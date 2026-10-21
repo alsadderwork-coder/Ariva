@@ -877,6 +877,26 @@
         "ARV-096b"
       ],
       "notes": "ARV-096b review findings L1, L2 and I4; backlog/progress.md, ARV-096b entry."
+    },
+    {
+      "id": "ARV-233",
+      "title": "[E17] A push gets its answer, not a connection reset, under load",
+      "description": "Found by ARV-124a's pilot load run. A device sending full 15 KB pushes at 150 a second, far past its limit of 600 a minute, had exactly 600 accepted, but a few of the rest reached the client as a connection reset (HttpRequestException, HttpRequestError Unknown in runs 2 and 4, ResponseEnded in run 6) instead of 429 with Retry-After: 1 of 300 in run 2, none in run 3, 3 of 300 in run 4, 2 of 300 in run 6, 3 of 300 in run 7, all during the D5 burst on a 4-core machine saturated by the whole stack. Run 7, with the harness's final checks, also had one reset (ResponseEnded) on a measured sensor's push within its rate, 1 of the burst's 6,000: the resets are not tied to refusals. Not reproduced on an idle machine: a bare Kestrel answering 429 to 3,600 unread 15 KB bodies at 150 a second gave no reset, whether it drained the body or not. Ingest aborts no HTTP connection itself, so the cause is in how Kestrel ends a request whose body was not read when the machine is busy (Proposed: the drain racing Ingest's minimum body rate), or in how the client reuses a connection the server is closing (Proposed: the harness sends every device's pushes through one connection pool, where a sensor keeps its own connection; to check). Ingest logs nothing about a reset: Kestrel's connection events are below its log level. Nothing past the limit was accepted, and no answer was a 5xx; a device that sees a reset instead of Retry-After may retry sooner, and a sensor whose push was reset does not know whether it was accepted (its retry is deduplicated by its package). CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "The cause is found and recorded (a Kestrel trace of a reset push, refused or accepted, or a reproduction outside the pilot run)",
+        "A push gets its answer under load, 202 or 429 with Retry-After (fixed, for example by reading or draining the body before answering, if the cost is acceptable, or in the harness if the cause is its shared connection pool), or the reset is documented as the answer devices must expect, with the reason",
+        "The pilot load run (node scripts/verify.mjs pilot-load) records no reset on any push, or its finding names the documented behaviour",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 305,
+      "passes": false,
+      "notes": "Size S. Low (the limit holds; the answer is a reset for about 1 percent of refusals and 1 in 6,000 accepted pushes under a saturated machine), so Phase 3 by the owner's rule. But a reset on a measured sensor's push fails the pilot run's first test, which ARV-124a needs to pass: if it recurs once ARV-230 and ARV-232 are in, this story moves before the pilot (owner's decision). The pilot run reports these resets as a finding, not a failure, only within FloodRule's bounds (PilotRun.cs: one outcome per push started, exactly the limit accepted, so none of the reset pushes was accepted; resets of the kinds ResponseEnded and Unknown only, at most 2 percent of the refusals or 6), and anything else as a problem. The harness's loopback refusal (PilotSettings) has no self-test of its own (round 2 review, I4).",
+      "dependsOn": [
+        "ARV-071"
+      ]
     }
   ]
 }

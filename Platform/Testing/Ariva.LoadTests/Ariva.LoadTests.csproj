@@ -3,7 +3,8 @@
     <!--
       Load tests (ARV-071): sensor pushes through Ariva.Api.Ingest and live fan-out from Ariva.Api.Main, run against hosts
       that are already up (the E2E run or a lab install). HTTP through Apizr (typed Refit interfaces), StackExchange.Redis
-      (already used by Ariva.Infra) to publish live snapshots as Ariva.Api.Stream does. Not deployed: no image, no chart.
+      (already used by Ariva.Infra) to publish live snapshots as Ariva.Api.Stream does. The pilot hall run (ARV-124a) has
+      Stream itself in the run and uses Confluent.Kafka for AMAN's feed and Stream's lag. Not deployed: no image, no chart.
     -->
     <PropertyGroup>
         <OutputType>Exe</OutputType>
@@ -13,6 +14,8 @@
     <ItemGroup>
         <PackageReference Include="Apizr" />
         <PackageReference Include="StackExchange.Redis" />
+        <!-- ARV-124a: AMAN's feed produced as AMAN does, and Stream's lag read from the broker (already pinned for Ariva.Infra). -->
+        <PackageReference Include="Confluent.Kafka" />
     </ItemGroup>
 
 </Project>

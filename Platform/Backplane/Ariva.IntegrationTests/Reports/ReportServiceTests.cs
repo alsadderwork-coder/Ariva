@@ -267,27 +267,107 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
         (await Host.ReadAsync<long>("SELECT count(*) FROM report_delivery WHERE schedule_id = @id", later.Id)).Should().Be(0);
     }
 
+    [Fact]
+    public async Task Rounds_Should_SendEachRecipientItsReportOnce_When_TwoRunAtOnce()
+    {
+        // ARV-124a: TickerQ 10.0.2 fires about one occurrence in ten twice, so two rounds run at once on one replica as they may
+        // on two. A delivery is claimed with its status checked again (FOR UPDATE SKIP LOCKED), so a report is sent once even
+        // while the other round delivers beside it; a failed one may be tried by both, within the attempt limit.
+        var admin = await AdminAsync();
+        var border = await UserAsync(admin, RoleCodes.BorderShiftSupervisor, "DMO", "twice.border@ariva.test");
+        var manager = await UserAsync(admin, RoleCodes.TerminalDutyManager, "DMO", "twice.manager@ariva.test");
+        var flaky = await UserAsync(admin, RoleCodes.TerminalDutyManager, "DMO", "twice.flaky@ariva.test");
+        var schedule = (await Host.AsCallerAsync(border, s => Schedules(s).CreateAsync(new ReportScheduleRequest("DMO", "Twice at once", null, "06:00", [border, manager, flaky]), Ct))).Data;
+        _transport.FailFor.Add("twice.flaky@ariva.test");
+
+        // The first round holds its first send (and so that delivery's row) until the second round sends one of its own: the
+        // second round prepares after the first's preparation committed and delivers while the first is mid-delivery.
+        _transport.HoldFirstSend();
+        var first = Task.Run(RunAsync, Ct);
+        await _transport.FirstSendEntered.WaitAsync(TimeSpan.FromSeconds(30), Ct);
+        var second = await RunAsync();
+        var firstRun = await first;
+
+        (second.Sent + second.Failed).Should().BeGreaterThan(0, "the second round delivered while the first held a delivery");
+        _transport.ReleasedBySend.Should().BeTrue("the held send went on because the second round sent, not after its 10 s");
+        (firstRun.Sent + second.Sent).Should().BeGreaterThanOrEqualTo(2);
+        _transport.SentTo("twice.border@ariva.test").Should().Be(1);
+        _transport.SentTo("twice.manager@ariva.test").Should().Be(1);
+        _transport.SentTo("twice.flaky@ariva.test").Should().Be(0);
+        (await Host.ReadAsync<string>("SELECT string_agg(status, ',' ORDER BY status) FROM report_delivery WHERE schedule_id = @id", schedule.Id))
+            .Should().Be("Failed,Sent,Sent");
+        (await Host.ReadAsync<int>("SELECT attempts FROM report_delivery WHERE schedule_id = @id AND status = 'Failed'", schedule.Id))
+            .Should().BeInRange(1, 2, "each copy tries a failed delivery at most once");
+
+        // The failed one goes out once later, and nothing is owed after it.
+        _transport.FailFor.Clear();
+        await Task.WhenAll(Task.Run(RunAsync, Ct), Task.Run(RunAsync, Ct));
+        _transport.SentTo("twice.flaky@ariva.test").Should().Be(1);
+        _transport.SentTo("twice.border@ariva.test").Should().Be(1, "a sent report is never sent again");
+        (await Host.ReadAsync<string>("SELECT string_agg(status, ',' ORDER BY status) FROM report_delivery WHERE schedule_id = @id", schedule.Id))
+            .Should().Be("Sent,Sent,Sent");
+    }
+
     private Task<ReportDeliveryRun> RunAsync() => Host.Provider.GetRequiredService<ReportDeliveryRound>().RunAsync(Ct);
 
     private static string Text(EmailAttachment attachment) => Encoding.UTF8.GetString(attachment.Content);
 
+    /// <summary>
+    /// Records what the relay would send; safe for rounds that send at the same time. After <see cref="HoldFirstSend"/> the
+    /// next send waits (at most 10 s) until another send arrives, so two rounds can be made to overlap;
+    /// <see cref="ReleasedBySend"/> tells which ended the wait.
+    /// </summary>
     private sealed class RecordingTransport : IEmailTransport
     {
+        private readonly Lock _gate = new();
+        private TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _holding;
+
         public List<OutgoingEmail> Sent { get; } = [];
         public HashSet<string> FailFor { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-        public Task<IReadOnlyDictionary<Guid, string>> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
+        public Task FirstSendEntered => _entered.Task;
+
+        public bool ReleasedBySend { get; private set; }
+
+        public void HoldFirstSend()
         {
-            var failures = new Dictionary<Guid, string>();
-            foreach (var email in emails)
+            _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _holding, 1);
+        }
+
+        public int SentTo(string recipient)
+        {
+            lock (_gate)
+                return Sent.Count(e => string.Equals(e.Recipient, recipient, StringComparison.OrdinalIgnoreCase));
+        }
+
+        public async Task<IReadOnlyDictionary<Guid, string>> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
+        {
+            if (Interlocked.CompareExchange(ref _holding, 2, 1) == 1)
             {
-                if (FailFor.Contains(email.Recipient))
-                    failures[email.Id] = "421 try again later";
-                else
-                    Sent.Add(email);
+                _entered.TrySetResult();
+                await _release.Task.WaitAsync(TimeSpan.FromSeconds(10), ct).ContinueWith(_ => { }, TaskScheduler.Default);
+                ReleasedBySend = _release.Task.IsCompletedSuccessfully;
+            }
+            else
+                _release.TrySetResult();
+
+            var failures = new Dictionary<Guid, string>();
+            lock (_gate)
+            {
+                foreach (var email in emails)
+                {
+                    if (FailFor.Contains(email.Recipient))
+                        failures[email.Id] = "421 try again later";
+                    else
+                        Sent.Add(email);
+                }
             }
 
-            return Task.FromResult<IReadOnlyDictionary<Guid, string>>(failures);
+            return failures;
         }
     }
 }

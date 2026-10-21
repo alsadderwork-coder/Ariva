@@ -4,13 +4,16 @@ namespace Ariva.LoadTests;
 
 /// <summary>
 /// CPU and memory of the Ariva hosts on this machine during a run (Linux /proc; elsewhere nothing is sampled). A lab
-/// stand-in for "per pod": each host is one process here, as it is one container in a pod.
+/// stand-in for "per pod": each host is one process here, as it is one container in a pod. The summary gives the average
+/// and peak CPU, the peak, first and last resident memory, and one sample every 10 seconds (ARV-124a: whether memory grows
+/// over a run, not only how high it gets).
 /// </summary>
 public sealed class HostSampler : IAsyncDisposable
 {
     private static readonly string[] Hosts = ["Ariva.Api.Main", "Ariva.Api.Ingest", "Ariva.Api.Integration", "Ariva.Api.Cronz", "Ariva.Api.Stream"];
     private const double TicksPerSecond = 100; // USER_HZ on Linux
-    private readonly Dictionary<string, List<(double Cpu, double RssMb)>> _samples = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<(DateTime At, double Cpu, double RssMb)>> _samples = new(StringComparer.Ordinal);
+    private readonly Lock _gate = new();
     private readonly CancellationTokenSource _stop = new();
     private readonly Task _loop;
 
@@ -77,9 +80,12 @@ public sealed class HostSampler : IAsyncDisposable
                     {
                         // Percent of one core over the last second.
                         var cpu = (now.Ticks - before) / TicksPerSecond * 100;
-                        if (!_samples.TryGetValue(host, out var list))
-                            _samples[host] = list = [];
-                        list.Add((cpu, now.RssMb));
+                        lock (_gate)
+                        {
+                            if (!_samples.TryGetValue(host, out var list))
+                                _samples[host] = list = [];
+                            list.Add((DateTime.UtcNow, cpu, now.RssMb));
+                        }
                     }
 
                     previous[pid] = now.Ticks;
@@ -91,13 +97,30 @@ public sealed class HostSampler : IAsyncDisposable
         }
     }
 
-    public object Summary() => _samples.OrderBy(s => s.Key, StringComparer.Ordinal).ToDictionary(s => s.Key, s => new
+    /// <summary>How many seconds a host was seen running (0 when it never was).</summary>
+    public int SamplesOf(string host)
     {
-        CpuAveragePercentOfOneCore = Math.Round(s.Value.Average(v => v.Cpu), 1),
-        CpuMaxPercentOfOneCore = Math.Round(s.Value.Max(v => v.Cpu), 1),
-        MemoryMaxMb = Math.Round(s.Value.Max(v => v.RssMb), 0),
-        Samples = s.Value.Count
-    });
+        lock (_gate)
+            return _samples.TryGetValue(host, out var list) ? list.Count : 0;
+    }
+
+    public object Summary()
+    {
+        lock (_gate)
+        {
+            return _samples.OrderBy(s => s.Key, StringComparer.Ordinal).ToDictionary(s => s.Key, s => (object)new
+            {
+                CpuAveragePercentOfOneCore = Math.Round(s.Value.Average(v => v.Cpu), 1),
+                CpuMaxPercentOfOneCore = Math.Round(s.Value.Max(v => v.Cpu), 1),
+                MemoryMaxMb = Math.Round(s.Value.Max(v => v.RssMb), 0),
+                MemoryFirstMb = Math.Round(s.Value[0].RssMb, 0),
+                MemoryLastMb = Math.Round(s.Value[^1].RssMb, 0),
+                Samples = s.Value.Count,
+                Every10Seconds = s.Value.Where((_, i) => i % 10 == 0)
+                    .Select(v => new { v.At, Cpu = Math.Round(v.Cpu, 0), RssMb = Math.Round(v.RssMb, 0) }).ToList()
+            });
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {

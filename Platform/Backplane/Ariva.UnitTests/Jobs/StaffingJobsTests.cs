@@ -6,6 +6,7 @@ using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using TickerQ.Utilities.Base;
 
 namespace Ariva.UnitTests.Jobs;
@@ -33,6 +34,34 @@ public sealed class StaffingJobsTests
 
         function.ConstructorArguments.Select(a => a.Value).Should().StartWith([StaffingJobs.Recommendations, "45 * * * * *"]);
         StaffingRecommendations.LockClass.Should().Be(51, "the class no other advisory lock takes (25, 26, 37, 38, 41, 42, 49, 50)");
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(59_999, false)]
+    [InlineData(60_000, true)]
+    [InlineData(95_000, true)]
+    public void Overran_Should_BeTrueFromAWholeMinute_When_ARunTookThatLong(int milliseconds, bool overran)
+    {
+        // ARV-124a: TickerQ starts the next occurrence beside a run still going, so a run of a minute or more is a warning.
+        StaffingJobs.Overran(new StaffingRun(1, 0, 0, 0, 1, 13) { Elapsed = TimeSpan.FromMilliseconds(milliseconds) }).Should().Be(overran);
+        StaffingJobs.Interval.Should().Be(TimeSpan.FromMinutes(1), "the job runs every minute at second 45");
+        StaffingJobs.Overran(null).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(0, 0, 0, 1_000, LogLevel.Debug)]
+    [InlineData(1, 0, 0, 1_000, LogLevel.Warning)]
+    [InlineData(0, 1, 0, 1_000, LogLevel.Warning)]
+    [InlineData(0, 0, 1, 1_000, LogLevel.Warning)]
+    [InlineData(0, 0, 0, 59_999, LogLevel.Debug)]
+    [InlineData(0, 0, 0, 60_000, LogLevel.Warning)]
+    public void LevelOf_Should_WarnOnATroubledOrOverlongRun_When_TheRunEnds(int failed, int refused, int lanesRefused, int milliseconds, LogLevel level)
+    {
+        var run = new StaffingRun(3, 0, failed, refused, 5, 65, lanesRefused) { Elapsed = TimeSpan.FromMilliseconds(milliseconds) };
+
+        StaffingJobs.LevelOf(run).Should().Be(level);
+        StaffingJobs.Troubled(run).Should().Be(failed + refused + lanesRefused > 0);
     }
 
     [Theory]

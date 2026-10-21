@@ -84,6 +84,8 @@ Application pods (from the chart defaults and `values-k8s-prd.yaml`: HPA minimum
 | web | 50m, 64Mi | 250m, 128Mi | 2 to 3 |
 | simulation | 100m, 256Mi | 500m, 512Mi | Not deployed in production |
 
+Ariva.Api.Stream does not hold the pilot hall within its 1500Mi until ARV-230 (High, before the pilot): in ARV-124a's pilot run its queue engine kept every track position of a zone for 90 seconds, about 20 MB of state a zone at 6 T3 sensors, and it ran out of its pod's heap three minutes into the hall's steady rate (wiki 05, sizing notes). Raising the limit is not the fix: with no limit at all (run 2) it used 2.35 GB and still fell behind after the D5 burst.
+
 Totals at the HPA minimums: about 2.5 CPU cores and 7.5 GiB of memory requested. At the HPA maximums the limits add up to about 24 cores and 23 GiB. The malware scanner is most of the difference (ARV-092c, section 6.7): each api-main pod also runs clamd (100m and 1200Mi requested, 1000m and 1600Mi limit) and, with signatures from a mirror, freshclam (10m and 64Mi, 500m and 256Mi), because clamd holds its signatures in memory, 990 MiB measured with ClamAV 1.4.6, and every replica loads its own copy. A node that runs an api-main pod needs about 2 GiB free for it. Add TimescaleDB (500m and 2Gi requested, 2 cores and 4Gi limit, of which up to 512Mi is shared memory; `Charts/timescaledb/values.yaml`), Kafka, Redis, the ingress controller and monitoring. Node size per profile: To confirm after the Phase 1 load test at 15,000 messages per second.
 
 ## 4. Dependencies
@@ -97,6 +99,7 @@ Totals at the HPA minimums: about 2.5 CPU cores and 7.5 GiB of memory requested.
   2. A PostgreSQL operator or Patroni with streaming replication for HA, using an image that includes TimescaleDB. The operator should match what AMAN runs (To confirm). Set `timescaledb: false` for the environment in the Helmfile.
   3. A customer-managed PostgreSQL 16 or later with TimescaleDB, set through `Database:Host`, with `timescaledb: false` in the Helmfile.
 - TimescaleDB telemetry is off (`TIMESCALEDB_TELEMETRY=off` in the chart sets `timescaledb.telemetry_level` and unschedules the telemetry job). Set it yourself with options 2 and 3.
+- Connections: every host and replica opens a pool of its own (Npgsql's default, up to 100 each), and nothing yet ties their sum to the server's `max_connections` (ARV-232, before the pilot). In ARV-124a's pilot run one replica of each host held up to 94 connections at once, and at PostgreSQL's default 100 the D5 burst took the last one: a display board answered 503 (wiki 05). Until ARV-232, set `max_connections` well above 100 for the replica counts you run, and watch `SELECT count(*) FROM pg_stat_activity` (every host names itself `ariva` for now, so the count is the hosts' together).
 
 ### Kafka
 

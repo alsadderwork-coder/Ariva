@@ -10,6 +10,10 @@ using Ariva.LoadTests;
 // failed (5xx or transport error), a limit did not answer 413 or 429 with Retry-After, a measured device was refused
 // with 429, a screen could not join, screens missed snapshots, or a display board did not answer 200.
 
+// ARV-124a: the pilot hall through the whole pipeline (Ariva.Api.Stream in the run) is its own mode.
+if (string.Equals(Environment.GetEnvironmentVariable("ARIVA_LOAD_MODE"), "pilot", StringComparison.OrdinalIgnoreCase))
+    return await PilotRun.RunAsync();
+
 var settings = LoadSettings.FromEnvironment();
 using var cancel = new CancellationTokenSource(TimeSpan.FromMinutes(settings.Full ? 15 : 5));
 var ingest = new IngestScenarios(settings, ArivaApis.Ingest(settings.Ingest));

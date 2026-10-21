@@ -7,13 +7,13 @@ Snapshot of 2026-10-21, branch `story/mvp-phase1`. The backlog files in `backlog
 | Backlog | Done | Open |
 |---|---|---|
 | Phase 0 (`prd-phase0.json`) | 78 of 79 | ARV-002: its last criterion is a dev cluster release by a person, deferred by the owner to ARV-137 |
-| Phase 1, the MVP (`prd-phase1.json`) | 69 of 83 | 14, almost all waiting for site answers or the owner (ARV-124 split in two on 2026-10-21) |
+| Phase 1, the MVP (`prd-phase1.json`) | 69 of 86 | 17, almost all waiting for site answers or the owner (ARV-124 split in two on 2026-10-21; ARV-124a's run filed ARV-230 to ARV-232 and stays open until they let it pass) |
 | Phase 2, displays and advertising (`prd-phase2.json`) | 8 of 8 | none |
 | ASVS gaps (`prd-asvs-gaps.json`) | 22 of 41 | 19 (ARV-096b split in four on 2026-10-21; its request path part done) |
-| Phase 3, deferred hardening (`prd-phase3.json`) | 0 of 46 | 46, built after the pilot go-live gate unless pulled forward (ARV-228 and ARV-229 added by ARV-096b) |
+| Phase 3, deferred hardening (`prd-phase3.json`) | 0 of 47 | 47, built after the pilot go-live gate unless pulled forward (ARV-228 and ARV-229 added by ARV-096b, ARV-233 by ARV-124a) |
 | Azure DevOps move (`prd-azure-move.json`) | 0 of 9 | 9, new; see [azure-devops-move.md](azure-devops-move.md) |
 
-ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 158 of the 203 requirements that apply are met (78 percent), 42 partly, 3 gaps.
+ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 157 of the 203 requirements that apply are met (77 percent), 43 partly, 3 gaps (V16.3.4 back to Partly: ARV-231).
 
 ## 1. Workable now, no decision needed
 
@@ -24,8 +24,11 @@ ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 158 of the 203 requirements that 
 | ARV-096c | Forms sent to actions that bind none; NulCharacterFilter in its place | The sign-in endpoints' part waits for the login freeze |
 | ARV-096d | Data read bounds (report rows, search counts, database command and statement timeouts) | The statement_timeout touches ARV-083a's per-host logins |
 | ARV-096e | Run timeouts (jobs, background loops, Kafka handlers) | |
-| ARV-124a | Pilot-profile load test and the D5 burst (15,000 messages a second through the whole pipeline) | Runs here; its numbers and ARV-124b's answer TC-33 (node sizes) |
-| ARV-124b | 24-hour soak and catch-up after a 30-minute stream outage | Needs a machine doing nothing else for a day, with disk for a day of Kafka and TimescaleDB growth |
+| ARV-230 | Queue engine: track positions out of the checkpointed state, so Stream fits its pod at the pilot rate | Found by ARV-124a: Stream runs out of its pod's heap three minutes into the pilot hall; High, next |
+| ARV-124a | Pilot-profile load test and the D5 burst | The harness, the run and the measurements are in (wiki 05); open until the pilot run passes after ARV-230 and ARV-232 |
+| ARV-231 | Queue engine refusals visible (buffer full, forced advances, late and invalid events) | Found by ARV-124a; Medium, before the pilot |
+| ARV-232 | Database connections bounded per host and sized against PostgreSQL's limit | Found by ARV-124a (a 503 at the default 100 connections); Medium, before the pilot |
+| ARV-124b | 24-hour soak and catch-up after a 30-minute stream outage | After ARV-230; needs a machine doing nothing else for a day, with disk for a day of Kafka and TimescaleDB growth; its numbers and ARV-124a's answer TC-33 (node sizes) |
 
 ## 2. Waiting for the owner to lift the sign-in freeze
 
@@ -80,4 +83,4 @@ The owner froze every change to sign-in, passwords, TOTP, sessions and authentic
 
 ## 6. Phase 3 (after the pilot)
 
-46 stories in `backlog/prd-phase3.json`: low-severity findings of the security reviews, test determinism and harness work, and small product refinements. Examples: ARV-175 (dead letters), ARV-154 (site import lock), ARV-163 (linear regular expressions), ARV-182 and ARV-183 (scheduled backups, restore hardening), ARV-209 (secrets in the release tooling, which matters for the Azure release), ARV-214 (supply chain residuals of CI and test tooling), ARV-224 (the test report secret check's remaining gaps), ARV-225 (the Trojan Source check's remaining gaps and two harness hooks for the owner). The owner can pull any of them forward.
+47 stories in `backlog/prd-phase3.json`: low-severity findings of the security reviews, test determinism and harness work, and small product refinements. Examples: ARV-175 (dead letters), ARV-154 (site import lock), ARV-163 (linear regular expressions), ARV-182 and ARV-183 (scheduled backups, restore hardening), ARV-209 (secrets in the release tooling, which matters for the Azure release), ARV-214 (supply chain residuals of CI and test tooling), ARV-224 (the test report secret check's remaining gaps), ARV-225 (the Trojan Source check's remaining gaps and two harness hooks for the owner). The owner can pull any of them forward.

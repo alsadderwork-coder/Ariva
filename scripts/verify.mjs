@@ -8,7 +8,7 @@
 //   integration  Ariva.IntegrationTests (needs Docker for Testcontainers)
 //   web          Ariva.Web: npm ci, svelte-check, lint, build
 //   e2e          Platform/Testing/Ariva.E2E: API end-to-end and Playwright functional tests; --specs <file,...> runs only those.
-//                After every Playwright run (e2e, visual, demo, rehearsal, zap, and those of story and checkpoint) the report,
+//                After every Playwright run (e2e, visual, demo, rehearsal, pilot-load, zap, and those of story and checkpoint) the report,
 //                the test output and their zips are checked for secrets (ARV-152, Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs)
 //   artifacts    that artifact check alone, on the report and the test output a run left behind
 //   visual       visual regression baselines (ARV-075) in the pinned Playwright image (Docker); --update regenerates them;
@@ -21,6 +21,11 @@
 //                their results frozen (about two hours; fresh services and the E2E database environment); ARIVA_DEMO_START and
 //                ARIVA_DEMO_END (quarter hours, default 1080 and 1170) set the rehearsed window. Runs at phase ends and before
 //                go-live, never in a story gate (docs/harness/test-cadence.md)
+//   pilot-load   the pilot hall load run (ARV-124a): the hall's 30 sensors, AMAN's feed, 50 screens and 10 boards, then the D5 burst
+//                (100 sensors, 15,000 positions a second) and the recovery, through Ingest, Kafka and Stream in real time (about
+//                20 minutes; fresh services and the E2E database environment); ARIVA_LOAD_STEADY_SECONDS, ARIVA_LOAD_BURST_SECONDS
+//                and ARIVA_LOAD_RECOVERY_SECONDS reshape it. Report in .verify/load/pilot. On demand and at phase ends, never in a
+//                story gate (docs/harness/test-cadence.md)
 //   zap          dynamic security scan (ARV-063): OWASP ZAP in its pinned image against the E2E stack (Docker and the E2E
 //                database environment; about 10 minutes); reports in Platform/Testing/Ariva.E2E/zap-reports
 //   security     scanner self-test + full scan + ops tooling self-tests (ARV-126, the TLS check of ARV-084) + dependency audits
@@ -471,6 +476,19 @@ const steps = {
       delete process.env.ARIVA_E2E_REHEARSAL;
     }
   },
+  // ARV-124a: the pilot hall load run through the live pipeline (Stream included), alone and in real time, on fresh services;
+  // its record is pilot-report.md and pilot-measurements.json in .verify/load/pilot, attached to the report.
+  'pilot-load': () => {
+    if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);
+    if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
+    run('load harness build', 'dotnet', ['build', 'Platform/Testing/Ariva.LoadTests/Ariva.LoadTests.csproj', '-c', 'Debug']);
+    process.env.ARIVA_E2E_PILOT_LOAD = '1';
+    try {
+      playwright('pilot hall load run (live pipeline)', ['--project=pilot-load']);
+    } finally {
+      delete process.env.ARIVA_E2E_PILOT_LOAD;
+    }
+  },
   // ARV-063: ZAP API and baseline scans; the run fails on an untriaged High risk finding (security/zap-triage.json).
   zap: () => {
     if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);
@@ -568,7 +586,7 @@ if (!steps[scope]) { console.error(`Unknown scope ${scope}. Use one of: ${Object
 // integration suites crashed PostgreSQL and filled the disk). Scopes that start the hosts or Testcontainers take a lock in
 // the machine's temporary folder; a second one refuses to start while the holder's process lives. Stryker has its own lock
 // and its own worktree (2026-10-09), so a mutation run and one heavy run may share the machine.
-const HEAVY = new Set(['integration', 'e2e', 'visual', 'demo', 'rehearsal', 'zap', 'all', 'story', 'checkpoint']);
+const HEAVY = new Set(['integration', 'e2e', 'visual', 'demo', 'rehearsal', 'pilot-load', 'zap', 'all', 'story', 'checkpoint']);
 const LOCK = path.join(os.tmpdir(), 'ariva-verify.lock');
 const MUTATION_LOCK = path.join(os.tmpdir(), 'ariva-mutation.lock');
 const MUTATION_TREE = path.join(os.tmpdir(), 'ariva-mutation-tree');

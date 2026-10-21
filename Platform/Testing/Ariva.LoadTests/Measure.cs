@@ -11,8 +11,14 @@ public sealed class Measure(string name)
     private readonly ConcurrentDictionary<string, int> _outcomes = new(StringComparer.Ordinal);
     private readonly Stopwatch _clock = new();
     private long _bytes;
+    private int _started;
 
     public string Name { get; } = name;
+
+    /// <summary>A request is on its way: every one started has an outcome recorded, so <see cref="Started"/> checks the count.</summary>
+    public void Begin() => Interlocked.Increment(ref _started);
+
+    public int Started => Volatile.Read(ref _started);
 
     public void Start() => _clock.Start();
 
@@ -25,9 +31,24 @@ public sealed class Measure(string name)
         Interlocked.Add(ref _bytes, bytes);
     }
 
+    /// <summary>Takes in another measure's requests (a scenario run in parts); the clock stays this measure's own.</summary>
+    public void Add(Measure other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        foreach (var latency in other._latencies)
+            _latencies.Enqueue(latency);
+        foreach (var (outcome, count) in other._outcomes)
+            _outcomes.AddOrUpdate(outcome, count, (_, n) => n + count);
+        Interlocked.Add(ref _bytes, Interlocked.Read(ref other._bytes));
+        Interlocked.Add(ref _started, other.Started);
+    }
+
     public void Record(double milliseconds, HttpStatusCode status, long bytes = 0) => Record(milliseconds, ((int)status).ToString(System.Globalization.CultureInfo.InvariantCulture), bytes);
 
     public int Count(string outcome) => _outcomes.TryGetValue(outcome, out var n) ? n : 0;
+
+    /// <summary>The requests whose outcome matches <paramref name="outcome"/>.</summary>
+    public int Count(Func<string, bool> outcome) => _outcomes.Where(o => outcome(o.Key)).Sum(o => o.Value);
 
     public int Total => _outcomes.Values.Sum();
 

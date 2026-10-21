@@ -10,8 +10,14 @@ using NpgsqlTypes;
 
 namespace Ariva.Infra.Staffing;
 
-/// <summary>What one run of the staffing recommendation did (lanes refused on their own beyond the desk bound in <see cref="LanesRefused"/>).</summary>
-public sealed record StaffingRun(int Sites, int SitesHeldElsewhere, int SitesFailed, int SitesRefused, int Lanes, int Rows, int LanesRefused = 0);
+/// <summary>
+/// What one run of the staffing recommendation did (lanes refused on their own beyond the desk bound in <see cref="LanesRefused"/>)
+/// and how long it took (<see cref="Elapsed"/>, from the host's <see cref="TimeProvider"/>; ARV-124a).
+/// </summary>
+public sealed record StaffingRun(int Sites, int SitesHeldElsewhere, int SitesFailed, int SitesRefused, int Lanes, int Rows, int LanesRefused = 0)
+{
+    public TimeSpan Elapsed { get; init; }
+}
 
 /// <summary>
 /// What one site's pass did: lanes computed and rows inserted, or the bound that refused it (a fixed text), and the lanes
@@ -22,7 +28,7 @@ public sealed record StaffingSitePass(int Lanes, int Rows, string Refused = null
 /// <summary>
 /// The indicative staffing recommendation (ARV-181a, formulas F16 pilot version), run by Ariva.Api.Cronz every minute. For
 /// each site with an arrivals-hall lane in its published profile, in one transaction holding the site's advisory lock
-/// (class 51, so one replica computes a site at a time; the others skip it), it reads the site's inputs
+/// (class 51, so one run computes a site at a time, whether the others are on another replica or a concurrent occurrence on the same one; they skip it), it reads the site's inputs
 /// (<see cref="StaffingInputs"/>, bounded; a site beyond a bound is refused with one warning naming the site and the bound,
 /// never cut short; a lane beyond the desk bound is refused on its own with one warning naming the site and the count),
 /// computes every lane (<see cref="SiteStaffing"/>, pure) and inserts one row per lane, minute and
@@ -41,6 +47,7 @@ public sealed class StaffingRecommendations(IServiceScopeFactory scopes, Databas
     public async Task<StaffingRun> RunAsync(CancellationToken ct = default)
     {
         int held = 0, failed = 0, refused = 0, lanes = 0, rows = 0, lanesRefused = 0;
+        var started = timeProvider.GetTimestamp();
         var sites = await SitesAsync(ct);
         foreach (var site in sites)
         {
@@ -76,7 +83,7 @@ public sealed class StaffingRecommendations(IServiceScopeFactory scopes, Databas
             }
         }
 
-        return new StaffingRun(sites.Count, held, failed, refused, lanes, rows, lanesRefused);
+        return new StaffingRun(sites.Count, held, failed, refused, lanes, rows, lanesRefused) { Elapsed = timeProvider.GetElapsedTime(started) };
     }
 
     /// <summary>The sites with an arrivals-hall lane in their published profile, in code order, at most <see cref="StaffingSettings.MaxSitesPerRun"/>.</summary>

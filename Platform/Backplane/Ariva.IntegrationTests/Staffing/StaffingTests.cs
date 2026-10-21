@@ -180,9 +180,33 @@ public sealed class StaffingTests(PostgresFixture fixture) : IAsyncDisposable
     private Task<long> CountAsync(string zonePrefix) =>
         ScalarAsync<long>("SELECT count(*) FROM lane_staffing WHERE zone_key LIKE @prefix || '/%'", ("prefix", zonePrefix));
 
-    private StaffingRecommendations Runner(StaffingSettings settings = null) =>
-        new(Host.Provider.GetRequiredService<IServiceScopeFactory>(), Host.Provider.GetRequiredService<DatabaseSettings>(), Host.Clock, settings ?? new StaffingSettings(),
+    private StaffingRecommendations Runner(StaffingSettings settings = null, TimeProvider clock = null) =>
+        new(Host.Provider.GetRequiredService<IServiceScopeFactory>(), Host.Provider.GetRequiredService<DatabaseSettings>(), clock ?? Host.Clock, settings ?? new StaffingSettings(),
             new ArrivalWaveSettings(), new EgateCouplingSettings(), NullLogger<StaffingRecommendations>.Instance);
+
+    [Fact]
+    public async Task Run_Should_TimeItselfWithTheHostsClock_When_ItRuns()
+    {
+        // ARV-124a: the run's duration (the job warns when it takes its whole minute) is the host clock's, from before the sites
+        // are read to after the last site: a clock whose timestamps step 250 ms at each reading gives exactly one step. The host
+        // starts with its first account, so the test does not depend on another having run first.
+        await Host.CreateUserAsync("it.staff.probe." + Guid.NewGuid().ToString("N")[..8]);
+        var run = await Runner(clock: new SteppingTimestamps(Host.Clock, TimeSpan.FromMilliseconds(250))).RunAsync(Ct);
+
+        run.Elapsed.Should().Be(TimeSpan.FromMilliseconds(250));
+    }
+
+    /// <summary>The host's clock, with timestamps that move <paramref name="step"/> at every reading.</summary>
+    private sealed class SteppingTimestamps(TimeProvider clock, TimeSpan step) : TimeProvider
+    {
+        private long _ticks;
+
+        public override DateTimeOffset GetUtcNow() => clock.GetUtcNow();
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => Interlocked.Add(ref _ticks, step.Ticks);
+    }
 
     private sealed record Row(int Index, string Lane, DateTime Start, int Minutes, double? Arrivals, int? Recommended, string Bound, bool AtLimit, int? Shortfall,
         double? WaitRecommended, double? WaitOpen, double? Backlog, string Gap, string LaneGap, double? QueueNow, int? OpenNow, int Desks, double? Rate, string Source);

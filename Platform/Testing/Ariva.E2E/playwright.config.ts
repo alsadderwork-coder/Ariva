@@ -50,8 +50,12 @@ const demo = process.env.ARIVA_E2E_DEMO === '1';
 // included: the reference evening plays through Ingest, Stream and Cronz, the simulator's observers capture through the capture
 // API, and the campaigns are closed and their results frozen. In real time and alone: ARIVA_E2E_REHEARSAL=1 --project=rehearsal.
 const rehearsal = process.env.ARIVA_E2E_REHEARSAL === '1';
-/** The whole pipeline (Ariva.Api.Stream started, Main on Kafka): the demo and the rehearsal against it. */
-const livePipeline = demo || rehearsal;
+// ARV-124a: the pilot hall load run (tests/load) through the whole pipeline, Stream included: the harness pushes the hall's
+// sensors, AMAN's feed and the D5 burst while the screens and boards run. In real time and alone, on fresh services (Stream
+// reads the sensing topics from their start): ARIVA_E2E_PILOT_LOAD=1 --project=pilot-load, or node scripts/verify.mjs pilot-load.
+const pilotLoad = process.env.ARIVA_E2E_PILOT_LOAD === '1';
+/** The whole pipeline (Ariva.Api.Stream started, Main on Kafka): the demo, the rehearsal and the pilot load run against it. */
+const livePipeline = demo || rehearsal || pilotLoad;
 
 const project = (relative: string) => path.join(repositoryRoot, 'Platform', relative);
 
@@ -239,10 +243,19 @@ function kafkaEnvironment(): Record<string, string> {
 		Kafka__Enabled: 'true',
 		Kafka__BootstrapServers: bootstrap,
 		Kafka__ProvisionTopics: 'true',
-		Kafka__Topics__Partitions: '1',
+		// The pilot load run creates the topics as production does (6 partitions, appsettings.base.json), when it creates them:
+		// topics an earlier run made keep their count (the run's report says which it had).
+		Kafka__Topics__Partitions: pilotLoad ? '6' : '1',
 		Kafka__Topics__ReplicationFactor: '1',
 		Kafka__Topics__MinInSyncReplicas: '1'
 	};
+}
+
+// ARV-124a: in the pilot load run each host gets the GC heap limit .NET derives in its container from the chart's memory
+// limit (75 percent; templates/api-*.yaml defaults: Main, Ingest and Cronz 1000Mi, Integration 750Mi, Stream 1500Mi), so the
+// run sees a host that would not fit its pod rather than one that grows into the lab machine's memory.
+function podHeap(limitMi: number): Record<string, string> {
+	return pilotLoad ? { DOTNET_GCHeapHardLimit: `0x${Math.floor(limitMi * 1024 * 1024 * 0.75).toString(16)}` } : {};
 }
 
 // ARV-092b: Ariva.Api.Main streams every upload to clamd before it stores it. ARIVA_E2E_CLAMD (host:port of the run's clamd)
@@ -281,6 +294,7 @@ function smtpEnvironment(): Record<string, string> {
 // The .NET hosts, by the resource names Ariva.AppHost uses (ARV-066). Playwright starts them in this order.
 const hostServers = {
 	'api-main': dotnetHost(project('Backplane/Ariva.Api.Main'), `${hosts.main}/health/readiness`, true, {
+		...podHeap(1000),
 		...(databaseAvailable ? developmentUserEnvironment() : {}),
 		...(databaseAvailable ? validationReaderEnvironment() : {}),
 		...redisEnvironment(),
@@ -294,6 +308,7 @@ const hostServers = {
 		Seed__NbjSite: 'false'
 	}),
 	'api-integration': dotnetHost(project('Backplane/Ariva.Api.Integration'), `${hosts.integration}/health/readiness`, false, {
+		...podHeap(750),
 		...smtpEnvironment(),
 		// ARV-048: Integration consumes AMAN's feed topics (aman.feed.*.v1), which the simulator's AMAN publishes.
 		...kafkaEnvironment(),
@@ -307,18 +322,20 @@ const hostServers = {
 		...outboundLabEnvironment()
 	}),
 	'api-ingest': dotnetHost(project('Backplane/Ariva.Api.Ingest'), `${hosts.ingest}/health/readiness`, false, {
+		...podHeap(1000),
 		...kafkaEnvironment(),
 		// A device's own limit (600 a minute by default) lowered so the load smoke's flood reaches it with 200 requests,
 		// well inside the per-address budget the parallel suites share; every device here pushes about once a minute.
-		// The full load run (ARIVA_LOAD_MODE=full) keeps the production 600; Ingest's per-address limit (20,000 a minute, for
+		// The full load run (ARIVA_LOAD_MODE=full) and the pilot load run keep the production 600; Ingest's per-address limit (20,000 a minute, for
 		// sensors behind one gateway) covers 40 sensors from this one address either way.
-		Security__RateLimiting__Device__PermitLimit: process.env.ARIVA_LOAD_MODE === 'full' ? '600' : '120'
+		Security__RateLimiting__Device__PermitLimit: process.env.ARIVA_LOAD_MODE === 'full' || pilotLoad ? '600' : '120'
 	}),
 	// ARV-060: TickerQ runs the scheduled reports and mails them through the run's smtp4dev; the dashboard is on with
 	// the run's key so reports.spec.ts can run the delivery job on demand.
 	// ARV-118: the availability ledger reads the run's Redis snapshots; a 30-second grace lets availability.spec.ts see a
 	// minute decided within two runs of the job.
 	'api-cronz': dotnetHost(project('Backplane/Ariva.Api.Cronz'), `${hosts.cronz}/health/readiness`, false, {
+		...podHeap(1000),
 		...smtpEnvironment(),
 		...redisEnvironment(),
 		// ARV-104j: the live pipeline writes a minute's live part about two minutes after it ends (one-minute sensor pushes,
@@ -331,6 +348,7 @@ const hostServers = {
 	...(livePipeline
 		? {
 				'api-stream': dotnetHost(project('Backplane/Ariva.Api.Stream'), `${streamUrl}/health/readiness`, false, {
+					...podHeap(1500),
 					...kafkaEnvironment(),
 					...redisEnvironment()
 				})
@@ -457,6 +475,20 @@ export default defineConfig({
 						retries: 0,
 						// The rehearsed evening in real time (about two hours by default), with the setup, the rehearsals and a margin.
 						timeout: 4 * 60 * 60_000,
+						// API calls only: a trace would carry the sign-ins and the device credentials.
+						use: { trace: 'off' as const }
+					}
+				]
+			: []),
+		...(pilotLoad
+			? [
+					{
+						name: 'pilot-load',
+						testDir: './tests/load',
+						fullyParallel: false,
+						retries: 0,
+						// The provisioning (about five minutes), the run (about twelve) and the measurements, with a margin.
+						timeout: 60 * 60_000,
 						// API calls only: a trace would carry the sign-ins and the device credentials.
 						use: { trace: 'off' as const }
 					}
