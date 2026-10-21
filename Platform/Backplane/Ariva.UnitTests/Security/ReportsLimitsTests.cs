@@ -75,6 +75,22 @@ public sealed class ReportsLimitsTests
         reports.Calls.Should().Be(1, "the refused request never reached the service");
     }
 
+    [Theory]
+    [InlineData(Daily)]
+    [InlineData(DailyCsv)]
+    public async Task Get_Should_Answer409WithTheFixedText_When_TheDayIsPastTheReportsReadBounds(string path)
+    {
+        // ARV-096d: a day the report would read past a bound of is refused, never cut short.
+        await using var app = MainHost(new HeldReports { Error = ReportErrors.TooLarge });
+        using var client = app.CreateClient();
+        using var request = Request(path);
+
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        HttpResponses.ParseProblem(await response.BodyAsync()).GetProperty("detail").GetString().Should().Be(ReportErrors.TooLarge);
+    }
+
     [Fact]
     public async Task Get_Should_LetTheQueuedRequestThrough_When_ThePermitFrees()
     {
@@ -202,9 +218,14 @@ public sealed class ReportsLimitsTests
         public int Calls => Volatile.Read(ref _calls);
         public bool Cancelled { get; private set; }
 
+        /// <summary>When set, the answer at once instead of a report.</summary>
+        public string Error { get; init; }
+
         public async Task<Fluentx.Result<DailyReport>> DailyAsync(string siteCode, DateOnly? date, CancellationToken ct = default)
         {
             Interlocked.Increment(ref _calls);
+            if (Error is not null)
+                return Fluentx.Result.Error<DailyReport>(Error);
             Entered.TrySetResult();
             try
             {

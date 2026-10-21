@@ -356,11 +356,11 @@ public sealed class StaffingAlertTests(PostgresFixture fixture) : IAsyncDisposab
         (await Daily(c.Duty)).Should().Contain(wait.Code).And.NotContain(codes);
         (await Daily(c.Border)).Should().Contain(codes);
         var delivered = await _host.AsCallerAsync(null, s => s.GetRequiredService<ReportReader>().ReadAsync("DMO", Day, [RoleCodes.TerminalDutyManager], Ten.AddDays(1), Ct));
-        delivered.Alerts.Select(a => a.RuleCode).Should().Contain(wait.Code).And.NotContain(codes);
+        delivered.Data.Alerts.Select(a => a.RuleCode).Should().Contain(wait.Code).And.NotContain(codes);
         (await _host.AsCallerAsync(null, s => s.GetRequiredService<ReportReader>().ReadAsync("DMO", Day, [RoleCodes.HandlerStationManager, RoleCodes.TerminalDutyManager],
-            Ten.AddDays(1), Ct))).Alerts.Select(a => a.RuleCode).Should().NotContain(codes);
+            Ten.AddDays(1), Ct))).Data.Alerts.Select(a => a.RuleCode).Should().NotContain(codes);
         (await _host.AsCallerAsync(null, s => s.GetRequiredService<ReportReader>().ReadAsync("DMO", Day, [RoleCodes.SystemAdministrator], Ten.AddDays(1), Ct)))
-            .Alerts.Select(a => a.RuleCode).Should().Contain(codes);
+            .Data.Alerts.Select(a => a.RuleCode).Should().Contain(codes);
 
         // The weekly summary (no endpoint yet): the week of 2026-09-28.
         async Task<List<string>> Weekly(Guid caller)

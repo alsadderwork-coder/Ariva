@@ -73,7 +73,10 @@ public sealed class ReportsController(ISvcReports reports) : ControllerBase
         DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
 }
 
-/// <summary>Problem answers of the report endpoints: unknown or foreign records 404, the per-site limit 409, the rest 400.</summary>
+/// <summary>
+/// Problem answers of the report endpoints: unknown or foreign records 404, the per-site limit and a day past the report's read
+/// bounds (ARV-096d) 409, the rest 400.
+/// </summary>
 internal static class ReportAnswers
 {
     public static ObjectResult Problem(ControllerBase controller, string error)
@@ -81,7 +84,7 @@ internal static class ReportAnswers
         var (status, title) = error switch
         {
             null or ReportErrors.NotFound => (StatusCodes.Status404NotFound, "Not found"),
-            ReportErrors.TooMany => (StatusCodes.Status409Conflict, "Conflict"),
+            ReportErrors.TooMany or ReportErrors.TooLarge => (StatusCodes.Status409Conflict, "Conflict"),
             _ => (StatusCodes.Status400BadRequest, "Not valid")
         };
         return controller.Problem(statusCode: status, title: title, detail: status == StatusCodes.Status404NotFound ? null : error);

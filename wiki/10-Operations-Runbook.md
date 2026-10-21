@@ -717,6 +717,16 @@ Alert rule `scannerNotAnswering` (ARV-092c): a scanner beside api-main has not a
 4. A clamd that answers PING but no longer has a signature database: with `ConcurrentDatabaseReload no` a reload that fails (a changed file it cannot load) frees the old signatures first, so clamd keeps running without any, its VERSION answer has no database (`ariva.uploads.scanner.answered` 0, the host's Warning "did not answer its signature check (NoAnswer)") and every upload of that pod is refused until the files are fixed. Fix the signature files (freshclam's log, or the mounted set), then restart the pod: `kubectl -n "$NAMESPACE" delete pod <api-main pod>` (its Deployment starts another).
 5. A pod NotReady whose `clamd` is in `CrashLoopBackOff` takes the host down with it (above): read `kubectl -n "$NAMESPACE" logs <api-main pod> -c clamd --previous`, then fix the signature set or raise `uploadScan.clamd.resources` and release.
 
+### 4.19 Database timeouts and bounded reads (ARV-096d)
+
+| Where it shows, and the message | Cause | Action |
+|---|---|---|
+| A request answers 500 and its host logs an `NpgsqlException` with an inner `TimeoutException` | A statement outlasted `Database:CommandTimeoutSeconds` (30 s unless set), so the host cancelled it | Find the statement in the trace (the trace id of the line) and the database's load (`pg_stat_activity`, section 4.7); raise the setting only for a measured reason, within 5 to 300 |
+| A host log or PostgreSQL's log: "canceling statement due to statement timeout" (SQLSTATE 57014) for the runtime login | The server ended a statement of the runtime login after `Database:StatementTimeoutSeconds` (360 s unless set): its host had stopped waiting (gone, restarted, or its cancel lost) | Nothing to undo; if it recurs, look for what held the statement (locks: `pg_locks`). The value in force: `SELECT r.rolname, s.setconfig FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole JOIN pg_database d ON d.oid = s.setdatabase WHERE d.datname = current_database();` |
+| A host or the migration job does not start: "Database:CommandTimeoutSeconds is a whole number of seconds from 5 to 300 (ARV-096d)." (or `StatementTimeoutSeconds`, 301 to 3,600) | A value out of range in the release's settings | Correct it; the statement timeout stays above every client timeout of the runtime login (300 s) |
+| Daily report or its CSV answers 409: "The day holds more than a report reads (queue minutes, zones, devices or outages); it is refused rather than cut short." A scheduled delivery fails with the same text once and is not retried | The site's day passes a bound of the report (200 queue zones' full day, 2,000 zone names, 2,000 devices, 20,000 outages) | Expected only at a site past those sizes, until ARV-234 aggregates the read by the hour; the minute tables and the live screens are unaffected |
+| Audit log: "More than 10,000 entries"; the audit or alert search answers 400 "A search pages through its first 10,000 matches only: narrow it, for example with dates." | A search counts at most 10,000 matches and pages no further | Narrow it: dates, an action, a site or a zone |
+
 ## 5. Routine checks
 
 | Frequency | Check |

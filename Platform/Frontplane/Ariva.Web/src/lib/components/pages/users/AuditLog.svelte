@@ -20,6 +20,8 @@
 	let pageIndex = $state(1);
 	let entries = $state<AuditEntry[]>([]);
 	let total = $state(0);
+	// ARV-096d: the server counts at most 10,000 matches and pages through those only.
+	let capped = $state(false);
 	let problems = $state<string[]>([]);
 	let loading = $state(true);
 	let request = 0;
@@ -46,6 +48,7 @@
 		if (result.hasErrors) problems = result.errorMessages;
 		entries = result.data?.data ?? [];
 		total = result.data?.totalCount ?? 0;
+		capped = result.data?.totalCountCapped ?? false;
 		loading = false;
 	}
 
@@ -220,7 +223,9 @@
 
 	<div class="flex items-center justify-between gap-2 text-sm">
 		<span class="text-muted-foreground tabular-nums" data-testid="audit-count">
-			{$_('users.audit.count', { values: { total, page: pageIndex, pages } })}
+			{$_(capped ? 'users.audit.countCapped' : 'users.audit.count', {
+				values: { total, page: pageIndex, pages }
+			})}
 		</span>
 		<span class="flex gap-1.5">
 			<button

@@ -23,7 +23,8 @@ internal sealed class SvcReports(IUnitOfWork unitOfWork, ICurrentUser currentUse
         var today = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(now, await reader.TimeZoneAsync(siteCode, ct)));
         if (date is not { } day || day > today || day < today.AddDays(-ISvcReports.MaxDaysBack))
             return Result.Error<DailyReport>(ReportErrors.InvalidDate);
-        return new Result<DailyReport>(await reader.ReadAsync(siteCode, day, await callerRoles.GetAsync(ct), now, ct));
+        // ARV-096d: a day past the report's read bounds is refused (ReportErrors.TooLarge), never cut short.
+        return await reader.ReadAsync(siteCode, day, await callerRoles.GetAsync(ct), now, ct);
     }
 }
 

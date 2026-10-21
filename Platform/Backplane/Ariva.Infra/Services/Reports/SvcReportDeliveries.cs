@@ -117,7 +117,20 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
         try
         {
             var report = await reader.ReadAsync(row.SiteCode, DateOnly.FromDateTime(row.ReportDate), await RolesAsync(row.UserId, ct), now, ct);
-            email = Email(row.Id, row.Email.Trim(), new ScheduleRow { Id = row.ScheduleId, SiteCode = row.SiteCode, Name = row.ScheduleName }, report);
+            if (report.HasErrors && Enumerable.Contains(report.ErrorMessages, ReportErrors.TooLarge, StringComparer.Ordinal))
+            {
+                // ARV-096d: a day past the report's read bounds stays past them, so the delivery is not tried again (its attempts at
+                // the limit), with the fixed reason.
+                logger.LogWarning("Report delivery {DeliveryId} of schedule {ScheduleId}: the day is past the report's read bounds", row.Id, row.ScheduleId);
+                await MarkAsync(row.Id, "Failed", ISvcReportDeliveries.MaxAttempts, ReportErrors.TooLarge, null, ct);
+                UnitOfWork.PromiseToCommit();
+                return ReportDeliveryOutcome.Failed;
+            }
+
+            if (report.HasErrors)
+                throw new InvalidOperationException("The report reader answered an error other than its read bounds.");
+
+            email = Email(row.Id, row.Email.Trim(), new ScheduleRow { Id = row.ScheduleId, SiteCode = row.SiteCode, Name = row.ScheduleName }, report.Data);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {

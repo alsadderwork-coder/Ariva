@@ -1563,6 +1563,7 @@
 			"trace": "Trace id",
 			"none": "No entry matches",
 			"count": "{total} entries, page {page} of {pages}",
+			"countCapped": "More than {total} entries, page {page} of {pages}; narrow the search, for example with dates, to see the rest",
 			"clearFilter": "Show every account",
 			"about": "About {user}",
 			"by": "By {user}",

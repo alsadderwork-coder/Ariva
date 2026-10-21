@@ -321,7 +321,7 @@ public sealed class SensingArchive(DatabaseSettings database, TimeProvider timeP
                 FROM sensing_event
                 WHERE site_code = @site AND queue_zone_name = @zone AND time_utc >= @from AND time_utc < @to AND kind = ANY(@kinds)
                 ORDER BY time_utc, batch_id, ordinal
-                """, connection) { CommandTimeout = 300 };
+                """, connection) { CommandTimeout = DatabaseSettings.LongestRuntimeCommandSeconds };
             command.Parameters.AddWithValue("site", query.SiteCode);
             command.Parameters.AddWithValue("zone", query.QueueZoneName);
             command.Parameters.AddWithValue("from", from);

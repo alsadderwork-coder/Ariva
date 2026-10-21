@@ -62,6 +62,7 @@
     "0059_advertising_video.sql": "eb0c0309384d233e60457baf073f75c8402958db32f1dc53006b0152444b6b91",
     "0060_advertising_plan.sql": "b3f7ccb980c385caa183f298b3eac8881bbc24eb6bfbfd60099ec5e5f89115a1",
     "0061_display_advertising_pause.sql": "19947de2d034f51b0596e0f33aaf48eaf4a1e6e8dc977478fca90cbd30c2b870",
-    "0062_advertising_play.sql": "c861acb3b177ff91fe06a4b075b44572f216416af9ced954babaff7a976c53e2"
+    "0062_advertising_play.sql": "c861acb3b177ff91fe06a4b075b44572f216416af9ced954babaff7a976c53e2",
+    "0063_runtime_statement_timeout.sql": "f246fb38516fcba60bdb300d01d95566e76907fd935775744489e165183b97d1"
   }
 }

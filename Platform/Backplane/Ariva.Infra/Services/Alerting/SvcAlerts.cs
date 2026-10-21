@@ -1,3 +1,4 @@
+using Ariva.Core.Domain.Constants;
 using Ariva.Core.Domain.Criteria;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
@@ -47,8 +48,11 @@ internal sealed class SvcAlerts(
             state = Enum.Parse<AlertState>(criteria.State);
         }
 
-        if ((criteria.FromUtc is { Kind: not DateTimeKind.Utc }) || (criteria.ToUtc is { Kind: not DateTimeKind.Utc }))
+        if ((criteria.FromUtc is { Kind: not DateTimeKind.Utc }) || (criteria.ToUtc is { Kind: not DateTimeKind.Utc }) ||
+            (criteria.FromUtc is { } after && criteria.ToUtc is { } before && after > before))
+        {
             return Result.Error<PageViewModel<AlertViewModel>>(TopologyErrors.InvalidCriteria);
+        }
 
         var roles = (await callerRoles.GetAsync(ct)).ToList();
         var query = Visible(QueryAsNoTracking<Alert>().WithinSites(await siteScope.GetAsync(ct)), roles);
@@ -69,9 +73,15 @@ internal sealed class SvcAlerts(
 
         var pageSize = Math.Clamp(criteria.PageSize, 1, MaxPageSize);
         var pageIndex = Math.Max(1, criteria.PageIndex);
-        var total = await query.CountAsync(ct);
+        // ARV-096d: alerts accumulate and no date range is required, so the count stops past SearchCounts.Cap and the pages end there.
+        if (SearchCounts.StartsBeyondCap(pageIndex, pageSize))
+            return Result.Error<PageViewModel<AlertViewModel>>(SearchCounts.BeyondCap);
+        // One row past the cap, if there is one (at most cap + 1 rows read), then an exact count only below it; see SvcAuditEntries.
+        var capped = (await query.Select(a => a.Id).Skip(SearchCounts.Cap).Take(1).ToListAsync(ct)).Count > 0;
+        var counted = capped ? SearchCounts.Cap : await query.CountAsync(ct);
         var rows = await query.OrderByDescending(a => a.RaisedUtc).ThenBy(a => a.Id).Skip((pageIndex - 1) * pageSize).Take(pageSize).ToListAsync(ct);
-        return new Result<PageViewModel<AlertViewModel>>(new PageViewModel<AlertViewModel>(rows.Select(View).ToList(), total, pageIndex, pageSize));
+        return new Result<PageViewModel<AlertViewModel>>(new PageViewModel<AlertViewModel>(
+            rows.Select(View).ToList(), counted, pageIndex, pageSize, capped));
     }
 
     public async Task<Result<AlertViewModel>> GetAsync(Guid id, CancellationToken ct = default)

@@ -121,7 +121,7 @@
       ],
       "priority": 103,
       "passes": false,
-      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). From ARV-083's notes: the database-migration job does not set automountServiceAccountToken: false (it needs no Kubernetes API access). 2026-10-10: owner folded the ARV-118 availability ledger rights into ARV-083 (now this story). 2026-10-19 (ARV-091 log inventory): the migration job sends the runtime login password in clear to PostgreSQL: SELECT ariva_ensure_runtime_login(@name, @password) (DatabaseMigrator.cs) binds it as a parameter, which the server logs with log_statement all or a duration threshold while log_parameter_max_length is -1, and the function EXECUTEs ALTER ROLE or CREATE ROLE ... PASSWORD %L, whose text a failing EXECUTE prints in the error CONTEXT. When the per-host logins replace this, send a SCRAM-SHA-256 verifier computed in the job (PostgreSQL stores a verifier given as the password as it is), never the password, and keep the advice of docs/security/log-inventory.md (log_statement none or ddl).",
+      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). From ARV-083's notes: the database-migration job does not set automountServiceAccountToken: false (it needs no Kubernetes API access). 2026-10-10: owner folded the ARV-118 availability ledger rights into ARV-083 (now this story). 2026-10-19 (ARV-091 log inventory): the migration job sends the runtime login password in clear to PostgreSQL: SELECT ariva_ensure_runtime_login(@name, @password) (DatabaseMigrator.cs) binds it as a parameter, which the server logs with log_statement all or a duration threshold while log_parameter_max_length is -1, and the function EXECUTEs ALTER ROLE or CREATE ROLE ... PASSWORD %L, whose text a failing EXECUTE prints in the error CONTEXT. When the per-host logins replace this, send a SCRAM-SHA-256 verifier computed in the job (PostgreSQL stores a verifier given as the password as it is), never the password, and keep the advice of docs/security/log-inventory.md (log_statement none or ddl). ARV-096d (script 0063): each per-host login also gets the runtime statement timeout (ariva_set_runtime_statement_timeout, called by the migration job after the login is ensured), since a setting of a group role does not reach its members.",
       "dependsOn": [
         "ARV-074"
       ]
@@ -749,7 +749,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 116,
-      "passes": false,
+      "passes": true,
       "dependsOn": [
         "ARV-096"
       ],

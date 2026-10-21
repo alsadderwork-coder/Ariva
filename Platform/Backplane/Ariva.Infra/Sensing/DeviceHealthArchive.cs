@@ -71,7 +71,7 @@ public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider 
             FROM device_health_event
             WHERE site_code = @site AND queue_zone_name = @zone AND received_utc >= @from AND received_utc < @to
             ORDER BY received_utc, event_id
-            """, connection) { CommandTimeout = 300 };
+            """, connection) { CommandTimeout = DatabaseSettings.LongestRuntimeCommandSeconds };
         command.Parameters.AddWithValue("site", siteCode);
         command.Parameters.AddWithValue("zone", queueZoneName);
         command.Parameters.AddWithValue("from", fromUtc);

@@ -2,6 +2,7 @@ using System.Globalization;
 using Ariva.Core;
 using Ariva.Core.Reports;
 using Ariva.Core.Security;
+using Ariva.Core.Services.Reports;
 using Ariva.Infra.Services.Foundation;
 
 namespace Ariva.Infra.Services.Reports;
@@ -11,10 +12,15 @@ namespace Ariva.Infra.Services.Reports;
 /// minutes of its queue zones with their histograms, the alerts raised that day that the given roles see (the same rule
 /// as the alert screens: the owner role, the escalation role once escalated, or an administrator; an alert on a
 /// border-only metric only for roles holding <c>ArrivalWaveLanes.View</c>, <see cref="BorderAlerts"/>, ARV-181b2 and ARV-187), and the
-/// outages of its devices. The caller decides who may read the site; this class only reads.
+/// outages of its devices. The caller decides who may read the site; this class only reads. ARV-096d (CWE-400, CWE-120): each read
+/// takes at most its bound of <see cref="Limits"/> plus one row, and a day past a bound is refused (<see cref="ReportErrors.TooLarge"/>),
+/// never cut short.
 /// </summary>
 internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
 {
+    /// <summary>The bounds of the reads; tests lower them.</summary>
+    public DailyReportLimits Limits { get; init; } = DailyReportLimits.Default;
+
     /// <summary>The site's time zone (its airports' IANA zone), or UTC for a site without one.</summary>
     public async Task<TimeZoneInfo> TimeZoneAsync(string siteCode, CancellationToken ct)
     {
@@ -28,19 +34,24 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
     public async Task<bool> SiteExistsAsync(string siteCode, CancellationToken ct) =>
         (await ExecuteSqlAsync<TextRow>("""SELECT code AS "Value" FROM site WHERE code = :site""", new Dictionary<string, object> { ["site"] = siteCode }, ct)).Count > 0;
 
-    /// <summary>The report of the site's local day; <paramref name="roles"/> decide which alerts it lists.</summary>
-    public async Task<DailyReport> ReadAsync(string siteCode, DateOnly date, IReadOnlyCollection<string> roles, DateTime nowUtc, CancellationToken ct)
+    /// <summary>
+    /// The report of the site's local day; <paramref name="roles"/> decide which alerts it lists. Refused
+    /// (<see cref="ReportErrors.TooLarge"/>) when a read passes its bound in <see cref="Limits"/>.
+    /// </summary>
+    public async Task<Result<DailyReport>> ReadAsync(string siteCode, DateOnly date, IReadOnlyCollection<string> roles, DateTime nowUtc, CancellationToken ct)
     {
         var tz = await TimeZoneAsync(siteCode, ct);
         var (from, to) = DailyReports.DayBounds(date, tz);
-        var window = new Dictionary<string, object> { ["prefix"] = siteCode + "/%", ["from"] = from, ["to"] = to };
+        var window = new Dictionary<string, object> { ["prefix"] = siteCode + "/%", ["from"] = from, ["to"] = to, ["cap"] = Limits.MaxQueueMinutes + 1 };
 
         var minutes = await ExecuteSqlAsync<MinuteRow>("""
             SELECT zone_key AS "ZoneKey", minute_utc AS "MinuteUtc", status AS "Status", entries AS "Entries", waits AS "Waits",
                    queue_length AS "QueueLength", array_to_string(wait_buckets, ',') AS "Buckets", array_to_string(wait_counts, ',') AS "Counts"
             FROM queue_minute WHERE zone_key LIKE :prefix AND minute_utc >= :from AND minute_utc < :to
-            ORDER BY zone_key, minute_utc
+            ORDER BY zone_key, minute_utc LIMIT :cap
             """, window, ct);
+        if (minutes.Count > Limits.MaxQueueMinutes)
+            return TooLarge();
 
         // Every queue zone of the published profile, and any other zone with minutes that day (a zone since renamed or
         // retired); the lane category comes from the newest profile that names the zone.
@@ -48,12 +59,15 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
             SELECT DISTINCT ON (z.name) z.name AS "Name", z.lane_category AS "Lane"
             FROM zone z JOIN zone_profile p ON p.id = z.profile_id
             WHERE p.site_code = :site AND z.kind = 'Queue' AND p.status IN ('Published', 'Retired')
-            ORDER BY z.name, p.version DESC
-            """, new Dictionary<string, object> { ["site"] = siteCode }, ct);
+            ORDER BY z.name, p.version DESC LIMIT :cap
+            """, new Dictionary<string, object> { ["site"] = siteCode, ["cap"] = Limits.MaxZones + 1 }, ct);
+        if (zones.Count > Limits.MaxZones)
+            return TooLarge();
+        // The published profile's queue zones are among the names above, so this read is within the same bound.
         var published = (await ExecuteSqlAsync<TextRow>("""
             SELECT z.name AS "Value" FROM zone z JOIN zone_profile p ON p.id = z.profile_id
-            WHERE p.site_code = :site AND z.kind = 'Queue' AND p.status = 'Published'
-            """, new Dictionary<string, object> { ["site"] = siteCode }, ct)).Select(r => r.Value).ToHashSet(StringComparer.Ordinal);
+            WHERE p.site_code = :site AND z.kind = 'Queue' AND p.status = 'Published' LIMIT :cap
+            """, new Dictionary<string, object> { ["site"] = siteCode, ["cap"] = Limits.MaxZones + 1 }, ct)).Select(r => r.Value).ToHashSet(StringComparer.Ordinal);
         var withData = minutes.Select(m => m.ZoneKey).ToHashSet(StringComparer.Ordinal);
         var lanes = zones.ToDictionary(z => z.Name, z => z.Lane, StringComparer.Ordinal);
         var reportZones = published.Concat(withData.Select(k => k[(siteCode.Length + 1)..])).Distinct(StringComparer.Ordinal)
@@ -86,16 +100,23 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
         var outages = await ExecuteSqlAsync<OutageRow>("""
             SELECT device_code AS "DeviceCode", from_utc AS "FromUtc", to_utc AS "ToUtc", closed AS "Closed"
             FROM zone_outage WHERE zone_key LIKE :prefix AND from_utc < :to AND (to_utc > :from OR NOT closed)
-            """, window, ct);
+            ORDER BY device_code, from_utc LIMIT :cap
+            """, new Dictionary<string, object> { ["prefix"] = siteCode + "/%", ["from"] = from, ["to"] = to, ["cap"] = Limits.MaxOutages + 1 }, ct);
+        if (outages.Count > Limits.MaxOutages)
+            return TooLarge();
         var devices = await ExecuteSqlAsync<DeviceRow>("""
             SELECT d.code AS "Code", d.queue_zone_name AS "ZoneName", d.state AS "State", h.last_seen_on AS "LastSeenOn"
             FROM device d LEFT JOIN device_heartbeat h ON h.device_id = d.id
             WHERE d.site_code = :site AND d.deleted_on IS NULL AND d.state <> 'Retired'
-            ORDER BY d.code
-            """, new Dictionary<string, object> { ["site"] = siteCode }, ct);
+            ORDER BY d.code LIMIT :cap
+            """, new Dictionary<string, object> { ["site"] = siteCode, ["cap"] = Limits.MaxDevices + 1 }, ct);
+        if (devices.Count > Limits.MaxDevices)
+            return TooLarge();
+        // Each device's outages once, not a scan of every outage per device.
+        var outagesOf = outages.ToLookup(o => o.DeviceCode, StringComparer.Ordinal);
         var reportDevices = devices.Select(d =>
         {
-            var spans = outages.Where(o => o.DeviceCode == d.Code)
+            var spans = outagesOf[d.Code]
                 .Select(o => (FromUtc: Utc(o.FromUtc), ToUtc: o.Closed ? Utc(o.ToUtc) : (DateTime?)null)).ToList();
             // An outage the stream has not recorded yet: the registry has the device offline since it was last heard.
             if (d.State == "Offline" && spans.All(s => s.ToUtc is not null))
@@ -103,15 +124,17 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
             return new ReportDevice(d.Code, d.ZoneName, spans);
         }).ToList();
 
-        return DailyReports.Build(new DailyReportInput(
+        return new Result<DailyReport>(DailyReports.Build(new DailyReportInput(
             siteCode, date, tz, reportZones,
             [.. minutes.Select(m => new ReportMinute(m.ZoneKey, Utc(m.MinuteUtc), m.Status == "Final", m.Entries ?? 0, m.Waits ?? 0, m.QueueLength,
                 Numbers(m.Buckets), Numbers(m.Counts)))],
             [.. alerts.Select(a => new ReportAlert(a.RuleCode, a.RuleName, a.ZoneName, a.DeviceCode, a.Severity, a.State, Utc(a.RaisedUtc),
                 a.ClearedUtc is { } c ? Utc(c) : null))],
             reportDevices,
-            nowUtc));
+            nowUtc)));
     }
+
+    private static Result<DailyReport> TooLarge() => Result.Error<DailyReport>(ReportErrors.TooLarge);
 
     private static DateTime Utc(DateTime value) => value.Kind == DateTimeKind.Utc ? value : DateTime.SpecifyKind(value.ToUniversalTime(), DateTimeKind.Utc);
 

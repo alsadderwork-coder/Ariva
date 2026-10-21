@@ -40,8 +40,11 @@ public sealed record AuditEntryViewModel(
     string IpAddress,
     string TraceId);
 
-/// <summary>A page of results.</summary>
-public sealed record PageViewModel<T>(IReadOnlyList<T> Data, int TotalCount, int PageIndex, int PageSize);
+/// <summary>
+/// A page of results. <paramref name="TotalCountCapped"/> (ARV-096d): more match than a search counts
+/// (<see cref="Constants.SearchCounts.Cap"/>), so <paramref name="TotalCount"/> is that cap, not the number of matches.
+/// </summary>
+public sealed record PageViewModel<T>(IReadOnlyList<T> Data, int TotalCount, int PageIndex, int PageSize, bool TotalCountCapped = false);
 
 /// <summary>
 /// A site (ARV-012). <paramref name="Illustrative"/>: a demo site modelled on a real airport from public information only

@@ -128,6 +128,12 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.AdvertisingMedia => "CREATE DATABASE it_advertising_media",
             TestDatabase.AdvertisingPlans => "CREATE DATABASE it_advertising_plans",
             TestDatabase.UploadScan => "CREATE DATABASE it_upload_scan",
+            TestDatabase.StatementTimeout => "CREATE DATABASE it_statement_timeout",
+            TestDatabase.StatementTimeoutMigration => "CREATE DATABASE it_statement_timeout_migration",
+            TestDatabase.StatementTimeoutRefusals => "CREATE DATABASE it_statement_timeout_refusals",
+            TestDatabase.CommandTimeout => "CREATE DATABASE it_command_timeout",
+            TestDatabase.SearchCounts => "CREATE DATABASE it_search_counts",
+            TestDatabase.ReportBounds => "CREATE DATABASE it_report_bounds",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
@@ -279,7 +285,13 @@ public enum TestDatabase
     Advertising,
     AdvertisingMedia,
     AdvertisingPlans,
-    UploadScan
+    UploadScan,
+    StatementTimeout,
+    StatementTimeoutMigration,
+    StatementTimeoutRefusals,
+    CommandTimeout,
+    SearchCounts,
+    ReportBounds
 }
 
 [CollectionDefinition(Name)]

@@ -8,6 +8,8 @@ import { Api, fail, type Result } from './Api';
 export interface Page<T> {
 	data: T[];
 	totalCount: number;
+	/** ARV-096d: more match than a search counts (10,000), so totalCount is that cap; the audit and alert searches only. */
+	totalCountCapped?: boolean;
 	pageIndex: number;
 	pageSize: number;
 }

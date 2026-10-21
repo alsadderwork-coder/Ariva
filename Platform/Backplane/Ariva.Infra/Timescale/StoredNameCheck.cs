@@ -132,7 +132,7 @@ public sealed class StoredNameCheck(DatabaseSettings database)
 
         var findings = new List<StoredNameFinding>();
         var read = 0;
-        await using (var command = new NpgsqlCommand(Sql, connection, transaction) { CommandTimeout = 300 })
+        await using (var command = new NpgsqlCommand(Sql, connection, transaction) { CommandTimeout = DatabaseSettings.LongestRuntimeCommandSeconds })
         await using (var reader = await command.ExecuteReaderAsync(ct))
         {
             while (await reader.ReadAsync(ct))

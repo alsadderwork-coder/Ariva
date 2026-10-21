@@ -311,11 +311,11 @@ public sealed class PredictedAlertTests(PostgresFixture fixture) : IAsyncDisposa
         (await Daily(c.Handler)).Should().NotContain(c.Rule.Code);
         (await Daily(c.Border)).Should().Contain(c.Rule.Code);
         var delivered = await _host.AsCallerAsync(null, s => s.GetRequiredService<ReportReader>().ReadAsync("DMO", Day, [RoleCodes.TerminalDutyManager], Two.AddDays(1), Ct));
-        delivered.Alerts.Select(a => a.RuleCode).Should().Contain(wait.Code).And.NotContain(c.Rule.Code);
+        delivered.Data.Alerts.Select(a => a.RuleCode).Should().Contain(wait.Code).And.NotContain(c.Rule.Code);
         (await _host.AsCallerAsync(null, s => s.GetRequiredService<ReportReader>().ReadAsync("DMO", Day, [RoleCodes.HandlerStationManager, RoleCodes.TerminalDutyManager],
-            Two.AddDays(1), Ct))).Alerts.Select(a => a.RuleCode).Should().NotContain(c.Rule.Code);
+            Two.AddDays(1), Ct))).Data.Alerts.Select(a => a.RuleCode).Should().NotContain(c.Rule.Code);
         (await _host.AsCallerAsync(null, s => s.GetRequiredService<ReportReader>().ReadAsync("DMO", Day, [RoleCodes.SystemAdministrator], Two.AddDays(1), Ct)))
-            .Alerts.Select(a => a.RuleCode).Should().Contain(c.Rule.Code);
+            .Data.Alerts.Select(a => a.RuleCode).Should().Contain(c.Rule.Code);
 
         // The weekly summary (no endpoint yet): the week of 2026-09-28.
         async Task<List<string>> Weekly(Guid caller)

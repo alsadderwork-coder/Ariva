@@ -58,10 +58,18 @@ internal sealed class SvcAuditEntries(IUnitOfWork unitOfWork, ICurrentUser curre
 
         var pageSize = Math.Clamp(criteria.PageSize, 1, MaxPageSize);
         var pageIndex = Math.Max(1, criteria.PageIndex);
-        var total = await query.CountAsync(ct);
+        // ARV-096d: the trail grows with time and no date range is required, so the count stops past SearchCounts.Cap and the
+        // pages end there.
+        if (SearchCounts.StartsBeyondCap(pageIndex, pageSize))
+            return Result.Error<PageViewModel<AuditEntryViewModel>>(SearchCounts.BeyondCap);
+        // One row past the cap, if there is one (OFFSET cap LIMIT 1, so the database reads at most cap + 1 rows), then an exact
+        // count only below it. A Take before Count does not bound it: NHibernate applies it to the count's one row.
+        var capped = (await query.Select(e => e.Id).Skip(SearchCounts.Cap).Take(1).ToListAsync(ct)).Count > 0;
+        var counted = capped ? SearchCounts.Cap : await query.CountAsync(ct);
         var entries = await query.OrderByDescending(e => e.OccurredOn).ThenByDescending(e => e.Id)
             .Skip((pageIndex - 1) * pageSize).Take(pageSize).ToListAsync(ct);
-        return new Result<PageViewModel<AuditEntryViewModel>>(new PageViewModel<AuditEntryViewModel>(entries.Select(View).ToList(), total, pageIndex, pageSize));
+        return new Result<PageViewModel<AuditEntryViewModel>>(new PageViewModel<AuditEntryViewModel>(
+            entries.Select(View).ToList(), counted, pageIndex, pageSize, capped));
     }
 
     private static AuditEntryViewModel View(AuditEntry e) => new(

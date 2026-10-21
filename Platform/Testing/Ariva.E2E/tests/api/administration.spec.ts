@@ -77,7 +77,13 @@ test('grants, revokes and resets work for a stepped-up administrator and are aud
 
 	const audit = await call('GET', `${auditUrl}?targetId=${userId}`, { token: admin });
 	expect(audit.status()).toBe(200);
-	const entries = (await audit.json()).data as { id: string; action: string; actorName: string }[];
+	const page = await audit.json();
+	// ARV-096d: the count says whether it stopped at the server's cap (10,000); a page past it is refused with a fixed text.
+	expect(page.totalCountCapped, 'counted exactly below the cap').toBe(false);
+	const beyond = await call('GET', `${auditUrl}?pageSize=50&pageIndex=201`, { token: admin });
+	expect(beyond.status(), 'a page past the 10,000 counted').toBe(400);
+	expect((await beyond.json()).detail).toBe('A search pages through its first 10,000 matches only: narrow it, for example with dates.');
+	const entries = page.data as { id: string; action: string; actorName: string }[];
 	expect(entries.map((entry) => entry.action)).toEqual(['User.TotpReset', 'User.PasswordReset', 'User.RoleRevoked', 'User.RoleGranted', 'User.Created']);
 	expect(entries.every((entry) => entry.actorName === accounts().securityAdmin.userName)).toBe(true);
 	expect(JSON.stringify(entries)).not.toContain(next);

@@ -7,7 +7,8 @@ namespace Ariva.Infra.Timescale;
 /// <summary>
 /// The migration job (ARV-006): applies the versioned scripts with the migration login, sets the retention periods of this
 /// environment (ARV-111a, <see cref="RetentionPolicies"/>: the hypertables' TimescaleDB policies and the relational periods
-/// the Cronz retention job reads), then creates or updates the runtime login the hosts use and (ARV-104g1) the validation
+/// the Cronz retention job reads), then creates or updates the runtime login the hosts use, with the server's limit on one of its
+/// statements (ARV-096d, script 0063), and (ARV-104g1) the validation
 /// reader login, the only login that reads the shadow nowcast. On a developer machine (Database:AllowSchemaUpdate) NHibernate
 /// SchemaUpdate then adds whatever the scripts do not cover yet, also with the migration login.
 /// </summary>
@@ -26,6 +27,8 @@ internal sealed class DatabaseMigrator(
         reader.EnsureValid(settings);
         // ARV-111a: a retention period out of range stops the job before anything changes, too.
         settings.Retention.EnsureValid();
+        // ARV-096d: and a command or statement timeout out of range.
+        settings.EnsureValidTimeouts();
 
         var migrationConnection = settings.BuildMigrationConnectionString();
         var runner = new SqlScriptRunner(migrationConnection, loggerFactory.CreateLogger<SqlScriptRunner>());
@@ -58,7 +61,14 @@ internal sealed class DatabaseMigrator(
         command.Parameters.AddWithValue("name", settings.Username);
         command.Parameters.AddWithValue("password", settings.Password);
         await command.ExecuteNonQueryAsync(ct);
-        _logger.LogInformation("Runtime login {Login} is a member of ariva_runtime", settings.Username);
+
+        // ARV-096d: on the login itself, since a setting of the ariva_runtime role would not reach it; new sessions take it.
+        await using var timeout = new NpgsqlCommand("SELECT ariva_set_runtime_statement_timeout(@name, @seconds)", connection);
+        timeout.Parameters.AddWithValue("name", settings.Username);
+        timeout.Parameters.AddWithValue("seconds", settings.StatementTimeoutSeconds);
+        await timeout.ExecuteNonQueryAsync(ct);
+        _logger.LogInformation("Runtime login {Login} is a member of ariva_runtime, its statements limited to {Seconds} s on the server",
+            settings.Username, settings.StatementTimeoutSeconds);
     }
 
     /// <summary>

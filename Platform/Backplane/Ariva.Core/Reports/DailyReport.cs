@@ -30,6 +30,30 @@ public sealed record ReportAlert(
 /// <summary>A device of the site and its outages that overlap the day (to_utc null while still open).</summary>
 public sealed record ReportDevice(string Code, string ZoneName, IReadOnlyList<(DateTime FromUtc, DateTime? ToUtc)> Outages);
 
+/// <summary>
+/// ARV-096d (CWE-400, CWE-120): the bounds of one daily report's reads; a read that would pass one is refused, never cut short
+/// (the alerts keep their own cut of 5,000). The queue minutes are those of <see cref="MaxQueueZones"/> queue zones for a local day
+/// of 25 hours, the longest a change of clock makes. Below the 500 zones a profile can hold
+/// (<see cref="Domain.Entities.ZoneProfile.MaxZones"/>): a report of 500 zones' full day was measured once at a sampled managed heap
+/// peak of about 406 MB (8 s; <c>docs/security/costly-operations.md</c> section 4), and two run at once on api-main, whose heap limit is 750 MiB,
+/// so a site of more queue zones gets its report once the read is aggregated by the hour in the database (Phase 3).
+/// </summary>
+/// <param name="MaxQueueMinutes">Stored minutes of the site's queue zones in the day.</param>
+/// <param name="MaxZones">Queue zone names of the site's published and retired profiles.</param>
+/// <param name="MaxDevices">Devices of the site.</param>
+/// <param name="MaxOutages">Device outages that overlap the day.</param>
+public sealed record DailyReportLimits(
+    int MaxQueueMinutes = DailyReportLimits.MaxQueueZones * 25 * 60,
+    int MaxZones = 2_000,
+    int MaxDevices = 2_000,
+    int MaxOutages = 20_000)
+{
+    /// <summary>The queue zones whose full day <see cref="MaxQueueMinutes"/> holds by default.</summary>
+    public const int MaxQueueZones = 200;
+
+    public static DailyReportLimits Default { get; } = new();
+}
+
 /// <summary>Everything a daily report is built from: the site, its local day and the rows read for that day.</summary>
 public sealed record DailyReportInput(
     string SiteCode,

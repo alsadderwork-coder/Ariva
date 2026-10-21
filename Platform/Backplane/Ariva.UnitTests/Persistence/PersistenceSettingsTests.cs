@@ -2,9 +2,11 @@ using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Text.Json;
 using Ariva.Core.Services;
+using Ariva.Di.Extensions;
 using Ariva.Infra.NHibernate.Mapping;
 using Ariva.Infra.Settings;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using FluentAssertions;
 using Npgsql;
 
@@ -87,6 +89,60 @@ public sealed class PersistenceSettingsTests
 
         parsed.Password.Should().Be("p;Include Error Detail=true;x=");
         parsed.IncludeErrorDetail.Should().BeFalse("a password must not be able to add connection options");
+    }
+
+    [Fact]
+    public void BuildConnectionString_Should_SetTheCommandTimeout_When_BuildingEitherLogin()
+    {
+        // ARV-096d: every command on these connections (NHibernate's, ExecuteSqlAsync's) waits this long unless it sets its own.
+        var settings = new DatabaseSettings { CommandTimeoutSeconds = 45, Migration = new MigrationLoginSettings { Username = "ariva", Password = "x" } };
+
+        new NpgsqlConnectionStringBuilder(settings.BuildConnectionString()).CommandTimeout.Should().Be(45);
+        new NpgsqlConnectionStringBuilder(settings.BuildMigrationConnectionString()).CommandTimeout.Should().Be(45);
+        new NpgsqlConnectionStringBuilder(new DatabaseSettings().BuildConnectionString()).CommandTimeout.Should().Be(30, "Npgsql's own default, now said");
+    }
+
+    [Theory]
+    [InlineData(30, 360, true)]
+    [InlineData(5, 301, true)]
+    [InlineData(300, 3600, true)]
+    [InlineData(4, 360, false)]
+    [InlineData(301, 360, false)]
+    [InlineData(30, 300, false)]
+    [InlineData(30, 3601, false)]
+    [InlineData(0, 0, false)]
+    public void Timeouts_Should_BeRefusedOutsideTheirBounds_When_Configured(int command, int statement, bool valid)
+    {
+        var settings = new DatabaseSettings { CommandTimeoutSeconds = command, StatementTimeoutSeconds = statement };
+
+        var check = settings.EnsureValidTimeouts;
+
+        if (valid)
+            check.Should().NotThrow();
+        else
+            check.Should().Throw<InvalidOperationException>().WithMessage("*Database:*TimeoutSeconds is a whole number of seconds from*");
+    }
+
+    [Theory]
+    [InlineData("CommandTimeoutSeconds", "1")]
+    [InlineData("StatementTimeoutSeconds", "60")]
+    public void AddArivaPersistence_Should_RefuseToStart_When_ATimeoutIsOutOfRange(string name, string value)
+    {
+        // Every host and the migration job build their persistence through this, so each stops at start.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string> { ["Database:" + name] = value }).Build();
+
+        var add = () => new ServiceCollection().AddArivaPersistence(configuration);
+
+        add.Should().Throw<InvalidOperationException>().WithMessage($"*Database:{name} is a whole number of seconds from*");
+    }
+
+    [Fact]
+    public void StatementTimeout_Should_StayAboveEveryClientTimeoutOfTheRuntimeLogin_When_Bounded()
+    {
+        // The server limit is a backstop: it never ends a statement a host still waits for.
+        DatabaseSettings.MinStatementTimeoutSeconds.Should().BeGreaterThan(DatabaseSettings.LongestRuntimeCommandSeconds);
+        DatabaseSettings.MinStatementTimeoutSeconds.Should().BeGreaterThan(DatabaseSettings.MaxCommandTimeoutSeconds);
+        new DatabaseSettings().StatementTimeoutSeconds.Should().BeInRange(DatabaseSettings.MinStatementTimeoutSeconds, DatabaseSettings.MaxStatementTimeoutSeconds);
     }
 
     [Theory]

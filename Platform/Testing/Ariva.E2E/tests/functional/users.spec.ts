@@ -337,3 +337,23 @@ test('without the permission there is no screen and every user API answers 403',
 	expect(requests, 'the screen asks the API for nothing it cannot have').toEqual([]);
 	await guards.expectClean();
 });
+
+test('the audit log says when more entries match than the server counts (ARV-096d)', async ({ page }) => {
+	// The trail grows with time and no date range is required, so the server counts at most 10,000 matches and pages through
+	// those: a capped answer (stubbed here; planting 10,001 entries would reach every other spec's audit) reads as "more than".
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webAdmin);
+	await page.route(
+		(url) => url.pathname === '/api/v1/admin/audit-entries',
+		async (route) => {
+			const response = await route.fetch();
+			const body = await response.json();
+			return route.fulfill({ response, json: { ...body, totalCount: 10_000, totalCountCapped: true } });
+		}
+	);
+	await page.getByTestId('app-sidebar').getByRole('link', { name: 'Users and access' }).click();
+	await page.getByTestId('tab-audit').click();
+	await expect(page.getByTestId('audit-count')).toHaveText(/^More than 10,?000 entries, page 1 of 400; narrow the search, for example with dates, to see the rest$/);
+	await expect(page.getByRole('button', { name: 'Next page' })).toBeEnabled();
+	await guards.expectClean();
+});

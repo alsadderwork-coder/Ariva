@@ -897,6 +897,25 @@
       "dependsOn": [
         "ARV-071"
       ]
+    },
+    {
+      "id": "ARV-234",
+      "title": "[E17] Daily report read aggregated by the hour in the database, so a site of up to 500 queue zones gets its report",
+      "description": "Found by ARV-096d. The daily report reads every stored minute of the site's queue zones for the day, with its histogram, and builds the report in memory: at the 500 queue zones a profile can hold (720,000 minutes) it took 8.0 s and peaked at about 406 MB of managed heap (1.9 GB allocated), past what api-main's 750 MiB heap takes for two reports at once (the reports policy) beside the host itself. ARV-096d therefore bounds the read at 200 queue zones (300,000 minutes, 168 MB measured) and refuses a larger site's report with a fixed 409. Reading what the report needs per zone and local hour (the counts and the merged histogram) in the database instead lifts the bound to the profile's. CWEs to review: CWE-400, CWE-120.",
+      "acceptanceCriteria": [
+        "The daily report's queue minute read returns per zone and local hour what the report needs (entries, waits, queue length, final and provisional minutes, the merged histogram), computed in PostgreSQL, and the report and its CSV are the same as before for the existing tests (ReportServiceTests, the CSV tests, e2e api/reports.spec.ts)",
+        "DailyReportLimits.MaxQueueZones rises to ZoneProfile.MaxZones (500), and a report at that bound is measured (time and managed heap peak) and recorded in docs/security/costly-operations.md section 4, within what two reports at once leave of api-main's heap",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 306,
+      "passes": false,
+      "notes": "Size M. Low (a site of more than 200 queue zones is far from the pilot hall's five; such a site gets a fixed 409 rather than an out-of-memory host), so Phase 3 by the owner's rule. DailyReportBoundsTests holds the measurement at the current bound.",
+      "dependsOn": [
+        "ARV-096d"
+      ]
     }
   ]
 }

@@ -99,6 +99,12 @@ test('each role sees only the alerts it is responsible for, in its own sites', a
 	}
 	expect((await call('GET', api)).status()).toBe(401);
 	expect((await call('GET', `${api}?state=Raised,Resolved`, { token: border })).status()).toBe(400);
+	// ARV-096d: a range that ends before it starts, and a page past the 10,000 a search counts, are refused.
+	expect((await call('GET', `${api}?fromUtc=2026-10-02T00:00:00Z&toUtc=2026-10-01T00:00:00Z`, { token: border })).status(), 'a reversed range').toBe(400);
+	const beyond = await call('GET', `${api}?pageSize=500&pageIndex=21`, { token: border });
+	expect(beyond.status(), 'a page past the 10,000 counted').toBe(400);
+	expect((await beyond.json()).detail).toBe('A search pages through its first 10,000 matches only: narrow it, for example with dates.');
+	expect((await (await call('GET', `${api}?open=true`, { token: border })).json()).totalCountCapped, 'counted exactly below the cap').toBe(false);
 });
 
 test('the owner acknowledges, escalates and resolves with a note; out-of-order actions answer 409', async () => {

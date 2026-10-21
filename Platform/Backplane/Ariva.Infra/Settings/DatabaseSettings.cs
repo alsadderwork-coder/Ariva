@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
 
@@ -12,6 +13,29 @@ namespace Ariva.Infra.Settings;
 public sealed class DatabaseSettings
 {
     public const string SectionName = "Database";
+
+    /// <summary>The bounds of <see cref="CommandTimeoutSeconds"/>.</summary>
+    public const int MinCommandTimeoutSeconds = 5;
+
+    /// <inheritdoc cref="MinCommandTimeoutSeconds"/>
+    public const int MaxCommandTimeoutSeconds = 300;
+
+    /// <summary>
+    /// The longest the runtime login's client waits for one statement anywhere in Ariva: the replay and archive reads, the device
+    /// health archive statement and the stored name check take this as their own command timeout. Npgsql's command timeout bounds
+    /// each wait for the server, not a whole streamed read; these readers buffer their rows (and the COPY writers write from batches
+    /// in memory), so no statement of theirs runs past it. A reader that streams to a slow consumer would need its own allowance.
+    /// </summary>
+    public const int LongestRuntimeCommandSeconds = 300;
+
+    /// <summary>
+    /// The bounds of <see cref="StatementTimeoutSeconds"/>: above <see cref="LongestRuntimeCommandSeconds"/>, so the server never ends a
+    /// statement a host still waits for.
+    /// </summary>
+    public const int MinStatementTimeoutSeconds = LongestRuntimeCommandSeconds + 1;
+
+    /// <inheritdoc cref="MinStatementTimeoutSeconds"/>
+    public const int MaxStatementTimeoutSeconds = 3600;
 
     public string Host { get; init; } = "localhost";
     public int Port { get; init; } = 5432;
@@ -39,6 +63,22 @@ public sealed class DatabaseSettings
     /// vm-local, where hosts migrate the development database themselves.
     /// </summary>
     public bool VerifySchemaOnStartup { get; init; }
+
+    /// <summary>
+    /// ARV-096d (CWE-400, ASVS 5.0 V15.2.2): how long a host waits for one database statement before it cancels it, in seconds: the
+    /// default of every command on a connection built here (NHibernate's and <c>ExecuteSqlAsync</c>'s among them) unless the command
+    /// sets its own. 30, Npgsql's own default, which every host used without saying so before ARV-096d. A host and the migration job
+    /// refuse to start outside <see cref="MinCommandTimeoutSeconds"/> to <see cref="MaxCommandTimeoutSeconds"/>.
+    /// </summary>
+    public int CommandTimeoutSeconds { get; init; } = 30;
+
+    /// <summary>
+    /// ARV-096d: the server's own limit on one statement of the runtime login (<c>statement_timeout</c>, set on the login by the
+    /// migration job through script 0063), in seconds. A backstop for a statement whose client stopped waiting without the server
+    /// knowing (a host gone, a cancel lost), above every client timeout the runtime login uses
+    /// (<see cref="MinStatementTimeoutSeconds"/> to <see cref="MaxStatementTimeoutSeconds"/>).
+    /// </summary>
+    public int StatementTimeoutSeconds { get; init; } = 360;
 
     /// <summary>The login the migration job uses (DDL). Hosts never use it.</summary>
     public MigrationLoginSettings Migration { get; init; } = new();
@@ -76,6 +116,26 @@ public sealed class DatabaseSettings
         return fileExists(RootCertificate) ? null : "Database:RootCertificate names a file that does not exist: mount the database CA secret.";
     }
 
+    /// <summary>What is out of range among the timeouts (ARV-096d); empty when both may be used.</summary>
+    public IEnumerable<string> TimeoutProblems()
+    {
+        if (CommandTimeoutSeconds is < MinCommandTimeoutSeconds or > MaxCommandTimeoutSeconds)
+            yield return Range(nameof(CommandTimeoutSeconds), MinCommandTimeoutSeconds, MaxCommandTimeoutSeconds);
+        if (StatementTimeoutSeconds is < MinStatementTimeoutSeconds or > MaxStatementTimeoutSeconds)
+            yield return Range(nameof(StatementTimeoutSeconds), MinStatementTimeoutSeconds, MaxStatementTimeoutSeconds);
+    }
+
+    /// <summary>Stops a host or the migration job at start when a timeout is out of range.</summary>
+    public void EnsureValidTimeouts()
+    {
+        var problems = TimeoutProblems().ToList();
+        if (problems.Count > 0)
+            throw new InvalidOperationException(string.Join(" ", problems));
+    }
+
+    private static string Range(string name, int min, int max) =>
+        string.Create(CultureInfo.InvariantCulture, $"{SectionName}:{name} is a whole number of seconds from {min:N0} to {max:N0} (ARV-096d).");
+
     /// <summary>The hosts' connection: the runtime login, DML only once the migration job has run.</summary>
     public string BuildConnectionString() => Build(Username, Password, "ariva");
 
@@ -95,7 +155,8 @@ public sealed class DatabaseSettings
             Username = username,
             Password = password,
             SslMode = UseEncryption ? SslMode.VerifyFull : SslMode.Disable,
-            ApplicationName = applicationName
+            ApplicationName = applicationName,
+            CommandTimeout = CommandTimeoutSeconds
         };
         ApplyRootCertificate(builder);
         return builder.ConnectionString;
