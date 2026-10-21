@@ -14,17 +14,33 @@ namespace Ariva.Api.Common.Filters;
 /// query or an insert answered 500; the dynamic scan found it with <c>siteCode=%00</c>. Kestrel already refuses NUL in
 /// the path; this filter answers 400 for one in the query string, a route value or a form field, and
 /// <see cref="NulRejectingStringConverter"/> makes one in a JSON string a model binding error (400 through
-/// <c>[ApiController]</c>). Runs after authentication and authorization, so an anonymous caller still gets 401.
+/// <c>[ApiController]</c>). Runs after authentication and authorization, so an anonymous caller still gets 401. Registered as an
+/// instance (ARV-096c), so MVC takes its <see cref="Order"/>: registered by type it was wrapped in a filter of order 0 and ran after
+/// <c>[ApiController]</c>'s invalid model filter (order -2000), which answered a NUL in an otherwise invalid upload as an invalid model.
 /// </summary>
-public sealed class NulCharacterFilter : IAsyncActionFilter, IOrderedFilter
+/// <param name="lenientInput">
+/// TEMPORARY until ARV-089a: true for the instance that serves only the endpoints the login freeze keeps as they are
+/// (<see cref="LenientInputMetadata"/>), at the position the filter had before ARV-096c (order 0), so their answers do not change;
+/// false for the instance that serves every other endpoint, before every other action filter.
+/// </param>
+public sealed class NulCharacterFilter(bool lenientInput = false) : IAsyncActionFilter, IOrderedFilter
 {
-    /// <summary>Before every other action filter (the site scope filter among them).</summary>
-    public int Order => int.MinValue;
+    /// <summary>
+    /// Before every other action filter (the site scope filter and <c>[ApiController]</c>'s invalid model filter among them); the
+    /// frozen endpoints' instance at order 0, as before ARV-096c.
+    /// </summary>
+    public int Order => lenientInput ? 0 : int.MinValue;
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(next);
+
+        if (context.ActionDescriptor.EndpointMetadata.OfType<LenientInputMetadata>().Any() != lenientInput)
+        {
+            await next();
+            return;
+        }
 
         if (await HoldsNulAsync(context.HttpContext.Request))
         {

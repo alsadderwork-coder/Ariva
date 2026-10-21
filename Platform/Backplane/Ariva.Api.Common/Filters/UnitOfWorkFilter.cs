@@ -40,7 +40,8 @@ public static class ControllerExtensions
 
     /// <summary>
     /// MVC controllers with the Ariva filters: no NUL character in any input (ARV-063, <see cref="NulCharacterFilter"/>
-    /// and <see cref="NulRejectingStringConverter"/>), no query parameter sent twice (ARV-089, <see cref="RepeatedQueryFilter"/>;
+    /// and <see cref="NulRejectingStringConverter"/>), no form read for an action that binds none (ARV-096c,
+    /// <see cref="UnboundFormFilter"/>), no query parameter sent twice (ARV-089, <see cref="RepeatedQueryFilter"/>;
     /// the JSON itself is read strictly through <see cref="StrictJson"/>, set with the request limits), the unit of work, and
     /// 400 answers that never repeat what a caller sent: model binding messages without the attempted value
     /// (<see cref="WithoutAttemptedValues"/>), JSON reader messages replaced by a fixed text
@@ -53,8 +54,12 @@ public static class ControllerExtensions
         return services
             .AddControllers(options =>
             {
+                // Instances, so MVC takes each filter's own order (a filter added by type is wrapped in one of order 0).
                 options.Filters.Add(new RepeatedQueryFilter());
-                options.Filters.Add<NulCharacterFilter>();
+                options.Filters.Add(new UnboundFormFilter());
+                options.Filters.Add(new NulCharacterFilter());
+                // TEMPORARY until ARV-089a: the frozen endpoints' NUL check at its earlier position (order 0, before the unit of work).
+                options.Filters.Add(new NulCharacterFilter(lenientInput: true));
                 options.Filters.Add<UnitOfWorkFilter>();
                 WithoutAttemptedValues(options.ModelBindingMessageProvider);
             })

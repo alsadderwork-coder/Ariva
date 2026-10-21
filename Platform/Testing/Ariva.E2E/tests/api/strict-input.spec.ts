@@ -16,6 +16,10 @@ import { expectStatus } from '../support/expect-status';
 // query parameter on their GET endpoints too; Ariva.Api.Cronz has no controller, so nothing there binds a query. The
 // login freeze (owner, since 2026-10-14) keeps the sign-in and the integration token exchange on the lenient parsing until
 // ARV-089a: an extra member, a member twice or a repeated query parameter does not by itself refuse them.
+// ARV-096c (CWE-400, ASVS 5.0 V15.2.2): a form sent to an action that binds no form field or file answers 415 on every host
+// before anything reads it (MVC's form value providers read it otherwise, without the request's token, file parts over 64 KB
+// into the pod's /tmp). A form the reader refuses once it has read it (1,025 fields, or a multipart body without its closing
+// boundary) answers 400 there, so its 415 shows it was not read. The frozen sign-in reads a form as before.
 
 test.skip(!databaseAvailable, 'strict input needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -225,6 +229,57 @@ test.describe('authentication, authorization and other sites come first', () => 
 		expect(strict.status(), 'a level of a site out of reach').toBe(404);
 		expect(await strict.text()).not.toContain('Arrivals');
 		expect((await (await call('GET', `${admin}/levels/${levelId}`, { token: stepped })).json()).name).toBe(level.name);
+	});
+});
+
+test.describe('forms sent to actions that bind none (ARV-096c)', () => {
+	const canary = 'canary-096c';
+	const boundary = 'arivaunbound';
+	const manyFields = Array.from({ length: 1025 }, (_, i) => `f${i}=${canary}`).join('&');
+	const unclosed =
+		`--${boundary}\r\nContent-Disposition: form-data; name="note"\r\n\r\n${canary}\r\n` +
+		`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.csv"\r\n\r\n${canary}`;
+	const form = { 'Content-Type': 'application/x-www-form-urlencoded' };
+	const multipart = { 'Content-Type': `multipart/form-data; boundary=${boundary}` };
+
+	/** The fixed 415 of a form that was not read, with nothing sent in it. */
+	async function expectUnread(response: CallResponse, why: string) {
+		const problem = await expectProblemDetails(response, 415);
+		expect(problem.detail, why).toBe('This endpoint takes no form.');
+		expect(await response.text(), `${why}: no echo`).not.toContain(canary);
+	}
+
+	test('Ariva.Api.Main answers 415 unread to a form for an action that binds a JSON body, after 401, and changes nothing', async () => {
+		const levelUrl = `${admin}/levels/${levelId}`;
+		await expectProblemDetails(await call('PUT', levelUrl, { raw: manyFields, headers: form }), 401);
+		await expectUnread(await call('PUT', levelUrl, { token: stepped, raw: manyFields, headers: form }), 'Main, 1,025 fields');
+		await expectUnread(await call('PUT', levelUrl, { token: stepped, raw: unclosed, headers: multipart }), 'Main, a multipart body without its closing boundary');
+		expect((await (await call('GET', levelUrl, { token: stepped })).json()).name, 'the level is unchanged').toBe(level.name);
+	});
+
+	test('Ariva.Api.Ingest and Ariva.Api.Integration answer the same 415 unread', async () => {
+		const push = `${hosts.ingest}/api/v1/ingest/zones/${encodeURIComponent('Snake A')}/events`;
+		await expectUnread(await call('POST', push, { raw: manyFields, headers: { ...form, 'X-Ariva-Device-Key': deviceKey } }), 'Ingest, a device push');
+		expect(integrationToken, 'the integration token of the run').toBeTruthy();
+		await expectUnread(
+			await call('POST', `${hosts.integration}/api/v1/integration/sites/${site}/flights/batch`, {
+				token: integrationToken,
+				address: inside(),
+				raw: unclosed,
+				headers: { ...multipart, 'Idempotency-Key': `e2e-096c-${random(8)}` }
+			}),
+			'Integration, a flight batch'
+		);
+	});
+
+	test('the frozen sign-in and token exchange read a form as they did before (TEMPORARY until ARV-089a)', async () => {
+		// Read and refused by the form reader (more than its 1,024 fields), as before ARV-096c.
+		const signIn = await call('POST', `${hosts.main}/api/auth/login`, { raw: manyFields, headers: form });
+		expect(signIn.status(), 'the sign-in').toBe(400);
+		expect(await signIn.text(), 'not the new refusal').not.toContain('This endpoint takes no form.');
+		const exchange = await call('POST', `${hosts.integration}/api/v1/auth`, { raw: manyFields, headers: form, address: inside() });
+		expect(exchange.status(), 'the token exchange').toBe(400);
+		expect(await exchange.text(), 'not the new refusal').not.toContain('This endpoint takes no form.');
 	});
 });
 

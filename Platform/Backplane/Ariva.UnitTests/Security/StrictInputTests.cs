@@ -407,6 +407,54 @@ public sealed partial class StrictInputTests
         }
     }
 
+    [Fact]
+    public async Task Login_Should_KeepItsNulCheckAndFormReading_When_TheLoginFreezeHolds()
+    {
+        // ARV-096c: the frozen endpoints keep the NUL check where it ran before (after the invalid model filter) and read a form as
+        // they did (the form reader's 400 for a form of 1,025 fields), so their answers do not change until ARV-089a.
+        var authenticator = new FakeAuthenticator();
+        await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder => builder.ConfigureTestServices(services =>
+            services.Replace(ServiceDescriptor.Singleton<Ariva.Core.Services.Security.ISvcAuthenticator>(authenticator))));
+        using var client = app.CreateClient();
+
+        using var nul = await client.PostAsync("/api/auth/login?x=%00", Json("""{"userName":"freeze","password":"not-the-password"}"""), Ct);
+        using var nulAndBroken = await client.PostAsync("/api/auth/login?x=%00", Json("""{"userName": tru}"""), Ct);
+        using var form = await client.PostAsync("/api/auth/login", ManyFields(), Ct);
+
+        nul.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        HttpResponses.ParseProblem(await nul.BodyAsync()).GetProperty("detail").GetString().Should().Be("The request contains a NUL character.");
+        nulAndBroken.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        HttpResponses.ParseProblem(await nulAndBroken.BodyAsync()).GetProperty("errors").GetProperty(ControllerExtensions.BodyErrorKey)[0].GetString()
+            .Should().Be("The input was not valid.", "the invalid model filter still answers before the NUL check here, as before ARV-096c");
+        form.StatusCode.Should().Be(HttpStatusCode.BadRequest, "the form is read and refused by the form reader, as before ARV-096c");
+        (await form.BodyAsync()).Should().NotContain(UnboundFormFilter.Message);
+        authenticator.Contexts.Should().BeEmpty("none of them reaches the sign-in service");
+    }
+
+    [Fact]
+    public async Task Exchange_Should_KeepItsNulCheckAndFormReading_When_TheLoginFreezeHolds()
+    {
+        await using var app = ArivaHosts.Create(ArivaHosts.Integration, configure: builder => builder.ConfigureTestServices(FakeIntegrationClients.Register));
+        using var client = app.CreateClient();
+
+        using var nul = await client.PostAsync("/api/v1/auth?x=%00",
+            Json("""{"clientId":"ic_aaaaaaaaaaaaaaaaaaaaaaaaaa","clientSecret":"not-the-secret","totpCode":"123456"}"""), Ct);
+        using var form = await client.PostAsync("/api/v1/auth", ManyFields(), Ct);
+
+        nul.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        HttpResponses.ParseProblem(await nul.BodyAsync()).GetProperty("detail").GetString().Should().Be("The request contains a NUL character.");
+        form.StatusCode.Should().Be(HttpStatusCode.BadRequest, "the form is read and refused by the form reader, as before ARV-096c");
+        (await form.BodyAsync()).Should().NotContain(UnboundFormFilter.Message);
+    }
+
+    /// <summary>A form of 1,025 fields: past the form reader's 1,024.</summary>
+    private static ByteArrayContent ManyFields()
+    {
+        var content = new ByteArrayContent(Encoding.UTF8.GetBytes(string.Join('&', Enumerable.Range(0, 1025).Select(i => $"f{i}=v"))));
+        content.Headers.TryAddWithoutValidation("Content-Type", "application/x-www-form-urlencoded");
+        return content;
+    }
+
     #endregion
 
     #region The filter

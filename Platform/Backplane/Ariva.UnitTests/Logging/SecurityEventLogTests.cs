@@ -11,6 +11,7 @@ using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
 using Ariva.Core.Services.Alerting;
+using Ariva.Core.Services.Flights;
 using Ariva.Core.Services.Integration;
 using Ariva.Core.Services.Sensing;
 using Ariva.Infra.Integration;
@@ -25,6 +26,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Moq;
 
 namespace Ariva.UnitTests.Logging;
 
@@ -32,7 +34,7 @@ namespace Ariva.UnitTests.Logging;
 /// ARV-091 (ASVS 5.0 V16.2.1, V16.3.2, V16.3.3; CWE-778, CWE-532): on real hosts, read back from the JSON lines the hosts
 /// write, each refusal writes exactly one security event with its EventId: the authorization middleware's 401 and 403, the
 /// rate limiter's 429, an invalid model, a body that is not strict JSON, a repeated query parameter, a NUL character in the
-/// query or the body, a site outside the caller's or a value that is not a site code, and, through the generic
+/// query, the body or a form field or file name of an upload otherwise invalid (ARV-096c: the NUL check runs first), a site outside the caller's or a value that is not a site code, and, through the generic
 /// RequestRefused event, the refusals made elsewhere (an ended session, a pending account, a service's border-only 403, an
 /// integration client's own limit). Each names the caller (CallerUserId and CallerSessionId, or anonymous; CallerClientId for
 /// an integration client, CallerDeviceId for a device), the client address the trusted proxy names, the trace id, the method
@@ -82,6 +84,8 @@ public sealed class SecurityEventLogTests : IDisposable
         { "a repeated query parameter", 0, HttpStatusCode.BadRequest, SecurityEvents.RepeatedQueryRefusedId, SecurityEvents.RepeatedQuery, "admin" },
         { "a NUL character in the query", 0, HttpStatusCode.BadRequest, SecurityEvents.NulCharacterRefusedId, SecurityEvents.NulCharacter, "admin" },
         { "a NUL character in the body", 0, HttpStatusCode.BadRequest, SecurityEvents.NulCharacterRefusedId, SecurityEvents.NulCharacter, "admin" },
+        { "a NUL character in a form field of an otherwise invalid upload", 0, HttpStatusCode.BadRequest, SecurityEvents.NulCharacterRefusedId, SecurityEvents.NulCharacter, "admin" },
+        { "a NUL character in the file name of an otherwise invalid upload", 0, HttpStatusCode.BadRequest, SecurityEvents.NulCharacterRefusedId, SecurityEvents.NulCharacter, "admin" },
         { "a site outside the caller's", 0, HttpStatusCode.NotFound, SecurityEvents.SiteScopeRefusedId, SecurityEvents.OutsideSiteScope, "admin" },
         { "a value that is not a site code", 0, HttpStatusCode.NotFound, SecurityEvents.SiteScopeRefusedId, SecurityEvents.NotASiteCode, "admin" },
         { "the global rate limit", 1, HttpStatusCode.TooManyRequests, SecurityEvents.RateLimitRejectedId, null, "anonymous" },
@@ -450,6 +454,8 @@ public sealed class SecurityEventLogTests : IDisposable
                 services.Replace(ServiceDescriptor.Scoped<IPermissionResolver>(_ => new Grants()));
                 services.Replace(ServiceDescriptor.Scoped<ISiteScope>(_ => new OneSiteScope()));
                 services.Replace(ServiceDescriptor.Scoped<ISvcAlertRules, BorderOnlyRules>());
+                // ARV-096c: the upload is refused before its action, so the service is never called.
+                services.Replace(ServiceDescriptor.Scoped(_ => new Mock<ISvcFlightSchedules>(MockBehavior.Strict).Object));
                 FakeAdministration.Register(services);
                 BindingProbeController.Mount(services);
                 LogProbeController.Mount(services);
@@ -473,11 +479,29 @@ public sealed class SecurityEventLogTests : IDisposable
         "a repeated query parameter" => Request(HttpMethod.Get, "/api/v1/admin/users?text=" + Uri.EscapeDataString(Marker) + "&text=" + Canary, token),
         "a NUL character in the query" => Request(HttpMethod.Get, "/api/v1/admin/users?text=" + Canary + "%00", token),
         "a NUL character in the body" => Request(HttpMethod.Post, "/api/v1/admin/users", token, $$"""{"userName":"{{Canary}}\u0000"}"""),
+        // ARV-096c: horizonDays does not bind (an invalid model), so before the NUL check took its own order the invalid model filter
+        // answered first and the upload was logged as an invalid model.
+        "a NUL character in a form field of an otherwise invalid upload" => Upload(token, note: Canary + "\0", fileName: "schedule.ssim"),
+        "a NUL character in the file name of an otherwise invalid upload" => Upload(token, note: "ok", fileName: "schedule" + Canary + "\0.ssim"),
         "a site outside the caller's" => Request(HttpMethod.Get, "/fixture/log/sites/BEY?note=" + Uri.EscapeDataString(Marker), token),
         "a value that is not a site code" => Request(HttpMethod.Get, "/fixture/log/sites/B_EY?note=" + Uri.EscapeDataString(Marker), token),
         "a border-only rule" => Request(HttpMethod.Get, $"/api/v1/admin/alert-rules/{Guid.CreateVersion7()}?note={Uri.EscapeDataString(Marker)}", token),
         _ => Request(HttpMethod.Get, "/fixture/log/ordinary?note=" + Uri.EscapeDataString(Marker), null)
     };
+
+    /// <summary>A flight schedule upload whose horizonDays is not a number, with the note and the file name given.</summary>
+    private static HttpRequestMessage Upload(string token, string note, string fileName)
+    {
+        const string boundary = "arivanul";
+        var body = $"--{boundary}\r\nContent-Disposition: form-data; name=\"horizonDays\"\r\n\r\nsoon\r\n" +
+                   $"--{boundary}\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\n{note}\r\n" +
+                   $"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{fileName}\"\r\nContent-Type: application/octet-stream\r\n\r\nx\r\n" +
+                   $"--{boundary}--\r\n";
+        var request = Request(HttpMethod.Post, "/api/v1/admin/sites/DMO/flight-schedules/preview", token);
+        request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", $"multipart/form-data; boundary={boundary}");
+        return request;
+    }
 
     private static HttpRequestMessage Request(HttpMethod method, string path, string token, string json = null, string forwardedFor = Client)
     {
