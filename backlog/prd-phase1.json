@@ -1344,13 +1344,14 @@
       "dependsOn": []
     },
     {
-      "id": "ARV-124",
-      "title": "[E17] Pilot-profile load test and 24-hour soak",
-      "description": "Work package 12 of the roadmap: load at the D5 site rate (about 15,000 messages a second for 100 sensors) and a long run that proves bounded memory, on the pilot hall profile, locally (no cluster). Epic: Operations and deployment. CWEs to review: CWE-120, CWE-400.",
+      "id": "ARV-124a",
+      "title": "[E17] Pilot-profile load test and the D5 burst",
+      "description": "Work package 12 of the roadmap, first part: load at the D5 site rate (about 15,000 messages a second for 100 sensors) on the pilot hall profile, through the whole pipeline (Ariva.Api.Ingest, Kafka, Ariva.Api.Stream, the live hub and the display boards), locally (no cluster). Epic: Operations and deployment. CWEs to review: CWE-120, CWE-400.",
       "acceptanceCriteria": [
         "A load harness scenario for the pilot hall profile (Proposed: up to 20 desks, e-gates, 30 T3 sensors, AMAN feed, 50 dashboards, 10 displays) and a burst at 15,000 messages a second",
-        "A 24-hour soak at accelerated simulator speed: stream state, desk engine buffers, outbox, Redis and process memory do not grow beyond their bounds; results and measured catch-up after a 30-minute stream outage recorded in wiki/05 sizing notes, labelled as lab measurements",
+        "Ariva.Api.Stream runs in the load run (the queue state and live snapshots are its own, not the harness's stand-in); its consumer lag is measured during and after the burst and the time it takes to catch up is recorded",
         "Rate and body limits hold (429 and 413, never 5xx) under load",
+        "Recorded in wiki/05 sizing notes, labelled as lab measurements: CPU and memory per host, Stream's lag and catch-up after the burst, stream_zone_state.state_bytes on the pilot zones and on AUH-TA, the staffing job's run duration at pilot scale and what TickerQ does when a run outlasts its minute (overlap or skip); state_bytes added to what wiki 10 says to watch",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -1359,12 +1360,32 @@
       ],
       "priority": 41,
       "passes": false,
-      "notes": "Size M. TC-33 (node sizes on site hardware) is answered later from these numbers and the site survey. From the ARV-168 review: measure stream_zone_state.state_bytes before and after ARV-168 on AUH-TA and on a busy zone (every checkpoint upserts each zone's whole state, now with its remembered batch keys) and add state_bytes to what wiki 10 says to watch. From the ARV-181a security review (2026-10-15): measure the staffing job's run duration at pilot scale (StaffingJobs, every minute) and confirm what TickerQ does when a run takes longer than a minute (overlap or skip).",
+      "notes": "Size M. Split from ARV-124 on 2026-10-21: the 24-hour soak needs a quiet machine with disk for a day of Kafka and TimescaleDB growth, which the cloud agent session does not have (about 3 GB free), so it moved to ARV-124b; this part runs in about half an hour. TC-33 (node sizes on site hardware) is answered later from ARV-124a, ARV-124b and the site survey. From the ARV-168 review: measure stream_zone_state.state_bytes before and after ARV-168 on AUH-TA and on a busy zone (every checkpoint upserts each zone's whole state, now with its remembered batch keys) and add state_bytes to what wiki 10 says to watch. From the ARV-181a security review (2026-10-15): measure the staffing job's run duration at pilot scale (StaffingJobs, every minute) and confirm what TickerQ does when a run takes longer than a minute (overlap or skip).",
       "dependsOn": [
         "ARV-071",
         "ARV-113",
         "ARV-115",
         "ARV-116"
+      ]
+    },
+    {
+      "id": "ARV-124b",
+      "title": "[E17] 24-hour soak and catch-up after a stream outage",
+      "description": "Work package 12 of the roadmap, second part: a long run that proves bounded memory, on the pilot hall profile, locally (no cluster). Needs a machine doing nothing else for a day, with disk for a day of Kafka and TimescaleDB growth at the soak's rate (Estimate from ARV-124a's bytes per push). Epic: Operations and deployment. CWEs to review: CWE-120, CWE-400.",
+      "acceptanceCriteria": [
+        "A 24-hour soak at accelerated simulator speed: stream state, desk engine buffers, outbox, Redis and process memory do not grow beyond their bounds; results and measured catch-up after a 30-minute stream outage recorded in wiki/05 sizing notes, labelled as lab measurements",
+        "The soak is repeatable: one command starts it on the pilot profile, samples the bounds above at a fixed interval and writes a report; it is proved on a short run before the 24-hour run",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 41,
+      "passes": false,
+      "notes": "Size M. Split from ARV-124 on 2026-10-21 (see ARV-124a). The simulator runs at most 60 times real time and stops at the end of its simulated day (minute 1440), so a soak restarts the day; Ariva.Api.Integration refuses border feed records more than Border:Feed:AheadMinutes (5) ahead of its clock outside k8s-demo and k8s-dev (1,440 there), so an accelerated simulated day needs that setting raised in the soak. Measure the outage on the real stream path: stop Ariva.Api.Stream for 30 minutes while the sensors push, then start it and record the time until its lag is back to its steady value.",
+      "dependsOn": [
+        "ARV-124a"
       ]
     },
     {
@@ -1868,7 +1889,8 @@
         "ARV-121",
         "ARV-122b",
         "ARV-123b",
-        "ARV-124",
+        "ARV-124a",
+        "ARV-124b",
         "ARV-126",
         "ARV-127",
         "ARV-128",

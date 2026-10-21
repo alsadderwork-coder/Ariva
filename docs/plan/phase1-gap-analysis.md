@@ -30,7 +30,7 @@ Paths are relative to `Platform/Backplane` unless they start with `Platform/`.
 | 18 | Authentication, roles, audit (work package 10) | ARV-010a to ARV-012, ARV-059 | Covered; production bootstrap is row 17 | ARV-121 |
 | 19 | Flight data: SSIM import; arrival-wave alert only with an AODB | ARV-046, ARV-047, ARV-038 predicted breach | SSIM date rules to confirm (TC-14, TC-46) | ARV-136 (values only) |
 | 20 | Privacy and retention for the pilot DPIA (implied by TC-62, TC-70, TC-75) | Hypertable retention fixed in scripts (90 days raw) | Data inventory; retention from contract answers; relational retention job | ARV-111a |
-| 21 | Hardening: failure modes, load test, security fixes (work package 12) | ARV-071 load harness (18,000 positions a second in a lab burst), ARV-072 fault tests (not yet run, see section 3) | Pilot-profile load and a 24-hour soak for bounded memory | ARV-124 |
+| 21 | Hardening: failure modes, load test, security fixes (work package 12) | ARV-071 load harness (18,000 positions a second in a lab burst), ARV-072 fault tests (not yet run, see section 3) | Pilot-profile load and a 24-hour soak for bounded memory | ARV-124a, ARV-124b |
 | 22 | Demo data on a real airport (owner request 2026-10-06) | DMO seed only (ARV-019, `DemoTopologySeed.cs`, guard in `Ariva.Di/Extensions/DemoSeedExtensions.cs`) | A second, illustrative seed site for AUH Terminal A from cited public facts, with an "Illustrative, not surveyed" banner, and a simulator scenario of its own | ARV-139a, ARV-139b |
 
 ## 2. Pilot acceptance criteria
@@ -43,7 +43,7 @@ Paths are relative to `Platform/Backplane` unless they start with `Platform/`.
 | Track completion (at least 90%) | Bin counters (exits, abandoned, censored, fragmented) | The rate itself and its alarm | ARV-114a, ARV-114b, ARV-104e |
 | Desk-state agreement with observer log (at least 95% of observed minutes) | `desk_minute` from AMAN | Sensor-zone desk input; observer log capture; comparison; the real AMAN feed | ARV-116, ARV-104b, ARV-104d, ARV-104f, ARV-131 |
 | Nowcast error against later realised wait (median within 2 min under 20 min) | Nowcast and final realised waits in `queue_minute` | Comparison | ARV-104f |
-| Availability (99% of operating hours) | Health probes, stale indicators | A definition of operating hours (new question for the KPI annex) and an availability ledger; system monitoring | ARV-118, ARV-125, ARV-124 |
+| Availability (99% of operating hours) | Health probes, stale indicators | A definition of operating hours (new question for the KPI annex) and an availability ledger; system monitoring | ARV-118, ARV-125, ARV-124a, ARV-124b |
 | Ground-truth proof (nowcast error with and without AMAN, side by side) | Live desk term from AMAN | A stored sensor-only shadow nowcast (cannot be rebuilt later) and the comparison | ARV-117, ARV-104f, ARV-131 |
 
 The validation results (ARV-104g, screen ARV-104h) put all eight together, frozen with a content hash at campaign close, and the downloadable report follows with the Insight report tool (ARV-146); ARV-104i rehearses the whole path on the simulator before any site work.
@@ -62,7 +62,7 @@ The validation results (ARV-104g, screen ARV-104h) put all eight together, froze
 
 | Dependency | Owner | Blocks |
 |---|---|---|
-| Site survey (TC-11, TC-13, TC-15, TC-16, TC-24, TC-25, TC-28, TC-30, TC-31, TC-33, TC-37, TC-40, TC-71) | Field engineer, local partner, client IT | ARV-132, ARV-133 (family and network), ARV-131 (AMAN Kafka), ARV-134a, ARV-134b (identity provider), node sizing after ARV-124 |
+| Site survey (TC-11, TC-13, TC-15, TC-16, TC-24, TC-25, TC-28, TC-30, TC-31, TC-33, TC-37, TC-40, TC-71) | Field engineer, local partner, client IT | ARV-132, ARV-133 (family and network), ARV-131 (AMAN Kafka), ARV-134a, ARV-134b (identity provider), node sizing after ARV-124a and ARV-124b |
 | Sensor family decision (survey; TC-71 stereo against LiDAR in Angola) and a real capture from the vendor (TC-38 Xovis or TC-39 Ouster) | Product owner, vendor | ARV-132, then ARV-133 |
 | Sensor purchase, import, customs, installation (6 to 16 weeks, roadmap) | Procurement, partner | Commissioning and the validation campaign after ARV-138 |
 | AMAN-side outbox changes, in the AMAN repository (not in this backlog): publish the four V1 aggregate contracts through AMAN's outbox; fix what the implementation plan lists as open in AMAN (idempotency filter never registered, outbox replay job commented out, Kafka consumer faults discarded without retry or dead letters, keyless producers on single-partition topics, `GetAll` on the integration client controller without permission, client details with secrets cached in Redis); merge the local `feature/integration-auth-hardening` branch; then the client's change control (5 to 13 weeks) | AMAN team, client | ARV-131; the desk-state agreement and ground-truth proof criteria (they need real AMAN data in the campaign) |
