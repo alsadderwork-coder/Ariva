@@ -119,6 +119,20 @@ public sealed class TlsCollector : IAsyncDisposable
         return _requests.Any(r => r.StartsWith(prefix, StringComparison.Ordinal));
     }
 
+    /// <summary>Waits until a request's body held <paramref name="text"/> (<see cref="ReceivedText"/>), or the patience ran out.</summary>
+    public async Task<bool> ReceivedTextAsync(string text, TimeSpan patience, CancellationToken cancellationToken)
+    {
+        var until = DateTime.UtcNow + patience;
+        while (DateTime.UtcNow < until)
+        {
+            if (ReceivedText(text))
+                return true;
+            await Task.Delay(50, cancellationToken);
+        }
+
+        return ReceivedText(text);
+    }
+
     /// <summary>The CA's certificate as a PEM file in <paramref name="folder"/>, as the chart mounts ca.crt; returns its path.</summary>
     public static string WritePem(X509Certificate2 authority, string folder, string name = "ca.crt")
     {

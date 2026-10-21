@@ -286,9 +286,12 @@ public sealed class ConsumerEndpointsTests
         gauge.Read().Should().Contain((Feed, Group), 1);
 
         Volatile.Write(ref broker, 2);
-        await UntilAsync(() => Volatile.Read(ref connects) == 1, "the consumer connected once its topic exists");
+        // The connect runs before the consumer is marked connected, and "now exists" is logged after: wait for the line, since
+        // the gauge read between the two still says missing.
+        await UntilAsync(() => lines.Logged.Any(l => l.Level == LogLevel.Information && l.Text.Contains("now exists", StringComparison.Ordinal)),
+            "the consumer connected once its topic exists");
+        Volatile.Read(ref connects).Should().Be(1);
         gauge.Read().Should().Contain((Feed, Group), 0);
-        lines.Logged.Should().Contain(l => l.Level == LogLevel.Information && l.Text.Contains("now exists", StringComparison.Ordinal));
         await endpoints.StopAsync(Ct);
     }
 

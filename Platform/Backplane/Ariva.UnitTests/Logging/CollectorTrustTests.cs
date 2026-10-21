@@ -477,7 +477,10 @@ public sealed class CollectorTrustTests : IDisposable
     public async Task Host_Should_ShipItsLinesToLoki_When_ProductionNamesTheSiteCaOfLokisCertificate(string host)
     {
         // V16.4.3 through the host's own wiring (AddAppLogging): a k8s-prd host whose Loki chains to the site CA starts, and its lines
-        // arrive, the last one too: it is written just before the host is disposed, so only the final flush can carry it.
+        // arrive, the last one too: it is written just before the host is disposed, so only the final flush can carry it. That flush
+        // may end after the factory's dispose returns: the host's entry point is in RunAsync too and disposes the same services when
+        // the host stops, and whichever disposes first does the work while the other returns at once (dependency injection disposes
+        // a provider once). So the last line is waited for; it never arrives if the flush fails, since the logger takes no batch after.
         await using var collector = await TlsCollector.StartAsync("Ariva test site CA", Ct);
         var pem = TlsCollector.WritePem(collector.Authority, _folder);
         var probe = $"Last line before the host stops {Guid.NewGuid():N}";
@@ -492,13 +495,15 @@ public sealed class CollectorTrustTests : IDisposable
         }
 
         (await collector.ReceivedAsync("POST /loki/api/v1/push", Patience, Ct)).Should().BeTrue(string.Join(", ", collector.Requests));
-        collector.ReceivedText(probe).Should().BeTrue("the line written just before the host stops goes out with the final flush");
+        (await collector.ReceivedTextAsync(probe, Patience, Ct)).Should().BeTrue("the line written just before the host stops goes out with the final flush");
     }
 
     [Theory]
     [MemberData(nameof(ArivaHosts.BackplaneHosts), MemberType = typeof(ArivaHosts))]
     public async Task Host_Should_ShipItsLinesToTheOtlpCollector_When_ProductionNamesTheSiteCaOfItsCertificate(string host)
     {
+        // As the Loki case above, the last line waited for. The collector answers gRPC without a gRPC status, so the sink counts
+        // every export as failed and keeps its batch: the final flush sends it again with the last line.
         await using var collector = await TlsCollector.StartAsync("Ariva test site CA", Ct);
         var pem = TlsCollector.WritePem(collector.Authority, _folder);
         var probe = $"Last line before the host stops {Guid.NewGuid():N}";
@@ -516,7 +521,7 @@ public sealed class CollectorTrustTests : IDisposable
 
         (await collector.ReceivedAsync("POST /opentelemetry.proto.collector.logs.v1.LogsService/Export", Patience, Ct))
             .Should().BeTrue(string.Join(", ", collector.Requests));
-        collector.ReceivedText(probe).Should().BeTrue("the line written just before the host stops goes out with the final flush");
+        (await collector.ReceivedTextAsync(probe, Patience, Ct)).Should().BeTrue("the line written just before the host stops goes out with the final flush");
     }
 
     [Fact]
