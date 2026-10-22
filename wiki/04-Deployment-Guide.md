@@ -847,6 +847,71 @@ Go-live check, and after every release (smoke test 11, section 8):
    As a system administrator in Ariva.Web, open Zones on a level of a test or smoke site and upload `eicar-test.png` as its floor plan. Expected: the upload is refused with "The file was refused: the malware scanner found a known threat in it."; the audit trail holds `Upload.MalwareRefused` with the signature `Eicar-Test-Signature`; the hosts' log holds security event 9131; the level's floor plan is unchanged. Delete `eicar-test.png` afterwards. The upload reaches one api-main pod; step 1 shows that every other pod's scanner answers too.
 3. Record in the go-live record: the signature source, each pod's signature version and build time, and the EICAR refusal (its time and the audit entry).
 
+### 6.8 Third-party images (ARV-227)
+
+Ariva pins every third-party image it runs outside its own Dockerfiles by tag and digest:
+- the charts' TimescaleDB and ClamAV;
+- docker-compose and the AppHost;
+- the CI and Azure DevOps containers;
+- the integration tests' Testcontainers images;
+- the Playwright image CI renders the visual baselines with (its tag on the dev container's `FROM` line).
+
+Tests hold further copies of some pins: the AppHost model's expected digests, the chart tests' fixtures and the dynamic scan's ZAP image. `scripts/base-images.mjs --check` holds every copy of a pin to one digest, and to the charts' tag and digest for TimescaleDB and ClamAV. It refuses a copy that carries a digest or tag no pin has, and one digest under two tags of an image. Ariva's own images are scanned when built (`images.yml`), and Dependabot keeps their base images current.
+
+The third-party images have a watch of their own: `.github/workflows/third-party-images.yml`. It has two parts:
+
+- **Scan.** Trivy scans every pinned image by its digest, every Monday, by hand (Actions, third-party-images, Run workflow), and on a pull request or a push to `main` that changes a file holding a pin. `--check` requires the workflow's triggers to cover every such file. The run fails on a high or critical vulnerability that has a fixed version, and when Trivy cannot scan. Its summary names the image, every place it is pinned and the time frames: critical 7 days and high 30 days from the day a fix is available (wiki 13 section 9).
+- **Patches.** Every Monday and by hand, each pinned line is compared with its registry. Pull requests and pushes do not run it: an upstream rebuild is not the fault of the change that runs next. The run fails in three cases:
+  - a version tag (for example `clamav/clamav:1.4.6`) has a newer patch release on its line;
+  - a tag names a new digest: a moving tag such as `redis:8.2-alpine` or ZAP's stable tag, or an image rebuilt under its version tag;
+  - TimescaleDB has a newer line. The ha image publishes one tag per extension minor (`pg17-ts2.30`, `pg17-ts2.31`), and an older one stops moving once a newer one is out: `pg17-ts2.28` was last pushed on 28 July 2026, `pg17-ts2.29` on 9 September, and `pg17-ts2.31` has been out since 21 October. A watch on the old tag's digest alone would go quiet on the production database image.
+
+  A newer minor line of any other image (ClamAV 1.5, Redis 8.10) is a note, not a failure: moving to it is a decision, not a patch. The summary lists each line as `ok`, `BEHIND` (with the newer tag, digest or line) or `ERROR`. The Playwright image's line reads `-`: Dependabot proposes its releases on the dev container, together with `@playwright/test`.
+
+What Trivy cannot see: it reads an image's distribution packages and its language packages (jars, Go binaries, .NET `deps.json`, npm and Python packages). Software installed any other way has nothing for it to match:
+- Redis in the `redis` images: built from source (`/usr/local/bin/redis-server`); no OS package names it.
+- clamd in ClamAV's image: no OS package names it.
+- PostgreSQL in `timescaledb-ha`: 17.11 from PostgreSQL's own apt repository on Ubuntu 22.04, which Ubuntu's advisories do not cover; the TimescaleDB extension is not a package at all.
+- Probably also the Java runtime in the Kafka images, the browsers in the Playwright image and semgrep's engine (to confirm from the first scan's package lists).
+
+The first three were checked in the running containers. For these, the patch check is the watch that notices a fix, as a newer patch release, a rebuilt digest or a newer line. That is how ClamAV 1.4.3's fixed CVEs would have been reported.
+
+To see every pinned image and where each copy is:
+
+```bash
+node scripts/base-images.mjs --list      # offline; --json gives the workflow's matrix
+node scripts/base-images.mjs --patches   # needs Docker Hub and ghcr.io; exits 1 when a line is behind
+```
+
+Bump a pin in every copy at once:
+
+1. **A new digest under the same tag** (a moving tag, or an image rebuilt under its version tag). Run `node scripts/base-images.mjs --resolve --outside --write`.
+   - It needs Docker Hub and ghcr.io.
+   - It moves every copy of the old digest to the new one, the charts' values and the tests' copies included.
+   - It writes nothing while `--check` finds a problem.
+   - It leaves the Dockerfiles alone; without `--outside` it also moves them to their newest patches.
+2. **A newer patch release or a newer line.**
+   - Change the tag in every place `--list` names for the image, leaving the old digest:
+     - the chart values' `tag`;
+     - docker-compose;
+     - the workflows and Azure DevOps YAML;
+     - the AppHost's `WithImage`;
+     - the integration tests' constant;
+     - the chart tests' fixtures;
+     - for TimescaleDB, also the chart's `appVersion` in `Chart.yaml` (`--check` holds it to the values tag);
+     - for smtp4dev, also the tool version in `.config/dotnet-tools.json`.
+   - The AppHost model's expectations hold only the digest, so the next command moves them.
+   - Then run the command of step 1: it gives every copy the new tag's digest. It refuses while some places still have the old tag, since one digest would then stand under two tags.
+   - A new TimescaleDB line also changes the extension's version: an existing database runs the old one until `ALTER EXTENSION timescaledb UPDATE` (ARV-236 decides where that runs).
+3. **Check** with `node scripts/base-images.mjs --check`: every copy has one tag and one digest, and the charts' pins are followed.
+4. **Test.**
+   - `node scripts/verify.mjs backend`: the unit tests, with the AppHost model, and the chart tests, with their fixtures.
+   - `node scripts/verify.mjs integration` for the Testcontainers images.
+   - The E2E run for compose and CI.
+   - Then the workflow by hand.
+
+A bump of TimescaleDB or ClamAV changes what the charts deploy: release it as any chart change, with its note in the release notes (wiki 18).
+
 ## 7. First-time bootstrap
 
 ### 7.1 Database

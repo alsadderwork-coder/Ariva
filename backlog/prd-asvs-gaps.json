@@ -517,10 +517,32 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 112,
-      "passes": false,
-      "notes": "Filed by ARV-092c on 2026-10-20 from its security review (H1, the third part of its fix). The bump to ClamAV 1.4.6 itself is in ARV-092c. High by its origin, so before the pilot.",
+      "passes": true,
+      "notes": "Filed by ARV-092c on 2026-10-20 from its security review (H1, the third part of its fix). The bump to ClamAV 1.4.6 itself is in ARV-092c. High by its origin, so before the pilot. Passed 2026-10-22: the weekly .github/workflows/third-party-images.yml scans every third-party pin with Trivy (on a change to a pin too, failing closed) and runs scripts/base-images.mjs --patches (a newer patch release, a moved tag, a newer TimescaleDB line); --check holds the tests' copies of the pins, the TimescaleDB chart's appVersion and the watch's triggers; --resolve --outside --write moves every copy and writes nothing over a problem; the bump is wiki 04 section 6.8, the tools wiki 13 section 9. Trivy cannot see Redis, clamd or PostgreSQL in timescaledb-ha (installed outside the distribution's packages), so for them the patch check is the watch. The first --patches run found 7 of 11 lines behind: ARV-236. V15.1.1 Met, V15.2.1 stays Partly (ARV-096a). Story gate PASS, security review PASS (round 2).",
       "dependsOn": [
         "ARV-092c"
+      ]
+    },
+    {
+      "id": "ARV-236",
+      "title": "[ASVS] Bump the third-party pins ARV-227's first weekly check found behind",
+      "description": "Found by ARV-227's first run of node scripts/base-images.mjs --patches (2026-10-22): 7 of the 11 third-party lines it compares with their registries are behind. Newer patch releases: apache/kafka 4.1.0 (4.1.2), confluentinc/confluent-local 8.2.0 (8.2.4), confluentinc/cp-kafka 7.6.1 (7.6.14). New digests under the pinned tag: ghcr.io/zaproxy/zaproxy stable, redis:8.2-alpine, redis:8.6. TimescaleDB: timescale/timescaledb-ha pg17-ts2.30 has a new digest and a newer line, pg17-ts2.31 (out since 2026-10-21); the ha image stops moving an older pgN-tsA.B tag once a newer one is out, so the bump goes to the newest line, not the new digest under ts2.30. node scripts/base-images.mjs --list names every place each one is pinned or copied (compose, the AppHost, the workflows, Azure DevOps, the charts, the integration tests' constants, the AppHost model's expectations, the chart tests' fixtures, the ZAP scan). Whether a high or critical vulnerability with a fix is among them is for the first scan of third-party-images.yml to say. ASVS 5.0: V15.2.1. Effort S.",
+      "acceptanceCriteria": [
+        "Each line above is bumped in every place --list names at once as wiki 04 section 6.8 says (the new digests with node scripts/base-images.mjs --resolve --outside --write; for a patch release or the newer TimescaleDB line the tag changed in every place --list names, then the same command), and node scripts/base-images.mjs --check and --patches pass",
+        "TimescaleDB moves to its newest pg17 line (the chart's appVersion with it, which --check holds to the values tag), and an existing database's extension is updated (ALTER EXTENSION timescaledb UPDATE) where the release runs it (the migration job or the release steps, decided and documented), with the release notes saying so (wiki 18)",
+        "The tests that use each bumped image pass on it: node scripts/verify.mjs backend (the AppHost model and the chart tests' fixtures), node scripts/verify.mjs integration (the Testcontainers images), the E2E run (docker-compose and CI's service containers), the ZAP baseline workflow by hand, and the AppHost started once",
+        "A run of third-party-images.yml by hand after the bump passes, or each finding it reports is fixed within its time frame (wiki 13 section 9) or filed with its frame",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 112,
+      "passes": false,
+      "notes": "Filed by ARV-227 on 2026-10-22 from the first live run of --patches. Kept out of ARV-227 so the watch and the bumps are reviewed and tested apart: a bump changes what the integration tests, the E2E run and the chart's TimescaleDB run on. Before the pilot: the chart's TimescaleDB is what k8s-prd deploys, and PostgreSQL's minor releases reach it only through a newer line. ARV-227's security review (round 1, M3) found the retiring TimescaleDB lines.",
+      "dependsOn": [
+        "ARV-227"
       ]
     },
     {

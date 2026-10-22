@@ -1,0 +1,143 @@
+# Weekly watch over the third-party images Ariva pins outside its own Dockerfiles (ARV-227): the charts' TimescaleDB and
+# ClamAV, docker-compose, the AppHost, the CI and Azure DevOps containers (the visual baselines' Playwright image among them) and
+# the integration tests' Testcontainers images, as scripts/base-images.mjs --list reads them. Ariva's own images are scanned in
+# images.yml and their base images follow Dependabot.
+# - scan: Trivy on every pinned image by its digest; fails on a high or critical vulnerability that has a fixed version, or when
+#   Trivy cannot scan. Every Monday, by hand, and on a change to a file that pins one (a pull request, and its push to main).
+# - patches: fails when a pinned line has a newer patch release, its tag has moved to a new digest, or TimescaleDB has a newer
+#   line. Every Monday and by hand only: an upstream rebuild is not a fault of the change that happens to run next. Trivy reads
+#   OS and language packages only, so for software installed another way (Redis, clamd, PostgreSQL in timescaledb-ha) this is
+#   the watch that notices a fix.
+# A failure is fixed by bumping the pin in every copy at once (wiki 04, "Third-party images"), within the remediation time
+# frames of wiki 13 section 9.
+name: third-party-images
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+  # The files that pin a third-party image; scripts/base-images.mjs --check requires each filter to cover every one of them.
+  pull_request:
+    paths:
+      - 'scripts/base-images.mjs'
+      - '.github/workflows/**'
+      - '.devcontainer/Dockerfile'
+      - 'docker-compose.dev.yml'
+      - 'Platform/Cloud/Ariva.AppHost/AppHost.cs'
+      - 'Platform/Cloud/Ariva.Cicd/AzureDevOps/**'
+      - 'Platform/Cloud/Ariva.K8s/Helm/Charts/*/values.yaml'
+      - 'Platform/Backplane/Ariva.IntegrationTests/Setup/*.cs'
+      - 'Platform/Backplane/Ariva.IntegrationTests/Faults/FaultsFixture.cs'
+      - 'Platform/Backplane/Ariva.IntegrationTests/Caching/FusionCacheBackplaneTests.cs'
+      - 'Platform/Testing/Ariva.E2E/scripts/visual-browser.mjs'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/base-images.mjs'
+      - '.github/workflows/**'
+      - '.devcontainer/Dockerfile'
+      - 'docker-compose.dev.yml'
+      - 'Platform/Cloud/Ariva.AppHost/AppHost.cs'
+      - 'Platform/Cloud/Ariva.Cicd/AzureDevOps/**'
+      - 'Platform/Cloud/Ariva.K8s/Helm/Charts/*/values.yaml'
+      - 'Platform/Backplane/Ariva.IntegrationTests/Setup/*.cs'
+      - 'Platform/Backplane/Ariva.IntegrationTests/Faults/FaultsFixture.cs'
+      - 'Platform/Backplane/Ariva.IntegrationTests/Caching/FusionCacheBackplaneTests.cs'
+      - 'Platform/Testing/Ariva.E2E/scripts/visual-browser.mjs'
+
+permissions:
+  contents: read
+
+# bash -eo pipefail: a step piped into tee must still fail when the command before the pipe fails.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  list:
+    name: List the pinned images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      images: ${{ steps.list.outputs.images }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: List every third-party image pin
+        id: list
+        run: |
+          node scripts/base-images.mjs --list | tee list.txt
+          images="$(node scripts/base-images.mjs --list --json)"
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+          { echo '### Third-party images pinned'; echo '```'; cat list.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  scan:
+    name: Scan ${{ matrix.image.name }}
+    needs: list
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.list.outputs.images) }}
+    steps:
+      # Trivy decides (exit code 1 on a finding or when it cannot scan), so the job fails closed; the next step names the pins.
+      - name: Scan the pinned image
+        id: trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ matrix.image.ref }}
+          version: v0.75.0
+          # Vulnerabilities only: a key or token a vendor ships in its image is not something a bump of the pin can fix.
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
+          output: trivy-image.txt
+      - name: Name the pins and the time frames
+        if: failure() && steps.trivy.outcome == 'failure'
+        env:
+          IMAGE_REF: ${{ matrix.image.ref }}
+          WHERE: ${{ matrix.image.where }}
+        run: |
+          {
+            echo "### $IMAGE_REF: high or critical vulnerabilities with a fixed version, or Trivy could not scan it"
+            echo
+            echo "Pinned in: $WHERE"
+            echo
+            echo 'Remediation time frames (wiki 13 section 9): critical 7 days, high 30 days from the day a fix is available. Bump every copy of the pin at once (wiki 04, "Third-party images").'
+            if [ -s trivy-image.txt ]; then
+              echo '```'
+              head -c 60000 trivy-image.txt
+              echo '```'
+            else
+              echo
+              echo 'Trivy wrote no report: its error is in the scan step log.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s trivy-image.txt ]; then cat trivy-image.txt; fi
+
+  patches:
+    name: Newer patch releases
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Compare each pinned line with its registry
+        run: |
+          status=0
+          node scripts/base-images.mjs --patches > patches.txt || status=$?
+          cat patches.txt
+          { echo '### Pinned lines against their registries'; echo '```'; cat patches.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

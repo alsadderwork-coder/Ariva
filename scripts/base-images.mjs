@@ -2,12 +2,22 @@
 // third-party images run outside the chart (ARV-096: the local stack, the CI service and job containers, the Azure DevOps E2E
 // database, the dynamic scan, the visual baselines' browser and the integration tests' Testcontainers images).
 //   node scripts/base-images.mjs --check      every FROM uses a full version tag plus @sha256 digest, every image run
-//                                             outside the chart is pinned by tag and digest with one digest per tag, and
-//                                             every .NET restore in a Dockerfile is locked (offline; CI gate)
+//                                             outside the chart is pinned by tag and digest with one digest per tag, every
+//                                             other copy of a third-party pin carries its digest, the third-party watch
+//                                             covers every pin file, and every .NET restore in a Dockerfile is locked
+//                                             (offline; CI gate)
 //   node scripts/base-images.mjs --resolve    finds the newest patch of each pinned line and its digest, and the current
 //                                             digest of each image run outside the chart (needs registry access and
 //                                             docker buildx; runs in .github/workflows/base-images.yml)
 //   node scripts/base-images.mjs --resolve --write   also rewrites the FROM lines and every copy of the other pins
+//   node scripts/base-images.mjs --resolve --outside [--write]   the images run outside the chart only (a third-party bump;
+//                                             moves the tests' copies too, writes nothing while --check finds a problem)
+//   node scripts/base-images.mjs --list [--json]   every third-party image pinned outside the Dockerfiles, each with every
+//                                             place it is pinned (offline; --json is the matrix of third-party-images.yml)
+//   node scripts/base-images.mjs --patches    each pinned third-party line against its registry: a newer patch release, its
+//                                             tag moved to a new digest, or a newer TimescaleDB line (a newer minor line
+//                                             elsewhere is a note); exits 1 when one is behind (ARV-227, weekly in
+//                                             .github/workflows/third-party-images.yml)
 // Dependabot (docker ecosystem) keeps the Dockerfile digests current once they are pinned.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -54,7 +64,8 @@ const VISUAL_BROWSER = path.join(ROOT, 'Platform', 'Testing', 'Ariva.E2E', 'scri
  * resolved; tests/zap/zap.spec.ts holds the same digest (checked in check()).
  */
 const OUTSIDE_LINES = {
-	'timescale/timescaledb-ha': { patterns: [/^pg17-ts2\.\d+$/], hubName: 'timescale/timescaledb-ha', chart: true },
+	// retires (ARV-227): the ha image stops moving an older pgN-tsA.B tag once a newer line is out, so --patches reports the newer line.
+	'timescale/timescaledb-ha': { patterns: [/^pg17-ts2\.\d+$/], hubName: 'timescale/timescaledb-ha', chart: true, retires: true },
 	// redis:8.2-alpine in compose and CI; Aspire's own Redis (8.6) in the AppHost
 	redis: { patterns: [/^8\.\d+-alpine$/, /^8\.\d+$/], hubName: 'library/redis' },
 	'apache/kafka': { patterns: [/^4\.\d+\.\d+$/], hubName: 'apache/kafka' },
@@ -76,6 +87,14 @@ const OUTSIDE_LINES = {
  * digest since AppHostModelTests reads the digest (Aspire drops the tag once a digest is set and runs image@sha256).
  */
 const APPHOST_TAG_ONLY = {};
+
+/**
+ * ARV-227: where --check and --resolve --outside look for further copies of a third-party pin (test expectations, the chart tests'
+ * fixtures, the scan's ZAP image), with the files they read; the fixtures are read here although the FROM line search skips them.
+ */
+const COPY_ROOTS = ['Platform', 'scripts', '.github', '.devcontainer'];
+const COPY_SKIP = [...SKIP.filter((name) => name !== 'fixtures'), 'test-results', 'playwright-report', 'blob-report'];
+const COPY_NAMES = /\.(cs|ya?ml|ts|mjs|js|json|ps1|sh)$|^Dockerfile$/;
 
 /** The integration tests' project, whose container images are C# constants (INTEGRATION_IMAGES). */
 const INTEGRATION_TESTS = path.join('Platform', 'Backplane', 'Ariva.IntegrationTests');
@@ -200,6 +219,7 @@ export function outsideImagePins(file, text, kind, names = []) {
 export function outsideImageProblems(pins, { chart, scanner, tools, tagOnly = {} }) {
 	const problems = [];
 	const digests = new Map();
+	const tagsOfDigest = new Map();
 	for (const pin of pins) {
 		if (pin.missing) {
 			problems.push(`${pin.where}: no constant ${pin.missing} names an image here; INTEGRATION_IMAGES in scripts/base-images.mjs lists the integration tests' image constants`);
@@ -230,10 +250,18 @@ export function outsideImageProblems(pins, { chart, scanner, tools, tagOnly = {}
 			const key = `${pin.image}:${pin.tag}`;
 			if (!digests.has(key)) digests.set(key, new Map());
 			digests.get(key).set(pin.digest, [...(digests.get(key).get(pin.digest) ?? []), pin.where]);
+			// ARV-227: a tag changed in some copies only keeps the old digest under the new tag; --resolve --outside would then move
+			// the copies still on the old tag to the new tag's digest.
+			const image = `${pin.image}@${pin.digest}`;
+			if (!tagsOfDigest.has(image)) tagsOfDigest.set(image, new Set());
+			tagsOfDigest.get(image).add(pin.tag || 'untagged');
 		}
 	}
 	for (const [key, byDigest] of digests) {
 		if (byDigest.size > 1) problems.push(`${key} is pinned to ${byDigest.size} digests; pin one everywhere (${[...byDigest].map(([digest, where]) => `${digest.slice(7, 19)} in ${where.join(', ')}`).join('; ')})`);
+	}
+	for (const [key, tags] of tagsOfDigest) {
+		if (tags.size > 1) problems.push(`${key.slice(0, key.indexOf('@'))} has one digest (${key.slice(key.indexOf('@') + 8, key.indexOf('@') + 20)}) under ${tags.size} tags (${[...tags].join(', ')}); change the tag in every place --list names`);
 	}
 	return problems;
 }
@@ -249,6 +277,257 @@ export function integrationImageLiterals(file, text) {
 		problems.push(`${file}:${text.slice(0, literal.index).split('\n').length}: the image "${literal[1]}" is a literal; name it by one of the pinned constants (INTEGRATION_IMAGES in scripts/base-images.mjs)`);
 	}
 	return problems;
+}
+
+/**
+ * ARV-227: every third-party image pinned outside Ariva's Dockerfiles, one entry per image, tag and digest, with each place it
+ * is pinned: the outside files' pins (compose, the AppHost, the workflows, Azure DevOps, the integration tests' constants) and the
+ * charts' TimescaleDB and ClamAV. A pin without a digest is left out (the check reports it). name is image:tag, ref what a
+ * scanner pulls (image:tag@digest), where the places, comma separated.
+ */
+export function pinnedImages(pins, { chart, scanner } = {}) {
+	const all = [...pins, ...chartPins(chart, scanner)];
+	const images = new Map();
+	for (const pin of all.filter((p) => p.image && /^sha256:[0-9a-f]{64}$/.test(p.digest ?? ''))) {
+		const name = pin.tag ? `${pin.image}:${pin.tag}` : pin.image;
+		const key = `${name}@${pin.digest}`;
+		if (!images.has(key)) images.set(key, { image: pin.image, tag: pin.tag, digest: pin.digest, name, ref: key, places: [] });
+		images.get(key).places.push(pin.where);
+	}
+	return [...images.values()].sort((a, b) => a.ref.localeCompare(b.ref)).map(({ places, ...image }) => ({ ...image, where: places.join(', ') }));
+}
+
+/** ARV-227: the charts' TimescaleDB (chart: tag, digest) and ClamAV (scanner: repository, tag, digest) as pins. */
+function chartPins(chart, scanner) {
+	return [
+		...(chart?.tag && chart?.digest ? [{ where: 'Platform/Cloud/Ariva.K8s/Helm/Charts/timescaledb/values.yaml', image: 'timescale/timescaledb-ha', tag: chart.tag, digest: chart.digest }] : []),
+		...(scanner?.repository && scanner?.digest ? [{ where: 'Platform/Cloud/Ariva.K8s/Helm/Charts/platform/values.yaml', image: scanner.repository, tag: scanner.tag, digest: scanner.digest }] : [])
+	];
+}
+
+/** ARV-227: the newest tag on the patch line of a version tag x.y.z (same x.y, a higher z), or null; other tags have no patch line. */
+export function newerPatch(tag, tags) {
+	const version = (value) => /^(\d+)\.(\d+)\.(\d+)$/.exec(value ?? '')?.slice(1).map(Number);
+	const pinned = version(tag);
+	if (!pinned) return null;
+	let best = null;
+	for (const candidate of tags) {
+		const found = version(candidate);
+		if (!found || found[0] !== pinned[0] || found[1] !== pinned[1] || found[2] <= pinned[2]) continue;
+		if (!best || found[2] > best[1]) best = [candidate, found[2]];
+	}
+	return best?.[0] ?? null;
+}
+
+/**
+ * ARV-227: a tag's line: x.y.z, x.y and x.y-variant on major x, pgN-tsA.B on PostgreSQL N and TimescaleDB A. prefix is what the
+ * registry is asked for, family the line's kin (same major and variant), minor its place among them; null for other tags (ZAP's
+ * stable).
+ */
+function tagLine(tag) {
+	let m = /^(\d+)\.(\d+)\.(\d+)$/.exec(tag ?? '');
+	if (m) return { prefix: `${m[1]}.`, family: `${m[1]}.x.z`, minor: Number(m[2]), patch: Number(m[3]) };
+	m = /^(\d+)\.(\d+)(-[a-z]+)?$/.exec(tag ?? '');
+	if (m) return { prefix: `${m[1]}.`, family: `${m[1]}.x${m[3] ?? ''}`, minor: Number(m[2]), patch: 0 };
+	m = /^pg(\d+)-ts(\d+)\.(\d+)$/.exec(tag ?? '');
+	if (m) return { prefix: `pg${m[1]}-ts${m[2]}.`, family: `pg${m[1]}-ts${m[2]}.x`, minor: Number(m[3]), patch: 0 };
+	return null;
+}
+
+/** ARV-227: the newest tag of a newer line of the same family (1.4.6 to 1.5.2, 8.2-alpine to 8.6-alpine, pg17-ts2.30 to pg17-ts2.31), or null. */
+export function newerLine(tag, tags) {
+	const pinned = tagLine(tag);
+	if (!pinned) return null;
+	let best = null;
+	for (const candidate of tags) {
+		const found = tagLine(candidate);
+		if (!found || found.family !== pinned.family || found.minor <= pinned.minor) continue;
+		if (!best || found.minor > best.minor || (found.minor === best.minor && found.patch > best.patch)) best = { ...found, tag: candidate };
+	}
+	return best?.tag ?? null;
+}
+
+/**
+ * ARV-227: one pinned line's status from what its registry says: tags (the tags on its major) and digest (what its tag, ZAP's
+ * stable, names now). BEHIND for a newer patch release, a tag that names another digest, or a newer line where lines retire
+ * (retires); a newer line elsewhere is a note on an ok line; ERROR when the registry names no sha256 digest.
+ */
+export function patchStatus(image, line, { tags, digest }) {
+	const tag = line.resolveTag ?? image.tag;
+	if (!/^sha256:[0-9a-f]{64}$/.test(digest ?? '')) return { status: 'ERROR', notes: [`the registry named no sha256 digest for ${tag}`] };
+	const behind = [];
+	const notes = [];
+	const patch = newerPatch(image.tag, tags);
+	if (patch) behind.push(`newer patch release ${patch}`);
+	if (digest !== image.digest) behind.push(`${tag} now names ${digest}`);
+	const newer = newerLine(image.tag, tags);
+	if (newer && line.retires) behind.push(`newer line ${newer} (${image.tag} stops moving once a newer line is out)`);
+	else if (newer) notes.push(`note: newer line ${newer}`);
+	return { status: behind.length ? 'BEHIND' : 'ok', notes: [...behind, ...notes] };
+}
+
+/**
+ * ARV-227: the copies of third-party pins in one file: image references with a digest (image[:tag]@sha256:...) whose normalised
+ * image is one of images (a Set). Test expectations, the chart tests' fixtures and the scan's ZAP image hold such copies besides
+ * the pins themselves.
+ */
+export function imageCopies(file, text, images) {
+	const copies = [];
+	for (const m of text.matchAll(/(?<![\w./-])((?:[a-z0-9][a-z0-9.-]*\/)*[a-z0-9][a-z0-9._-]*)(?::(\w[\w.-]{0,127}))?@(sha256:[0-9a-f]{64})/g)) {
+		const { image } = parseImageRef(m[1]);
+		if (images.has(image)) copies.push({ where: `${file}:${text.slice(0, m.index).split('\n').length}`, image, tag: m[2] ?? '', digest: m[3] });
+	}
+	return copies;
+}
+
+/**
+ * ARV-227: problems for copies of third-party pins: a tagged copy carries the digest pinned for its image and tag, an untagged one
+ * a digest pinned for its image. A bump that misses a copy fails --check, and --resolve --outside refuses to write.
+ */
+export function copyProblems(copies, pins) {
+	const problems = [];
+	for (const copy of copies) {
+		const ofImage = pins.filter((pin) => pin.image === copy.image && pin.digest);
+		if (copy.tag) {
+			const same = ofImage.filter((pin) => pin.tag === copy.tag);
+			if (!same.length) problems.push(`${copy.where}: ${copy.image}:${copy.tag} is a copy of no pin (${copy.image} is pinned on ${[...new Set(ofImage.map((pin) => pin.tag || 'no tag'))].join(', ')}); change its tag with the pin's`);
+			else if (!same.some((pin) => pin.digest === copy.digest)) problems.push(`${copy.where}: ${copy.image}:${copy.tag}@${copy.digest.slice(7, 19)} must carry the pin's digest ${same[0].digest} (node scripts/base-images.mjs --resolve --outside --write moves every copy)`);
+		} else if (!ofImage.some((pin) => pin.digest === copy.digest)) {
+			problems.push(`${copy.where}: ${copy.image}@${copy.digest.slice(7, 19)} carries no digest pinned for ${copy.image} (node scripts/base-images.mjs --resolve --outside --write moves every copy)`);
+		}
+	}
+	return problems;
+}
+
+/** ARV-227: a GitHub Actions paths filter as a regular expression (** any characters, * and ? any but a slash). */
+export function pathFilter(glob) {
+	const source = glob.split('**').map((part) => part.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')).join('.*');
+	return new RegExp(`^${source}$`);
+}
+
+/** ARV-227: the globs of each paths: block list in a workflow, in order. */
+export function workflowPaths(text) {
+	const lines = text.split(/\r?\n/);
+	const filters = [];
+	lines.forEach((line, index) => {
+		const head = /^(\s*)paths:\s*$/.exec(line);
+		if (!head) return;
+		const globs = [];
+		for (let i = index + 1; i < lines.length; i++) {
+			const item = /^(\s*)-\s*['"]?([^'"#\s]+)['"]?\s*(?:#.*)?$/.exec(lines[i]);
+			if (!item || item[1].length <= head[1].length) break;
+			globs.push(item[2]);
+		}
+		filters.push(globs);
+	});
+	return filters;
+}
+
+/**
+ * ARV-227: problems when the watch's triggers do not cover the files that pin third-party images: its pull_request and push
+ * filters (two at least) must each match every such file, so a change to a pin is scanned before it lands and when it reaches main.
+ */
+export function watchPathProblems(files, filters) {
+	const problems = [];
+	if (filters.length < 2) problems.push('third-party-images.yml: its pull_request and push triggers each need a paths filter over the files that pin third-party images');
+	for (const globs of filters) {
+		const regexes = globs.map(pathFilter);
+		for (const file of files) if (!regexes.some((regex) => regex.test(file))) problems.push(`third-party-images.yml: a paths filter misses ${file}, which pins a third-party image; add it so a change to the pin is scanned`);
+	}
+	return [...new Set(problems)];
+}
+
+function selfTestThirdPartyImages() {
+	const d = (c) => `sha256:${c.repeat(64)}`;
+	const failures = [];
+	const tags = ['1.4.3', '1.4.6', '1.4.5', '1.4.6_base', '1.5.0', '1.4.10-rc1', 'stable', 'latest', '1.3.9'];
+	for (const [tag, expected] of [['1.4.3', '1.4.6'], ['1.4.6', null], ['1.5.0', null], ['8.2-alpine', null], ['pg17-ts2.30', null], ['', null], ['1.3.2', '1.3.9']]) {
+		const found = newerPatch(tag, tags);
+		if (found !== expected) failures.push(`newerPatch(${tag || 'no tag'}): expected ${expected}, got ${found}`);
+	}
+	if (newerPatch('2.9.0', ['2.10.0', '2.9.10', '2.9.9']) !== '2.9.10') failures.push('newerPatch compares patches as numbers, not text');
+	const pins = [
+		{ where: 'docker-compose.dev.yml:4', image: 'redis', tag: '8.2-alpine', digest: d('b') },
+		{ where: '.github/workflows/ci.yml:30', image: 'redis', tag: '8.2-alpine', digest: d('b') },
+		{ where: 'ci.yml:40', image: 'ghcr.io/zaproxy/zaproxy', tag: '', digest: d('e') },
+		{ where: 'x.yml:1', image: 'redis', tag: '8.2-alpine', digest: '' },
+		{ where: 'AppHost.cs:9', resource: 'kafka', image: '', tag: '', digest: '' }
+	];
+	const listed = pinnedImages(pins, { chart: { tag: 'pg17-ts2.30', digest: d('a') }, scanner: { repository: 'clamav/clamav', tag: '1.4.6', digest: d('5') } });
+	const expected = [
+		{ name: 'clamav/clamav:1.4.6', ref: `clamav/clamav:1.4.6@${d('5')}`, where: 'Platform/Cloud/Ariva.K8s/Helm/Charts/platform/values.yaml' },
+		{ name: 'ghcr.io/zaproxy/zaproxy', ref: `ghcr.io/zaproxy/zaproxy@${d('e')}`, where: 'ci.yml:40' },
+		{ name: 'redis:8.2-alpine', ref: `redis:8.2-alpine@${d('b')}`, where: 'docker-compose.dev.yml:4, .github/workflows/ci.yml:30' },
+		{ name: 'timescale/timescaledb-ha:pg17-ts2.30', ref: `timescale/timescaledb-ha:pg17-ts2.30@${d('a')}`, where: 'Platform/Cloud/Ariva.K8s/Helm/Charts/timescaledb/values.yaml' }
+	];
+	const shown = JSON.stringify(listed.map(({ name, ref, where }) => ({ name, ref, where })));
+	if (shown !== JSON.stringify(expected)) failures.push(`pinnedImages: expected one entry per image, tag and digest with every place, got ${shown}`);
+	// Newer lines: the same major and variant, a higher minor; moving and other tags.
+	const lineTags = ['1.4.7', '1.5.0', '1.5.2', '1.5.10-rc1', '2.0.0', '8.2-alpine', '8.4-alpine', '8.6-alpine', '8.6', '8.6-alpine3.22', '8.8.1-alpine', 'pg17-ts2.30', 'pg17-ts2.31', 'pg18-ts2.31', 'pg17-ts2.31-all'];
+	for (const [tag, expected] of [['1.4.6', '1.5.2'], ['1.5.2', null], ['8.2-alpine', '8.6-alpine'], ['8.4', '8.6'], ['pg17-ts2.30', 'pg17-ts2.31'], ['pg17-ts2.31', null], ['', null]]) {
+		const found = newerLine(tag, lineTags);
+		if (found !== expected) failures.push(`newerLine(${tag || 'no tag'}): expected ${expected}, got ${found}`);
+	}
+	// A line's status: a moved digest and a newer patch are BEHIND, a newer line a note unless the line retires, no digest an ERROR.
+	const status = (image, line, answer) => { const r = patchStatus(image, line, answer); return `${r.status} ${r.notes.join('; ')}`; };
+	const clam = { image: 'clamav/clamav', tag: '1.4.6', digest: d('5') };
+	const cases = [
+		[clam, {}, { tags: ['1.4.6', '1.5.2'], digest: d('5') }, `ok note: newer line 1.5.2`],
+		[clam, {}, { tags: ['1.4.6'], digest: d('5') }, 'ok '],
+		[clam, {}, { tags: ['1.4.7'], digest: d('5') }, 'BEHIND newer patch release 1.4.7'],
+		[{ image: 'redis', tag: '8.2-alpine', digest: d('b') }, {}, { tags: [], digest: d('c') }, `BEHIND 8.2-alpine now names ${d('c')}`],
+		[{ image: 'timescale/timescaledb-ha', tag: 'pg17-ts2.30', digest: d('a') }, { retires: true }, { tags: ['pg17-ts2.31'], digest: d('a') }, 'BEHIND newer line pg17-ts2.31 (pg17-ts2.30 stops moving once a newer line is out)'],
+		[{ image: 'ghcr.io/zaproxy/zaproxy', tag: '', digest: d('e') }, { resolveTag: 'stable' }, { tags: [], digest: d('e') }, 'ok '],
+		[clam, {}, { tags: [], digest: undefined }, 'ERROR the registry named no sha256 digest for 1.4.6'],
+		[clam, {}, { tags: [], digest: 'sha256:<b>x</b>' }, 'ERROR the registry named no sha256 digest for 1.4.6']
+	];
+	for (const [image, line, answer, expected] of cases) {
+		const found = status(image, line, answer);
+		if (found !== expected) failures.push(`patchStatus(${image.image}:${image.tag}): expected "${expected}", got "${found}"`);
+	}
+	// Copies: found by image (docker.io/ and library/ dropped, another registry's image left alone) and held to the pins.
+	const known = new Set(['clamav/clamav', 'redis', 'ghcr.io/zaproxy/zaproxy']);
+	const text = `a: "docker.io/clamav/clamav@${d('5')}"\nb: clamav/clamav:1.4.6@${d('5')}\nc: myregistry.example/clamav/clamav@${d('6')}\nd: docker.io/library/redis:8.2-alpine@${d('b')}\ne: ghcr.io/zaproxy/zaproxy@${d('e')}\nf: postgres:17@${d('9')}\n`;
+	const copies = imageCopies('t.yaml', text, known);
+	const copied = copies.map((c) => `${c.where} ${c.image}:${c.tag}@${c.digest.slice(7, 8)}`).join(', ');
+	if (copied !== 't.yaml:1 clamav/clamav:@5, t.yaml:2 clamav/clamav:1.4.6@5, t.yaml:4 redis:8.2-alpine@b, t.yaml:5 ghcr.io/zaproxy/zaproxy:@e') failures.push(`imageCopies: got ${copied}`);
+	const pinsNow = [{ image: 'clamav/clamav', tag: '1.4.6', digest: d('5') }, { image: 'redis', tag: '8.2-alpine', digest: d('b') }, { image: 'ghcr.io/zaproxy/zaproxy', tag: '', digest: d('e') }];
+	if (copyProblems(copies, pinsNow).length) failures.push(`copyProblems: copies of the pins reported: ${copyProblems(copies, pinsNow).join('; ')}`);
+	const bumped = [{ image: 'clamav/clamav', tag: '1.4.7', digest: d('7') }, ...pinsNow.slice(1)];
+	const stale = copyProblems(copies, bumped);
+	if (stale.length !== 2 || !stale[0].startsWith('t.yaml:1:') || !stale[1].startsWith('t.yaml:2: clamav/clamav:1.4.6 is a copy of no pin')) failures.push(`copyProblems: a missed copy of a bumped pin not reported as expected: ${stale.join('; ')}`);
+	const moved = copyProblems(copies, [{ image: 'clamav/clamav', tag: '1.4.6', digest: d('7') }, ...pinsNow.slice(1)]);
+	if (moved.length !== 2 || !moved[1].includes("must carry the pin's digest")) failures.push(`copyProblems: copies left on an old digest not reported: ${moved.join('; ')}`);
+	// One digest under two tags of one image (a tag changed in some places only) is refused.
+	const twoTags = outsideImageProblems([
+		{ where: 'a.yml:1', image: 'apache/kafka', tag: '4.1.2', digest: d('1'), ref: 'x' },
+		{ where: 'b.yml:1', image: 'apache/kafka', tag: '4.1.0', digest: d('1'), ref: 'x' }
+	], {});
+	if (!twoTags.some((problem) => problem.startsWith('apache/kafka has one digest (111111111111) under 2 tags (4.1.2, 4.1.0)'))) failures.push(`outsideImageProblems: one digest under two tags not reported: ${twoTags.join('; ')}`);
+	// The watch's paths filters: GitHub's globs, every pin file covered by each trigger.
+	for (const [glob, file, expected] of [['.github/workflows/**', '.github/workflows/ci.yml', true], ['Platform/Cloud/Ariva.K8s/Helm/Charts/*/values.yaml', 'Platform/Cloud/Ariva.K8s/Helm/Charts/platform/values.yaml', true], ['Platform/Cloud/Ariva.K8s/Helm/Charts/*/values.yaml', 'Platform/Cloud/Ariva.K8s/Helm/Charts/platform/sub/values.yaml', false], ['docker-compose.dev.yml', 'docker-compose_dev.yml', false]]) {
+		if (pathFilter(glob).test(file) !== expected) failures.push(`pathFilter(${glob}) on ${file}: expected ${expected}`);
+	}
+	const watch = `on:\n  pull_request:\n    paths:\n      - 'a/**'\n      - "b.yml" # pins\n  push:\n    branches: [main]\n    paths:\n      - 'a/**'\njobs:\n`;
+	if (JSON.stringify(workflowPaths(watch)) !== JSON.stringify([['a/**', 'b.yml'], ['a/**']])) failures.push(`workflowPaths: got ${JSON.stringify(workflowPaths(watch))}`);
+	const missed = watchPathProblems(['a/x.yml', 'b.yml'], workflowPaths(watch));
+	if (missed.length !== 1 || !missed[0].includes('misses b.yml')) failures.push(`watchPathProblems: expected b.yml missed by the push filter, got ${missed.join('; ')}`);
+	if (!watchPathProblems(['a/x.yml'], [['a/**']]).some((problem) => problem.includes('each need a paths filter'))) failures.push('watchPathProblems: a single filter accepted');
+	// Docker Hub's next page is followed on hub.docker.com only.
+	if (hubNextPage(null) !== null || hubNextPage(undefined) !== null) failures.push('hubNextPage: no next page must end the listing');
+	if (hubNextPage('https://hub.docker.com/v2/repositories/library/redis/tags?page=2') !== 'https://hub.docker.com/v2/repositories/library/redis/tags?page=2') failures.push('hubNextPage: a Docker Hub page refused');
+	for (const next of ['http://hub.docker.com/v2/x', 'https://hub.docker.com.example/v2/x', 'https://169.254.169.254/latest', 'https://user@evil.example/hub.docker.com']) {
+		try {
+			hubNextPage(next);
+			failures.push(`hubNextPage: ${next} followed`);
+		} catch {
+			// Refused, as it should be.
+		}
+	}
+	if (failures.length) {
+		console.error(`base images: third-party images self-test failed:\n  ${failures.join('\n  ')}`);
+		process.exit(1);
+	}
 }
 
 /** The integration tests' C# files (bin and obj skipped), repository-relative. */
@@ -766,6 +1045,7 @@ function check() {
 	selfTestLockedRestore();
 	selfTestLockedNpm();
 	selfTestOutsideImages();
+	selfTestThirdPartyImages();
 	const readRepo = (file) => {
 		const full = path.join(ROOT, ...file.split('/'));
 		return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null;
@@ -843,6 +1123,10 @@ function check() {
 			problems.push(`Charts/timescaledb/values.yaml: image ${field('repository')}:${field('tag')} must be timescale/timescaledb-ha:${compose}, the tag of docker-compose.dev.yml`);
 		}
 		if (!/^sha256:[0-9a-f]{64}$/.test(field('digest') ?? '')) problems.push('Charts/timescaledb/values.yaml: image.digest must be a sha256 digest');
+		// ARV-227: the chart's appVersion names the database line it deploys (helm list), so it moves with the image tag.
+		const chartFile = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'timescaledb', 'Chart.yaml');
+		const appVersion = fs.existsSync(chartFile) ? fs.readFileSync(chartFile, 'utf8').match(/^appVersion:\s*["']?([^"'\s]+)/m)?.[1] : undefined;
+		if (appVersion !== field('tag')) problems.push(`Charts/timescaledb/Chart.yaml: appVersion ${appVersion} must be the image tag ${field('tag')} of values.yaml`);
 	}
 	// ARV-092c: the scanner beside api-main runs the ClamAV image docker-compose.dev.yml, the AppHost and CI run, pinned by digest
 	// (every other copy is held to the chart's tag and digest below).
@@ -871,6 +1155,13 @@ function check() {
 	// integration tests' constants included (INTEGRATION_IMAGES), and no image named by a literal in the integration tests.
 	const pins = outsidePins();
 	for (const problem of outsideImageProblems(pins, { chart: chartDatabase(), scanner: scanner ?? undefined, tools: toolVersions(), tagOnly: APPHOST_TAG_ONLY })) problems.push(problem);
+	// ARV-227: every other copy of a third-party pin carries its digest, and the weekly watch scans a change to any pin file.
+	const thirdParty = thirdPartyPins();
+	const copies = otherCopies(thirdParty);
+	for (const problem of copyProblems(copies, thirdParty)) problems.push(problem);
+	const watch = path.join(ROOT, '.github', 'workflows', 'third-party-images.yml');
+	if (!fs.existsSync(watch)) problems.push('.github/workflows/third-party-images.yml is missing: the weekly scan of the third-party images (ARV-227)');
+	else for (const problem of watchPathProblems([...new Set(thirdParty.map((pin) => pin.where.replace(/:\d+$/, '')))], workflowPaths(fs.readFileSync(watch, 'utf8')))) problems.push(problem);
 	for (const file of integrationSources()) {
 		for (const problem of integrationImageLiterals(file.split(path.sep).join('/'), fs.readFileSync(path.join(ROOT, file), 'utf8'))) problems.push(problem);
 	}
@@ -881,7 +1172,7 @@ function check() {
 	}
 	const tagOnly = pins.filter((pin) => pin.resource && APPHOST_TAG_ONLY[pin.resource] && !pin.digest).map((pin) => `${pin.resource} (${APPHOST_TAG_ONLY[pin.resource]})`);
 	const integration = pins.filter((pin) => pin.where.startsWith(`${INTEGRATION_TESTS.split(path.sep).join('/')}/`)).length;
-	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged; ${runtimeChecked} runtime-deps images check their published runtime against their base; ${lockedRestores} image builds restore in locked mode with their whole closure; ${lockedNpmInstalls} image builds install npm packages with npm ci from their lock file; ${pins.length} images run outside the chart pinned by tag and digest (${integration} of them the integration tests')${tagOnly.length ? `, except on a tag: ${tagOnly.join(', ')}` : ''}.`);
+	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged; ${runtimeChecked} runtime-deps images check their published runtime against their base; ${lockedRestores} image builds restore in locked mode with their whole closure; ${lockedNpmInstalls} image builds install npm packages with npm ci from their lock file; ${pins.length} images run outside the chart pinned by tag and digest (${integration} of them the integration tests')${tagOnly.length ? `, except on a tag: ${tagOnly.join(', ')}` : ''}; ${copies.length} further copies of third-party pins carry their digests.`);
 }
 
 /** The TimescaleDB chart's image tag and digest, the pin every other copy follows (null without the chart). */
@@ -945,9 +1236,54 @@ async function tagsFor(image) {
 	for (let page = 0; url && page < 10; page++) {
 		const body = await (await fetch(url)).json();
 		names.push(...(body.results ?? []).map((r) => r.name));
-		url = body.next;
+		url = hubNextPage(body.next);
 	}
 	return names;
+}
+
+/** ARV-227: Docker Hub's next page of a tag list, followed only on hub.docker.com (a registry answer never steers a request elsewhere). */
+function hubNextPage(next) {
+	if (!next) return null;
+	if (new URL(next).origin !== 'https://hub.docker.com') throw new Error('Docker Hub named a next page off hub.docker.com');
+	return next;
+}
+
+/** The current digest of an outside line's tag: Docker Hub's tags API (no pull, so no pull rate limit) or the tag's manifest on ghcr.io. */
+async function registryDigest(line, tag) {
+	if (line.hubName) {
+		const res = await fetch(`https://hub.docker.com/v2/repositories/${line.hubName}/tags/${encodeURIComponent(tag)}`);
+		if (!res.ok) throw new Error(`Docker Hub tag ${line.hubName}:${tag}: ${res.status}`);
+		return (await res.json()).digest;
+	}
+	const auth = await fetch(`https://ghcr.io/token?scope=repository:${line.ghcrName}:pull`);
+	if (!auth.ok) throw new Error(`ghcr.io token for ${line.ghcrName}: ${auth.status}`);
+	const { token } = await auth.json();
+	const accept = ['application/vnd.oci.image.index.v1+json', 'application/vnd.docker.distribution.manifest.list.v2+json', 'application/vnd.oci.image.manifest.v1+json', 'application/vnd.docker.distribution.manifest.v2+json'].join(', ');
+	const res = await fetch(`https://ghcr.io/v2/${line.ghcrName}/manifests/${encodeURIComponent(tag)}`, { method: 'HEAD', headers: { Authorization: `Bearer ${token}`, Accept: accept } });
+	if (!res.ok) throw new Error(`ghcr.io ${line.ghcrName}:${tag}: ${res.status}`);
+	return res.headers.get('docker-content-digest');
+}
+
+/** ARV-227: the tags of an outside line that start with prefix (Docker Hub filters by name; ghcr.io lists every tag). */
+async function registryTags(line, prefix) {
+	if (line.hubName) {
+		const names = [];
+		let url = `https://hub.docker.com/v2/repositories/${line.hubName}/tags?page_size=100&name=${encodeURIComponent(prefix)}`;
+		for (let page = 0; url && page < 10; page++) {
+			const res = await fetch(url);
+			if (!res.ok) throw new Error(`Docker Hub tags of ${line.hubName}: ${res.status}`);
+			const body = await res.json();
+			names.push(...(body.results ?? []).map((r) => r.name));
+			url = hubNextPage(body.next);
+		}
+		return names.filter((name) => name.startsWith(prefix));
+	}
+	const auth = await fetch(`https://ghcr.io/token?scope=repository:${line.ghcrName}:pull`);
+	if (!auth.ok) throw new Error(`ghcr.io token for ${line.ghcrName}: ${auth.status}`);
+	const { token } = await auth.json();
+	const list = await fetch(`https://ghcr.io/v2/${line.ghcrName}/tags/list?n=10000`, { headers: { Authorization: `Bearer ${token}` } });
+	if (!list.ok) throw new Error(`ghcr.io tags of ${line.ghcrName}: ${list.status}`);
+	return ((await list.json()).tags ?? []).filter((name) => name.startsWith(prefix));
 }
 
 /**
@@ -959,43 +1295,132 @@ async function tagsFor(image) {
  */
 async function resolveOutside(write) {
 	const pins = outsidePins();
+	const thirdParty = thirdPartyPins();
+	const copies = otherCopies(thirdParty);
+	if (write) refuseThirdPartyProblems();
 	const groups = new Map();
-	for (const pin of pins.filter((p) => p.image && OUTSIDE_LINES[p.image])) {
+	for (const pin of pins.filter((p) => p.image && Object.hasOwn(OUTSIDE_LINES, p.image))) {
 		const key = `${pin.image}:${pin.tag}`;
 		if (!groups.has(key)) groups.set(key, { image: pin.image, tag: pin.tag, digests: new Set() });
-		if (pin.digest) groups.get(key).digests.add(pin.digest);
+		if (/^sha256:[0-9a-f]{64}$/.test(pin.digest ?? '')) groups.get(key).digests.add(pin.digest);
 	}
 	const moves = [];
 	for (const [key, group] of groups) {
 		const line = OUTSIDE_LINES[group.image];
-		let digest;
-		if (line.hubName) {
-			const res = await fetch(`https://hub.docker.com/v2/repositories/${line.hubName}/tags/${encodeURIComponent(group.tag)}`);
-			if (!res.ok) throw new Error(`Docker Hub tag ${line.hubName}:${group.tag}: ${res.status}`);
-			digest = (await res.json()).digest;
-		} else {
-			const auth = await fetch(`https://ghcr.io/token?scope=repository:${line.ghcrName}:pull`);
-			if (!auth.ok) throw new Error(`ghcr.io token for ${line.ghcrName}: ${auth.status}`);
-			const { token } = await auth.json();
-			const accept = ['application/vnd.oci.image.index.v1+json', 'application/vnd.docker.distribution.manifest.list.v2+json', 'application/vnd.oci.image.manifest.v1+json', 'application/vnd.docker.distribution.manifest.v2+json'].join(', ');
-			// ZAP follows its stable tag; any other ghcr.io image keeps the tag it is pinned on.
-			const tag = line.resolveTag ?? group.tag;
-			const res = await fetch(`https://ghcr.io/v2/${line.ghcrName}/manifests/${encodeURIComponent(tag)}`, { method: 'HEAD', headers: { Authorization: `Bearer ${token}`, Accept: accept } });
-			if (!res.ok) throw new Error(`ghcr.io ${line.ghcrName}:${tag}: ${res.status}`);
-			digest = res.headers.get('docker-content-digest');
-		}
+		// ZAP follows its stable tag; any other image keeps the tag it is pinned on.
+		const digest = await registryDigest(line, line.resolveTag ?? group.tag);
 		if (!/^sha256:[0-9a-f]{64}$/.test(digest ?? '')) throw new Error(`${key}: no digest from the registry`);
 		console.log(`${key.padEnd(40)} ${group.image}${group.tag ? `:${group.tag}` : ''}@${digest}${line.resolveTag ? ` (${line.resolveTag})` : ''}${group.digests.has(digest) ? '' : ' (new)'}`);
 		for (const old of group.digests) if (old !== digest) moves.push([old.slice('sha256:'.length), digest.slice('sha256:'.length)]);
 	}
 	if (!write || !moves.length) return;
 	const targets = [...outsideFiles().map(([file]) => file), path.join('Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'timescaledb', 'values.yaml'),
-		path.join('Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'platform', 'values.yaml'), path.join('Platform', 'Testing', 'Ariva.E2E', 'tests', 'zap', 'zap.spec.ts')];
+		path.join('Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'platform', 'values.yaml'), ...new Set(copies.map((copy) => copy.where.replace(/:\d+$/, '')))];
 	for (const file of targets.filter((target) => fs.existsSync(path.join(ROOT, target)))) {
 		const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
 		const next = moves.reduce((current, [from, to]) => current.split(from).join(to), text);
 		if (next !== text) fs.writeFileSync(path.join(ROOT, file), next);
 	}
+}
+
+/**
+ * ARV-227: throws when the third-party pins or their copies have a problem --check reports (a tag changed in some places only, a
+ * malformed digest, a stale copy), which a write would spread to the wrong copies. Called before anything is written.
+ */
+function refuseThirdPartyProblems() {
+	const thirdParty = thirdPartyPins();
+	const problems = [...outsideImageProblems(outsidePins(), { chart: chartDatabase(), scanner: chartScanner() ?? undefined, tools: toolVersions(), tagOnly: APPHOST_TAG_ONLY }), ...copyProblems(otherCopies(thirdParty), thirdParty)];
+	if (problems.length) throw new Error(`nothing written: ${problems.length} problem(s) in the third-party pins (node scripts/base-images.mjs --check)\n  ${problems.join('\n  ')}`);
+}
+
+/** ARV-227: the third-party images pinned outside the Dockerfiles (pinnedImages over this repository). */
+function thirdPartyImages() {
+	const pins = thirdPartyPins();
+	// An untagged copy (an expectation holding image@digest) is listed under the tag of the pin whose digest it carries.
+	const copies = otherCopies(pins).map((copy) => (copy.tag ? copy : { ...copy, tag: pins.find((pin) => pin.image === copy.image && pin.digest === copy.digest)?.tag ?? '' }));
+	return pinnedImages([...outsidePins(), ...visualBrowserPins(), ...copies], { chart: chartDatabase(), scanner: chartScanner() });
+}
+
+/** ARV-227: every third-party pin: the outside files', the visual baselines' Playwright image and the charts' TimescaleDB and ClamAV. */
+function thirdPartyPins() {
+	return [...outsidePins(), ...visualBrowserPins(), ...chartPins(chartDatabase(), chartScanner())];
+}
+
+/** ARV-227: the copies of third-party pins in the repository (COPY_ROOTS and compose) other than the pins themselves. */
+function otherCopies(pins) {
+	const images = new Set(pins.map((pin) => pin.image).filter(Boolean));
+	const pinned = new Set(pins.map((pin) => pin.where));
+	const copies = [];
+	const read = (file) => copies.push(...imageCopies(file.split(path.sep).join('/'), fs.readFileSync(path.join(ROOT, file), 'utf8'), images));
+	const walk = (relative) => {
+		const full = path.join(ROOT, relative);
+		if (!fs.existsSync(full)) return;
+		for (const entry of fs.readdirSync(full, { withFileTypes: true })) {
+			if (COPY_SKIP.includes(entry.name)) continue;
+			const child = path.join(relative, entry.name);
+			// This script's own self-test values are not copies.
+			if (entry.isDirectory()) walk(child);
+			else if (COPY_NAMES.test(entry.name) && child !== path.join('scripts', 'base-images.mjs')) read(child);
+		}
+	};
+	for (const root of COPY_ROOTS) walk(root);
+	for (const name of fs.readdirSync(ROOT).filter((file) => /^docker-compose.*\.ya?ml$/.test(file))) read(name);
+	return copies.filter((copy) => !pinned.has(copy.where));
+}
+
+/**
+ * The Playwright image CI renders the visual baselines with: pinned by digest in visual-browser.mjs, its tag on the dev container's
+ * FROM line (check() holds the two to one digest). Scanned with the others; its newer releases come from Dependabot, with
+ * @playwright/test.
+ */
+function visualBrowserPins() {
+	const devcontainer = path.join(ROOT, '.devcontainer', 'Dockerfile');
+	if (!fs.existsSync(devcontainer) || !fs.existsSync(VISUAL_BROWSER)) return [];
+	const from = fromLines(devcontainer).find((f) => f.image === 'mcr.microsoft.com/playwright');
+	if (!from) return [];
+	const line = fs.readFileSync(VISUAL_BROWSER, 'utf8').split(/\r?\n/).findIndex((text) => /image = 'mcr\.microsoft\.com\/playwright@sha256:/.test(text));
+	return [
+		{ where: `.devcontainer/Dockerfile:${from.line}`, image: from.image, tag: from.tag, digest: from.digest },
+		...(line === -1 ? [] : [{ where: `Platform/Testing/Ariva.E2E/scripts/visual-browser.mjs:${line + 1}`, image: from.image, tag: from.tag, digest: from.digest }])
+	];
+}
+
+/** --list: one line per image, tag and digest with every place it is pinned; with json, the matrix of third-party-images.yml. */
+function list(json) {
+	const images = thirdPartyImages();
+	if (json) {
+		console.log(JSON.stringify(images.map(({ name, ref, where }) => ({ name, ref, where }))));
+		return;
+	}
+	for (const image of images) console.log(`${image.ref}\n    ${image.where}`);
+}
+
+/**
+ * --patches (ARV-227): each third-party line pinned outside the Dockerfiles against its registry (patchStatus). Behind when a
+ * version tag x.y.z has a newer patch on x.y, when the pinned tag (ZAP: its stable tag) now names another digest (an image
+ * rebuilt or patched under a moving tag such as redis:8.2-alpine), or when a line that retires has a newer line (TimescaleDB);
+ * another newer line is a note. Exit 1 when one is behind or cannot be read; the bump is wiki 04's "Third-party images".
+ */
+async function patches() {
+	let behind = 0;
+	for (const image of thirdPartyImages()) {
+		const line = Object.hasOwn(OUTSIDE_LINES, image.image) ? OUTSIDE_LINES[image.image] : null;
+		if (!line) {
+			console.log(`-      ${image.name.padEnd(48)} newer releases through Dependabot (the dev container's FROM lines)`);
+			continue;
+		}
+		let result;
+		try {
+			const prefix = tagLine(image.tag)?.prefix;
+			result = patchStatus(image, line, { tags: prefix ? await registryTags(line, prefix) : [], digest: await registryDigest(line, line.resolveTag ?? image.tag) });
+		} catch (error) {
+			result = { status: 'ERROR', notes: [error.message] };
+		}
+		if (result.status !== 'ok') behind++;
+		console.log(`${result.status.padEnd(6)} ${image.name.padEnd(48)} ${result.notes.join('; ')}`);
+	}
+	console.log(behind ? `\n${behind} pinned line(s) behind their registry or not readable: bump every copy at once (wiki 04, "Third-party images").` : '\nEvery pinned line is current.');
+	if (behind) process.exitCode = 1;
 }
 
 const versionKey = (tag) => tag.split(/[.-]/).map((part) => (/^\d+$/.test(part) ? part.padStart(6, '0') : part.replace(/\d+/g, (d) => d.padStart(6, '0')))).join('.');
@@ -1035,7 +1460,15 @@ async function resolve(write) {
 }
 
 const args = process.argv.slice(2);
-if (args.includes('--resolve')) {
-	await resolve(args.includes('--write'));
-	await resolveOutside(args.includes('--write'));
+if (args.includes('--list')) list(args.includes('--json'));
+else if (args.includes('--patches')) await patches();
+else if (args.includes('--resolve')) {
+	try {
+		if (args.includes('--write')) refuseThirdPartyProblems();
+		if (!args.includes('--outside')) await resolve(args.includes('--write'));
+		await resolveOutside(args.includes('--write'));
+	} catch (error) {
+		console.error(`base images: ${error.message}`);
+		process.exit(1);
+	}
 } else check();

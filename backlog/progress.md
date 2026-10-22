@@ -3018,3 +3018,98 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - A `WebApplicationFactory` host can be started without its hosted services (remove every `IHostedService` but `GenericWebHostService` in `ConfigureTestServices`), so a test can build a loop from the host's own registrations without the host touching the database at start.
   - An init-only property can be set by reflection in a test.
 - Status: passes set; committed (signed).
+
+## 2026-10-22 ARV-227: Third-party images: patch releases and known vulnerabilities noticed (ASVS gaps, branch story/mvp-phase1; CI, scripts, docs)
+
+- What changed:
+  - `scripts/base-images.mjs`, three new modes over the third-party images pinned outside Ariva's own Dockerfiles:
+    - the charts' TimescaleDB and ClamAV;
+    - docker-compose and the AppHost;
+    - the CI and Azure DevOps containers, the visual baselines' Playwright image among them;
+    - the integration tests' Testcontainers images.
+  - `--list [--json]` prints one entry per image, tag and digest with every place it is pinned (12 today); `--json` is the workflow's matrix.
+  - `--patches` compares each line with its registry (Docker Hub and ghcr.io, `patchStatus`). A line is behind in three cases:
+    - a version tag x.y.z has a newer patch on x.y;
+    - its tag (ZAP: its stable tag) names another digest;
+    - TimescaleDB has a newer `pgN-tsA.B` line, since the ha image stops moving an older one.
+    A newer minor line elsewhere is a note. It exits 1 when one is behind or cannot be read. The Playwright image reads `-`: Dependabot proposes its releases on the dev container, with `@playwright/test`.
+  - `--check` also:
+    - finds every other copy of a third-party pin and refuses one on a digest or tag no pin has (the AppHost model's expected digests, the chart tests' fixtures, the ZAP spec: 7 today);
+    - refuses one digest under two tags of an image;
+    - refuses a watch trigger whose paths miss a file that holds a pin;
+    - holds the TimescaleDB chart's `appVersion` to its image tag.
+  - `--resolve --outside [--write]` moves every copy of a pin's digest at once, the charts' values and the tests' copies included, and leaves the Dockerfiles alone. With `--write`, nothing is written (the Dockerfiles of `--resolve --write` included) while `--check` finds a problem in the third-party pins. A Docker Hub next page off hub.docker.com is refused.
+  - Self-tested in `--check`: `pinnedImages`, `newerPatch`, `newerLine`, `patchStatus`, `imageCopies`, `copyProblems`, the paths filters, the next-page guard, and one digest under two tags.
+  - `.github/workflows/third-party-images.yml` (new):
+    - `scan`: Trivy v0.75.0 (trivy-action pinned by SHA, as in `images.yml`) on every pinned image by its digest, vulnerabilities only, high and critical with a fixed version. Trivy's own exit code decides, so a finding or a failure to scan fails the job; the summary names every place the image is pinned and the remediation frames (critical 7 days, high 30 days, wiki 13 section 9). It also runs on a pull request or a push to `main` that changes a file holding a pin.
+    - `patches`: `--patches` into the run summary, failing with it; Mondays and by hand only, since an upstream rebuild is not the fault of the change that runs next.
+    - `contents: read` only, actions pinned by SHA, no credentials persisted, matrix values reach `run:` only through `env`.
+- Tests:
+  - `node scripts/base-images.mjs --check` with the new self-test (`selfTestThirdPartyImages`).
+  - `--list`, `--list --json` (12 images) and a live `--patches` run.
+  - Mutants, each restored after:
+    - a stale digest in `AppHostModelTests`;
+    - a fixture left on tag 1.4.5;
+    - compose missing from one trigger's paths;
+    - a stale `appVersion`.
+    Each fails `--check`. With the stale digest, `--resolve --outside --write` and `--resolve --write` refuse before any registry call or file write.
+  - Trivy v0.75.0 run locally in Docker, the workflow's way (`--scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --format table`), on `redis:8.2-alpine@sha256:b516...` by tag and digest: 22 Alpine packages read, none with a fixed high or critical, so the job's check passes it. ghcr.io's blobs are refused in this session and the Kafka image's scan ran the session's disk out downloading Trivy's Java database (941 MB), so the full matrix runs first in CI.
+- Found:
+  - The first `--patches` run: 7 of the 11 lines it compares are behind (apache/kafka 4.1.0 with 4.1.2 out, confluent-local 8.2.0 with 8.2.4, cp-kafka 7.6.1 with 7.6.14; new digests under ZAP's stable tag, redis:8.2-alpine, redis:8.6 and timescaledb-ha pg17-ts2.30). Filed as ARV-236 (before the pilot), kept apart so the watch and the bumps are reviewed and tested apart.
+  - Trivy reads distribution and language packages only. Checked in the running containers:
+    - Redis (`/usr/local/bin/redis-server`) and clamd: no OS package names them;
+    - PostgreSQL 17.11 in timescaledb-ha: from PostgreSQL's apt repository on Ubuntu 22.04, outside Ubuntu's advisories;
+    - the TimescaleDB extension: no package at all.
+    For these only the patch check notices a fix. Trivy alone would not have reported ClamAV 1.4.3's CVEs; the patch check would have.
+  - TimescaleDB's ha image publishes one tag per extension minor, and an older one stops moving once a newer line is out: `pg17-ts2.28` was last pushed on 2026-07-28, `pg17-ts2.29` on 2026-09-09, and `pg17-ts2.31` came out on 2026-10-21. So ARV-236 moves to the newest line, with the extension update for existing databases.
+- Docs:
+  - wiki 04 section 6.8 (new): the watch, what Trivy cannot see, `--list` and `--patches`, the bump in four steps (`--resolve --outside --write`, the tag in every place `--list` names, `--check`, `verify.mjs backend` and the tests that use the image), the charts' release note.
+  - wiki 13 section 9: rows for the third-party scan and `--patches`; the `--check` row.
+  - asvs-l2: V15.1.1 tool list; V15.2.1 evidence (stays Partly for ARV-096a); gap rows ARV-227 (Done) and ARV-236.
+  - remaining-work: ASVS gaps 26 of 42; ARV-236 replaces ARV-227 in the open list.
+  - prd-asvs-gaps: ARV-236.
+- Decided:
+  - Vulnerabilities only in the third-party scan: a key a vendor ships in its image is not something a bump fixes.
+  - The Playwright image is scanned with the others; its releases stay with Dependabot.
+  - A failing weekly run is the report (no issue opened), as `images.yml` does for Ariva's own images.
+- Security review (security-reviewer):
+  - Round 1 FAIL, three Medium:
+    - M1: the bump missed copies of the pins (the AppHost model's expected digests, the chart tests' fixtures), which `--check` did not know, so a documented bump would have failed the unit and chart tests;
+    - M2: the V15.1.1 evidence named wiki 13 rows that did not exist;
+    - M3: TimescaleDB's lines retire, so after a bump to the new digest under `pg17-ts2.30` the watch would have gone quiet on the production database image while PostgreSQL's minor releases land only in newer lines.
+  - Round 1 Lows: the pull request trigger covered only the script (L4); Docker Hub's next page was followed unchecked (L5); old digests were not validated before a write, and a tag changed in some places only could move the wrong copies (L6); `patches` had no self-test and printed an unvalidated digest (L7); the blind-spot docs were narrow or wrong in places (L8).
+  - Info: the scan failed open on a changed Trivy table format.
+  - All fixed in round 1's changes: the copies, the wiki 13 rows, newer lines (`retires`), the triggers over every pin file held by `--check`, the next-page guard, validation before writing, `patchStatus` pure and self-tested, the docs, and Trivy's own exit code.
+  - Round 2 PASS (2026-10-22). Its three Lows, all applied:
+    - the next-page guard self-tested;
+    - the TimescaleDB chart's `appVersion`, a tag-only copy, held to the values tag by `--check`;
+    - `--resolve --write` validates before `resolve()` rewrites the Dockerfiles, so "nothing written" is true.
+  - Info left as is:
+    - copies in other shapes (image and digest in separate fields, Helm templates, `.md`) are not seen; none exists today;
+    - `workflowPaths` reads block lists only and fails closed on another shape.
+  - The semgrep MCP was not connected in this session.
+- Gates (2026-10-22):
+  - `node scripts/verify.mjs story` on the final tree, with fresh E2E services. Every step passed:
+    - build; reference golden; unit 7,609;
+    - security scan and its self-test;
+    - the E2E message and artifact self-tests; ops and TLS self-tests;
+    - base images: the new self-tests, 27 outside pins and 7 further copies;
+    - published runtime and offline bundle self-tests;
+    - chart security with Helmfile;
+    - NuGet and three npm audits; docs; Windows paths;
+    - integration skipped (no persistence change);
+    - E2E smoke 341 passed; no secret in the artifacts.
+  - `node scripts/verify.mjs quick` PASS.
+  - Earlier runs, none counted:
+    - one stopped for round 1's fixes;
+    - one hung 89 minutes in the unit step (the Docker daemon down, see the gotchas);
+    - one failed on the freezer's stall test (fixed in its own commit) and on leftover blame files;
+    - two ended at Playwright's webServer wait (the services and variables missing after a container restart).
+- Gotchas:
+  - `AppHostModelTests` need a container runtime. With the Docker daemon down (it stopped with a container restart in this session), `DevelopmentSite_Should_TurnOnForApiMainOnly_WithTheSeparateVolumeAndTheAccounts_When_TheSwitchIsOn` never returns, and the whole unit step hangs (89 minutes in a story gate). It awaits an endpoint value that Aspire allocates only when a runtime answers, as `dotnet-dump`'s `dumpasync` showed. `dotnet test --blame-hang-timeout 10m --blame-hang-dump-type none` named the test. With `dockerd` started, all 30 pass. Suggested as a task: bound the tests so a missing runtime fails fast.
+  - The gate also found a timing fault in ARV-096e's stall tests (`RunTimeoutInventoryTests`): the run timeout under test is 1 s, and a fresh test host built its NHibernate session factory lazily inside the timed run. On a busy machine the mappings took the whole second, so the validation results freeze was cut before it reached the stalled server. That failed `silent.Accepted` once in the full suite and two runs in three with the CPUs loaded. The tests now build the session factory before the clock starts; it never connects, since keywords are off. Committed apart as a test fix; four runs in four pass under the same load.
+  - After a container restart, a gate needs the session's setup again: `dockerd`, fresh E2E services (`reset-services.sh`), the E2E variables, and Helm and Helmfile. Without the variables the E2E hosts start with no database password and the run ends at Playwright's 5 minute webServer wait. Leftover blame files (`TestResults/**/Sequence_*.xml`) fail the security scan (SEC-130).
+  - xUnit v3 runs the tests in a child process of the VSTest host (`Ariva.UnitTests @@ ...`). A blame or a timeout that kills the host leaves that child running, so stop it by PID too.
+  - A Docker container in a cloud session reaches the internet only through the session's proxy: `--network host`, the proxy variables and `SSL_CERT_FILE` on the proxy's CA bundle.
+  - Trivy's Java database is about 1 GB on first use; a session's disk allowance does not take it next to a built tree. Clean with `trivy clean --all`.
+- Status: passes set; committed (signed).
