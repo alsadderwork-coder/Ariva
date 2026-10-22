@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using Ariva.Infra.NHibernate;
 using Ariva.Infra.Resilience;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
@@ -160,6 +161,13 @@ public sealed class RunTimeoutInventoryTests
     private static void ShortenRunTimeout(object instance) =>
         instance.GetType().GetProperty(nameof(IBoundedRuns.RunTimeout))!.SetValue(instance, TestTimeout);
 
+    /// <summary>
+    /// Builds the host's NHibernate session factory before a run is timed (it never connects: keywords are off), so the run spends
+    /// its second at the stalled server. Built lazily inside the run, the mappings took the whole second on a busy machine and the
+    /// validation results freeze was cut before it reached the server (seen in a story gate, and two runs in three under load).
+    /// </summary>
+    private static void BuildSessionFactory(IArivaHost app) => _ = app.Services.GetService<NHibernateSessionFactoryProvider>()?.SessionFactory;
+
     /// <summary>Every bounded loop of every host.</summary>
     public static TheoryData<string, string> Loops
     {
@@ -185,6 +193,7 @@ public sealed class RunTimeoutInventoryTests
         var type = ArivaType(t => t.Name == loop && typeof(IBoundedRuns).IsAssignableFrom(t));
         var instance = ActivatorUtilities.CreateInstance(app.Services, type);
         ShortenRunTimeout(instance);
+        BuildSessionFactory(app);
         var runOnce = type.GetMethod("RunOnceAsync", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, [typeof(CancellationToken)]);
         runOnce.Should().NotBeNull($"{loop} runs each run through RunOnceAsync, the run its loop makes");
         var watch = Stopwatch.StartNew();
@@ -206,6 +215,7 @@ public sealed class RunTimeoutInventoryTests
         var type = JobTypes().Single(t => t.Name == job);
         var instance = ActivatorUtilities.CreateInstance(scope.ServiceProvider, type);
         ShortenRunTimeout(instance);
+        BuildSessionFactory(app);
         var function = type.GetMethods().Single(m => m.GetCustomAttribute<TickerFunctionAttribute>() is not null);
         var watch = Stopwatch.StartNew();
 
