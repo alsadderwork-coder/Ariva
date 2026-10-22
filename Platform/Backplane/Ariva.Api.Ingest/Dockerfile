@@ -14,7 +14,7 @@ EXPOSE 8080
 # The SDK that bundles the runtime-deps version above: a self-contained publish ships the runtime packs of the SDK's own
 # runtime, whatever the base says (SDK 10.0.402 bundles 10.0.13; 10.0.103 bundled 10.0.3). MCR publishes patches of the
 # newest feature band only, so the band moves with the runtime (ARV-184).
-FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2 AS build
 WORKDIR /src
 
 # Package sources (nuget.org only, with package source mapping), Central Package Management and the shared build settings
