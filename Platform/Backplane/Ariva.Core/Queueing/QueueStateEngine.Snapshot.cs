@@ -367,7 +367,9 @@ public sealed partial class QueueStateEngine
     /// </summary>
     private static void RestoreRuns(QueueStateEngine engine, QueueEngineState state)
     {
-        if (state.Runs is not { Count: > 0 } runs)
+        // No pattern variable before an early exit (ARV-069a): a mutant without the return would leave it unassigned.
+        var runs = state.Runs;
+        if (runs is not { Count: > 0 })
             return;
         var buffered = engine._buffer.UnorderedItems.Select(i => i.Element.Input).OfType<QueueTrackSeen>()
             .Select(seen => (seen.TrackKey, seen.TimeUtc)).ToHashSet();

@@ -337,8 +337,11 @@ public static class AdvertisingSchedules
         var bestOpened = DateTime.MinValue;
         foreach (var candidate in candidates)
         {
-            if (AdvertisingSchedule.OpenedBefore(local, candidate.Days, candidate.Window) is not { } opened)
+            // No pattern variable before an early exit (ARV-069a): a mutant without the continue would leave it unassigned.
+            var openedAt = AdvertisingSchedule.OpenedBefore(local, candidate.Days, candidate.Window);
+            if (!openedAt.HasValue)
                 continue;
+            var opened = openedAt.Value;
             if (best is null || candidate.Specificity > best.Specificity ||
                 (candidate.Specificity == best.Specificity && (opened > bestOpened || (opened == bestOpened && Newer(candidate.Schedule, best.Schedule)))))
             {

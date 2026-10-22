@@ -327,7 +327,9 @@ public sealed partial class QueueStateEngine
         if (needsPlace && (OverShare() || BufferIsFull()))
         {
             var due = Target(referenceUtc);
-            while ((OverShare() || BufferIsFull()) && TryOldestHeld(out var oldest) && oldest <= due && Records < _settings.MaxStepRecords)
+            // Declared before the condition, so every mutant of it compiles (ARV-069a).
+            var oldest = DateTime.MaxValue;
+            while ((OverShare() || BufferIsFull()) && TryOldestHeld(out oldest) && oldest <= due && Records < _settings.MaxStepRecords)
             {
                 _forced++;
                 FullThrough(_watermark, oldest);
@@ -368,8 +370,13 @@ public sealed partial class QueueStateEngine
         if (seen > _clock)
             _clock = seen;
 
-        bool OverShare() => owner is not null && ShareOf(owner) is var share && share < _settings.MaxBufferedEvents &&
-            _heldByDevice.GetValueOrDefault(owner) >= share;
+        bool OverShare()
+        {
+            if (owner is null)
+                return false;
+            var share = ShareOf(owner);
+            return share < _settings.MaxBufferedEvents && _heldByDevice.GetValueOrDefault(owner) >= share;
+        }
 
         bool BufferIsFull() => BufferedEvents >= _settings.MaxBufferedEvents;
     }
@@ -1170,7 +1177,9 @@ public sealed partial class QueueStateEngine
         {
             _flushes.Dequeue();
             run.FlushScheduled = false;
-            if (run.Pending is not { } pending)
+            // No pattern variable before an early exit (ARV-069a): a mutant without the continue would leave it unassigned.
+            var pending = run.Pending;
+            if (pending is null)
                 continue;
             if (pending.TimeUtc <= target)
             {
@@ -1215,7 +1224,8 @@ public sealed partial class QueueStateEngine
         // Each run's flush is at or before its pending sample: make the earliest one exact.
         while (_flushes.TryPeek(out var run, out var at))
         {
-            if (run.Pending is not { } pending)
+            var pending = run.Pending;
+            if (pending is null)
             {
                 _flushes.Dequeue();
                 run.FlushScheduled = false;

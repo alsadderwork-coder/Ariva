@@ -728,7 +728,7 @@ public sealed class ZoneProcessor
             _refusals[kind] = _refusals.GetValueOrDefault(kind) + count;
         foreach (var minute in rejections.FullBufferMinutes)
         {
-            if (_fullMinutes.Count < MaxFullMinutes && (_lastLive is not { } last || minute > last))
+            if (_fullMinutes.Count < MaxFullMinutes && (!_lastLive.HasValue || minute > _lastLive.Value))
                 _fullMinutes.Add(minute);
         }
     }
