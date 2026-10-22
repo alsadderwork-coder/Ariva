@@ -5,6 +5,7 @@ using Ariva.Core.Queueing;
 using Ariva.Core.Queueing.Replay;
 using Ariva.Core.Sensing;
 using FluentAssertions;
+using Ariva.UnitTests.Queueing;
 
 namespace Ariva.UnitTests.Desks;
 
@@ -314,7 +315,7 @@ public sealed class DeskZoneTests
         zone.Offer(Occupancy(At(70), ("AR-08 staff", 1, At(60), SensedFlags.None)), At(70));
         zone.Drain();
         // Version 6 had neither the desk zones' memory nor remembered batches (version 10, ARV-168).
-        var older = zone.Capture() with { Version = 6, DeskZones = null, RecentBatches = [] };
+        var older = zone.Capture().WrittenBefore12() with { Version = 6, DeskZones = null, RecentBatches = [] };
 
         var restored = ZoneProcessor.Restore("DMO/A-VIS", Geometry(), 12, null, JsonSerializer.Deserialize<ZoneProcessorState>(JsonSerializer.Serialize(older)), At(200));
         restored.Offer(Occupancy(At(75), ("AR-08 staff", 1, At(61), SensedFlags.None)), At(75));

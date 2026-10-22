@@ -39,7 +39,15 @@ public sealed record QueueInputState(
 }
 
 /// <summary>A buffered input with its arrival order.</summary>
-public sealed record QueueBufferedState(QueueInputState Input, bool Ahead, long Sequence);
+public sealed record QueueBufferedState(QueueInputState Input, bool Ahead, long Sequence)
+{
+    /// <summary>
+    /// The device that sent the event, held for its share of the buffer (ARV-231, zone snapshot version 12), when the event does not
+    /// name it: a tracked event's key names its device ("device/track"), so only anonymous events carry it. Null for none.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string Device { get; init; }
+}
 
 /// <summary>A zone's latest occupancy reading.</summary>
 public sealed record QueueOccupancyState(string Zone, int Count, DateTime AtUtc, bool Degraded);
@@ -54,7 +62,15 @@ public sealed record LateMinuteState(DateTime MinuteUtc, long Count);
 /// ARV-230: a track's run of position samples: its anchor (the latest sample applied or buffered) and its pending sample (the
 /// latest within the hand-over window after it, held outside the buffer), whose time, flag and arrival order are here.
 /// </summary>
-public sealed record QueueRunState(string TrackKey, DateTime AnchorUtc, DateTime? PendingUtc = null, bool PendingDegraded = false, long PendingSequence = 0);
+public sealed record QueueRunState(string TrackKey, DateTime AnchorUtc, DateTime? PendingUtc = null, bool PendingDegraded = false, long PendingSequence = 0)
+{
+    /// <summary>
+    /// The device that sent the pending sample (ARV-231, zone snapshot version 12) when its track key does not name it; null when it
+    /// does, or for none.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string PendingDevice { get; init; }
+}
 
 /// <summary>A held entrant in a snapshot.</summary>
 public sealed record QueueEntrantState(DateTime EntryUtc, string TrackKey, string Group, bool Degraded, WaitMethod Method, long Order, DateTime? LastSeenUtc);
@@ -112,7 +128,10 @@ public sealed record QueueEngineState
     public IReadOnlyList<ZoneReadingMinute> Readings { get; init; } = [];
     public IReadOnlyList<RealisedWait> Waits { get; init; } = [];
     public IReadOnlyList<EntrantResolution> Resolutions { get; init; } = [];
+    /// <summary>The step's refusal counts in QueueRejections' order; the twelfth, DeviceShareFull, from zone snapshot version 12 (ARV-231).</summary>
     public IReadOnlyList<long> Counters { get; init; } = [];
+    /// <summary>The minutes a full buffer may have shortened since the last step (ARV-231, zone snapshot version 12).</summary>
+    public IReadOnlyList<DateTime> FullBufferMinutes { get; init; } = [];
     public int Reanchors { get; init; }
     public DateTime? EarliestLateUtc { get; init; }
     public IReadOnlyList<LateMinuteState> LateByMinute { get; init; } = [];
@@ -127,9 +146,15 @@ public sealed partial class QueueStateEngine
     {
         QueueZone = _geometry.QueueZone,
         Buffer = [.. _buffer.UnorderedItems.OrderBy(i => i.Priority, DueOrder.Instance)
-            .Select(i => new QueueBufferedState(QueueInputState.From(i.Element.Input), i.Element.Ahead, i.Priority.Sequence))],
+            .Select(i => new QueueBufferedState(QueueInputState.From(i.Element.Input), i.Element.Ahead, i.Priority.Sequence)
+            {
+                Device = i.Element.Device == OwnerOf(i.Element.Input) ? null : i.Element.Device
+            })],
         Runs = [.. _runs.Values.OrderBy(r => r.Track, StringComparer.Ordinal)
-            .Select(r => new QueueRunState(r.Track, r.Anchor, r.Pending?.TimeUtc, r.Pending?.Degraded ?? false, r.Pending is null ? 0 : r.PendingSequence))],
+            .Select(r => new QueueRunState(r.Track, r.Anchor, r.Pending?.TimeUtc, r.Pending?.Degraded ?? false, r.Pending is null ? 0 : r.PendingSequence)
+            {
+                PendingDevice = r.Pending is null || r.PendingDevice == OwnerOf(r.Pending) ? null : r.PendingDevice
+            })],
         Held = [.. _held.Select(e => new QueueEntrantState(e.EntryUtc, e.TrackKey, e.Group, e.Degraded, e.Method, e.Order, e.LastSeenUtc))],
         ResolvedTracks = [.. _resolvedOrder],
         Occupancy = [.. _occupancy.OrderBy(o => o.Key, StringComparer.Ordinal).Select(o => new QueueOccupancyState(o.Key, o.Value.Count, o.Value.AtUtc, o.Value.Degraded))],
@@ -148,7 +173,8 @@ public sealed partial class QueueStateEngine
         Readings = ReadingMinutes(),
         Waits = [.. _waits],
         Resolutions = [.. _resolutions],
-        Counters = [_late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices],
+        Counters = [_late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices, _deviceShareFull],
+        FullBufferMinutes = [.. _fullMinutes.Order()],
         Reanchors = _reanchors,
         EarliestLateUtc = _earliestLate,
         LateByMinute = [.. _lateByMinute.OrderBy(m => m.Key).Select(m => new LateMinuteState(m.Key, m.Value))],
@@ -173,18 +199,22 @@ public sealed partial class QueueStateEngine
         if ((state.Buffer?.Count ?? 0) + pendingSamples > s.MaxBufferedEvents || (state.Runs?.Count ?? 0) > s.MaxSightingRuns ||
             (state.Held?.Count ?? 0) > s.MaxOpenEntrants ||
             (state.ResolvedTracks?.Count ?? 0) > s.MaxRememberedTracks || (state.Occupancy?.Count ?? 0) > 1 + geometry.OverflowZones.Count ||
-            (state.Handovers?.Count ?? 0) > 2 * s.MaxOpenEntrants + 1024 || (state.Counters?.Count ?? 0) != 11 ||
+            (state.Handovers?.Count ?? 0) > 2 * s.MaxOpenEntrants + 1024 || (state.Counters?.Count ?? 0) is not (11 or 12) ||
+            (state.FullBufferMinutes?.Count ?? 0) > MaxFullMinutes ||
             (state.LateByMinute?.Count ?? 0) > MaxLateMinutes ||
             (state.Movements?.Count ?? 0) + (state.Lines?.Count ?? 0) + (state.Waits?.Count ?? 0) + (state.Resolutions?.Count ?? 0) +
             (state.OccupancySamples?.Count ?? 0) + (state.Readings?.Count ?? 0) > s.MaxStepRecords + s.MaxBufferedEvents)
             throw new InvalidDataException("The queue engine snapshot exceeds the engine's bounds.");
 
-        foreach (var (input, ahead, sequence) in state.Buffer ?? [])
+        foreach (var buffered in state.Buffer ?? [])
         {
+            var (input, ahead, sequence) = buffered ?? new QueueBufferedState(null, false, 0);
             if (input is null)
                 throw new InvalidDataException("The queue engine snapshot has an empty input.");
             var restored = input.ToInput();
-            engine._buffer.Enqueue((restored, ahead), new Due(QueueInputState.Utc(input.TimeUtc), InputKey.Of(restored, geometry), sequence));
+            if (buffered.Device is not null && !Sensing.DeviceCodes.IsValid(buffered.Device))
+                throw new InvalidDataException("The queue engine snapshot holds an event of a device that is not a device code.");
+            engine.Buffer(restored, ahead, buffered.Device ?? OwnerOf(restored), new Due(QueueInputState.Utc(input.TimeUtc), InputKey.Of(restored, geometry), sequence));
             if (ahead)
                 engine._aheadBuffered++;
         }
@@ -308,6 +338,14 @@ public sealed partial class QueueStateEngine
         var c = state.Counters;
         (engine._late, engine._future, engine._invalid, engine._unknown, engine._duplicates, engine._reverse) = (c[0], c[1], c[2], c[3], c[4], c[5]);
         (engine._unmatched, engine._negative, engine._bufferFull, engine._forced, engine._tooManyDevices) = (c[6], c[7], c[8], c[9], c[10]);
+        engine._deviceShareFull = c.Count > 11 ? c[11] : 0;
+        foreach (var minute in state.FullBufferMinutes ?? [])
+        {
+            var utc = QueueInputState.Utc(minute);
+            if (utc.Ticks % TimeSpan.TicksPerMinute != 0)
+                throw new InvalidDataException("The queue engine snapshot has a full-buffer minute that is not a whole minute.");
+            engine._fullMinutes.Add(utc);
+        }
         engine._reanchors = state.Reanchors;
         engine._earliestLate = state.EarliestLateUtc is { } late ? QueueInputState.Utc(late) : null;
         foreach (var (minute, count) in state.LateByMinute ?? [])
@@ -352,8 +390,12 @@ public sealed partial class QueueStateEngine
                 if (at <= anchor || at - anchor > engine._settings.HandoverWindow || at <= engine._watermark ||
                     r.PendingSequence < 0 || r.PendingSequence >= engine._sequence)
                     throw new InvalidDataException("The queue engine snapshot has a pending position sample outside its run's window, behind the watermark or out of order.");
+                if (r.PendingDevice is not null && !Sensing.DeviceCodes.IsValid(r.PendingDevice))
+                    throw new InvalidDataException("The queue engine snapshot has a pending position sample of a device that is not a device code.");
                 run.Pending = new QueueTrackSeen(r.TrackKey, at, r.PendingDegraded);
                 run.PendingSequence = r.PendingSequence;
+                run.PendingDevice = r.PendingDevice ?? OwnerOf(run.Pending);
+                engine.Held(run.PendingDevice, 1);
                 engine._pending++;
                 engine._flushes.Enqueue(run, at);
                 run.FlushScheduled = true;

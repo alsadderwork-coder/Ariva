@@ -486,6 +486,9 @@ monitoring:
     outboxBacklog: { enabled: true, minutes: 5, severity: critical }
     # Any dead letter (sent, kept or failed) in the window.
     deadLetters: { enabled: true, minutes: 15, severity: warning }
+    # Any event a zone's queue engine refused for a full buffer, or a device's full share of it, in the window (ARV-231):
+    # crossings or readings were lost and their minutes are marked degraded. kinds are QueueRejections counts.
+    queueRefused: { enabled: true, minutes: 5, severity: critical, kinds: [BufferFull, DeviceShareFull] }
     # A volume Ariva's data lives on fuller than usedPercent for the window, from the site collector's kubelet volume
     # metrics (external). claims names the PersistentVolumeClaims (the TimescaleDB release's by default) and namespaces
     # the namespaces they are in (empty: the release's namespace), so a claim of the same name elsewhere is not read.

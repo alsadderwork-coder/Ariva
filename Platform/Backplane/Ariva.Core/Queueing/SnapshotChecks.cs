@@ -94,6 +94,21 @@ public static class SnapshotChecks
             }
         }
 
+        // The buffer's shares and the full-buffer minutes (ARV-231): only a snapshot of version 12 or later carries them. Each minute
+        // is a whole, plausible minute, at most two days of them; the engine's Restore checks each device is a device code.
+        var shares = (e.Counters?.Count ?? 0) > 11 || e.FullBufferMinutes is { Count: > 0 } || state.FullBufferMinutes is { Count: > 0 } ||
+            (e.Buffer ?? []).Any(b => b?.Device is not null) || (e.Runs ?? []).Any(r => r?.PendingDevice is not null);
+        if (shares && state.Version < ZoneProcessorState.BufferSharesSinceVersion)
+            yield return $"A snapshot before version {ZoneProcessorState.BufferSharesSinceVersion} carries no buffer shares or full-buffer minutes.";
+        if ((e.FullBufferMinutes?.Count ?? 0) > MaxFullBufferMinutes || (state.FullBufferMinutes?.Count ?? 0) > MaxFullBufferMinutes)
+            yield return "The snapshot marks more full-buffer minutes than a zone keeps.";
+        foreach (var minute in (e.FullBufferMinutes ?? []).Concat(state.FullBufferMinutes ?? []))
+        {
+            Time(minute);
+            if (minute.Ticks % TimeSpan.TicksPerMinute != 0)
+                bad++;
+        }
+
         // The engine's event clock (ARV-148, written from version 9 on): never ahead of the zone's receive clock, since each
         // event counts at most up to the reference it arrived with, and set once the watermark has moved (the first event
         // sets it). The engine's Restore checks it against the events held.
@@ -323,6 +338,9 @@ public static class SnapshotChecks
 
     /// <summary>The largest count a snapshot may hold (a trillion people or events).</summary>
     public const long MaxCount = 1_000_000_000_000;
+
+    /// <summary>The most full-buffer minutes the engine and the zone each keep (two days, ARV-231).</summary>
+    public const int MaxFullBufferMinutes = 2 * 24 * 60;
 
     private static int Tally(BinTallyState t)
     {

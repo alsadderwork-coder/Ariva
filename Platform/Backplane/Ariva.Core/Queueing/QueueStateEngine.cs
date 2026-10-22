@@ -47,6 +47,12 @@ public sealed record QueueEngineSettings
     /// <summary>Events held at most for reordering; a tenth of it at most for events ahead of the reference clock.</summary>
     public int MaxBufferedEvents { get; init; } = 100_000;
 
+    /// <summary>
+    /// ARV-231: the fewest events one device may hold of the buffer. A device holds at most the buffer's bound over the devices
+    /// holding events, and never less than this, so one flooding device cannot fill the buffer for the others.
+    /// </summary>
+    public int DeviceShareFloor { get; init; } = 10_000;
+
     /// <summary>Recently resolved tracks remembered to recognise duplicates.</summary>
     public int MaxRememberedTracks { get; init; } = 20_000;
 
@@ -95,6 +101,8 @@ public sealed record QueueEngineSettings
             yield return "MaxOpenEntrants is from 1 to 100,000.";
         if (MaxBufferedEvents is < 10 or > 1_000_000)
             yield return "MaxBufferedEvents is from 10 to 1,000,000.";
+        if (DeviceShareFloor is < 1 or > 1_000_000)
+            yield return "DeviceShareFloor is from 1 to 1,000,000.";
         if (MaxRememberedTracks is < 0 or > 100_000)
             yield return "MaxRememberedTracks is from 0 to 100,000.";
         if (MaxSightingRuns is < 0 or > 1_000_000)
@@ -170,13 +178,14 @@ public sealed partial class QueueStateEngine
         public DateTime Anchor { get; set; } = anchor;
         public QueueTrackSeen Pending { get; set; }
         public long PendingSequence { get; set; }
+        public string PendingDevice { get; set; }
         public bool FlushScheduled { get; set; }
         public bool EndScheduled { get; set; }
     }
 
     private readonly QueueZoneGeometry _geometry;
     private readonly QueueEngineSettings _settings;
-    private readonly PriorityQueue<(QueueInput Input, bool Ahead), Due> _buffer = new(DueOrder.Instance);
+    private readonly PriorityQueue<(QueueInput Input, bool Ahead, string Device), Due> _buffer = new(DueOrder.Instance);
     private readonly LinkedList<Entrant> _held = new();
     private readonly Dictionary<string, LinkedList<Entrant>> _groups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Entrant> _byTrack = new(StringComparer.Ordinal);
@@ -204,6 +213,8 @@ public sealed partial class QueueStateEngine
     private readonly PriorityQueue<SightingRun, DateTime> _flushes = new();
     private readonly PriorityQueue<SightingRun, DateTime> _runEnds = new();
     private int _pending;
+    // ARV-231: the events each device holds, buffered or pending (only devices holding any), for its share of the buffer.
+    private readonly Dictionary<string, int> _heldByDevice = new(StringComparer.Ordinal);
     private bool _residualSuspect;
     // The time of the occupancy reading applied last, until the events of its instant are all applied. A full step that
     // ends inside that instant keeps it for the next step (ARV-114d), one tick after the watermark, so it is part of the
@@ -216,7 +227,10 @@ public sealed partial class QueueStateEngine
     private readonly Dictionary<(DateTime Minute, string Zone), (int Min, int Max)> _readings = [];
     private readonly List<RealisedWait> _waits = [];
     private readonly List<EntrantResolution> _resolutions = [];
-    private long _late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices;
+    private long _late, _future, _invalid, _unknown, _duplicates, _reverse, _unmatched, _negative, _bufferFull, _forced, _tooManyDevices, _deviceShareFull;
+    // ARV-231: the minutes a full buffer may have shortened since the last step (QueueRejections.FullBufferMinutes), at most two days of them.
+    private readonly HashSet<DateTime> _fullMinutes = [];
+    private const int MaxFullMinutes = 2 * 24 * 60;
     private int _reanchors;
     private DateTime? _earliestLate;
     private readonly Dictionary<DateTime, long> _lateByMinute = [];
@@ -247,6 +261,13 @@ public sealed partial class QueueStateEngine
     /// <summary>People held: entered and not yet resolved.</summary>
     public int OpenEntrants => _held.Count;
 
+    /// <summary>
+    /// ARV-231: the devices the zone has heard recently, which its zone processor sets before each batch. A device's share of the
+    /// buffer is the bound over at least these (and at least two), so a device that floods a quiet zone leaves room for the
+    /// devices that push next. Not part of the snapshot: the zone processor's own device liveness is.
+    /// </summary>
+    public int ZoneDevices { get; set; }
+
     /// <summary>Events waiting in the reorder buffer, the tracks' pending position samples included (ARV-230).</summary>
     public int BufferedEvents => _buffer.Count + _pending;
 
@@ -260,8 +281,10 @@ public sealed partial class QueueStateEngine
     /// Offers one event. <paramref name="referenceUtc"/> is Ariva's clock when the event arrived; events further ahead
     /// than <see cref="QueueEngineSettings.MaxAhead"/> are refused, and events at or behind the watermark are late. An
     /// event held moves the zone's clock to its time, or to <paramref name="referenceUtc"/> when it lies ahead of it.
+    /// <paramref name="device"/> is the device that sent it (a tracked event's key names it too): a device holds at most its
+    /// share of the buffer (ARV-231); an event of no device is held within the buffer's bound alone.
     /// </summary>
-    public void Offer(QueueInput input, DateTime referenceUtc)
+    public void Offer(QueueInput input, DateTime referenceUtc, string device = null)
     {
         ArgumentNullException.ThrowIfNull(input);
         if (referenceUtc.Kind != DateTimeKind.Utc)
@@ -286,27 +309,42 @@ public sealed partial class QueueStateEngine
         }
 
         var ahead = time > referenceUtc;
+        // ARV-231 (CWE-400): the device that sent it (a tracked event's key names it too), held to its share of the buffer.
+        var owner = device ?? OwnerOf(input);
         if (ahead && _aheadBuffered >= _settings.MaxBufferedEvents / 10)
         {
             _bufferFull++;
+            Full(time);
             return;
         }
 
         // ARV-230: a track's position sample within its run takes no place of its own (see Hold), so it is never refused.
         var sighting = _settings.CoalescePositions && !ahead && input is QueueTrackSeen { TrackKey: not null } sample ? sample : null;
-        if (BufferedEvents >= _settings.MaxBufferedEvents && (sighting is null || NeedsPlace(sighting)))
+        var needsPlace = sighting is null || NeedsPlace(sighting);
+        // A device past its share, or a full buffer, gets room only from events that were due anyway, never moving the watermark
+        // past what the clock allows; otherwise the event is refused, a device past its share alone, so one flooding device cannot
+        // fill the buffer and have the zone refuse the other devices' events.
+        if (needsPlace && (OverShare() || BufferIsFull()))
         {
-            // Make room only with events that were due anyway; never move the watermark past what the clock allows.
             var due = Target(referenceUtc);
-            if (TryOldestHeld(out var oldest) && oldest <= due && Records < _settings.MaxStepRecords)
+            while ((OverShare() || BufferIsFull()) && TryOldestHeld(out var oldest) && oldest <= due && Records < _settings.MaxStepRecords)
             {
                 _forced++;
+                FullThrough(_watermark, oldest);
                 ProcessUpTo(oldest);
             }
 
-            if (BufferedEvents >= _settings.MaxBufferedEvents)
+            if (OverShare())
+            {
+                _deviceShareFull++;
+                Full(time);
+                return;
+            }
+
+            if (BufferIsFull())
             {
                 _bufferFull++;
+                Full(time);
                 return;
             }
 
@@ -319,9 +357,9 @@ public sealed partial class QueueStateEngine
 
         var place = new Due(time, InputKey.Of(input, _geometry), _sequence++);
         if (sighting is not null)
-            Hold(sighting, place);
+            Hold(sighting, place, owner);
         else
-            _buffer.Enqueue((input, ahead), place);
+            Buffer(input, ahead, owner, place);
         if (ahead)
             _aheadBuffered++;
         // The zone's clock moves with the events it holds, each at most to the time it arrived (CWE-501: a device whose
@@ -329,6 +367,11 @@ public sealed partial class QueueStateEngine
         var seen = ahead ? referenceUtc : time;
         if (seen > _clock)
             _clock = seen;
+
+        bool OverShare() => owner is not null && ShareOf(owner) is var share && share < _settings.MaxBufferedEvents &&
+            _heldByDevice.GetValueOrDefault(owner) >= share;
+
+        bool BufferIsFull() => BufferedEvents >= _settings.MaxBufferedEvents;
     }
 
     /// <summary>
@@ -389,7 +432,8 @@ public sealed partial class QueueStateEngine
             {
                 Late = _late, EarliestLateUtc = _earliestLate, BeyondHorizon = _beyondHorizon, LateByMinute = [.. _lateByMinute.OrderBy(m => m.Key).Select(m => (m.Key, m.Value))], Future = _future, Invalid = _invalid, UnknownGeometry = _unknown,
                 Duplicates = _duplicates, Reverse = _reverse, UnmatchedExits = _unmatched, NegativeWaits = _negative,
-                BufferFull = _bufferFull, ForcedAdvances = _forced, TooManyDevices = _tooManyDevices
+                BufferFull = _bufferFull, ForcedAdvances = _forced, TooManyDevices = _tooManyDevices, DeviceShareFull = _deviceShareFull,
+                FullBufferMinutes = [.. _fullMinutes.Order()]
             },
             _reanchors, _held.Count, BufferedEvents, _more)
         {
@@ -403,7 +447,8 @@ public sealed partial class QueueStateEngine
         _readings.Clear();
         _waits.Clear();
         _resolutions.Clear();
-        _late = _future = _invalid = _unknown = _duplicates = _reverse = _unmatched = _negative = _bufferFull = _forced = _tooManyDevices = 0;
+        _late = _future = _invalid = _unknown = _duplicates = _reverse = _unmatched = _negative = _bufferFull = _forced = _tooManyDevices = _deviceShareFull = 0;
+        _fullMinutes.Clear();
         _reanchors = 0;
         _earliestLate = null;
         _lateByMinute.Clear();
@@ -448,6 +493,7 @@ public sealed partial class QueueStateEngine
             }
 
             _buffer.Dequeue();
+            Held(item.Device, -1);
             if (item.Ahead)
                 _aheadBuffered--;
             Expire(key.Time);
@@ -930,6 +976,79 @@ public sealed partial class QueueStateEngine
 
     #endregion
 
+    #region Buffer shares (ARV-231)
+
+    // Each device holds at most its share of the buffer: the buffer's bound over the devices sharing it (those holding events with
+    // the offering one, the zone's devices heard recently, and at least two, so one device never holds more than half the buffer,
+    // even when it floods a quiet zone before the others push), never less than DeviceShareFloor. A device past its share gets room
+    // only from events that were due anyway (forced advances, as for a full buffer), and is refused (DeviceShareFull) when they
+    // free none of its places: a device sending what is due catches up, a flood within the lateness is refused alone. A floor at
+    // the buffer's bound turns the shares off. Many devices at the floor can still fill the buffer together (bound over floor: 10
+    // at the defaults). The tenth that holds events ahead of the clock stays the zone's, not shared per device: a sensor within
+    // Ingest's clock tolerance stamps its latest samples a little ahead, and a per-device share of the tenth cost such a sensor
+    // most of its crossings (security review M3); one device whose clock runs far ahead can fill it (BufferFull, visible), and a
+    // fast sensor's ahead samples are not coalesced (ARV-239). Events of no device (a caller that names none) are bounded by the
+    // buffer alone.
+
+    private void Buffer(QueueInput input, bool ahead, string device, Due place)
+    {
+        _buffer.Enqueue((input, ahead, device), place);
+        Held(device, 1);
+    }
+
+    private void Held(string device, int change) => Count(_heldByDevice, device, change);
+
+    private static void Count(Dictionary<string, int> counts, string device, int change)
+    {
+        if (device is null)
+            return;
+        var held = counts.GetValueOrDefault(device) + change;
+        if (held > 0)
+            counts[device] = held;
+        else
+            counts.Remove(device);
+    }
+
+    /// <summary>The devices a share divides by: those holding events with the offering one, the zone's devices, at least two.</summary>
+    private int Sharing(string device) =>
+        Math.Max(2, Math.Max(_heldByDevice.Count + (_heldByDevice.ContainsKey(device) ? 0 : 1), ZoneDevices));
+
+    private int ShareOf(string device) => Math.Max(_settings.DeviceShareFloor, _settings.MaxBufferedEvents / Sharing(device));
+
+    /// <summary>The device a tracked event names (its key is namespaced "device/track"), or null.</summary>
+    private static string OwnerOf(QueueInput input)
+    {
+        var key = input switch
+        {
+            QueueTrackSeen seen => seen.TrackKey,
+            QueueCrossing crossing => crossing.TrackKey,
+            _ => null
+        };
+        var slash = key?.IndexOf('/', StringComparison.Ordinal) ?? -1;
+        return slash > 0 ? key[..slash] : null;
+    }
+
+    /// <summary>Marks the minute of <paramref name="time"/> as one a full buffer may have shortened.</summary>
+    private void Full(DateTime time)
+    {
+        var minute = new DateTime(time.Ticks - time.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        if (_fullMinutes.Count < MaxFullMinutes)
+            _fullMinutes.Add(minute);
+    }
+
+    /// <summary>Marks the minutes a forced advance from <paramref name="from"/> to <paramref name="to"/> processes early.</summary>
+    private void FullThrough(DateTime from, DateTime to)
+    {
+        var last = new DateTime(to.Ticks - to.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        var first = from == DateTime.MinValue ? last : new DateTime(from.Ticks - from.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        if ((last - first).TotalMinutes >= MaxFullMinutes)
+            first = last.AddMinutes(-(MaxFullMinutes - 1));
+        for (var minute = first; minute <= last && _fullMinutes.Count < MaxFullMinutes; minute = minute.AddMinutes(1))
+            _fullMinutes.Add(minute);
+    }
+
+    #endregion
+
     #region Position samples (ARV-230)
 
     // A position sample only marks an open entrant's track as seen: its last sighting, and a hand-over deadline that window after
@@ -956,13 +1075,13 @@ public sealed partial class QueueStateEngine
         return time != run.Anchor && run.Pending is null;
     }
 
-    /// <summary>Holds a position sample in its track's run, or in the buffer (see the region's remarks).</summary>
-    private void Hold(QueueTrackSeen seen, Due place)
+    /// <summary>Holds a position sample of <paramref name="device"/> in its track's run, or in the buffer (see the region's remarks).</summary>
+    private void Hold(QueueTrackSeen seen, Due place, string device)
     {
         var time = seen.TimeUtc;
         if (!_runs.TryGetValue(seen.TrackKey, out var run))
         {
-            _buffer.Enqueue((seen, false), place);
+            Buffer(seen, false, device, place);
             // The runs have their own bound (CWE-400): a track without one is not coalesced, its samples buffered as before.
             if (_runs.Count < _settings.MaxSightingRuns)
             {
@@ -976,7 +1095,7 @@ public sealed partial class QueueStateEngine
 
         if (time < run.Anchor)
         {
-            _buffer.Enqueue((seen, false), place);
+            Buffer(seen, false, device, place);
             return;
         }
 
@@ -990,7 +1109,7 @@ public sealed partial class QueueStateEngine
                 BufferPending(run);
             if (time - run.Anchor > _settings.HandoverWindow)
             {
-                _buffer.Enqueue((seen, false), place);
+                Buffer(seen, false, device, place);
                 run.Anchor = time;
                 ScheduleEnd(run);
                 return;
@@ -1001,6 +1120,8 @@ public sealed partial class QueueStateEngine
         {
             run.Pending = seen;
             run.PendingSequence = place.Sequence;
+            run.PendingDevice = device;
+            Held(device, 1);
             _pending++;
             if (!run.FlushScheduled)
             {
@@ -1013,6 +1134,9 @@ public sealed partial class QueueStateEngine
             // A flush scheduled for the earlier pending sample is at or before this one too.
             run.Pending = seen;
             run.PendingSequence = place.Sequence;
+            Held(run.PendingDevice, -1);
+            run.PendingDevice = device;
+            Held(device, 1);
         }
 
         // Otherwise between the anchor and the pending sample, or at the latter: it changes nothing.
@@ -1022,9 +1146,11 @@ public sealed partial class QueueStateEngine
     private void BufferPending(SightingRun run)
     {
         var pending = run.Pending;
-        _buffer.Enqueue((pending, false), new Due(pending.TimeUtc, InputKey.Of(pending, _geometry), run.PendingSequence));
+        // Still held, now in the buffer: its device's count stays.
+        _buffer.Enqueue((pending, false, run.PendingDevice), new Due(pending.TimeUtc, InputKey.Of(pending, _geometry), run.PendingSequence));
         run.Anchor = pending.TimeUtc;
         run.Pending = null;
+        run.PendingDevice = null;
         _pending--;
         ScheduleEnd(run);
     }

@@ -441,7 +441,7 @@ public sealed class RepeatedBatchTests
         var json = JsonSerializer.SerializeToNode(zone.Capture(), EventCatalog.Json)!.AsObject();
         var state = json.Deserialize<ZoneProcessorState>(EventCatalog.Json)!;
 
-        state.Version.Should().Be(11).And.Be(ZoneProcessorState.CurrentVersion);
+        state.Version.Should().Be(12).And.Be(ZoneProcessorState.CurrentVersion);
         json["recentBatches"]!.AsArray().Should().HaveCount(2);
         state.RecentBatches.Should().Equal(new RecentBatchState("S-81", Id(3), At(End(3) + 90)), new RecentBatchState("S-82", Id(3), At(End(3) + 90)));
         ZoneProcessor.Restore(ZoneKey, Geometry, 3, new ZoneProcessorSettings(), state, Far).Capture().RecentBatches.Should().Equal(state.RecentBatches);
@@ -454,7 +454,7 @@ public sealed class RepeatedBatchTests
         // resent just after it is applied again (once, within one window of the upgrade).
         var zone = new ZoneProcessor(ZoneKey, Geometry, 3);
         zone.Offer(Counts(3), DateTime.MaxValue);
-        var json = JsonSerializer.SerializeToNode(zone.Capture() with { Version = 9 }, EventCatalog.Json)!.AsObject();
+        var json = JsonSerializer.SerializeToNode(zone.Capture().WrittenBefore12() with { Version = 9 }, EventCatalog.Json)!.AsObject();
         json.Remove("recentBatches").Should().BeTrue("a snapshot written now names them");
         var older = json.Deserialize<ZoneProcessorState>(EventCatalog.Json)!;
 
@@ -486,7 +486,7 @@ public sealed class RepeatedBatchTests
         RecentBatchState Other(int k, string device = "S-81") => new(device, Id(500 + k), first.UntilUtc.AddSeconds(k));
         var changed = bad switch
         {
-            "a version 9 snapshot that remembers batches" => state with { Version = 9 },
+            "a version 9 snapshot that remembers batches" => state.WrittenBefore12() with { Version = 9 },
             "an invalid device code" => state with { RecentBatches = [first with { DeviceCode = "s-81;drop" }] },
             "an empty id" => state with { RecentBatches = [first with { BatchId = Guid.Empty }] },
             "a batch twice" => state with { RecentBatches = [first, first with { UntilUtc = first.UntilUtc.AddSeconds(1) }] },

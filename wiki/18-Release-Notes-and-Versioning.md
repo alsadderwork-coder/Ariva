@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-231: queue engine refusals visible, and the buffer's share per device (zone snapshot version 12, 2026-10-22)
+
+- Ariva.Api.Stream writes zone snapshot version 12: the device of each anonymous event the queue engine holds (a tracked one's key names it), the step's new `DeviceShareFull` count and the minutes a full buffer touched. A version 11 snapshot restores as it is (its tracked events counted for their devices, its anonymous ones for none); a rollback to a build before ARV-231 refuses version 12 snapshots and starts the zones afresh, as for version 11 (below).
+- New: the counter `ariva.stream.queue_refused` (kind, site), a warning per zone and kind at most once a minute, and the SigNoz rule `queueRefused` (`monitoring.alerts.queueRefused`, critical on `BufferFull` and `DeviceShareFull`); import the rules ConfigMap into SigNoz again after the upgrade (wiki 10 section 1). The live minutes a full buffer touched are written with `length_degraded` and `nowcast_degraded` set.
+- Behaviour: each device holds at most its share of a zone's 100,000-event buffer (the bound over the devices sharing it: those holding events, the zone's devices heard recently, and at least two, so never more than half; at least 10,000). Past its share, events that were due anyway are applied to make room; if that frees nothing the device's event is refused alone (`DeviceShareFull`) where before the whole zone refused events of every kind (wiki 10 section 4.22). A single-device zone now holds at most half the buffer for that device.
+
 ### ARV-230: the queue engine keeps track positions in runs (zone snapshot version 11, 2026-10-22)
 
 - Ariva.Api.Stream writes each zone's state as snapshot version 11: the queue engine's runs of position samples (a track's anchor and one pending sample) travel in it, and its reorder buffer no longer holds one event a position. A hall zone's `stream_zone_state.state_bytes` falls from about 20 MB to a few hundred KB (wiki 05).

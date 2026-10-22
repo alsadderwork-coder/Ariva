@@ -234,6 +234,7 @@ public sealed class QueueStreamWorker(
     }
 
     private readonly ZoneProcessorSettings _zoneSettings = zoneSettings ?? new ZoneProcessorSettings();
+    private readonly RefusalWarnings _refusalWarnings = new(timeProvider);
     private readonly Dictionary<string, (ZoneProcessor Zone, int Partition, DateTime LastRecordWall)> _zones = new(StringComparer.Ordinal);
     private readonly Dictionary<(string Topic, int Partition), long> _positions = [];
     private readonly Dictionary<(string Topic, int Partition), long> _consumed = [];
@@ -905,6 +906,7 @@ public sealed class QueueStreamWorker(
         // Only now, with the rows committed, are they removed from the zones: a failed or cancelled write loses nothing.
         for (var k = 0; k < zones.Count; k++)
             zones[k].Acknowledge(outputs[k]);
+        Refusals(outputs);
 
         // The latest minute of each zone that has a new one goes to the live hub (ARV-035); screens are best effort,
         // so a Redis failure is logged and the next checkpoint carries on.
@@ -933,6 +935,27 @@ public sealed class QueueStreamWorker(
 
         logger.LogDebug("Queue stream checkpoint: {Zones} zones, {Rows} rows, {Records} records, {Dead} dead letters, {Failed} failed batches, {Wrong} on the wrong partition, {Forced} forced merges",
             states.Count, outputs.Sum(o => o.Count), _records, _deadLettered, _failedBatches, _wrongPartition, _forcedReleases);
+    }
+
+    /// <summary>
+    /// ARV-231 (CWE-778): what each zone's queue engine refused or applied early reaches the refusal metric by kind and site, and
+    /// a warning per zone and kind at most once a minute names the zone, the kind and the count (never an event's content), so a
+    /// zone at its buffer's bound no longer loses crossings silently. Counted once the checkpoint wrote the outputs.
+    /// </summary>
+    private void Refusals(IReadOnlyList<ZoneOutputs> outputs)
+    {
+        foreach (var output in outputs.Where(o => o.Refusals.Count > 0))
+        {
+            var slash = output.ZoneKey.IndexOf('/', StringComparison.Ordinal);
+            var site = slash > 0 ? output.ZoneKey[..slash] : output.ZoneKey;
+            foreach (var (kind, count) in output.Refusals)
+                metrics?.Refused(site, kind, count);
+            _refusalWarnings.Add(output.ZoneKey, output.Refusals);
+        }
+
+        foreach (var (zone, kind, count) in _refusalWarnings.Due())
+            logger.LogWarning("Zone {Zone}: the queue engine refused or applied early {Count} events of kind {Kind} since its last warning (wiki 10, 4.22)",
+                zone, count, kind);
     }
 
     // ARV-166: a dead letter is retried until the broker takes it or the worker stops; a stop leaves the record unreleased,

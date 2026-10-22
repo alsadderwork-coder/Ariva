@@ -1433,7 +1433,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 42,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M (S before the per-device share, added by ARV-230's security review on 2026-10-22). Medium (silent loss of counts at a bound), so before the pilot.",
       "dependsOn": [
         "ARV-071"
@@ -2054,6 +2054,27 @@
       "notes": "Size S. Before the pilot if the site measures departure queues with service zones on lane-coded emigration desks; otherwise it can move to Phase 3 by the owner's call.",
       "dependsOn": [
         "ARV-187"
+      ]
+    },
+    {
+      "id": "ARV-239",
+      "title": "[E4] Queue engine: position samples ahead of the receive clock coalesced, so fast sensors within the clock tolerance never fill the ahead tenth",
+      "description": "Found by ARV-231's security review (M3). Ingest leaves a device clock within 500 ms uncorrected (ClockOffset.ToleranceMilliseconds), so a T3 sensor whose clock is a little fast stamps the latest samples of each push after its receive time. The queue engine holds events ahead of the reference clock in a tenth of its buffer (10,000 at the defaults) shared by the zone's devices, and ARV-230 coalesces only samples that are not ahead, so each of those samples takes a place there for about the lateness: about 2,800 to 8,200 for one sensor 100 to 500 ms fast at the pilot rate. Two or three such sensors fill the tenth, and the zone then refuses every event ahead of the clock (BufferFull, visible since ARV-231), crossings of fast sensors included. A per-device share of the tenth made it worse (one sensor lost most of its crossings), so ARV-231 kept the tenth shared. Options (Proposed): coalesce ahead samples into runs (the clock, the restore checks of a run's anchor and pending sample against the clock, and the ahead count need care: an ahead sample counts on the clock only up to its reference); or leave position samples out of the ahead tenth, bounded by the device's share of the buffer instead; or clamp a sample at most the clock tolerance ahead to its receive time. CWEs to review: CWE-400, CWE-501.",
+      "acceptanceCriteria": [
+        "A hall zone of 20 T3 sensors at 30 people and 5 Hz, every sensor 500 ms fast (within Ingest's tolerance), keeps every crossing and occupancy reading with no BufferFull or DeviceShareFull, proved by a unit test; a device whose clock runs minutes ahead still cannot carry the watermark past the receive clock (ARV-148) nor fill the buffer for the others",
+        "The engine's outputs are unchanged on the golden replay (seed 9303) and the existing engine scenarios, or the engine version and the replay hashes are bumped with the reason recorded",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 43,
+      "passes": false,
+      "notes": "Size S to M. Medium (crossings of fast sensors refused once the shared tenth fills; a sensor more than 500 ms off is corrected by Ingest, so the exposure is sensors 200 to 500 ms fast), so before the pilot. Measure the pilot sensors' clock offsets first (ARV-104j's clock drift readings): if none is more than about 200 ms fast, the owner may move it to Phase 3.",
+      "dependsOn": [
+        "ARV-230",
+        "ARV-231"
       ]
     }
   ]

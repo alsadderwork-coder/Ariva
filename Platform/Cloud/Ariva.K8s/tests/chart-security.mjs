@@ -1567,6 +1567,10 @@ for (const [label, file, sets, message, annotation] of [
 	['a channel name with a quote', 'values-k8s-dev.yaml', ['monitoring.channels={bad"name}']],
 	['a disk rule without its claims', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.claims=null']],
 	['a claim that is not a Kubernetes name', 'values-k8s-dev.yaml', ["monitoring.alerts.disk.claims={data') OR (1}"]],
+	// ARV-231: the queue refusal rule's kinds are QueueRejections counts, so a value cannot break its filter.
+	['a queue refusal kind that is not one', 'values-k8s-dev.yaml', ["monitoring.alerts.queueRefused.kinds={BufferFull,x') OR (1}"], 'is not a queue engine refusal kind'],
+	['a queue refusal rule with an empty kind', 'values-k8s-dev.yaml', ['monitoring.alerts.queueRefused.kinds={}'], '"" is not a queue engine refusal kind'],
+	['a queue refusal rule whose kinds are not a list', 'values-k8s-dev.yaml', ['monitoring.alerts.queueRefused.kinds=BufferFull'], 'monitoring.alerts.queueRefused.kinds must be a list'],
 	// ARV-125b: the scopes that keep a rule on its own release: the environment and the namespaces.
 	['a monitoring environment that is not a plain name', 'values-k8s-dev.yaml', ["monitoring.environment=k8s-dev' OR deployment.environment = 'k8s-prd"]],
 	['an environment that is not a plain name when monitoring reads it', 'values-k8s-dev.yaml', ['environment=k8s dev']],

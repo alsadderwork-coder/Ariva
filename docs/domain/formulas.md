@@ -552,7 +552,7 @@ Source: D5 invariants and failure modes.
 | Condition in the bin | Flag |
 |---|---|
 | All sensors healthy, all desks known, clocks within threshold | `Good` |
-| A sensor degraded, a desk `Unknown`, clock drift corrected, AMAN feed stale with last-known values used, censored tracks above threshold, a final bin's track completion below threshold (ARV-114b) | `Degraded` |
+| A sensor degraded, a desk `Unknown`, clock drift corrected, AMAN feed stale with last-known values used, censored tracks above threshold, a final bin's track completion below threshold (ARV-114b); for a live minute's queue length and nowcast, a full buffer that refused events of the minute or applied them before their lateness was up (ARV-231) | `Degraded` |
 | An entry or exit line without coverage for the bin, or no measurement at all | `Unknown` |
 
 The worst flag of any input wins. Every interval result, nowcast and forecast carries its flag.

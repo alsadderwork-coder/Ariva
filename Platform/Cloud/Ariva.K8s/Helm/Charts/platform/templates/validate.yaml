@@ -661,6 +661,16 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- end }}
 {{- end }}
+{{- if eq $field "kinds" }}
+{{- if or (not (kindIs "slice" $value)) (eq (len $value) 0) }}
+{{- fail (printf "monitoring.alerts.%s.kinds must be a list of one or more queue engine refusal kinds" $key) }}
+{{- end }}
+{{- range $value }}
+{{- if not (has (toString .) (list "Late" "Future" "Invalid" "UnknownGeometry" "Duplicates" "Reverse" "UnmatchedExits" "NegativeWaits" "BufferFull" "ForcedAdvances" "TooManyDevices" "DeviceShareFull")) }}
+{{- fail (printf "monitoring.alerts.%s.kinds: %q is not a queue engine refusal kind (a QueueRejections count, ARV-231)" $key (toString .)) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if eq $field "namespaces" }}
 {{- if not (kindIs "slice" $value) }}
 {{- fail (printf "monitoring.alerts.%s.namespaces must be a list of namespaces (empty: the release's namespace)" $key) }}

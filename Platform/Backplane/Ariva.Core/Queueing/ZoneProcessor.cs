@@ -141,9 +141,18 @@ public sealed record ZoneOutputs(
 
     public IReadOnlyList<DeskZoneSample> DeskReadings { get; init; } = DeskReadings ?? [];
 
+    /// <summary>
+    /// What the queue engine refused or applied early since the last acknowledgement, by kind (ARV-231: the stream's refusal
+    /// metric and warnings). Not rows to persist: outside <see cref="Count"/> and the replay ledger.
+    /// </summary>
+    public IReadOnlyList<QueueRefusalCount> Refusals { get; init; } = [];
+
     public int Count => Minutes.Count + Bins.Count + Live.Count + Recomputations.Count + Outages.Count + Lines.Count + Health.Count + Overflow.Count +
         OverflowChanges.Count + DeskReadings.Count;
 }
+
+/// <summary>A count of one kind of <see cref="QueueRejections"/> (its property name).</summary>
+public sealed record QueueRefusalCount(string Kind, long Count);
 
 /// <summary>
 /// Counts of what a zone refused, for health. <see cref="OtherZones"/> (ARV-116): occupancy readings of a zone that is
@@ -177,8 +186,12 @@ public sealed record ZoneProcessorState
     /// remembering none, so a batch applied before the upgrade and resent just after it is applied again. 11 adds the queue
     /// engine's runs of position samples (<see cref="QueueEngineState.Runs"/>, ARV-230); an earlier snapshot carries none and is
     /// refused if it says otherwise, and restores without runs: its held samples are all in its buffer, and runs start anew.
+    /// 12 adds the buffer's shares per device (the device of each anonymous buffered event, a tracked one's named by its key, and
+    /// the step's DeviceShareFull count) and the minutes a full buffer may have shortened, the engine's and the zone's (ARV-231);
+    /// an earlier snapshot carries none and is refused if it says otherwise, and restores with its tracked events counted for their
+    /// devices, its anonymous ones for none, and no minute marked.
     /// </summary>
-    public const int CurrentVersion = 11;
+    public const int CurrentVersion = 12;
 
     /// <summary>The first version that may carry the queue engine's pending empty-queue check (ARV-114d).</summary>
     public const int PendingAnchorSinceVersion = 8;
@@ -188,6 +201,9 @@ public sealed record ZoneProcessorState
 
     /// <summary>The first version that may carry the queue engine's runs of position samples (ARV-230).</summary>
     public const int SightingRunsSinceVersion = 11;
+
+    /// <summary>The first version that may carry the buffer's devices and full-buffer minutes (ARV-231).</summary>
+    public const int BufferSharesSinceVersion = 12;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }
@@ -216,6 +232,9 @@ public sealed record ZoneProcessorState
 
     /// <summary>The batches the zone applied within their window, by device and batch id (ARV-168), in the order they would be forgotten.</summary>
     public IReadOnlyList<RecentBatchState> RecentBatches { get; init; } = [];
+
+    /// <summary>The minutes, not yet published live, that a full buffer may have shortened (ARV-231, version 12), in time order.</summary>
+    public IReadOnlyList<DateTime> FullBufferMinutes { get; init; } = [];
 }
 
 /// <summary>
@@ -242,6 +261,11 @@ public sealed class ZoneProcessor
     private DateTime _reference = DateTime.MinValue;
     private DateTime? _lastLive;
     private long _batches, _uncommissioned, _wrongZone, _invalid, _otherZones, _repeated, _forgotten;
+    // ARV-231: the engine's refusals since the last acknowledgement, by kind, and the minutes not yet published live that a full
+    // buffer may have shortened (at most two days of them).
+    private readonly Dictionary<string, long> _refusals = new(StringComparer.Ordinal);
+    private readonly SortedSet<DateTime> _fullMinutes = [];
+    private const int MaxFullMinutes = 2 * 24 * 60;
     private RecentBatches _recent;
     private readonly List<MinuteResult> _minutes = [];
     private readonly List<BinResult> _binResults = [];
@@ -370,12 +394,14 @@ public sealed class ZoneProcessor
         // ARV-148: each event is offered with its own batch's receive time (capped as above), not the zone's latest one, so
         // an event moves the zone's clock at most to the time Ingest stamped on the push that carried it. That depends on
         // the records alone: a batch applied after the host ticked the zone on gives what a replay without ticks gives.
+        // ARV-231: the devices the zone has heard recently share its buffer, the ones that have not pushed for a while included.
+        _engine.ZoneDevices = _liveness.Count;
         foreach (var input in Inputs(batch, unreliable))
         {
             if (input is null)
                 _invalid++;
             else
-                _engine.Offer(input, reference);
+                _engine.Offer(input, reference, batch.DeviceCode);
         }
 
         // Remembered until the watermark is a lateness past its latest event (events beyond the engine's MaxAhead are
@@ -567,6 +593,7 @@ public sealed class ZoneProcessor
         do
         {
             step = _engine.Advance(_reference);
+            Refused(step.Rejections);
             var update = _bins.Accept(step, finalThrough);
             _minutes.AddRange(update.Minutes);
             _binResults.AddRange(update.Bins);
@@ -598,6 +625,9 @@ public sealed class ZoneProcessor
         _lastLive = minute;
         var length = step.Length;
         var deviceOut = _liveness.OutDuring(minute);
+        // ARV-231: a minute a full buffer may have shortened (events refused, or applied before their lateness was up).
+        var full = _fullMinutes.Contains(minute);
+        _fullMinutes.RemoveWhere(m => m <= minute);
         var window = _exits.Window(minute.AddMinutes(1), _settings.ExitWindowMinutes);
         // The desk term joins when the desks serving this queue have closed a minute recently (ARV-064).
         var desks = _desks is { } d && d.AsOfMinuteUtc >= minute.AddMinutes(-_settings.DeskTermFreshMinutes) ? d : null;
@@ -611,11 +641,11 @@ public sealed class ZoneProcessor
             QueueLength = length.Count,
             ExitsInWindow = window.Complete ? window.Exits : null,
             ExitWindowMinutes = _settings.ExitWindowMinutes,
-            Degraded = length.Degraded || deviceOut || window.DegradedExits > 0
+            Degraded = length.Degraded || deviceOut || full || window.DegradedExits > 0
         }, desks, cycleExits, _settings.SensorCycle);
         var nowcast = Nowcast.Compute(published, _settings.Nowcast);
         // ARV-117: the shadow nowcast without AMAN inputs, beside the published one, for the validation comparison only.
-        _live.Add(new QueueLiveMinute(ZoneKey, minute, length.Count, length.FromSensors, length.Degraded || deviceOut, nowcast.Minutes, nowcast.Throughput,
+        _live.Add(new QueueLiveMinute(ZoneKey, minute, length.Count, length.FromSensors, length.Degraded || deviceOut || full, nowcast.Minutes, nowcast.Throughput,
             nowcast.NoService, nowcast.Degraded) { Shadow = ShadowNowcast.From(Nowcast.Compute(shadow, _settings.Nowcast), cycle?.CycleMinutes) });
         _liveness.Published(minute);
     }
@@ -653,6 +683,7 @@ public sealed class ZoneProcessor
         _live.Clear();
         _recomputations.Clear();
         _outages.Clear();
+        _refusals.Clear();
         return outputs;
     }
 
@@ -662,7 +693,10 @@ public sealed class ZoneProcessor
     /// </summary>
     public ZoneOutputs Peek() =>
         new(ZoneKey, [.. _minutes], [.. _binResults], [.. _live], [.. _recomputations], [.. _outages], [.. _lineMinutes], [.. _health], [.. _overflow], [.. _overflowChanges],
-            [.. _deskReadings]);
+            [.. _deskReadings])
+        {
+            Refusals = [.. _refusals.OrderBy(r => r.Key, StringComparer.Ordinal).Select(r => new QueueRefusalCount(r.Key, r.Value))]
+        };
 
     /// <summary>Removes the outputs a <see cref="Peek"/> returned (the ones before any produced since).</summary>
     public void Acknowledge(ZoneOutputs written)
@@ -678,6 +712,25 @@ public sealed class ZoneProcessor
         _overflow.RemoveRange(0, Math.Min(written.Overflow.Count, _overflow.Count));
         _overflowChanges.RemoveRange(0, Math.Min(written.OverflowChanges.Count, _overflowChanges.Count));
         _deskReadings.RemoveRange(0, Math.Min(written.DeskReadings.Count, _deskReadings.Count));
+        foreach (var (kind, count) in written.Refusals)
+        {
+            var left = _refusals.GetValueOrDefault(kind) - count;
+            if (left > 0)
+                _refusals[kind] = left;
+            else
+                _refusals.Remove(kind);
+        }
+    }
+
+    private void Refused(QueueRejections rejections)
+    {
+        foreach (var (kind, count) in rejections.Counts())
+            _refusals[kind] = _refusals.GetValueOrDefault(kind) + count;
+        foreach (var minute in rejections.FullBufferMinutes)
+        {
+            if (_fullMinutes.Count < MaxFullMinutes && (_lastLive is not { } last || minute > last))
+                _fullMinutes.Add(minute);
+        }
     }
 
     /// <summary>
@@ -704,7 +757,8 @@ public sealed class ZoneProcessor
             OverflowOpen = _bands.CaptureOpen(),
             OverflowBands = _bands.CaptureBands(),
             DeskZones = _deskZones.Capture(),
-            RecentBatches = _recent.Capture()
+            RecentBatches = _recent.Capture(),
+            FullBufferMinutes = [.. _fullMinutes]
         };
     }
 
@@ -738,6 +792,8 @@ public sealed class ZoneProcessor
         var engine = zone._settings.Engine;
         zone._recent = RecentBatches.Restore(state.RecentBatches, zone._settings.MaxRememberedBatches, zone._settings.MaxRememberedBatchesPerDevice,
             zone._engine.WatermarkUtc, Plus(Plus(zone._reference, engine.MaxAhead), engine.Lateness));
+        foreach (var minute in state.FullBufferMinutes ?? [])
+            zone._fullMinutes.Add(DateTime.SpecifyKind(minute, DateTimeKind.Utc));
         return zone;
     }
 }

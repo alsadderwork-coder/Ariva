@@ -319,12 +319,13 @@ public sealed class ZoneProcessorTests
         zone.Tick(WallOf(1091));
         zone.Capture().Engine.PendingAnchorUtc.Should().BeNull("the next step applies the rest of 18:02 and runs it");
         // A version 7 snapshot carries no runs of position samples either (ARV-230, version 11).
-        ZoneProcessor.Restore(ZoneKey, Geometry, 3, settings, state with { Version = older, Engine = state.Engine with { PendingAnchorUtc = null, Runs = [] } }, notAfter)
+        var before12 = state.WrittenBefore12();
+        ZoneProcessor.Restore(ZoneKey, Geometry, 3, settings, before12 with { Version = older, Engine = before12.Engine with { PendingAnchorUtc = null, Runs = [] } }, notAfter)
             .Capture().Engine.PendingAnchorUtc.Should().BeNull("a version 7 snapshot restores with no check pending");
 
         foreach (var (bad, because) in new[]
                  {
-                     (state with { Version = older, Engine = state.Engine with { Runs = [] } }, "a version 7 snapshot carries no pending check"),
+                     (before12 with { Version = older, Engine = before12.Engine with { Runs = [] } }, "a version 7 snapshot carries no pending check"),
                      (state with { ReferenceUtc = state.Engine.WatermarkUtc }, "the check is of an event after the zone's clock"),
                      (state with { ReferenceUtc = DateTime.MinValue }, "a zone that never stepped has no check pending"),
                      (state with { Engine = state.Engine with { PendingAnchorUtc = at.AddSeconds(1) } }, "the check is not where the full step stopped"),

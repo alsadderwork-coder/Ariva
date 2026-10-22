@@ -9,15 +9,20 @@ namespace Ariva.Infra.Streaming;
 /// interval from what its consumer knows (the high watermark of each owned partition, from the fetch responses, less the
 /// next offset it reads), so it costs no broker call. Each instance reports only its own partitions, so the instances of a
 /// group add up; a measurement older than its freshness window, or one from a worker that stopped, is not reported.
+/// <see cref="QueueRefusedName"/> (ARV-231) counts the events each zone's queue engine refused or applied early, tagged with the
+/// <c>kind</c> (a <c>QueueRejections</c> property: BufferFull, DeviceShareFull, ForcedAdvances, Late and the others) and the
+/// <c>site</c> code, added once a checkpoint has written the zone's outputs.
 /// </summary>
 public sealed class StreamMetrics : IDisposable
 {
     public const string MeterName = "Ariva.Stream";
     public const string ConsumerLagName = "ariva.stream.consumer_lag";
+    public const string QueueRefusedName = "ariva.stream.queue_refused";
 
     #region Fields
 
     private readonly Meter _meter;
+    private readonly Counter<long> _refused;
     private readonly TimeProvider _time;
     private volatile Snapshot _last;
 
@@ -33,6 +38,8 @@ public sealed class StreamMetrics : IDisposable
         _meter = meterFactory?.Create(MeterName) ?? new Meter(MeterName);
         _meter.CreateObservableGauge(ConsumerLagName, Observe, unit: "{record}",
             description: "Records behind the end of each sensing topic for the partitions this Stream instance owns");
+        _refused = _meter.CreateCounter<long>(QueueRefusedName, unit: "{event}",
+            description: "Events a zone's queue engine refused or applied early, by kind and site");
     }
 
     #endregion
@@ -52,6 +59,13 @@ public sealed class StreamMetrics : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(group);
         ArgumentNullException.ThrowIfNull(lagByTopic);
         _last = new Snapshot(group, [.. lagByTopic.OrderBy(l => l.Key, StringComparer.Ordinal).Select(l => (l.Key, l.Value))], _time.GetUtcNow(), freshFor);
+    }
+
+    /// <summary>Counts <paramref name="count"/> events of <paramref name="kind"/> refused at <paramref name="site"/> (ARV-231).</summary>
+    public void Refused(string site, string kind, long count)
+    {
+        if (count > 0)
+            _refused.Add(count, new KeyValuePair<string, object>("kind", kind), new KeyValuePair<string, object>("site", site));
     }
 
     /// <summary>Nothing more to report (the worker stopped).</summary>

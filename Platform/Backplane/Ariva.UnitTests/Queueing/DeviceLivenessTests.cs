@@ -191,7 +191,7 @@ public sealed class DeviceLivenessTests
         var state = zone.Capture();
         var notAfter = Start.AddDays(1);
 
-        ZoneProcessor.Restore(ZoneKey, Geometry, 12, new ZoneProcessorSettings(), state with { Version = 1, Devices = [], RecentOutages = [] }, notAfter)
+        ZoneProcessor.Restore(ZoneKey, Geometry, 12, new ZoneProcessorSettings(), state.WrittenBefore12() with { Version = 1, Devices = [], RecentOutages = [] }, notAfter)
             .Capture().Devices.Should().BeEmpty("a version 1 snapshot has heard no devices yet");
         var device = state.Devices[0];
         foreach (var bad in new[]

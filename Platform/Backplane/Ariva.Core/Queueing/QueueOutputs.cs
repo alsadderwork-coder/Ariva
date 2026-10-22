@@ -121,8 +121,31 @@ public sealed record QueueRejections
     /// <summary>Tracked crossings counted as anonymous because the zone already has the most devices it tracks separately.</summary>
     public long TooManyDevices { get; init; }
 
+    /// <summary>Events refused because their device already held its share of the buffer (ARV-231).</summary>
+    public long DeviceShareFull { get; init; }
+
+    /// <summary>
+    /// The minutes (of event time) whose counts a full buffer may have shortened (ARV-231): those of the events refused for a
+    /// full buffer or a device's full share, and those a forced advance processed before their lateness was up (events of them
+    /// arriving later are late). In time order.
+    /// </summary>
+    public IReadOnlyList<DateTime> FullBufferMinutes { get; init; } = [];
+
     public bool Any => Late + Future + Invalid + UnknownGeometry + Duplicates + Reverse + UnmatchedExits + NegativeWaits + BufferFull +
-        ForcedAdvances + TooManyDevices > 0;
+        ForcedAdvances + TooManyDevices + DeviceShareFull > 0;
+
+    /// <summary>The counts by kind (ARV-231: the stream's refusal metric and warnings), the kinds with none left out.</summary>
+    public IEnumerable<(string Kind, long Count)> Counts()
+    {
+        (string Kind, long Count)[] all =
+        [
+            (nameof(Late), Late), (nameof(Future), Future), (nameof(Invalid), Invalid), (nameof(UnknownGeometry), UnknownGeometry),
+            (nameof(Duplicates), Duplicates), (nameof(Reverse), Reverse), (nameof(UnmatchedExits), UnmatchedExits),
+            (nameof(NegativeWaits), NegativeWaits), (nameof(BufferFull), BufferFull), (nameof(ForcedAdvances), ForcedAdvances),
+            (nameof(TooManyDevices), TooManyDevices), (nameof(DeviceShareFull), DeviceShareFull)
+        ];
+        return all.Where(k => k.Count > 0);
+    }
 }
 
 /// <summary>

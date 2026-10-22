@@ -99,8 +99,11 @@ public sealed partial class MetricTagTests
             certificates.Track(CertificateMetrics.MqttServer, DateTime.UtcNow.AddDays(30));
         },
         [typeof(OutboxMetrics)] = m => ((OutboxMetrics)m).Report(new OutboxBacklog(3, DateTime.UtcNow.AddMinutes(-1)), TimeSpan.FromMinutes(1)),
-        [typeof(StreamMetrics)] = m => ((StreamMetrics)m).Report("ariva-stream.queue-engine",
-            new Dictionary<string, long> { [KafkaTopics.DeviceZoneOccupancy] = 5 }, TimeSpan.FromMinutes(1)),
+        [typeof(StreamMetrics)] = m =>
+        {
+            ((StreamMetrics)m).Report("ariva-stream.queue-engine", new Dictionary<string, long> { [KafkaTopics.DeviceZoneOccupancy] = 5 }, TimeSpan.FromMinutes(1));
+            ((StreamMetrics)m).Refused("AUH-TA", nameof(Ariva.Core.Queueing.QueueRejections.BufferFull), 3);
+        },
         [typeof(UploadScanMetrics)] = m => ((UploadScanMetrics)m).Report(
             new Ariva.Core.Services.Storage.MalwareSignatures("1.4.3", 27927, DateTime.UtcNow.AddHours(-3)), TimeSpan.FromMinutes(30)),
         [typeof(Ariva.Api.Common.Logging.SecurityEventMetrics)] = m =>

@@ -1,0 +1,93 @@
+{
+  "alert": "Ariva queue engine refusing events (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "A zone's queue engine refused events for a full buffer or a device's full share of it, so crossings or readings were lost and their minutes are marked degraded (ARV-231).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.stream.queue_refused",
+                "timeAggregation": "increase",
+                "spaceAggregation": "sum"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}' AND kind IN ${queueRefused.kinds}"
+            },
+            "groupBy": [
+              {
+                "name": "site",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "kind",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{site}} {{kind}}"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${queueRefused.severity}",
+          "op": "above",
+          "matchType": "in_total",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${queueRefused.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "site",
+      "kind"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "queueRefused",
+    "environment": "${environment}",
+    "severity": "${queueRefused.severity}"
+  },
+  "annotations": {
+    "summary": "Queue engine refusing events at {{$site}}",
+    "description": "{{$value}} events refused ({{$kind}}) at {{$site}} in the last ${queueRefused.minutes} minutes: the zone's buffer, or one device's share of it, was full. Stream's log names the zone.",
+    "runbook": "wiki/10-Operations-Runbook.md#422-queue-engine-refusals-arv-231"
+  },
+  "disabled": false
+}

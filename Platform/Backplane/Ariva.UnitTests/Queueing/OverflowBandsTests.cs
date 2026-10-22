@@ -475,7 +475,7 @@ public sealed class OverflowBandsTests
         var zone = new ZoneProcessor("DMO/A-VIS", Geometry, 12, ReceiveClock);
         zone.Tick(At(1));
         // A version 4 snapshot as the stream stored it before ARV-115: no overflow properties at all.
-        var json = JsonSerializer.SerializeToNode(zone.Capture() with { Version = 4 }, EventCatalog.Json)!.AsObject();
+        var json = JsonSerializer.SerializeToNode(zone.Capture().WrittenBefore12() with { Version = 4 }, EventCatalog.Json)!.AsObject();
         json.Remove("overflowOpen");
         json.Remove("overflowBands");
         var old = json.Deserialize<ZoneProcessorState>(EventCatalog.Json)!;
@@ -520,7 +520,7 @@ public sealed class OverflowBandsTests
         zone.Tick(At(2));
         zone.Drain();
         // A version 5 snapshot as the stream stored it before the Unknown state: band states without the property.
-        var json = JsonSerializer.SerializeToNode(zone.Capture() with { Version = 5 }, EventCatalog.Json)!.AsObject();
+        var json = JsonSerializer.SerializeToNode(zone.Capture().WrittenBefore12() with { Version = 5 }, EventCatalog.Json)!.AsObject();
         foreach (var band in json["overflowBands"]!.AsArray())
             band!.AsObject().Remove("unknown");
         var old = json.Deserialize<ZoneProcessorState>(EventCatalog.Json)!;
