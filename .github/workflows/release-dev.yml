@@ -229,7 +229,7 @@ jobs:
       # ARV-084: read only. Lists the Ingresses the release left (each names its plain HTTP mode) and checks their hosts from
       # outside: TLS handshakes, GET /, a POST that announces a body over every limit and sends none (the ingress answers 413
       # before any pod sees it) and a plain HTTP GET /.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       - name: TLS check of the released hosts (ARV-084)
