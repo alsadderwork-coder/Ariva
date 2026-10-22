@@ -4,6 +4,7 @@ using Ariva.Core.Border;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Services.Border;
 using Ariva.Infra.Integration.Outbound;
+using Ariva.Infra.Resilience;
 using Ariva.Infra.Services.Foundation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -205,14 +206,22 @@ internal sealed class SvcAmanPull(IUnitOfWork unitOfWork, ICurrentUser currentUs
 /// credentials: the token cached and renewed by <see cref="TokenHandler"/>, <c>X-TOTP-Code</c> on every call when the
 /// endpoint needs it; the SSRF control and the resilience of ARV-045), up to <see cref="MaxPagesPerPoll"/> pages, applying
 /// each page with its new position in one unit of work, then records the outcome on the endpoint. Records AMAN also sent
-/// over another transport are unchanged (the intake keeps one per site and source event id).
+/// over another transport are unchanged (the intake keeps one per site and source event id). A round ends at
+/// <see cref="RunTimeout"/> (ARV-096e): the pages already applied keep their position, a pull it cut is recorded on its endpoint
+/// as a failure (so the endpoint waits longer before the next), and the next poll goes on from the last page applied.
 /// </summary>
 internal sealed class AmanPoller(IServiceScopeFactory scopes, OutboundClients clients, TimeProvider time, Microsoft.Extensions.Configuration.IConfiguration configuration,
-    ILogger<AmanPoller> logger) : BackgroundService
+    ILogger<AmanPoller> logger) : BackgroundService, IBoundedRuns
 {
     public static readonly TimeSpan Tick = TimeSpan.FromSeconds(15);
     public const int MaxPagesPerPoll = 20;
     private const int ClaimsPerTick = 4;
+
+    /// <summary>
+    /// Five minutes: a poll of four endpoints, each its pages one call at a time within the endpoint's own call timeout. A slower
+    /// partner is cut here and asked again from where it stopped.
+    /// </summary>
+    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(5);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -240,8 +249,11 @@ internal sealed class AmanPoller(IServiceScopeFactory scopes, OutboundClients cl
         while (await WaitAsync(timer, stoppingToken));
     }
 
-    /// <summary>One round: claim due endpoints and pull each. Public for tests.</summary>
-    public async Task<int> RunOnceAsync(CancellationToken ct)
+    /// <summary>One round under the run timeout: claim due endpoints and pull each. Public for tests.</summary>
+    public Task<int> RunOnceAsync(CancellationToken stoppingToken) =>
+        RunBound.RunAsync("AMAN pull", RunTimeout, time, ct => RoundAsync(ct, stoppingToken), stoppingToken);
+
+    private async Task<int> RoundAsync(CancellationToken ct, CancellationToken stoppingToken)
     {
         IReadOnlyList<AmanPullClaim> claims;
         await using (var scope = scopes.CreateAsyncScope())
@@ -250,11 +262,11 @@ internal sealed class AmanPoller(IServiceScopeFactory scopes, OutboundClients cl
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().EndAsync(ct);
         }
 
-        await Task.WhenAll(claims.Select(claim => PullAsync(claim, ct)));
+        await Task.WhenAll(claims.Select(claim => PullAsync(claim, ct, stoppingToken)));
         return claims.Count;
     }
 
-    private async Task PullAsync(AmanPullClaim claim, CancellationToken ct)
+    private async Task PullAsync(AmanPullClaim claim, CancellationToken ct, CancellationToken stoppingToken)
     {
         var success = false;
         string status;
@@ -321,10 +333,19 @@ internal sealed class AmanPoller(IServiceScopeFactory scopes, OutboundClients cl
             status = "The pull failed in Ariva; see the Integration log.";
             logger.LogError(e, "AMAN pull from {Endpoint} failed in Ariva", claim.Target.Code);
         }
+#pragma warning disable CA1031 // the round's run timeout (ARV-096e) cut it: recorded as a failure, the round then reports the cut
+        catch (Exception) when (ct.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
+#pragma warning restore CA1031
+        {
+            status = string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"The pull ran past the poll's run timeout of {RunTimeout.TotalSeconds:0} s and was cut; the next poll goes on from the last page applied.");
+            logger.LogWarning("AMAN pull from {Endpoint} was cut by the poll's run timeout", claim.Target.Code);
+        }
 
+        // Recorded with the host's token: a cut pull is still recorded (each statement within the database command timeout).
         await using var record = scopes.CreateAsyncScope();
-        await record.ServiceProvider.GetRequiredService<SvcAmanPull>().RecordAsync(claim.Target.Id, success, status, ct);
-        await record.ServiceProvider.GetRequiredService<IUnitOfWork>().EndAsync(ct);
+        await record.ServiceProvider.GetRequiredService<SvcAmanPull>().RecordAsync(claim.Target.Id, success, status, stoppingToken);
+        await record.ServiceProvider.GetRequiredService<IUnitOfWork>().EndAsync(stoppingToken);
     }
 
     private sealed record PageRead(object Page, int Count, int Unreadable);

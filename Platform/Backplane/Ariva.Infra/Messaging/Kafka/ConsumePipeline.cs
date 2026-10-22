@@ -5,7 +5,8 @@ namespace Ariva.Infra.Messaging.Kafka;
 
 /// <summary>
 /// The consume pipe of every Ariva endpoint (ADR-0018), from the outside in: bounded exponential retry, dead letter
-/// (acts on the final attempt only), inbox and unit of work (a fresh scope per attempt), consumer. The same method
+/// (acts on the final attempt only), the handler timeout (each attempt, ARV-096e), inbox and unit of work (a fresh scope per
+/// attempt), consumer. The same method
 /// configures rider topic endpoints and the in-memory endpoints of the tests, so the tests prove what the rider runs.
 /// </summary>
 public static class ConsumePipeline
@@ -47,6 +48,12 @@ public static class ConsumePipeline
             // on an endpoint): the stop waits out the rest of the schedule, and the final attempt dead-letters the message
             // or keeps its letter (ARV-171), so a retry wait never leaves a faulted record behind.
         });
+        // ARV-096e: each attempt (inbox, unit of work and consumer) ends at the handler timeout; inside the dead-letter filter, so
+        // a cut attempt is retried and the last one dead-lettered.
+        endpoint.UseFilter(new HandlerTimeoutFilter(
+            TimeSpan.FromSeconds(settings.HandlerTimeoutSeconds),
+            context.GetRequiredService<TimeProvider>(),
+            context.GetRequiredService<ILogger<HandlerTimeoutFilter>>()));
         endpoint.UseConsumeFilter(typeof(InboxFilter<>), context);
         endpoint.ConfigureDeadLetter(skipped => skipped.UseFilter(new UnreadableFilter(
             context.GetRequiredService<IDeadLetterSink>(),

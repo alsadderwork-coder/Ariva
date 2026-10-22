@@ -141,16 +141,24 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
             return ReportDeliveryOutcome.Failed;
         }
 
-        var failures = await transport.SendAsync([email], ct);
-        if (failures.TryGetValue(row.Id, out var reason))
+        var batch = await transport.SendAsync([email], ct);
+        // ARV-096e: a round cut before the send leaves the delivery pending, no attempt counted.
+        if (batch.NotTried.Contains(row.Id))
         {
-            await MarkAsync(row.Id, "Failed", row.Attempts + 1, EmailTemplates.Clean(reason), null, ct);
+            ct.ThrowIfCancellationRequested();
+            throw new InvalidOperationException("The transport did not try the report's email.");
+        }
+
+        // Once the relay has answered, the outcome is recorded whatever the round's token says, so a sent report is never sent again.
+        if (batch.Failures.TryGetValue(row.Id, out var reason))
+        {
+            await MarkAsync(row.Id, "Failed", row.Attempts + 1, EmailTemplates.Clean(reason), null, CancellationToken.None);
             logger.LogWarning("Report delivery {DeliveryId} of schedule {ScheduleId} failed (attempt {Attempt})", row.Id, row.ScheduleId, row.Attempts + 1);
             UnitOfWork.PromiseToCommit();
             return ReportDeliveryOutcome.Failed;
         }
 
-        await MarkAsync(row.Id, "Sent", row.Attempts + 1, null, now, ct);
+        await MarkAsync(row.Id, "Sent", row.Attempts + 1, null, now, CancellationToken.None);
         UnitOfWork.PromiseToCommit();
         return ReportDeliveryOutcome.Sent;
     }
@@ -286,7 +294,8 @@ public sealed class ReportDeliveryRound(IServiceScopeFactory scopes, ILogger<Rep
             try
             {
                 var outcome = await scope.ServiceProvider.GetRequiredService<ISvcReportDeliveries>().DeliverAsync(id, ct);
-                await unitOfWork.EndAsync(ct);
+                // Committed whatever the round's token says: a delivery the relay took is recorded as sent (ARV-096e).
+                await unitOfWork.EndAsync(CancellationToken.None);
                 sent += outcome == ReportDeliveryOutcome.Sent ? 1 : 0;
                 skipped += outcome == ReportDeliveryOutcome.Skipped ? 1 : 0;
                 failed += outcome == ReportDeliveryOutcome.Failed ? 1 : 0;

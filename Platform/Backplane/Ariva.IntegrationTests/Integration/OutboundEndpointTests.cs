@@ -6,6 +6,7 @@ using Ariva.Core.Services.Integration;
 using Ariva.Di.Extensions;
 using Ariva.Infra.Flights.Acris;
 using Ariva.Infra.Integration;
+using Ariva.Infra.Resilience;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Seed;
 using Ariva.IntegrationTests.Security;
@@ -20,6 +21,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
 namespace Ariva.IntegrationTests.Integration;
@@ -297,6 +299,81 @@ public sealed class OutboundEndpointTests(PostgresFixture fixture) : IAsyncDispo
         exchanges.Should().Be(1, "the token is cached until shortly before it expires");
         calls.Should().Contain(("desk-interval-stats", "3", true));
         (await _host.ReadAsync<string>("SELECT last_status FROM outbound_endpoint WHERE code = 'aman-dmo'")).Should().StartWith("Pulled 0 AMAN records");
+    }
+
+    /// <summary>The pollers with a run timeout short enough for a test (ARV-096e); built like the hosts' own.</summary>
+    private Task<(AcrisPoller Acris, Ariva.Infra.Border.AmanPoller Aman)> PollersAsync(TimeSpan runTimeout) =>
+        _host.AsCallerAsync(null, s => Task.FromResult((
+            new AcrisPoller(s.GetRequiredService<IServiceScopeFactory>(), s.GetRequiredService<Ariva.Infra.Integration.Outbound.OutboundClients>(), _host.Clock,
+                s.GetRequiredService<IConfiguration>(), NullLogger<AcrisPoller>.Instance) { RunTimeout = runTimeout },
+            new Ariva.Infra.Border.AmanPoller(s.GetRequiredService<IServiceScopeFactory>(), s.GetRequiredService<Ariva.Infra.Integration.Outbound.OutboundClients>(), _host.Clock,
+                s.GetRequiredService<IConfiguration>(), NullLogger<Ariva.Infra.Border.AmanPoller>.Instance) { RunTimeout = runTimeout })));
+
+    [Fact]
+    public async Task Polls_Should_RecordThePullTheirRunTimeoutCut_When_ThePartnerStopsAnswering()
+    {
+        // ARV-096e: a partner that takes the call and never answers holds a poll until the poll's run timeout (the endpoints' own call
+        // timeout, 60 s, is longer here). The cut pull is recorded on its endpoint as a failure, so it waits longer before the next, and
+        // the round reports the cut.
+        var p = await AdminsAsync();
+        var asked = 0;
+        await using var server = await LoopbackServer.StartAsync(async c =>
+        {
+            Interlocked.Increment(ref asked);
+            await Task.Delay(Timeout.Infinite, c.RequestAborted).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        });
+        var url = $"http://127.0.0.1:{server.Port}/";
+        (await CreateAsync(p.All, new CreateOutboundEndpointRequest("cut-acris", "Stalled ACRIS", "AcrisFlights", ["DMO"],
+            new OutboundConnectionRequest(url, ["127.0.0.0/8"], "ApiKeyHeader", HeaderName: "X-Api-Key", TimeoutSeconds: 60, RetryCount: 0, PullPath: "/acris/flights",
+                PollSeconds: 30),
+            new OutboundSecretRequest(ApiKey: "the-key-cut-acris")))).HasErrors.Should().BeFalse();
+        (await CreateAsync(p.All, new CreateOutboundEndpointRequest("cut-aman", "Stalled AMAN", "AmanFeed", ["DMO"],
+            new OutboundConnectionRequest(url + "aman/api/v1/", ["127.0.0.0/8"], "TotpClientCredentials", TokenPath: "/auth", ClientId: "ariva-pull", TotpPerRequest: true,
+                TimeoutSeconds: 60, RetryCount: 0, PullPath: "/feed/", PollSeconds: 30),
+            new OutboundSecretRequest(ClientSecret: "aman-secret-1", TotpSeed: Ariva.Infra.Security.Base32.Encode(Ariva.Infra.Security.Totp.NewSecret()))))).HasErrors.Should().BeFalse();
+        // Only this test's endpoints are due.
+        await _host.ReadAsync<long>("WITH d AS (UPDATE outbound_endpoint SET status = 'Disabled' WHERE purpose IN ('AcrisFlights', 'AmanFeed') AND code NOT LIKE 'cut-%' RETURNING 1) " +
+            "SELECT count(*) FROM d");
+        var (acris, aman) = await PollersAsync(TimeSpan.FromSeconds(2));
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        var acrisPoll = () => acris.RunOnceAsync(Ct);
+        var amanPoll = () => aman.RunOnceAsync(Ct);
+
+        (await acrisPoll.Should().ThrowAsync<RunTimeoutException>()).Which.Run.Should().Be("ACRIS pull");
+        (await amanPoll.Should().ThrowAsync<RunTimeoutException>()).Which.Run.Should().Be("AMAN pull");
+        watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30), "each poll was cut at its 2 s, not at the endpoints' 60 s");
+        asked.Should().Be(2, "each poll reached its partner, which never answered");
+        (await _host.ReadAsync<string>("SELECT last_status || ' ' || consecutive_failures FROM outbound_endpoint WHERE code = 'cut-acris'"))
+            .Should().Be("The pull ran past the poll's run timeout of 2 s and was cut; the next poll asks again. 1");
+        (await _host.ReadAsync<string>("SELECT last_status || ' ' || consecutive_failures FROM outbound_endpoint WHERE code = 'cut-aman'"))
+            .Should().Be("The pull ran past the poll's run timeout of 2 s and was cut; the next poll goes on from the last page applied. 1");
+        (await acris.RunOnceAsync(Ct)).Should().Be(0, "a failed endpoint waits twice its interval before it is due again");
+        new AcrisPoller(null, null, TimeProvider.System, null, null).RunTimeout.Should().Be(TimeSpan.FromMinutes(5));
+    }
+
+    [Fact]
+    public async Task Polls_Should_EndAtTheirRunTimeout_When_TheDatabaseHoldsTheirStatement()
+    {
+        // ARV-096e: a statement that waits on the database (here a lock another session holds on the endpoints) is cancelled at the
+        // run timeout through the run's token, well before the 30 s command timeout would end it.
+        await AdminsAsync();
+        var (acris, aman) = await PollersAsync(TimeSpan.FromSeconds(1));
+        await using var holder = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
+        await holder.OpenAsync(Ct);
+        await using var hold = await holder.BeginTransactionAsync(Ct);
+        await using (var lockEndpoints = new NpgsqlCommand("LOCK TABLE outbound_endpoint IN ACCESS EXCLUSIVE MODE", holder, hold))
+            await lockEndpoints.ExecuteNonQueryAsync(Ct);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        var acrisPoll = () => acris.RunOnceAsync(Ct);
+        var amanPoll = () => aman.RunOnceAsync(Ct);
+
+        await acrisPoll.Should().ThrowAsync<RunTimeoutException>();
+        await amanPoll.Should().ThrowAsync<RunTimeoutException>();
+        watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(15), "each claim was cancelled at its 1 s run timeout, not the 30 s command timeout");
+        await hold.RollbackAsync(Ct);
+        (await acris.RunOnceAsync(Ct)).Should().BeGreaterThanOrEqualTo(0, "the next poll runs once the database answers");
     }
 
     [Theory]

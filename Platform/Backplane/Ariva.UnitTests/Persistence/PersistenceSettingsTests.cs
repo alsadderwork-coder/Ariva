@@ -102,6 +102,33 @@ public sealed class PersistenceSettingsTests
         new NpgsqlConnectionStringBuilder(new DatabaseSettings().BuildConnectionString()).CommandTimeout.Should().Be(30, "Npgsql's own default, now said");
     }
 
+    [Fact]
+    public void BuildConnectionString_Should_SetTheConnectTimeout_When_BuildingEitherLogin()
+    {
+        // ARV-096e: a run timeout cannot cut a connection the server never answers, so this bounds that wait.
+        var settings = new DatabaseSettings { ConnectTimeoutSeconds = 7, Migration = new MigrationLoginSettings { Username = "ariva", Password = "x" } };
+
+        new NpgsqlConnectionStringBuilder(settings.BuildConnectionString()).Timeout.Should().Be(7);
+        new NpgsqlConnectionStringBuilder(settings.BuildMigrationConnectionString()).Timeout.Should().Be(7);
+        new NpgsqlConnectionStringBuilder(new DatabaseSettings().BuildConnectionString()).Timeout.Should().Be(15, "Npgsql's own default, now said");
+    }
+
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(2, true)]
+    [InlineData(15, true)]
+    [InlineData(60, true)]
+    [InlineData(61, false)]
+    public void ConnectTimeout_Should_BeRefusedOutsideItsBounds_When_Configured(int seconds, bool valid)
+    {
+        var check = new DatabaseSettings { ConnectTimeoutSeconds = seconds }.EnsureValidTimeouts;
+
+        if (valid)
+            check.Should().NotThrow();
+        else
+            check.Should().Throw<InvalidOperationException>().WithMessage("Database:ConnectTimeoutSeconds is a whole number of seconds from 2 to 60 (ARV-096e).");
+    }
+
     [Theory]
     [InlineData(30, 360, true)]
     [InlineData(5, 301, true)]

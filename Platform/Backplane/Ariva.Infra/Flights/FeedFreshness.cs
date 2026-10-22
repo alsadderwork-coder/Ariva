@@ -3,6 +3,7 @@ using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Flights;
 using Ariva.Core.Services.Flights;
+using Ariva.Infra.Resilience;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -106,10 +107,35 @@ public sealed class FlightMetrics : IDisposable
     public void Dispose() => _meter.Dispose();
 }
 
-/// <summary>Sweeps the flight feeds every <see cref="FlightFeedSettings.SweepSeconds"/> in Ariva.Api.Integration (ARV-041).</summary>
+/// <summary>
+/// Sweeps the flight feeds every <see cref="FlightFeedSettings.SweepSeconds"/> in Ariva.Api.Integration (ARV-041); a sweep ends at
+/// <see cref="RunTimeout"/> (ARV-096e) and is rolled back, and the next one sweeps again.
+/// </summary>
 internal sealed class FeedFreshnessMonitor(IServiceScopeFactory scopes, FlightFeedSettings settings, TimeProvider timeProvider, ILogger<FeedFreshnessMonitor> logger)
-    : BackgroundService
+    : BackgroundService, IBoundedRuns
 {
+    /// <summary>One minute: a sweep reads and updates the configured feeds only.</summary>
+    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>One sweep under the run timeout (tests).</summary>
+    internal Task RunOnceAsync(CancellationToken stoppingToken) => RunBound.RunAsync("Flight feed freshness sweep", RunTimeout, timeProvider, async ct =>
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        try
+        {
+            await scope.ServiceProvider.GetRequiredService<ISvcFeedFreshness>().SweepAsync(ct);
+            unitOfWork.PromiseToCommit();
+            await unitOfWork.EndAsync(ct);
+        }
+        catch
+        {
+            // A sweep that failed or was cut part way is rolled back (a promised unit would otherwise commit as the scope ends).
+            await unitOfWork.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }, stoppingToken);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(settings.SweepSeconds), timeProvider);
@@ -117,11 +143,7 @@ internal sealed class FeedFreshnessMonitor(IServiceScopeFactory scopes, FlightFe
         {
             try
             {
-                await using var scope = scopes.CreateAsyncScope();
-                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                await scope.ServiceProvider.GetRequiredService<ISvcFeedFreshness>().SweepAsync(stoppingToken);
-                unitOfWork.PromiseToCommit();
-                await unitOfWork.EndAsync(stoppingToken);
+                await RunOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

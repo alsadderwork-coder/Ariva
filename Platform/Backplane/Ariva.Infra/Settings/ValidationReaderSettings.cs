@@ -119,7 +119,7 @@ internal sealed partial class ValidationReaderSettings
 
     /// <summary>
     /// The reader's connection: host, port, database and TLS from <paramref name="database"/>, the login from this section,
-    /// its own application name and a small pool of its own. Built with Npgsql's builder, so a password holding ';' cannot add
+    /// its own application name and a small pool of its own, and the hosts' connect timeout (ARV-096e). Built with Npgsql's builder, so a password holding ';' cannot add
     /// options. Only the validation service's shadow read calls it (a source scan pins the caller).
     /// </summary>
     internal string BuildReaderConnectionString(DatabaseSettings database)
@@ -137,7 +137,8 @@ internal sealed partial class ValidationReaderSettings
             Password = Password,
             SslMode = database.UseEncryption ? SslMode.VerifyFull : SslMode.Disable,
             ApplicationName = ApplicationName,
-            MaxPoolSize = MaxPoolSize
+            MaxPoolSize = MaxPoolSize,
+            Timeout = database.ConnectTimeoutSeconds
         };
         database.ApplyRootCertificate(builder);
         return builder.ConnectionString;

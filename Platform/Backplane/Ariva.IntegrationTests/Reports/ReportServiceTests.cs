@@ -308,6 +308,34 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
             .Should().Be("Sent,Sent,Sent");
     }
 
+    [Fact]
+    public async Task Round_Should_KeepAReportTheRelayTookAsSent_When_ItsRunTimeoutCutsTheRoundAfterTheSend()
+    {
+        // ARV-096e: the round is cut while the relay finishes a report it has already taken. The delivery is recorded as sent all
+        // the same (committed whatever the round's token says), the round stops there, and the next round sends only what is left,
+        // so no recipient gets a report twice.
+        var admin = await AdminAsync();
+        var one = await UserAsync(admin, RoleCodes.TerminalDutyManager, "DMO", "cut.one@ariva.test");
+        var two = await UserAsync(admin, RoleCodes.TerminalDutyManager, "DMO", "cut.two@ariva.test");
+        var schedule = (await Host.AsCallerAsync(admin, s => Schedules(s).CreateAsync(new ReportScheduleRequest("DMO", "Cut short", null, "06:00", [one, two]), Ct))).Data;
+        _transport.SlowAfterTaking = "cut.one@ariva.test";
+        var round = Host.Provider.GetRequiredService<ReportDeliveryRound>();
+
+        var cut = () => Ariva.Infra.Resilience.RunBound.RunAsync("Report deliveries", TimeSpan.FromSeconds(3), TimeProvider.System, round.RunAsync, Ct);
+
+        await cut.Should().ThrowAsync<Ariva.Infra.Resilience.RunTimeoutException>();
+        _transport.SentTo("cut.one@ariva.test").Should().Be(1);
+        (await Host.ReadAsync<string>("SELECT status || ':' || attempts FROM report_delivery d JOIN \"user\" u ON u.id = d.recipient_id WHERE d.schedule_id = @id AND u.email = @secret",
+            schedule.Id, "cut.one@ariva.test")).Should().Be("Sent:1", "the relay took it before the cut");
+
+        _transport.SlowAfterTaking = null;
+        await RunAsync();
+        _transport.SentTo("cut.one@ariva.test").Should().Be(1, "a report the relay took is never sent again");
+        _transport.SentTo("cut.two@ariva.test").Should().Be(1);
+        (await Host.ReadAsync<string>("SELECT string_agg(status, ',' ORDER BY status) FROM report_delivery WHERE schedule_id = @id", schedule.Id))
+            .Should().Be("Sent,Sent");
+    }
+
     private Task<ReportDeliveryRun> RunAsync() => Host.Provider.GetRequiredService<ReportDeliveryRound>().RunAsync(Ct);
 
     private static string Text(EmailAttachment attachment) => Encoding.UTF8.GetString(attachment.Content);
@@ -327,6 +355,12 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
         public List<OutgoingEmail> Sent { get; } = [];
         public HashSet<string> FailFor { get; } = new(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// A recipient whose report the relay takes and then answers slowly (ARV-096e): the send is recorded, then waits until the
+        /// round's token is cancelled before it returns as sent.
+        /// </summary>
+        public string SlowAfterTaking { get; set; }
+
         public Task FirstSendEntered => _entered.Task;
 
         public bool ReleasedBySend { get; private set; }
@@ -344,7 +378,7 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
                 return Sent.Count(e => string.Equals(e.Recipient, recipient, StringComparison.OrdinalIgnoreCase));
         }
 
-        public async Task<IReadOnlyDictionary<Guid, string>> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
+        public async Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
         {
             if (Interlocked.CompareExchange(ref _holding, 2, 1) == 1)
             {
@@ -367,7 +401,10 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
                 }
             }
 
-            return failures;
+            if (SlowAfterTaking is { } slow && emails.Any(e => string.Equals(e.Recipient, slow, StringComparison.OrdinalIgnoreCase)) && failures.Count == 0)
+                await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+            return EmailBatch.Tried(failures);
         }
     }
 }

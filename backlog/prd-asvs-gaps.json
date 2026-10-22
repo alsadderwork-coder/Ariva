@@ -768,7 +768,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 116,
-      "passes": false,
+      "passes": true,
       "dependsOn": [
         "ARV-096"
       ],

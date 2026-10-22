@@ -80,6 +80,20 @@ public sealed class DatabaseSettings
     /// </summary>
     public int StatementTimeoutSeconds { get; init; } = 360;
 
+    /// <summary>The bounds of <see cref="ConnectTimeoutSeconds"/>.</summary>
+    public const int MinConnectTimeoutSeconds = 2;
+
+    /// <inheritdoc cref="MinConnectTimeoutSeconds"/>
+    public const int MaxConnectTimeoutSeconds = 60;
+
+    /// <summary>
+    /// ARV-096e: how long a host waits for the server to accept a new connection (Npgsql's <c>Timeout</c>), in seconds. A job's or a
+    /// loop's run timeout cannot cut this wait (Npgsql does not take the token while it opens a connection), so a server that
+    /// accepts and never answers holds a run this long at the most. 15, Npgsql's own default, said explicitly; a host and the
+    /// migration job refuse to start outside <see cref="MinConnectTimeoutSeconds"/> to <see cref="MaxConnectTimeoutSeconds"/>.
+    /// </summary>
+    public int ConnectTimeoutSeconds { get; init; } = 15;
+
     /// <summary>The login the migration job uses (DDL). Hosts never use it.</summary>
     public MigrationLoginSettings Migration { get; init; } = new();
 
@@ -116,13 +130,15 @@ public sealed class DatabaseSettings
         return fileExists(RootCertificate) ? null : "Database:RootCertificate names a file that does not exist: mount the database CA secret.";
     }
 
-    /// <summary>What is out of range among the timeouts (ARV-096d); empty when both may be used.</summary>
+    /// <summary>What is out of range among the timeouts (ARV-096d, ARV-096e); empty when all may be used.</summary>
     public IEnumerable<string> TimeoutProblems()
     {
         if (CommandTimeoutSeconds is < MinCommandTimeoutSeconds or > MaxCommandTimeoutSeconds)
             yield return Range(nameof(CommandTimeoutSeconds), MinCommandTimeoutSeconds, MaxCommandTimeoutSeconds);
         if (StatementTimeoutSeconds is < MinStatementTimeoutSeconds or > MaxStatementTimeoutSeconds)
             yield return Range(nameof(StatementTimeoutSeconds), MinStatementTimeoutSeconds, MaxStatementTimeoutSeconds);
+        if (ConnectTimeoutSeconds is < MinConnectTimeoutSeconds or > MaxConnectTimeoutSeconds)
+            yield return Range(nameof(ConnectTimeoutSeconds), MinConnectTimeoutSeconds, MaxConnectTimeoutSeconds, "ARV-096e");
     }
 
     /// <summary>Stops a host or the migration job at start when a timeout is out of range.</summary>
@@ -133,8 +149,8 @@ public sealed class DatabaseSettings
             throw new InvalidOperationException(string.Join(" ", problems));
     }
 
-    private static string Range(string name, int min, int max) =>
-        string.Create(CultureInfo.InvariantCulture, $"{SectionName}:{name} is a whole number of seconds from {min:N0} to {max:N0} (ARV-096d).");
+    private static string Range(string name, int min, int max, string story = "ARV-096d") =>
+        string.Create(CultureInfo.InvariantCulture, $"{SectionName}:{name} is a whole number of seconds from {min:N0} to {max:N0} ({story}).");
 
     /// <summary>The hosts' connection: the runtime login, DML only once the migration job has run.</summary>
     public string BuildConnectionString() => Build(Username, Password, "ariva");
@@ -156,7 +172,8 @@ public sealed class DatabaseSettings
             Password = password,
             SslMode = UseEncryption ? SslMode.VerifyFull : SslMode.Disable,
             ApplicationName = applicationName,
-            CommandTimeout = CommandTimeoutSeconds
+            CommandTimeout = CommandTimeoutSeconds,
+            Timeout = ConnectTimeoutSeconds
         };
         ApplyRootCertificate(builder);
         return builder.ConnectionString;

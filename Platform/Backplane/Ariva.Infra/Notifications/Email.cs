@@ -216,8 +216,20 @@ public sealed record EmailAttachment
 /// <summary>Where emails go (an SMTP server through MailKit; a recorder in tests).</summary>
 public interface IEmailTransport
 {
-    /// <summary>Sends each email; a failure of one is reported for it, the others still go.</summary>
-    Task<IReadOnlyDictionary<Guid, string>> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct);
+    /// <summary>
+    /// Sends each email in turn; a failure of one is reported for it, the others still go. A message once begun is finished
+    /// (each exchange within the SMTP timeout), since one cut half way may have reached the relay: <paramref name="ct"/> stops the
+    /// batch between messages (ARV-096e), and the emails not tried come back in <see cref="EmailBatch.NotTried"/>, neither sent
+    /// nor refused, to go in a later round.
+    /// </summary>
+    Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct);
+}
+
+/// <summary>What a batch did: the emails refused, each with its reason, and those not tried; every other email was sent.</summary>
+public sealed record EmailBatch(IReadOnlyDictionary<Guid, string> Failures, IReadOnlySet<Guid> NotTried)
+{
+    /// <summary>A batch that tried every email.</summary>
+    public static EmailBatch Tried(IReadOnlyDictionary<Guid, string> failures) => new(failures, new HashSet<Guid>());
 }
 
 /// <summary>
@@ -228,12 +240,13 @@ public interface IEmailTransport
 /// </summary>
 public sealed class MailKitTransport(EmailSettings settings, SmtpSettings smtp) : IEmailTransport
 {
-    public async Task<IReadOnlyDictionary<Guid, string>> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
+    public async Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(emails);
         var failures = new Dictionary<Guid, string>();
+        var notTried = new HashSet<Guid>();
         if (emails.Count == 0)
-            return failures;
+            return new EmailBatch(failures, notTried);
         using var client = new SmtpClient { Timeout = smtp.TimeoutSeconds * 1000 };
         var security = smtp.Security switch
         {
@@ -247,15 +260,27 @@ public sealed class MailKitTransport(EmailSettings settings, SmtpSettings smtp) 
             if (!string.IsNullOrEmpty(smtp.Username))
                 await client.AuthenticateAsync(smtp.Username, smtp.Password ?? string.Empty, ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Stopped before any message began: none was tried.
+            return new EmailBatch(failures, emails.Select(e => e.Id).ToHashSet());
+        }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             foreach (var email in emails)
                 failures[email.Id] = "SMTP connection failed: " + e.GetType().Name;
-            return failures;
+            return new EmailBatch(failures, notTried);
         }
 
         foreach (var email in emails)
         {
+            // ARV-096e: stopped between messages; the rest go in a later round.
+            if (ct.IsCancellationRequested)
+            {
+                notTried.Add(email.Id);
+                continue;
+            }
+
             if (!EmailAddresses.IsValid(email.Recipient))
             {
                 failures[email.Id] = "Recipient address is not valid.";
@@ -272,7 +297,8 @@ public sealed class MailKitTransport(EmailSettings settings, SmtpSettings smtp) 
             using var message = Build(settings, email);
             try
             {
-                await client.SendAsync(message, ct);
+                // Finished once begun, within the SMTP timeout of each exchange (see IEmailTransport).
+                await client.SendAsync(message, CancellationToken.None);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -283,14 +309,14 @@ public sealed class MailKitTransport(EmailSettings settings, SmtpSettings smtp) 
         try
         {
             if (client.IsConnected)
-                await client.DisconnectAsync(true, ct);
+                await client.DisconnectAsync(true, CancellationToken.None);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             // Every email has its outcome; a failed QUIT changes none of them.
         }
 
-        return failures;
+        return new EmailBatch(failures, notTried);
     }
 
     /// <summary>The message as it goes on the wire: one recipient, a cleaned one-line subject, a plain-text body.</summary>

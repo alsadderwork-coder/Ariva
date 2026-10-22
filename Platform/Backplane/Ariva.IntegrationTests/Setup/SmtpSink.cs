@@ -9,7 +9,8 @@ namespace Ariva.IntegrationTests.Setup;
 /// A minimal SMTP server on loopback for the ARV-040 tests (no container image needed): it speaks enough of RFC 5321
 /// for MailKit (EHLO, MAIL, RCPT, DATA, RSET, NOOP, QUIT, without STARTTLS) and keeps each message as received on the
 /// wire. A recipient in <see cref="Refuse"/> gets a 550 at RCPT; with <see cref="DropAfter"/> set, the connection is
-/// closed after that many accepted messages.
+/// closed after that many accepted messages; with <see cref="DataDelay"/> set, each message is answered that much later (a slow
+/// relay, ARV-096e).
 /// </summary>
 public sealed class SmtpSink : IAsyncDisposable
 {
@@ -31,6 +32,9 @@ public sealed class SmtpSink : IAsyncDisposable
     public ConcurrentDictionary<string, bool> Refuse { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public int? DropAfter { get; set; }
+
+    /// <summary>How long the sink takes to answer each message's DATA.</summary>
+    public TimeSpan DataDelay { get; set; }
 
     public int Connections => _connections;
 
@@ -106,6 +110,8 @@ public sealed class SmtpSink : IAsyncDisposable
                         var data = new StringBuilder();
                         while (await reader.ReadLineAsync(_stop.Token) is { } dataLine && dataLine != ".")
                             data.Append(dataLine.StartsWith("..", StringComparison.Ordinal) ? dataLine[1..] : dataLine).Append("\r\n");
+                        if (DataDelay > TimeSpan.Zero)
+                            await Task.Delay(DataDelay, _stop.Token);
                         Received.Enqueue(new SmtpReceived(from, [.. to], data.ToString()));
                         await writer.WriteLineAsync("250 OK queued");
                         if (DropAfter is { } limit && Interlocked.Increment(ref _accepted) >= limit)

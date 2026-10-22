@@ -134,6 +134,10 @@ public static partial class MessagingExtensions
         var watch = settings.Consumers?.TopicWatchSeconds ?? 0;
         if (watch is < 1 or > 300)
             throw new InvalidOperationException("Kafka:Consumers:TopicWatchSeconds must be from 1 to 300.");
+        var handler = settings.Consumers?.HandlerTimeoutSeconds ?? 0;
+        if (handler is < ConsumerSettings.MinHandlerTimeoutSeconds or > ConsumerSettings.MaxHandlerTimeoutSeconds)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Consumers:HandlerTimeoutSeconds must be from {ConsumerSettings.MinHandlerTimeoutSeconds} to {ConsumerSettings.MaxHandlerTimeoutSeconds} (ARV-096e)."));
         var seconds = settings.Producer?.RecreateSeconds ?? 0;
         if (seconds is < ProducerSettings.MinRecreateSeconds or > ProducerSettings.MaxRecreateSeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,

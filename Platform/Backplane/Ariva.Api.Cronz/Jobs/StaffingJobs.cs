@@ -1,4 +1,5 @@
 using Ariva.Core.Staffing;
+using Ariva.Infra.Resilience;
 using Ariva.Infra.Staffing;
 using TickerQ.Utilities.Base;
 
@@ -11,12 +12,20 @@ namespace Ariva.Api.Cronz.Jobs;
 /// dashboard, a second replica or a restart writes nothing twice (the first computation of a minute stands); a minute the
 /// job missed stays empty. TickerQ 10.0.2 starts the next occurrence while a run is still going and fires about one occurrence
 /// in ten twice (measured in ARV-124a, wiki 05): the site lock makes the second run skip each site the first holds, and a
-/// run that takes its whole minute or more is logged as a warning with its duration.
+/// run that takes its whole minute or more is logged as a warning with its duration. A run ends at <see cref="RunTimeout"/>
+/// (ARV-096e): the sites it finished keep their rows; a minute it cut stays empty, as a missed one does.
 /// </summary>
-public sealed class StaffingJobs(StaffingRecommendations recommendations, StaffingSettings settings, ILogger<StaffingJobs> logger)
+public sealed class StaffingJobs(StaffingRecommendations recommendations, StaffingSettings settings, ILogger<StaffingJobs> logger, TimeProvider timeProvider = null)
+    : IBoundedRuns
 {
     /// <summary>The function name the dashboard shows and runs.</summary>
     public const string Recommendations = "StaffingRecommendations";
+
+    /// <summary>
+    /// Ten minutes: runs at the pilot hall took 68 to 285 ms (ARV-124a). The next occurrence starts beside a long run, so this
+    /// also bounds how many runs a stalled database gathers.
+    /// </summary>
+    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(10);
 
     /// <summary>The time between two occurrences of the job: a run that takes this long or longer overlaps the next.</summary>
     public static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
@@ -36,7 +45,7 @@ public sealed class StaffingJobs(StaffingRecommendations recommendations, Staffi
         ArgumentNullException.ThrowIfNull(context);
         if (!settings.Enabled)
             return;
-        var run = await recommendations.RunAsync(ct);
+        var run = await RunBound.RunAsync(Recommendations, RunTimeout, timeProvider ?? TimeProvider.System, recommendations.RunAsync, ct);
         var milliseconds = (long)run.Elapsed.TotalMilliseconds;
         if (LevelOf(run) != LogLevel.Warning)
         {

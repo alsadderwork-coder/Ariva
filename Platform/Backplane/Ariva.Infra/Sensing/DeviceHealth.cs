@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using Ariva.Core.Sensing;
 using Ariva.Core.Services.Sensing;
+using Ariva.Infra.Resilience;
 using MassTransit;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -116,12 +117,37 @@ public sealed class DeviceHealthConsumer(ISvcDeviceHealth health) : IConsumer<De
     }
 }
 
-/// <summary>Sweeps for devices that lost their heartbeat every <see cref="DeviceHealthSettings.SweepSeconds"/> (ARV-025).</summary>
+/// <summary>
+/// Sweeps for devices that lost their heartbeat every <see cref="DeviceHealthSettings.SweepSeconds"/> (ARV-025); a sweep ends at
+/// <see cref="RunTimeout"/> (ARV-096e) and is rolled back, and the next one sweeps again.
+/// </summary>
 internal sealed class DeviceHeartbeatMonitor(IServiceScopeFactory scopes, IOptions<DeviceHealthSettings> settings, TimeProvider timeProvider,
-    ILogger<DeviceHeartbeatMonitor> logger) : BackgroundService
+    ILogger<DeviceHeartbeatMonitor> logger) : BackgroundService, IBoundedRuns
 {
     /// <summary>The last sweep's outcome (tests and diagnostics).</summary>
     internal DeviceHealthSweep Last { get; private set; }
+
+    /// <summary>One minute: a sweep is a few statements over the commissioned devices.</summary>
+    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>One sweep under the run timeout (tests).</summary>
+    internal Task RunOnceAsync(CancellationToken stoppingToken) => RunBound.RunAsync("Device heartbeat sweep", RunTimeout, timeProvider, async ct =>
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        try
+        {
+            Last = await scope.ServiceProvider.GetRequiredService<ISvcDeviceHealth>().SweepAsync(ct);
+            unitOfWork.PromiseToCommit();
+            await unitOfWork.EndAsync(ct);
+        }
+        catch
+        {
+            // A sweep that failed or was cut part way is rolled back (a promised unit would otherwise commit as the scope ends).
+            await unitOfWork.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }, stoppingToken);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -130,11 +156,7 @@ internal sealed class DeviceHeartbeatMonitor(IServiceScopeFactory scopes, IOptio
         {
             try
             {
-                await using var scope = scopes.CreateAsyncScope();
-                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                Last = await scope.ServiceProvider.GetRequiredService<ISvcDeviceHealth>().SweepAsync(stoppingToken);
-                unitOfWork.PromiseToCommit();
-                await unitOfWork.EndAsync(stoppingToken);
+                await RunOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

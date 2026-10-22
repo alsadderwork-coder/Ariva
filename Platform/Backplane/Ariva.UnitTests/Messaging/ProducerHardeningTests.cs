@@ -317,6 +317,30 @@ public sealed class ProducerHardeningTests
     }
 
     [Theory]
+    [InlineData("64", true)]
+    [InlineData("65", false)]
+    [InlineData("70", false)]
+    [InlineData("120", false)]
+    [InlineData("121", true)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_TheHandlerTimeoutIsOutOfBounds(string seconds, bool refused)
+    {
+        // ARV-096e: each attempt of a consumed message ends at Kafka:Consumers:HandlerTimeoutSeconds.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Kafka:Enabled"] = "true",
+            ["Kafka:Consumers:HandlerTimeoutSeconds"] = seconds
+        }).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (refused)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Consumers:HandlerTimeoutSeconds must be from 65 to 120*");
+        else
+            add.Should().NotThrow();
+        new ConsumerSettings().HandlerTimeoutSeconds.Should().Be(70, "above the archive consumers' wait for a database outage, about a minute");
+    }
+
+    [Theory]
     [InlineData("60", "130", false)]
     [InlineData("70", "130", false)]
     [InlineData("71", "130", true)]

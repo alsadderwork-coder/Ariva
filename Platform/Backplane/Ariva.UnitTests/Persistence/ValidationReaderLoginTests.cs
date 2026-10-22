@@ -191,6 +191,7 @@ public sealed class ValidationReaderLoginTests
         parsed.SslMode.Should().Be(SslMode.VerifyFull, "the reader follows the deployment's TLS setting");
         parsed.ApplicationName.Should().Be("ariva-validation-reader");
         parsed.MaxPoolSize.Should().Be(ValidationReaderSettings.MaxPoolSize);
+        parsed.Timeout.Should().Be(new DatabaseSettings().ConnectTimeoutSeconds, "the hosts' connect timeout (ARV-096e)");
     }
 
     [Fact]

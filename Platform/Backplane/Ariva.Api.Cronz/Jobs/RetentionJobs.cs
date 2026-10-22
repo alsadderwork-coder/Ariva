@@ -1,3 +1,4 @@
+using Ariva.Infra.Resilience;
 using Ariva.Infra.Retention;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using TickerQ.Utilities.Base;
@@ -12,11 +13,19 @@ namespace Ariva.Api.Cronz.Jobs;
 /// runtime login cannot move the time column the purge reads: column grants on email_message and report_delivery, no UPDATE
 /// on integration_call).
 /// TimescaleDB drops old hypertable chunks itself (its retention policies, also set by the migration job).
+/// A run ends at <see cref="RunTimeout"/> (ARV-096e): the batches it deleted stay deleted, and the next day's run takes the rest.
 /// </summary>
-public sealed class RetentionJobs(RetentionRound round, RetentionJobSettings settings, ILogger<RetentionJobs> logger)
+public sealed class RetentionJobs(RetentionRound round, RetentionJobSettings settings, ILogger<RetentionJobs> logger, TimeProvider timeProvider = null)
+    : IBoundedRuns
 {
     /// <summary>The function name the dashboard shows and runs.</summary>
     public const string Purge = "RelationalRetention";
+
+    /// <summary>
+    /// An hour: 100 batches per data set by default, each a bounded delete on an index; a larger backlog cut here waits for the
+    /// next day's run, as one beyond <c>MaxBatchesPerRun</c> does.
+    /// </summary>
+    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromHours(1);
 
     [TickerFunction(Purge, "0 15 3 * * *")]
     public async Task PurgeAsync(TickerFunctionContext context, CancellationToken ct)
@@ -24,7 +33,7 @@ public sealed class RetentionJobs(RetentionRound round, RetentionJobSettings set
         ArgumentNullException.ThrowIfNull(context);
         if (!settings.Enabled)
             return;
-        var run = await round.RunAsync(ct);
+        var run = await RunBound.RunAsync(Purge, RunTimeout, timeProvider ?? TimeProvider.System, round.RunAsync, ct);
         if (run.HeldElsewhere)
         {
             logger.LogInformation("Retention ({Type}): another replica is running it; skipped", context.Type);

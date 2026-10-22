@@ -203,7 +203,7 @@ public sealed class DailyReportBoundsTests(PostgresFixture fixture, ITestOutputH
     /// <summary>Counts what the relay would send; nothing leaves the test.</summary>
     private sealed class CountingTransport : IEmailTransport
     {
-        public Task<IReadOnlyDictionary<Guid, string>> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyDictionary<Guid, string>>(new Dictionary<Guid, string>());
+        public Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct) =>
+            Task.FromResult(EmailBatch.Tried(new Dictionary<Guid, string>()));
     }
 }

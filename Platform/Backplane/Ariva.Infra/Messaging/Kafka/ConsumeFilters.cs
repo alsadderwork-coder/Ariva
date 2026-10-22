@@ -104,6 +104,71 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
 }
 
 /// <summary>
+/// ARV-096e (CWE-400, ASVS 5.0 V15.2.2): each attempt of a message gets at most <c>Kafka:Consumers:HandlerTimeoutSeconds</c>. The
+/// filter runs inside the retry and the dead-letter filter and around the inbox, unit of work and consumer, which see a
+/// token that the timeout cancels as well as the message's own; so a handler stalled on the database or a partner frees its
+/// slot of the endpoint (one of <c>ConcurrentMessageLimit</c>) at the timeout. An attempt cut there fails with
+/// <see cref="HandlerTimeoutException"/>: it is rolled back and retried like any failure, and the last attempt goes to the
+/// dead-letter topic. The message's own cancellation (a stop) is passed on unchanged. A handler that never looks at its token
+/// cannot be cut; every Ariva consumer passes it to its reads and writes.
+/// </summary>
+public sealed class HandlerTimeoutFilter(TimeSpan timeout, TimeProvider timeProvider, ILogger<HandlerTimeoutFilter> logger) : IFilter<ConsumeContext>
+{
+    public async Task Send(ConsumeContext context, IPipe<ConsumeContext> next)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(next);
+        using var limit = new CancellationTokenSource(timeout, timeProvider);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, limit.Token);
+        try
+        {
+            await next.Send(new TimedConsumeContext(context, linked.Token));
+        }
+        // Whatever the cut ended in (a cancellation, MassTransit's ConsumerCanceledException, a wrapped database error) is the cut.
+        catch (Exception e) when (limit.IsCancellationRequested && !context.CancellationToken.IsCancellationRequested)
+        {
+            throw Cut(context, e);
+        }
+
+        if (limit.IsCancellationRequested && !context.CancellationToken.IsCancellationRequested)
+            throw Cut(context, null);
+    }
+
+    private HandlerTimeoutException Cut(ConsumeContext context, Exception inner)
+    {
+        var consumer = ConsumerName.Of(context);
+        logger.LogWarning("A message for {Consumer} ran past its handler timeout of {Seconds} s and was cancelled; it is retried, then dead-lettered",
+            consumer, timeout.TotalSeconds);
+        return new HandlerTimeoutException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"The handler of {consumer} ran past its timeout of {timeout.TotalSeconds:0} s and was cancelled (ARV-096e)."), inner);
+    }
+
+    public void Probe(ProbeContext context) => context?.CreateFilterScope("ariva-handler-timeout");
+
+    /// <summary>The message's context with the attempt's token in place of the message's own.</summary>
+    private sealed class TimedConsumeContext(ConsumeContext context, CancellationToken token) : MassTransit.Context.ConsumeContextProxy(context)
+    {
+        public override CancellationToken CancellationToken => token;
+    }
+}
+
+/// <summary>An attempt of a message that ran past its handler timeout and was cancelled (ARV-096e).</summary>
+public sealed class HandlerTimeoutException : TimeoutException
+{
+    public HandlerTimeoutException()
+    {
+    }
+
+    public HandlerTimeoutException(string message) : base(message)
+    {
+    }
+
+    public HandlerTimeoutException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>
 /// The endpoint's dead-letter pipe: a record no consumer could take because its value is not a readable message (the
 /// rider skipped it) goes to the dead-letter topic with its raw bytes, not dropped and not blocking the partition.
 /// Records skipped for other reasons (an inbox duplicate, one already dead-lettered after its retries) pass through.

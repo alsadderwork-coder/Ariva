@@ -2,6 +2,7 @@ using System.Text.Json;
 using Ariva.Core.Border;
 using Ariva.Core.Desks;
 using Ariva.Infra.Messaging;
+using Ariva.Infra.Resilience;
 using Ariva.Infra.Settings;
 using Ariva.Infra.Streaming;
 using Microsoft.Extensions.Hosting;
@@ -730,9 +731,19 @@ internal sealed record DeskZoneRow(Guid Id, DateTime WrittenUtc, string DeskKey,
     };
 }
 
-/// <summary>Runs the desk feed every <see cref="DeskFeedSettings.PollSeconds"/> in Ariva.Api.Stream (ARV-049).</summary>
-public sealed class DeskFeedWorker(DeskFeed feed, DeskFeedSettings settings, TimeProvider timeProvider, ILogger<DeskFeedWorker> logger) : BackgroundService
+/// <summary>
+/// Runs the desk feed every <see cref="DeskFeedSettings.PollSeconds"/> in Ariva.Api.Stream (ARV-049). A read ends at
+/// <see cref="RunTimeout"/> (ARV-096e); each site is one transaction, so the sites it finished keep their minutes and positions,
+/// the site it cut is rolled back, and the next read goes on from the saved positions.
+/// </summary>
+public sealed class DeskFeedWorker(DeskFeed feed, DeskFeedSettings settings, TimeProvider timeProvider, ILogger<DeskFeedWorker> logger) : BackgroundService, IBoundedRuns
 {
+    /// <summary>Two minutes: a site's read is bounded in records and its statements by the database command timeout.</summary>
+    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>One read under the run timeout; returns the sites read. Public for tests.</summary>
+    public Task<int> RunOnceAsync(CancellationToken stoppingToken) => RunBound.RunAsync("Desk feed", RunTimeout, timeProvider, feed.TickAsync, stoppingToken);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // ARV-149a: a site whose stream timing leaves its lane contexts without a queue is named once, at start.
@@ -742,7 +753,7 @@ public sealed class DeskFeedWorker(DeskFeed feed, DeskFeedSettings settings, Tim
         {
             try
             {
-                await feed.TickAsync(stoppingToken);
+                await RunOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

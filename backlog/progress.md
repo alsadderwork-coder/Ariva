@@ -2904,3 +2904,117 @@ Project `Ariva.UnitTests` has the following vulnerable packages
 - Gates (2026-10-21): `node scripts/verify.mjs story` exit 0 on the final code (finished 22:39 UTC), wide (`PersistenceExtensions.cs`, `topology.ts`), so the full suites ran: build; reference golden; unit 7,566; the security scan (2,230 files, 0 errors, the 12 allowlisted warnings) and its self-test; the E2E message and artifact self-tests; ops and TLS self-tests; base images; published runtime and offline bundle self-tests; chart security; NuGet and three npm audits; docs; Windows paths; web check, lint and build; integration 761 passed and 1 skipped; E2E 911 passed and 1 skipped, none flaky; no secret in the artifacts. An earlier run was stopped for round 1's fixes. The two Info 9 doc sentences were added during this run; the quick gate passed on them.
 - Gotchas: in NHibernate 5.6 `query.Take(n).CountAsync()` limits the count's one result row, not the rows counted; bound a count with a probe past the cap (`Skip(cap).Take(1)`) and count only below it. A role setting on a group role (`ALTER ROLE ariva_runtime SET`) does not reach its member logins; set it on the login, which only the migration job knows by name. Npgsql's `CommandTimeout` limits each wait for the server, not a whole streamed read. Npgsql's activities ("Npgsql" ActivitySource, `db.query.text` or `db.statement`) are the simplest way for a test to see the SQL a service sent. FluentX's `Contains` extension makes `ErrorMessages.Contains(x, comparer)` ambiguous with LINQ's; call `Enumerable.Contains`.
 - Status: passes set; committed (signed).
+
+## 2026-10-21 ARV-096e: Run timeouts: jobs, background loops and Kafka handlers (ASVS gaps, branch story/mvp-phase1; backend, docs)
+
+- What changed:
+  - `RunBound` and `IBoundedRuns` (new, `Ariva.Infra/Resilience/RunBound.cs`): one run of a job or loop gets a token that its run timeout cancels as well as the host's stop. A run cut there is reported as `RunTimeoutException` (a `TimeoutException`), which each loop logs as a failed run before its next tick; this holds also when the cut ends in another error or the run swallows its cancellation and returns. A stop stays a cancellation. Run timeouts are bounded to two hours.
+  - Every periodic loop of the hosts runs each iteration through it (`RunOnceAsync`):
+    - alert evaluation 2 minutes;
+    - the device heartbeat and flight feed sweeps 1 minute;
+    - the desk feed 2 minutes;
+    - the idempotency sweep 5 minutes;
+    - the AMAN and ACRIS polls 5 minutes;
+    - the malware scanner's signature check 1 minute;
+    - the email round 10 minutes;
+    - the validation results freeze 65 minutes, derived from its settings (20 computations and 5 minutes), so a pass within its bounds is never cut.
+  - The five Cronz jobs wrap their round:
+    - availability and staffing 10 minutes;
+    - report deliveries and secret re-protection 30 minutes;
+    - retention an hour.
+  - What a cut keeps:
+    - The heartbeat, flight feed and idempotency sweeps roll their unit of work back when cut (a promised unit would otherwise commit as its scope ends).
+    - A pull the poll's timeout cuts is recorded on its endpoint as a failure, with the host's token, so the endpoint backs off and the screen says why.
+    - The email round and the report deliveries are cut only between messages. `IEmailTransport.SendAsync` now returns an `EmailBatch` (the failures and the emails not tried); the transport finishes a message once begun and stops between messages when its token is cancelled. What the relay took is committed as sent with `CancellationToken.None`, so a cut never sends an email or a report twice.
+    - The secret re-protection round is one transaction, so a cut one rewrites nothing.
+  - The hosted services without a run timeout are named with their reasons in the inventory test:
+    - the outbox relay, bounded by its pass time;
+    - the stream engine's consume loop;
+    - the live relay's Redis lease;
+    - the hub session sweep, session code left as it is under the sign-in freeze;
+    - the start and stop services.
+  - Kafka: `HandlerTimeoutFilter` sits in every rider endpoint's pipe after the dead-letter filter and before the inbox. It gives the inbox, the unit of work and the consumer a `ConsumeContextProxy` whose token `Kafka:Consumers:HandlerTimeoutSeconds` cancels (70 s; 65 to 120, refused at start, so it stays above the archive consumers' wait for a database that refuses connections). A cut attempt fails with `HandlerTimeoutException`: rolled back, retried, and the last one dead-lettered.
+  - `Database:ConnectTimeoutSeconds` (new, 15 s, Npgsql's default said explicitly; 2 to 60, refused at start by every host and the migration job), set as Npgsql's `Timeout` on the hosts' and the migration job's connections and on the validation reader's. Found by the tests: Npgsql 10 does not take the token while it opens a connection, so against a server that accepts and never answers a run ended at Npgsql's 15 s connect timeout, not its 1 s run timeout. A statement that waits on the server is cancelled at once (the integration test with a table lock).
+- Tests:
+  - Unit:
+    - `RunBoundTests` (the cut, the stop, a swallowed cancellation, a wrapped error, the result, the bounds).
+    - `RunTimeoutInventoryTests`:
+      - every Ariva hosted service of each host is bounded or exempt with its reason, and each host runs the expected bounded loops;
+      - every TickerQ job is bounded;
+      - every bounded loop and every job is built from its host's own registrations and run against a database (and scanner) that never answers: each ends with `RunTimeoutException` and its test timeout, after reaching the stalled server.
+    - `ConsumePipelineTests`:
+      - the filter's place in the probe;
+      - a stalled attempt cut at 1 s and retried to success, rolled back once;
+      - every attempt stalled, then dead-lettered as `HandlerTimeoutException`.
+    - `ProducerHardeningTests.AddArivaMessaging_Should_RefuseToStart_When_TheHandlerTimeoutIsOutOfBounds`.
+    - `PersistenceSettingsTests`: the connect timeout in both connection strings, and its bounds.
+    - `ValidationReaderLoginTests`: the reader's connection takes the connect timeout too.
+  - Integration:
+    - `OutboundEndpointTests.Polls_Should_RecordThePullTheirRunTimeoutCut_When_ThePartnerStopsAnswering`: AMAN and ACRIS partners that take the call and never answer, cut at 2 s rather than the endpoints' 60 s, each endpoint's status and failure recorded, and the next poll backs off.
+    - `OutboundEndpointTests.Polls_Should_EndAtTheirRunTimeout_When_TheDatabaseHoldsTheirStatement`: a lock on the endpoints, the claims cancelled at 1 s.
+    - `AlertEmailTests.Worker_Should_RecordWhatTheRelayTookAndLeaveTheRestPending_When_ItsRunTimeoutCutsARound`: a slow relay (`SmtpSink.DataDelay`). The cut round's accepted emails are Sent and the rest Pending with no attempt counted; the next round sends only those, and no recipient gets one twice.
+    - `ReportServiceTests.Round_Should_KeepAReportTheRelayTookAsSent_When_ItsRunTimeoutCutsTheRoundAfterTheSend`: a relay that takes the report and answers after the cut. The delivery is `Sent:1`, and the next round sends only the other recipient.
+  - Mutants:
+    - the heartbeat sweep without its bound makes its stall test fail (an `NHibernate.TransactionException` instead of the cut);
+    - committing the email round or a delivered report with the run's token makes both cut tests fail (0 Sent; `Pending:0`).
+- Docs:
+  - costly-operations:
+    - status line;
+    - section 4 deliveries;
+    - section 5 freeze;
+    - section 6 alert evaluation;
+    - section 9 idempotency, AMAN and ACRIS;
+    - section 10 consumers;
+    - section 12: header, every job row, and rows for the feed sweep, desk feed, signature check and hub sweep;
+    - section 14: the connect timeout row;
+    - section 15: items 6 to 8 closed.
+  - asvs-l2: summary; V15.1.3 (what ARV-095 found, now in the past tense, and what is left); V15.2.2 evidence, still Partly for the forms the sign-in freeze keeps (ARV-089a), the hub session sweep, and ARV-230 and ARV-232; the gap rows ARV-096d and ARV-096e.
+  - remaining-work: ASVS gaps 25 of 41; Phase 3 49 stories.
+  - wiki 04: `Database:ConnectTimeoutSeconds`, `Kafka:Consumers:HandlerTimeoutSeconds`.
+  - wiki 10: new section 4.20, the run-timeout lines and what to do.
+  - prd-phase3: ARV-235.
+- Decided:
+  - Run timeouts are code constants per loop and job (overridable by tests). A cut keeps what was committed (per site, page, rule, delivery or accepted email), and the next run goes on.
+  - The handler timeout covers the inbox claim and commit too.
+  - OutboxRelay keeps its own pass bound rather than a second one.
+  - The hub session sweeper stays as it was under the sign-in freeze (review M1).
+  - Filed: ARV-235 (Phase 3, Low), per-loop proofs on a statement the database holds (review L3).
+- Security review (security-reviewer):
+  - Round 1 FAIL:
+    - M1: the hub session sweeper is session code under the owner's freeze.
+    - M2: a cut email round rolled back the emails the relay had already accepted, so the same emails went again, possibly every round. The derived run timeout assumed one SMTP timeout per email, while MailKit's timeout is per exchange.
+    - M3: a report delivery cut after its send stayed Pending and went again.
+    - L1: the secret round's "values stay rewritten" was false (one transaction).
+    - L2: cut sweeps could commit, since a promised unit commits as its scope ends, though the docs said they roll back.
+    - L3: the stall tests cannot tell a loop that ignores the run's token, since Npgsql ignores it at connect.
+    - Info I1 to I6, among them the 5 s handler minimum (I2), the stale V15.1.3 row (I4) and the validation reader without the connect timeout (I6).
+  - Fixed: M1 (reverted, exempted), M2 and M3 (cut between messages, accepted ones committed with `CancellationToken.None`, a test each), L1 (docs), L2 (rollback catches), I2 (minimum 65), I4, I6.
+  - Filed: L3 as ARV-235.
+  - Left: I1 (a run finishing just as its limit fires is reported cut) and I3 (the pollers' record runs past the bound by its command timeout).
+  - Round 2 PASS (2026-10-21): every finding fixed or filed, nothing new above Low.
+    - N1 (Low, filed in ARV-235): once begun, an email's only bound is MailKit's per-exchange timeout, untested.
+    - N2 (applied): a stale test name in V15.2.2.
+    - N3 (filed in ARV-235): the report's not-tried path is untested.
+    - N4 (applied): the inventory test's summary claimed more than the integration tests prove.
+    - N5 (noise, left): a cut heartbeat sweep logs a lost device again at the next sweep, as any failed sweep did.
+    - The semgrep MCP was not available in this session.
+- Gates (2026-10-21 and 22):
+  - `node scripts/verify.mjs story`, after round 1's fixes, on fresh services, wide (the consume pipe and the Kafka settings), so the full suites ran (finished 00:46 UTC on 2026-10-22). Every step passed but one:
+    - build; reference golden;
+    - security scan (2,234 files, 0 errors, the 12 allowlisted warnings) and its self-test;
+    - the E2E message and artifact self-tests; ops and TLS self-tests; base images; published runtime and offline bundle self-tests;
+    - chart security; NuGet and three npm audits; docs; Windows paths;
+    - integration 765 passed and 1 skipped;
+    - E2E 911 passed and 1 skipped, none flaky;
+    - no secret in the artifacts.
+  - The one failure was unit 7,608 of 7,609: the new `RunBoundTests` timed a 200 ms run at 199.5 ms, because a timer can fire a fraction of a millisecond before the stopwatch reads its due time. The bound now allows 20 ms, and the stall tests the same.
+  - `node scripts/verify.mjs backend` on the final tree then passed: build, unit 7,609, security scan and the rest of the backend steps.
+  - An earlier story gate was stopped for round 1's fixes.
+- Gotchas:
+  - Npgsql 10 ignores the cancellation token while it opens a connection (a server that accepts and never answers holds `OpenAsync` until the connect timeout), so a run timeout alone does not bound a run against a stalled server.
+  - A unit of work promised to commit commits when its scope ends, so a loop that may be cut part way needs its own rollback.
+  - MailKit's `Timeout` is per exchange, not per message.
+  - MassTransit's `ConsumeContextProxy.CancellationToken` is overridable, and a proxy passed on from a non-generic `IFilter<ConsumeContext>` keeps its token through the dispatch to the typed inbox filter and the consumer.
+  - A `WebApplicationFactory` host can be started without its hosted services (remove every `IHostedService` but `GenericWebHostService` in `ConfigureTestServices`), so a test can build a loop from the host's own registrations without the host touching the database at start.
+  - An init-only property can be set by reflection in a test.
+- Status: passes set; committed (signed).

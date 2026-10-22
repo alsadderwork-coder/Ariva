@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Ariva.Infra.Resilience;
 using Ariva.Infra.Settings;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -17,7 +18,7 @@ namespace Ariva.Infra.Services.Validation;
 /// returns only which campaigns it tried and why one failed.
 /// </summary>
 internal sealed class ValidationResultsFreezer(IServiceScopeFactory scopes, ValidationResultsSettings settings, TimeProvider timeProvider,
-    ILogger<ValidationResultsFreezer> logger) : BackgroundService
+    ILogger<ValidationResultsFreezer> logger) : BackgroundService, IBoundedRuns
 {
     #region Constants
 
@@ -32,7 +33,30 @@ internal sealed class ValidationResultsFreezer(IServiceScopeFactory scopes, Vali
 
     #endregion
 
+    #region Properties
+
+    /// <summary>
+    /// ARV-096e: long enough that a pass within its bounds is never cut: at most <see cref="PassSize"/> campaigns, each frozen within
+    /// its computation's timeout (<c>Validation:Results:Timeout</c>, 3 minutes), and 5 minutes for the database; 65 minutes by
+    /// default, at most <see cref="RunBound.MaxRunTimeout"/>. Each campaign commits on its own, so a pass it cuts keeps the campaigns
+    /// it froze and leaves the rest to the next pass.
+    /// </summary>
+    public TimeSpan RunTimeout { get; init; } = PassTimeout(settings);
+
+    /// <summary>The run timeout a pass needs with these settings (see <see cref="RunTimeout"/>).</summary>
+    internal static TimeSpan PassTimeout(ValidationResultsSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        var timeout = settings.Timeout * PassSize + TimeSpan.FromMinutes(5);
+        return timeout < RunBound.MaxRunTimeout ? timeout : RunBound.MaxRunTimeout;
+    }
+
+    #endregion
+
     #region Methods
+
+    /// <summary>One pass under the run timeout (tests).</summary>
+    internal Task<int> RunOnceAsync(CancellationToken stoppingToken) => RunBound.RunAsync("Validation results freeze", RunTimeout, timeProvider, PassAsync, stoppingToken);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -41,7 +65,7 @@ internal sealed class ValidationResultsFreezer(IServiceScopeFactory scopes, Vali
         {
             try
             {
-                await PassAsync(stoppingToken);
+                await RunOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

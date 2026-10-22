@@ -3,6 +3,7 @@ using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Security;
+using Ariva.Infra.Resilience;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -185,13 +186,16 @@ public sealed class EmailSender(IUnitOfWork unitOfWork, IEmailTransport transpor
             }
         }
 
-        var failures = emails.Count == 0
-            ? new Dictionary<Guid, string>()
+        var batch = emails.Count == 0
+            ? EmailBatch.Tried(new Dictionary<Guid, string>())
             : await transport.SendAsync([.. emails.Select(e => new OutgoingEmail(e.Id!.Value, e.Recipient, e.Subject, e.Body))], ct);
         int sent = 0, failed = 0, retrying = 0;
         foreach (var email in emails)
         {
-            if (failures.TryGetValue(email.Id!.Value, out var reason))
+            // ARV-096e: a round cut before this email stopped between messages; it stays Pending, no attempt counted.
+            if (batch.NotTried.Contains(email.Id!.Value))
+                continue;
+            if (batch.Failures.TryGetValue(email.Id!.Value, out var reason))
             {
                 email.Failed(reason, now, settings.MaxAttempts);
                 if (email.Status == EmailStatus.Failed)
@@ -206,7 +210,8 @@ public sealed class EmailSender(IUnitOfWork unitOfWork, IEmailTransport transpor
             }
         }
 
-        await Storage.FlushAsync(ct);
+        // What the relay accepted is recorded even when the round was cut meanwhile, so it is never sent again (ARV-096e).
+        await Storage.FlushAsync(CancellationToken.None);
         unitOfWork.PromiseToCommit();
         return new EmailRound(sent, failed, retrying, withheld);
     }
@@ -223,9 +228,36 @@ public sealed class EmailSender(IUnitOfWork unitOfWork, IEmailTransport transpor
     }
 }
 
-/// <summary>Sends due emails every <see cref="EmailSettings.PollSeconds"/> in Ariva.Api.Integration.</summary>
-public sealed class EmailSenderWorker(IServiceScopeFactory scopes, EmailSettings settings, TimeProvider timeProvider, ILogger<EmailSenderWorker> logger) : BackgroundService
+/// <summary>
+/// Sends due emails every <see cref="EmailSettings.PollSeconds"/> in Ariva.Api.Integration. A round ends at
+/// <see cref="RunTimeout"/> (ARV-096e) between messages: the message the relay is taking is finished, the emails it accepted are
+/// committed as sent and the rest stay pending for the next round, so a cut never sends an email twice.
+/// </summary>
+public sealed class EmailSenderWorker(IServiceScopeFactory scopes, EmailSettings settings, TimeProvider timeProvider, ILogger<EmailSenderWorker> logger)
+    : BackgroundService, IBoundedRuns
 {
+    /// <summary>Ten minutes: a slow relay's round is cut between messages and goes on in the next round from what is left.</summary>
+    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>One round under the run timeout (tests).</summary>
+    internal Task<EmailRound> RunOnceAsync(CancellationToken stoppingToken) => RunBound.RunAsync("Email round", RunTimeout, timeProvider, async ct =>
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        try
+        {
+            var round = await scope.ServiceProvider.GetRequiredService<EmailSender>().SendDueAsync(timeProvider.GetUtcNow().UtcDateTime, ct);
+            // Committed whatever the run's token says: the emails the relay accepted must be recorded as sent (ARV-096e).
+            await unitOfWork.EndAsync(CancellationToken.None);
+            return round;
+        }
+        catch
+        {
+            await unitOfWork.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }, stoppingToken);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(settings.PollSeconds), timeProvider);
@@ -233,21 +265,10 @@ public sealed class EmailSenderWorker(IServiceScopeFactory scopes, EmailSettings
         {
             try
             {
-                await using var scope = scopes.CreateAsyncScope();
-                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                try
-                {
-                    var round = await scope.ServiceProvider.GetRequiredService<EmailSender>().SendDueAsync(timeProvider.GetUtcNow().UtcDateTime, stoppingToken);
-                    await unitOfWork.EndAsync(stoppingToken);
-                    if (round.Failed + round.Retrying + round.Withheld > 0)
-                        logger.LogWarning("Email round: {Sent} sent, {Retrying} to retry, {Failed} given up, {Withheld} held back", round.Sent, round.Retrying, round.Failed,
-                            round.Withheld);
-                }
-                catch
-                {
-                    await unitOfWork.RollbackAsync(CancellationToken.None);
-                    throw;
-                }
+                var round = await RunOnceAsync(stoppingToken);
+                if (round.Failed + round.Retrying + round.Withheld > 0)
+                    logger.LogWarning("Email round: {Sent} sent, {Retrying} to retry, {Failed} given up, {Withheld} held back", round.Sent, round.Retrying, round.Failed,
+                        round.Withheld);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

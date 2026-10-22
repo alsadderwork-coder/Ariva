@@ -311,6 +311,43 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Worker_Should_RecordWhatTheRelayTookAndLeaveTheRestPending_When_ItsRunTimeoutCutsARound()
+    {
+        // ARV-096e: a slow relay. The round is cut between messages: the message the relay is taking is finished, every email it
+        // accepted is committed as sent, the others stay pending with no attempt counted, and the next round sends only those, so
+        // no recipient gets an alert twice.
+        Host();
+        var p = await PeopleAsync();
+        var first = ReferenceReplay.WallOf(63 * 60);
+        var alert = await RaiseAsync(p.Admin, "A-VIS", first, owner: null);
+        await SetAsidePendingAsync(alert.Id);
+        (await EmailsAsync(alert.Id)).Should().HaveCount(4);
+        _sink.DataDelay = TimeSpan.FromMilliseconds(1200);
+        var worker = new EmailSenderWorker(_host.Provider.GetRequiredService<IServiceScopeFactory>(), _host.Provider.GetRequiredService<EmailSettings>(),
+            new FixedNow(first.AddMinutes(2)), NullLogger<EmailSenderWorker>.Instance) { RunTimeout = TimeSpan.FromSeconds(2) };
+
+        var round = () => worker.RunOnceAsync(Ct);
+
+        (await round.Should().ThrowAsync<Ariva.Infra.Resilience.RunTimeoutException>()).Which.Run.Should().Be("Email round");
+        var taken = _sink.Received.Count;
+        taken.Should().BeInRange(1, 3, "the round stopped between messages, after the relay took at least the first");
+        var rows = await EmailsAsync(alert.Id);
+        rows.Count(r => r.Status == "Sent").Should().Be(taken, "every email the relay accepted is recorded as sent, cut or not");
+        rows.Where(r => r.Status != "Sent").Should().OnlyContain(r => r.Status == "Pending" && r.Attempts == 0, "the emails not tried keep their attempts");
+
+        _sink.DataDelay = TimeSpan.Zero;
+        (await SendAsync(first.AddMinutes(3))).Sent.Should().Be(4 - taken);
+        _sink.Received.Select(m => m.To.Single()).Should().HaveCount(4).And.OnlyHaveUniqueItems("no recipient got the alert twice");
+        new EmailSenderWorker(null, new EmailSettings(), TimeProvider.System, NullLogger<EmailSenderWorker>.Instance).RunTimeout.Should().Be(TimeSpan.FromMinutes(10));
+    }
+
+    /// <summary>A clock that always reads the same instant; its timers are the system's.</summary>
+    private sealed class FixedNow(DateTime utc) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(DateTime.SpecifyKind(utc, DateTimeKind.Utc));
+    }
+
+    [Fact]
     public async Task Sender_Should_KeepEveryEmailForLater_When_TheServerCannotBeReached()
     {
         // A port nothing listens on: the connection fails for the whole round, and the reason is the error type.

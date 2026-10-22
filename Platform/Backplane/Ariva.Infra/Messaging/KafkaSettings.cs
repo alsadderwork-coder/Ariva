@@ -146,6 +146,18 @@ public sealed class ConsumerSettings
     /// <summary>Parallel lanes per endpoint, split by key so order holds per key.</summary>
     public int ConcurrentMessageLimit { get; init; } = 8;
 
+    public const int MinHandlerTimeoutSeconds = 65;
+    public const int MaxHandlerTimeoutSeconds = 120;
+
+    /// <summary>
+    /// ARV-096e: the longest one attempt of a message may take (inbox, unit of work and consumer) before it is cancelled, retried
+    /// and at last dead-lettered (<see cref="Kafka.HandlerTimeoutFilter"/>). 70 seconds. The minimum, 65, keeps it above the archive
+    /// consumers' wait for a database that refuses connections (about a minute of waits between attempts), so that wait is not cut
+    /// short, and well above a stop's window; from <see cref="MinHandlerTimeoutSeconds"/> to <see cref="MaxHandlerTimeoutSeconds"/>,
+    /// or the host does not start.
+    /// </summary>
+    public int HandlerTimeoutSeconds { get; init; } = 70;
+
     /// <summary>
     /// How long a host waits at start for the Ariva topics it consumes to exist before it connects the consumers whose
     /// topics do (ARV-176: AMAN's feed topics are never waited for, and a topic that is still missing is connected when it

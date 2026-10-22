@@ -1,4 +1,5 @@
 using Ariva.Core.Services.Storage;
+using Ariva.Infra.Resilience;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
@@ -19,9 +20,9 @@ namespace Ariva.Infra.Storage;
 /// Warning line throttled the same way, and an Information line when the scanner answers again.</item>
 /// </list>
 /// Every clock read is the <see cref="TimeProvider"/>'s; a check that fails is logged and the next one runs, so the alarm
-/// never stops the host.
+/// never stops the host. A check ends at <see cref="RunTimeout"/> (ARV-096e).
 /// </summary>
-internal sealed class ScannerSignatureMonitor : BackgroundService
+internal sealed class ScannerSignatureMonitor : BackgroundService, IBoundedRuns
 {
     #region Fields
 
@@ -102,6 +103,9 @@ internal sealed class ScannerSignatureMonitor : BackgroundService
     /// <summary>The checks made so far (tests).</summary>
     internal int Checks { get; private set; }
 
+    /// <summary>One minute: a check is one short exchange with the scanner, which has its own connection and read timeouts.</summary>
+    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(1);
+
     #endregion
 
     #region Loop
@@ -122,7 +126,7 @@ internal sealed class ScannerSignatureMonitor : BackgroundService
         {
             try
             {
-                await CheckAsync(stoppingToken);
+                await RunOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -153,6 +157,9 @@ internal sealed class ScannerSignatureMonitor : BackgroundService
     #endregion
 
     #region Check
+
+    /// <summary>One check under the run timeout (tests).</summary>
+    internal Task RunOnceAsync(CancellationToken stoppingToken) => RunBound.RunAsync("Malware scanner signature check", RunTimeout, _time, CheckAsync, stoppingToken);
 
     /// <summary>One check: asks the scanner, reports what it said and writes the alarm's lines as their throttles allow.</summary>
     internal async Task CheckAsync(CancellationToken ct)

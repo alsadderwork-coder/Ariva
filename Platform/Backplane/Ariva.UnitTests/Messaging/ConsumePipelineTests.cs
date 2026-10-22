@@ -20,6 +20,9 @@ public sealed class PipelineProbe : EventBase
     /// <summary>Fail with the consumer's own timeout (TaskCanceledException) instead of an ordinary error.</summary>
     public bool TimeOut { get; set; }
 
+    /// <summary>The first attempts that wait on their token until it is cancelled (a stalled handler, ARV-096e).</summary>
+    public int StallTimes { get; set; }
+
     public override string GetPartitionKey() => ZoneId;
 }
 
@@ -33,6 +36,9 @@ public sealed class PipelineProbe : EventBase
 public sealed class ConsumePipelineTests
 {
     private static readonly ConsumerSettings Fast = new() { RetryCount = 2, RetryMinMilliseconds = 1, RetryMaxMilliseconds = 5 };
+
+    /// <summary>As <see cref="Fast"/>, with the shortest handler timeout a test can wait for (ARV-096e).</summary>
+    private static readonly ConsumerSettings Timed = new() { RetryCount = 2, RetryMinMilliseconds = 1, RetryMaxMilliseconds = 5, HandlerTimeoutSeconds = 1 };
 
     private static async Task<(ServiceProvider Provider, ITestHarness Harness, Ledger Ledger)> StartAsync(ConsumerSettings settings = null,
         IDeadLetterStore store = null)
@@ -81,11 +87,13 @@ public sealed class ConsumePipelineTests
         var probe = System.Text.Json.JsonSerializer.Serialize(harness.Bus.GetProbeResult().Results);
         var retry = probe.IndexOf("\"filterType\":\"retry\"", StringComparison.Ordinal);
         var deadLetter = probe.IndexOf("ariva-dead-letter", StringComparison.Ordinal);
+        var timeout = probe.IndexOf("ariva-handler-timeout", StringComparison.Ordinal);
         var inbox = probe.IndexOf("InboxFilter", StringComparison.Ordinal);
 
         retry.Should().BePositive();
         deadLetter.Should().BeGreaterThan(retry, "the retry wraps the dead-letter filter");
-        inbox.Should().BeGreaterThan(deadLetter, "the inbox and unit of work run inside both");
+        timeout.Should().BeGreaterThan(deadLetter, "each attempt's handler timeout runs inside the retry and the dead-letter filter (ARV-096e)");
+        inbox.Should().BeGreaterThan(timeout, "the inbox and unit of work run inside all three, so the timeout covers the claim and the commit too");
     }
 
     [Fact]
@@ -120,6 +128,43 @@ public sealed class ConsumePipelineTests
         ledger.Attempts[probe.Id].Should().Be(3, "a consumer's own cancellation is retried like any failure");
         // MassTransit reports a consumer's own cancellation as ConsumerCanceledException.
         ledger.Letters.Should().ContainSingle().Which.ErrorType.Should().Be(typeof(ConsumerCanceledException).FullName);
+    }
+
+    [Fact]
+    public async Task Pipe_Should_CancelAStalledAttemptAtTheHandlerTimeoutAndRetryIt_When_TheNextAttemptSucceeds()
+    {
+        // ARV-096e: a handler stalled on the database or a partner frees its slot at the timeout; the attempt is rolled back and retried.
+        var (provider, harness, ledger) = await StartAsync(Timed);
+        await using var _ = provider;
+        var probe = new PipelineProbe { StallTimes = 1 };
+
+        await harness.Bus.Publish(probe, TestContext.Current.CancellationToken);
+        await SettleAsync(harness, () => ledger.Committed.Contains(probe.Id));
+
+        ledger.Attempts[probe.Id].Should().Be(2);
+        ledger.Cut.Should().Be(1, "the stalled attempt's own token was cancelled at the handler timeout");
+        ledger.Rollbacks.Should().Be(1, "the cut attempt rolled its unit of work back, claim included");
+        ledger.Committed.Should().ContainSingle();
+        ledger.Letters.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Pipe_Should_DeadLetterTheHandlerTimeout_When_EveryAttemptStalls()
+    {
+        var (provider, harness, ledger) = await StartAsync(Timed);
+        await using var _ = provider;
+        var probe = new PipelineProbe { StallTimes = 99 };
+
+        await harness.Bus.Publish(probe, TestContext.Current.CancellationToken);
+        await SettleAsync(harness, () => !ledger.Letters.IsEmpty);
+
+        ledger.Attempts[probe.Id].Should().Be(3, "each attempt is cut at the timeout and retried like any failure");
+        ledger.Cut.Should().Be(3);
+        var letter = ledger.Letters.Should().ContainSingle().Subject;
+        letter.ErrorType.Should().Be(typeof(HandlerTimeoutException).FullName);
+        letter.ErrorMessage.Should().Contain("ran past its timeout of 1 s");
+        ledger.Committed.Should().BeEmpty();
+        (await harness.Published.Any<Fault<PipelineProbe>>(TestContext.Current.CancellationToken)).Should().BeFalse("the dead letter ends the message, so the offset moves on");
     }
 
     [Fact]
@@ -352,14 +397,27 @@ public sealed class ConsumePipelineTests
 
     public sealed class ProbeConsumer(Ledger ledger) : IConsumer<PipelineProbe>
     {
-        public Task Consume(ConsumeContext<PipelineProbe> context)
+        public async Task Consume(ConsumeContext<PipelineProbe> context)
         {
             var attempt = ledger.Attempts.AddOrUpdate(context.Message.Id, 1, (_, n) => n + 1);
+            if (attempt <= context.Message.StallTimes)
+            {
+                try
+                {
+                    await Task.Delay(Timeout.Infinite, context.CancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    Interlocked.Increment(ref ledger.Cut);
+                    throw;
+                }
+            }
+
             if (attempt > context.Message.FailTimes)
-                return Task.CompletedTask;
-            return context.Message.TimeOut
-                ? throw new TaskCanceledException($"probe timeout {attempt}")
-                : throw new InvalidOperationException($"probe failure {attempt}");
+                return;
+            if (context.Message.TimeOut)
+                throw new TaskCanceledException($"probe timeout {attempt}");
+            throw new InvalidOperationException($"probe failure {attempt}");
         }
     }
 
@@ -372,6 +430,7 @@ public sealed class ConsumePipelineTests
         public HashSet<Guid> Claimed { get; } = [];
         public int Rollbacks;
         public int Duplicates;
+        public int Cut;
         public int RefuseLetters;
         public int Refused;
 

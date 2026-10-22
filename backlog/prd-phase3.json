@@ -916,6 +916,25 @@
       "dependsOn": [
         "ARV-096d"
       ]
+    },
+    {
+      "id": "ARV-235",
+      "title": "[E17] Run timeouts proven per loop and job on a statement the database holds",
+      "description": "Found by ARV-096e's security review (L3). RunTimeoutInventoryTests runs every bounded loop and Cronz job against a database that accepts connections and never answers; Npgsql does not take a run's token while it opens a connection, so there the connect timeout ends each run, and the test proves that every run goes through its run timeout but not that each loop passes the run's token on to its statements. Only the AMAN and ACRIS polls are proven against a statement the database holds (OutboundEndpointTests, a table lock), plus the Kafka handler filter in ConsumePipelineTests; for the other loops and jobs the token was checked by reading the code. A test per loop pattern on a warmed connection pool, with a statement held (a table lock, or a Toxiproxy stall of an open connection), proves each run is cancelled at its timeout rather than at the 30 s command timeout. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "Every bounded loop and Cronz job of RunTimeoutInventoryTests is run with a short run timeout against PostgreSQL holding its first statement (a lock or a stalled open connection), and each ends with RunTimeoutException well before Database:CommandTimeoutSeconds",
+        "An email round whose relay takes a message's DATA and never answers ends that message at Email:Smtp:TimeoutSeconds (MailKit's own timeout, the only bound once a message has begun since ARV-096e), recorded for retry, proven with SmtpSink.DataDelay above the test's SMTP timeout (ARV-096e round 2, N1)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 307,
+      "passes": false,
+      "notes": "Size S to M. Low (a test gap: the token is passed at the top level of every loop, checked by reading the code in ARV-096e's review), so Phase 3 by the owner's rule. ARV-096e round 2 added N1 (the begun message's SMTP bound untested) and N3 (the report delivery's not-tried path untested; it behaves as the old cancellation path).",
+      "dependsOn": [
+        "ARV-096e"
+      ]
     }
   ]
 }

@@ -4,6 +4,7 @@ using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Security;
 using Ariva.Infra.Live;
+using Ariva.Infra.Resilience;
 using Ariva.Infra.Services.Administration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -466,10 +467,20 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
     }
 }
 
-/// <summary>Runs <see cref="AlertEvaluation"/> every interval.</summary>
+/// <summary>
+/// Runs <see cref="AlertEvaluation"/> every interval. A tick ends at <see cref="RunTimeout"/> (ARV-096e); each rule commits on
+/// its own, so a cut tick leaves the rules it reached evaluated and the next tick takes the rest.
+/// </summary>
 public sealed class AlertEvaluationWorker(AlertEvaluation evaluation, AlertEvaluationSettings settings, TimeProvider timeProvider, ILogger<AlertEvaluationWorker> logger)
-    : BackgroundService
+    : BackgroundService, IBoundedRuns
 {
+    /// <summary>Two minutes: 500 rules a site read with bounded inputs take seconds; a tick past it waits on a stalled database.</summary>
+    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>One tick under the run timeout. Public for tests.</summary>
+    public Task<AlertTickResult> RunOnceAsync(CancellationToken stoppingToken) =>
+        RunBound.RunAsync("Alert evaluation", RunTimeout, timeProvider, ct => evaluation.TickAsync(timeProvider.GetUtcNow().UtcDateTime, ct), stoppingToken);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(settings.IntervalSeconds), timeProvider);
@@ -477,7 +488,7 @@ public sealed class AlertEvaluationWorker(AlertEvaluation evaluation, AlertEvalu
         {
             try
             {
-                await evaluation.TickAsync(timeProvider.GetUtcNow().UtcDateTime, stoppingToken);
+                await RunOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
