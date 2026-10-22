@@ -79,6 +79,21 @@ public static class SnapshotChecks
             if (state.ReferenceUtc == DateTime.MinValue || pending > state.ReferenceUtc)
                 bad++;
         }
+        // The tracks' runs of position samples (ARV-230): only a snapshot of version 11 or later carries them. The engine's Restore
+        // checks each against its bounds, its watermark and its hand-over window.
+        if (e.Runs is { Count: > 0 } runs)
+        {
+            if (state.Version < ZoneProcessorState.SightingRunsSinceVersion)
+                yield return $"A snapshot before version {ZoneProcessorState.SightingRunsSinceVersion} carries no runs of position samples.";
+            foreach (var run in runs.Where(r => r is not null))
+            {
+                Time(run.AnchorUtc);
+                Times(run.PendingUtc);
+                if (run.PendingUtc is { } pendingAt && state.ReferenceUtc != DateTime.MinValue && pendingAt > state.ReferenceUtc)
+                    bad++;
+            }
+        }
+
         // The engine's event clock (ARV-148, written from version 9 on): never ahead of the zone's receive clock, since each
         // event counts at most up to the reference it arrived with, and set once the watermark has moved (the first event
         // sets it). The engine's Restore checks it against the events held.

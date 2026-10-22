@@ -935,6 +935,45 @@
       "dependsOn": [
         "ARV-096e"
       ]
+    },
+    {
+      "id": "ARV-237",
+      "title": "[E4] Zone cold start: exits of people already inside pair with another sensor's entrant",
+      "description": "Found by ARV-230's pilot load run and its security review. A zone that starts afresh (go-live, a rollback to a build that refuses its snapshot, a refused snapshot, a new profile version) knows nobody inside. For about one queue dwell time, the exit of a person who entered before it has a track the engine never saw enter; FifoPartner pairs it with the earliest person another sensor of the zone holds (F5: an unknown tracked exit is someone who entered before the engine started, or under another sensor's id), and that person's own exit later counts as a duplicate. So exits are undercounted and those waits come out short until the people inside at the restart have left: a replay of ARV-230's first pilot run, whose harness started with about 180 people inside each hall zone, counted 175 of 252 exits (77 duplicates). Options (Proposed, a domain decision): pair an unknown tracked exit only with an entrant whose own device has no track that could be it, or not at all, during the first dwell after a fresh start (counted as an unmatched exit); mark the minutes of that first dwell Degraded; restore the zone's open people from the archive when it starts afresh. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "A zone that starts afresh with people inside counts every exit of a person who entered after the start, and no wait of such a person is shortened by an earlier person's exit, proven by a unit test of a hall zone of 6 T3 sensors started with 180 people inside (ARV-230's first pilot run replayed); or, if the owner keeps F5's pairing, the minutes of the first dwell after a fresh start are marked Degraded and the rule is recorded in docs/domain/formulas.md F5",
+        "The locked replays are unchanged, or the engine version and the replay hashes are bumped with the reason recorded",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 308,
+      "passes": false,
+      "notes": "Size M. Low by the owner's rule (a transient of one dwell time after a fresh start, documented in wiki 10 and 18), so Phase 3; the owner may pull it before the pilot, for instance if the validation campaign will cross a profile publish. Needs the owner's choice among the options first.",
+      "dependsOn": [
+        "ARV-230"
+      ]
+    },
+    {
+      "id": "ARV-238",
+      "title": "[E4] Queue engine restore checks its hand-over deadlines",
+      "description": "Found by ARV-230's security review (Info, before that story). QueueStateEngine.Restore reads each hand-over deadline of a zone snapshot without checking that it is a sighting time plus the hand-over window, or that its track is held, so a crafted snapshot can fragment an entrant at a time it chooses. Writing it needs the database's write access to stream_zone_state, as every other snapshot field does; the runs ARV-230 added are already checked as the engine keeps them. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "Restore refuses a hand-over deadline that is not its sighting time plus the hand-over window, a sighting after the engine's clock, or (when the track is held) a sighting after the entrant's last sighting; a unit test per refusal, and genuine snapshots taken at random points restore and continue identically",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 309,
+      "passes": false,
+      "notes": "Size S. Low (needs write access to the zone state, which already holds every count), so Phase 3.",
+      "dependsOn": [
+        "ARV-230"
+      ]
     }
   ]
 }

@@ -4,8 +4,11 @@ using System.Text.Json;
 
 namespace Ariva.LoadTests;
 
-/// <summary>One push: its body, and the crossings it reports (entries and exits) for the run's count check.</summary>
-public sealed record PilotPush(byte[] Body, int Entries, int Exits);
+/// <summary>
+/// One push: its body, the crossings it reports (entries and exits) for the run's count check, and the track ids of its entries
+/// (an exit is sent only once its walk's entry was accepted, <see cref="PilotTracks.Body"/>).
+/// </summary>
+public sealed record PilotPush(byte[] Body, int Entries, int Exits, IReadOnlyList<string> EntryTracks);
 
 /// <summary>
 /// A T3 sensor's push in the pilot hall (ARV-124a), as a stereo sensor reports a queue: the positions of the people it
@@ -25,13 +28,24 @@ public static class PilotTracks
     private const double Length = FirstLeg + SecondLeg;
 
     /// <param name="since">The end of the device's previous push (its crossings since then are this push's).</param>
-    public static PilotPush Body(PilotZone zone, int device, long packageId, DateTime since, DateTime now, int people, int samples, int dwellSeconds, int padding = 0)
+    /// <param name="entryAccepted">
+    /// Whether Ingest accepted the entry of a track id of this device. ARV-230: the walks run on the wall clock, so when the run
+    /// starts about every person is already inside, and a push refused with 429 loses its entries. An exit whose entry Ariva never
+    /// received is someone who entered before the engine started (or under another sensor's id), so the queue engine pairs it
+    /// with the earliest person another sensor of the zone holds (F5), whose own exit later counts as a duplicate: about a third
+    /// of a hall zone's exits in the first runs, the same with or without ARV-230. This harness's people never pass from one
+    /// sensor to another, so only exits of entries accepted are sent (positions are sent for everyone, as before).
+    /// </param>
+    public static PilotPush Body(PilotZone zone, int device, long packageId, DateTime since, DateTime now, int people, int samples, int dwellSeconds,
+        Func<string, bool> entryAccepted, int padding = 0)
     {
         ArgumentNullException.ThrowIfNull(zone);
+        ArgumentNullException.ThrowIfNull(entryAccepted);
         var tracks = new List<object>(people * samples);
         var crossings = new List<object>();
         var occupancy = 0;
         int entries = 0, exits = 0;
+        var entryTracks = new List<string>();
         var from = Seconds(since);
         var to = Seconds(now);
         for (var p = 0; p < people; p++)
@@ -64,17 +78,25 @@ public static class PilotTracks
                 var crossedAt = (k * dwellSeconds) + (walkedAt / Length * dwellSeconds) - offset;
                 if (crossedAt <= from || crossedAt > to)
                     continue;
+                var trackId = TrackId(p, (long)k);
+                if (direction == "Out" && !entryAccepted(trackId))
+                    continue;
                 crossings.Add(new
                 {
                     lineName = zone.Name + " " + line,
                     direction,
-                    trackId = TrackId(p, (long)k),
+                    trackId,
                     timeUtc = DateTime.UnixEpoch.AddTicks((long)(crossedAt * TimeSpan.TicksPerSecond)).ToString("O", CultureInfo.InvariantCulture)
                 });
                 if (direction == "In")
+                {
                     entries++;
+                    entryTracks.Add(trackId);
+                }
                 else
+                {
                     exits++;
+                }
             }
 
             var (_, now0) = Walk(to, offset, dwellSeconds);
@@ -93,10 +115,10 @@ public static class PilotTracks
             body["crossings"] = crossings;
         var json = JsonSerializer.SerializeToUtf8Bytes(body);
         if (padding <= 0)
-            return new PilotPush(json, entries, exits);
+            return new PilotPush(json, entries, exits, entryTracks);
         // An oversized body: the same push with a long, valid JSON string member appended (it never gets parsed).
         var text = Encoding.UTF8.GetString(json);
-        return new PilotPush(Encoding.UTF8.GetBytes(text[..^1] + ",\"padding\":\"" + new string('x', padding) + "\"}"), 0, 0);
+        return new PilotPush(Encoding.UTF8.GetBytes(text[..^1] + ",\"padding\":\"" + new string('x', padding) + "\"}"), 0, 0, []);
     }
 
     private static double Seconds(DateTime at) => (at - DateTime.UnixEpoch).Ticks / (double)TimeSpan.TicksPerSecond;

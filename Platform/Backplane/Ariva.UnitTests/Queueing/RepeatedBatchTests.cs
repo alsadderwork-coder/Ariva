@@ -441,7 +441,7 @@ public sealed class RepeatedBatchTests
         var json = JsonSerializer.SerializeToNode(zone.Capture(), EventCatalog.Json)!.AsObject();
         var state = json.Deserialize<ZoneProcessorState>(EventCatalog.Json)!;
 
-        state.Version.Should().Be(10).And.Be(ZoneProcessorState.CurrentVersion);
+        state.Version.Should().Be(11).And.Be(ZoneProcessorState.CurrentVersion);
         json["recentBatches"]!.AsArray().Should().HaveCount(2);
         state.RecentBatches.Should().Equal(new RecentBatchState("S-81", Id(3), At(End(3) + 90)), new RecentBatchState("S-82", Id(3), At(End(3) + 90)));
         ZoneProcessor.Restore(ZoneKey, Geometry, 3, new ZoneProcessorSettings(), state, Far).Capture().RecentBatches.Should().Equal(state.RecentBatches);

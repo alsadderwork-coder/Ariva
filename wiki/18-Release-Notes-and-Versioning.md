@@ -146,6 +146,13 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-230: the queue engine keeps track positions in runs (zone snapshot version 11, 2026-10-22)
+
+- Ariva.Api.Stream writes each zone's state as snapshot version 11: the queue engine's runs of position samples (a track's anchor and one pending sample) travel in it, and its reorder buffer no longer holds one event a position. A hall zone's `stream_zone_state.state_bytes` falls from about 20 MB to a few hundred KB (wiki 05).
+- Upgrading needs nothing: Stream restores a version 10 snapshot as it is (its held positions all in the buffer) and the runs start with the next positions.
+- Rolling back to a build before ARV-230 is the case to plan for: that build refuses version 11 snapshots, so each zone starts afresh with its next events and logs an error ("The saved state of zone ... cannot be restored; the zone starts afresh"): its open entrants and the events it held are lost, as with any earlier version change, and the minutes already stored stay. Roll back only between peaks. For about one queue dwell time after any zone starts afresh (a rollback, a refused snapshot, a new profile version, go-live), exits of people who were already inside pair by FIFO with the earliest person another sensor of the zone holds, whose own exit then counts as a duplicate (formulas F5): exits are undercounted and those waits come out short until the people inside at the restart have left (77 of 252 exits a hall zone in the replay of ARV-230's first pilot run; ARV-237).
+- Nothing to configure: the bound on runs (`MaxSightingRuns`, 20,000 a zone) is the engine's own, like its buffer's.
+
 ### ARV-092: download names, charset and the file handling guide (2026-10-19)
 
 Changed in the hosts:

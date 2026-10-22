@@ -174,15 +174,20 @@ public sealed record ZoneProcessorState
     /// with the clock at the latest of its watermark and its held events, and the clock then catches up with the events.
     /// 10 adds the batches the zone remembers to apply a resent batch once (<see cref="RecentBatches"/>, ARV-168); an
     /// earlier snapshot carries none (its zone did not remember batches) and is refused if it says otherwise, and restores
-    /// remembering none, so a batch applied before the upgrade and resent just after it is applied again.
+    /// remembering none, so a batch applied before the upgrade and resent just after it is applied again. 11 adds the queue
+    /// engine's runs of position samples (<see cref="QueueEngineState.Runs"/>, ARV-230); an earlier snapshot carries none and is
+    /// refused if it says otherwise, and restores without runs: its held samples are all in its buffer, and runs start anew.
     /// </summary>
-    public const int CurrentVersion = 10;
+    public const int CurrentVersion = 11;
 
     /// <summary>The first version that may carry the queue engine's pending empty-queue check (ARV-114d).</summary>
     public const int PendingAnchorSinceVersion = 8;
 
     /// <summary>The first version that may carry remembered batches (ARV-168).</summary>
     public const int RecentBatchesSinceVersion = 10;
+
+    /// <summary>The first version that may carry the queue engine's runs of position samples (ARV-230).</summary>
+    public const int SightingRunsSinceVersion = 11;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }
@@ -494,7 +499,10 @@ public sealed class ZoneProcessor
 
                 break;
             case TrackSampleBatch t:
-                foreach (var e in (t.Samples ?? []).Take(MaxEventsPerBatch))
+                // ARV-230 (CWE-400): a push's samples are offered in time order (stable: the samples of one instant keep the order
+                // they came in, which is all the engine's order depends on), so the engine coalesces each track's samples into its
+                // run whichever order the device lists them in; a push sent newest first would otherwise take a place a sample.
+                foreach (var e in (t.Samples ?? []).Take(MaxEventsPerBatch).OrderBy(e => e?.TimeUtc ?? DateTime.MinValue))
                     yield return e?.Event is null || !Valid(e, e.Event with { TrackId = Checkable(Local(e.Event.TrackId)) }) ? null
                         : new QueueTrackSeen(Track(e.Event.TrackId), e.TimeUtc, Degraded(e.Flags));
                 break;

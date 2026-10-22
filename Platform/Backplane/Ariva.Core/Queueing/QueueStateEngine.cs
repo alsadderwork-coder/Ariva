@@ -50,6 +50,12 @@ public sealed record QueueEngineSettings
     /// <summary>Recently resolved tracks remembered to recognise duplicates.</summary>
     public int MaxRememberedTracks { get; init; } = 20_000;
 
+    /// <summary>
+    /// ARV-230: tracks whose position samples are coalesced at most (the engine's remarks); the samples of further tracks are
+    /// buffered one place each. The pilot hall's busiest zone (20 T3 sensors at 30 people) holds about 850.
+    /// </summary>
+    public int MaxSightingRuns { get; init; } = 20_000;
+
     /// <summary>Late events older than this behind the reference clock are beyond recomputation (the 3 days the sensing topics and the archive keep).</summary>
     public TimeSpan LateHorizon { get; init; } = TimeSpan.FromDays(3);
 
@@ -61,6 +67,12 @@ public sealed record QueueEngineSettings
 
     /// <summary>Devices whose tracks a zone keeps apart; the tracks of further devices count as anonymous.</summary>
     public int MaxDevicesPerZone { get; init; } = 64;
+
+    /// <summary>
+    /// ARV-230: each track's position samples are coalesced in runs (the engine's remarks). Off only in tests, which compare the
+    /// engine with one that applies every sample, as before ARV-230.
+    /// </summary>
+    internal bool CoalescePositions { get; init; } = true;
 
     /// <summary>The problems with these settings, empty when valid.</summary>
     public IEnumerable<string> Problems()
@@ -85,6 +97,8 @@ public sealed record QueueEngineSettings
             yield return "MaxBufferedEvents is from 10 to 1,000,000.";
         if (MaxRememberedTracks is < 0 or > 100_000)
             yield return "MaxRememberedTracks is from 0 to 100,000.";
+        if (MaxSightingRuns is < 0 or > 1_000_000)
+            yield return "MaxSightingRuns is from 0 to 1,000,000.";
         if (MaxStepRecords is < 1_000 or > 1_000_000)
             yield return "MaxStepRecords is from 1,000 to 1,000,000.";
         if (MaxIntervalPeople is < 1 or > CanonicalEventRules.MaxIntervalCount)
@@ -149,6 +163,17 @@ public sealed partial class QueueStateEngine
         public LinkedListNode<Entrant> InGroup { get; set; }
     }
 
+    /// <summary>ARV-230: a track's run of position samples (see <see cref="Hold"/>).</summary>
+    private sealed class SightingRun(string track, DateTime anchor)
+    {
+        public string Track { get; } = track;
+        public DateTime Anchor { get; set; } = anchor;
+        public QueueTrackSeen Pending { get; set; }
+        public long PendingSequence { get; set; }
+        public bool FlushScheduled { get; set; }
+        public bool EndScheduled { get; set; }
+    }
+
     private readonly QueueZoneGeometry _geometry;
     private readonly QueueEngineSettings _settings;
     private readonly PriorityQueue<(QueueInput Input, bool Ahead), Due> _buffer = new(DueOrder.Instance);
@@ -172,6 +197,13 @@ public sealed partial class QueueStateEngine
     // before the watermark is late), and in a step split inside an instant the watermark, one tick before it, is later.
     private DateTime _instantFloor = DateTime.MinValue;
     private readonly PriorityQueue<(string Key, DateTime Seen), DateTime> _handovers = new();
+    // ARV-230: each track's run of position samples (see Hold): its anchor and its pending sample, held outside the buffer. The
+    // heaps schedule each run's flush (at or before its pending sample) and its end (at or before its anchor plus the hand-over
+    // window), one entry each.
+    private readonly Dictionary<string, SightingRun> _runs = new(StringComparer.Ordinal);
+    private readonly PriorityQueue<SightingRun, DateTime> _flushes = new();
+    private readonly PriorityQueue<SightingRun, DateTime> _runEnds = new();
+    private int _pending;
     private bool _residualSuspect;
     // The time of the occupancy reading applied last, until the events of its instant are all applied. A full step that
     // ends inside that instant keeps it for the next step (ARV-114d), one tick after the watermark, so it is part of the
@@ -215,8 +247,8 @@ public sealed partial class QueueStateEngine
     /// <summary>People held: entered and not yet resolved.</summary>
     public int OpenEntrants => _held.Count;
 
-    /// <summary>Events waiting in the reorder buffer.</summary>
-    public int BufferedEvents => _buffer.Count;
+    /// <summary>Events waiting in the reorder buffer, the tracks' pending position samples included (ARV-230).</summary>
+    public int BufferedEvents => _buffer.Count + _pending;
 
     private int Records => _waits.Count + _resolutions.Count + _movements.Count + _lines.Count + _samples.Count + _readings.Count;
 
@@ -260,18 +292,19 @@ public sealed partial class QueueStateEngine
             return;
         }
 
-        if (_buffer.Count >= _settings.MaxBufferedEvents)
+        // ARV-230: a track's position sample within its run takes no place of its own (see Hold), so it is never refused.
+        var sighting = _settings.CoalescePositions && !ahead && input is QueueTrackSeen { TrackKey: not null } sample ? sample : null;
+        if (BufferedEvents >= _settings.MaxBufferedEvents && (sighting is null || NeedsPlace(sighting)))
         {
             // Make room only with events that were due anyway; never move the watermark past what the clock allows.
-            _buffer.TryPeek(out _, out var oldest);
             var due = Target(referenceUtc);
-            if (oldest.Time <= due && Records < _settings.MaxStepRecords)
+            if (TryOldestHeld(out var oldest) && oldest <= due && Records < _settings.MaxStepRecords)
             {
                 _forced++;
-                ProcessUpTo(oldest.Time);
+                ProcessUpTo(oldest);
             }
 
-            if (_buffer.Count >= _settings.MaxBufferedEvents)
+            if (BufferedEvents >= _settings.MaxBufferedEvents)
             {
                 _bufferFull++;
                 return;
@@ -284,7 +317,11 @@ public sealed partial class QueueStateEngine
             }
         }
 
-        _buffer.Enqueue((input, ahead), new Due(time, InputKey.Of(input, _geometry), _sequence++));
+        var place = new Due(time, InputKey.Of(input, _geometry), _sequence++);
+        if (sighting is not null)
+            Hold(sighting, place);
+        else
+            _buffer.Enqueue((input, ahead), place);
         if (ahead)
             _aheadBuffered++;
         // The zone's clock moves with the events it holds, each at most to the time it arrived (CWE-501: a device whose
@@ -354,7 +391,7 @@ public sealed partial class QueueStateEngine
                 Duplicates = _duplicates, Reverse = _reverse, UnmatchedExits = _unmatched, NegativeWaits = _negative,
                 BufferFull = _bufferFull, ForcedAdvances = _forced, TooManyDevices = _tooManyDevices
             },
-            _reanchors, _held.Count, _buffer.Count, _more)
+            _reanchors, _held.Count, BufferedEvents, _more)
         {
             Lines = LineMovements(),
             Occupancy = [.. _samples],
@@ -379,6 +416,7 @@ public sealed partial class QueueStateEngine
 
     private void ProcessUpTo(DateTime target)
     {
+        FlushSightings(target);
         // Every minute boundary at or before the watermark has been sampled (ARV-114a); this run samples the ones after it.
         var sampledThrough = _watermark;
         while (_buffer.TryPeek(out var item, out var key) && key.Time <= target)
@@ -405,6 +443,7 @@ public sealed partial class QueueStateEngine
                 // split: it stays pending, one tick after the watermark, and runs in a later step once the rest of the
                 // instant has been applied, exactly as in a step that is not split (ARV-114d). Never run it with part
                 // of an instant applied: a band's 0 beside the zone's previous reading is not an empty queue.
+                EndRuns();
                 return;
             }
 
@@ -412,10 +451,13 @@ public sealed partial class QueueStateEngine
             if (item.Ahead)
                 _aheadBuffered--;
             Expire(key.Time);
-            if (key.Time > _cursor)
+            // ARV-230: a position sample is not a count, so it neither moves the cursor nor narrows an interval reading's spread:
+            // the spread does not depend on how often the zone's sensors sample positions, or on which samples the runs keep.
+            var counts = item.Input is not QueueTrackSeen;
+            if (counts && key.Time > _cursor)
                 _instantFloor = _cursor;
             Apply(item.Input);
-            if (key.Time > _cursor)
+            if (counts && key.Time > _cursor)
                 _cursor = key.Time;
         }
 
@@ -425,6 +467,7 @@ public sealed partial class QueueStateEngine
             Sample(sampledThrough, target, inclusive: true);
         if (target > _watermark)
             _watermark = target;
+        EndRuns();
     }
 
     /// <summary>
@@ -777,19 +820,49 @@ public sealed partial class QueueStateEngine
         _residualSuspect = dropped > _settings.ResidualTolerance;
     }
 
-    /// <summary>Censors entrants past T_censor and fragments tracks not seen within the hand-over window, at <paramref name="now"/>.</summary>
+    /// <summary>
+    /// Censors entrants past T_censor and fragments tracks not seen within the hand-over window, before <paramref name="now"/>, in the
+    /// order of the times they resolve at (a censoring first at the same time): which of the two resolves an entrant, and the order
+    /// of the resolutions, do not depend on which events happen to be applied between them (ARV-230: the tracks' runs apply fewer
+    /// position samples).
+    /// </summary>
     private void Expire(DateTime now)
     {
-        while (_held.First is { } first && now - first.Value.EntryUtc > _settings.CensorAfter)
-            Resolve(first.Value, first.Value.EntryUtc + _settings.CensorAfter, EntrantOutcome.Censored);
+        while (true)
+        {
+            var first = _held.First;
+            DateTime? censorAt = first is not null && now - first.Value.EntryUtc > _settings.CensorAfter ? first.Value.EntryUtc + _settings.CensorAfter : null;
+            var handover = NextHandover(now);
+            if (handover is { } h && (censorAt is not { } c || h.Deadline < c))
+            {
+                _handovers.Dequeue();
+                Resolve(h.Entrant, h.Deadline, EntrantOutcome.Fragmented);
+            }
+            else if (censorAt is { } at)
+            {
+                Resolve(first.Value, at, EntrantOutcome.Censored);
+            }
+            else
+            {
+                return;
+            }
+        }
+    }
 
-        // Hand-over deadlines in a heap: each sighting costs a logarithm, each expiry looks only at what is due.
+    /// <summary>
+    /// The earliest hand-over deadline before <paramref name="now"/> that still holds, or null. Hand-over deadlines are in a heap:
+    /// each sighting costs a logarithm, each expiry looks only at what is due; superseded deadlines are dropped here.
+    /// </summary>
+    private (Entrant Entrant, DateTime Deadline)? NextHandover(DateTime now)
+    {
         while (_handovers.TryPeek(out var item, out var deadline) && now > deadline)
         {
-            _handovers.Dequeue();
             if (_byTrack.TryGetValue(item.Key, out var entrant) && entrant.LastSeenUtc == item.Seen)
-                Resolve(entrant, deadline, EntrantOutcome.Fragmented);
+                return (entrant, deadline);
+            _handovers.Dequeue();
         }
+
+        return null;
     }
 
     private void RebuildHandovers()
@@ -854,6 +927,189 @@ public sealed partial class QueueStateEngine
     private List<ZoneReadingMinute> ReadingMinutes() =>
         [.. _readings.OrderBy(r => r.Key.Minute).ThenBy(r => r.Key.Zone, StringComparer.Ordinal)
             .Select(r => new ZoneReadingMinute(r.Key.Zone, r.Key.Minute, r.Value.Min, r.Value.Max))];
+
+    #endregion
+
+    #region Position samples (ARV-230)
+
+    // A position sample only marks an open entrant's track as seen: its last sighting, and a hand-over deadline that window after
+    // it, after which the entrant is fragmented (F6) unless a later sample moved it. So of a track's samples, one between two that
+    // are applied and at most the hand-over window apart changes no outcome: whatever it would have set, the later one sets before
+    // any deadline it could add or leave passes (Expire resolves in time order, and a sample neither moves the cursor nor narrows
+    // an interval reading). Each track keeps a run: its anchor (the latest sample applied or in the buffer) and its pending sample
+    // (the latest within the window after the anchor), held outside the buffer until the watermark reaches it or a later sample
+    // ends the run (and the pending sample, buffered, anchors the next). A run holds at most two places in the window, whatever the
+    // sensors' rate (5 Hz positions held one place each before: about 20 MB of state a hall zone, ARV-124a). Samples ahead of the
+    // reference clock, without a track, behind their run's anchor, or of a track without a run when the runs are at their bound
+    // (MaxSightingRuns) are buffered as before: applying an extra sample never changes an outcome either. The zone processor
+    // offers each push's samples in time order, so a device that sends a push newest first still coalesces; only samples sent out
+    // of order across pushes take a place each, as they did before.
+
+    /// <summary>True when the sample takes a place of its own (in the buffer or as a run's pending sample); false when its run takes it.</summary>
+    private bool NeedsPlace(QueueTrackSeen seen)
+    {
+        if (!_runs.TryGetValue(seen.TrackKey, out var run))
+            return true;
+        var time = seen.TimeUtc;
+        if (time < run.Anchor || time - run.Anchor > _settings.HandoverWindow)
+            return true;
+        return time != run.Anchor && run.Pending is null;
+    }
+
+    /// <summary>Holds a position sample in its track's run, or in the buffer (see the region's remarks).</summary>
+    private void Hold(QueueTrackSeen seen, Due place)
+    {
+        var time = seen.TimeUtc;
+        if (!_runs.TryGetValue(seen.TrackKey, out var run))
+        {
+            _buffer.Enqueue((seen, false), place);
+            // The runs have their own bound (CWE-400): a track without one is not coalesced, its samples buffered as before.
+            if (_runs.Count < _settings.MaxSightingRuns)
+            {
+                run = new SightingRun(seen.TrackKey, time);
+                _runs.Add(seen.TrackKey, run);
+                ScheduleEnd(run);
+            }
+
+            return;
+        }
+
+        if (time < run.Anchor)
+        {
+            _buffer.Enqueue((seen, false), place);
+            return;
+        }
+
+        // The same instant as the anchor: the same reading.
+        if (time == run.Anchor)
+            return;
+        if (time - run.Anchor > _settings.HandoverWindow)
+        {
+            // The run ends at its pending sample, which anchors the next one.
+            if (run.Pending is not null)
+                BufferPending(run);
+            if (time - run.Anchor > _settings.HandoverWindow)
+            {
+                _buffer.Enqueue((seen, false), place);
+                run.Anchor = time;
+                ScheduleEnd(run);
+                return;
+            }
+        }
+
+        if (run.Pending is null)
+        {
+            run.Pending = seen;
+            run.PendingSequence = place.Sequence;
+            _pending++;
+            if (!run.FlushScheduled)
+            {
+                _flushes.Enqueue(run, time);
+                run.FlushScheduled = true;
+            }
+        }
+        else if (time > run.Pending.TimeUtc)
+        {
+            // A flush scheduled for the earlier pending sample is at or before this one too.
+            run.Pending = seen;
+            run.PendingSequence = place.Sequence;
+        }
+
+        // Otherwise between the anchor and the pending sample, or at the latter: it changes nothing.
+    }
+
+    /// <summary>Moves the run's pending sample into the buffer, where it anchors the run.</summary>
+    private void BufferPending(SightingRun run)
+    {
+        var pending = run.Pending;
+        _buffer.Enqueue((pending, false), new Due(pending.TimeUtc, InputKey.Of(pending, _geometry), run.PendingSequence));
+        run.Anchor = pending.TimeUtc;
+        run.Pending = null;
+        _pending--;
+        ScheduleEnd(run);
+    }
+
+    private void ScheduleEnd(SightingRun run)
+    {
+        if (run.EndScheduled)
+            return;
+        _runEnds.Enqueue(run, Plus(run.Anchor, _settings.HandoverWindow));
+        run.EndScheduled = true;
+    }
+
+    /// <summary>Buffers every pending sample at or before <paramref name="target"/>, before the watermark moves to it.</summary>
+    private void FlushSightings(DateTime target)
+    {
+        while (_flushes.TryPeek(out var run, out var at) && at <= target)
+        {
+            _flushes.Dequeue();
+            run.FlushScheduled = false;
+            if (run.Pending is not { } pending)
+                continue;
+            if (pending.TimeUtc <= target)
+            {
+                BufferPending(run);
+                continue;
+            }
+
+            _flushes.Enqueue(run, pending.TimeUtc);
+            run.FlushScheduled = true;
+        }
+    }
+
+    /// <summary>
+    /// Forgets the runs the watermark has left behind: a run without a pending sample whose anchor is a hand-over window or more
+    /// behind the watermark coalesces nothing more, since any sample still accepted is past its window.
+    /// </summary>
+    private void EndRuns()
+    {
+        while (_runEnds.TryPeek(out var run, out var at) && at <= _watermark)
+        {
+            _runEnds.Dequeue();
+            run.EndScheduled = false;
+            var end = Plus(run.Anchor, _settings.HandoverWindow);
+            if (run.Pending is null && end <= _watermark)
+            {
+                if (_runs.TryGetValue(run.Track, out var current) && ReferenceEquals(current, run))
+                    _runs.Remove(run.Track);
+                continue;
+            }
+
+            // A pending sample is never behind the watermark (FlushSightings), so its run ends later.
+            _runEnds.Enqueue(run, end > _watermark ? end : Plus(_watermark, TimeSpan.FromTicks(1)));
+            run.EndScheduled = true;
+        }
+    }
+
+    /// <summary>The time of the oldest event held, in the buffer or as a run's pending sample; false when none is.</summary>
+    private bool TryOldestHeld(out DateTime oldest)
+    {
+        var any = _buffer.TryPeek(out _, out var first);
+        oldest = any ? first.Time : DateTime.MaxValue;
+        // Each run's flush is at or before its pending sample: make the earliest one exact.
+        while (_flushes.TryPeek(out var run, out var at))
+        {
+            if (run.Pending is not { } pending)
+            {
+                _flushes.Dequeue();
+                run.FlushScheduled = false;
+                continue;
+            }
+
+            if (at < pending.TimeUtc)
+            {
+                _flushes.Dequeue();
+                _flushes.Enqueue(run, pending.TimeUtc);
+                continue;
+            }
+
+            if (at < oldest)
+                oldest = at;
+            return true;
+        }
+
+        return any;
+    }
 
     #endregion
 

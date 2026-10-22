@@ -1794,7 +1794,8 @@ public sealed class ComparisonTests
             SensitivityShift = TimeSpan.FromMinutes(1)
         }.Problems().Should().BeEmpty();
         new ComparisonSettings { OffsetOutlierBound = TimeSpan.FromMilliseconds(1), SensitivityShift = TimeSpan.FromMilliseconds(1) }.Problems().Should().BeEmpty();
-        FluentActions.Invoking(() => ValidationComparison.Compare(null)).Should().Throw<ArgumentNullException>();
+        // The public overload: the tests see Ariva.Core's internal one too (ARV-230).
+        FluentActions.Invoking(() => ValidationComparison.Compare((ComparisonInput)null)).Should().Throw<ArgumentNullException>();
     }
 
     #endregion

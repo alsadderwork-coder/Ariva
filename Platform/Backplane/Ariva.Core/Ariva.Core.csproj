@@ -9,6 +9,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- ARV-230: the queue engine's tests compare it with a run that applies every position sample (CoalescePositions). -->
+        <InternalsVisibleTo Include="Ariva.UnitTests" />
+    </ItemGroup>
+
+    <ItemGroup>
         <!-- Result<T>, Fx.Specification, PagedData and Search<TCriteria> come from Fluentx, as in AMAN (ARV-004) -->
         <PackageReference Include="Fluentx" />
         <!-- Airport IANA zones resolve on Windows too without ICU (SiteTimeZones) -->

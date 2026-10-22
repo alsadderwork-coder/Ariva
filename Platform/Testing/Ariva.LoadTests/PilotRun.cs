@@ -44,6 +44,8 @@ public static class PilotRun
         var lastPush = new long[every.Count + 1];
         var sentIn = new System.Collections.Concurrent.ConcurrentDictionary<string, long>(StringComparer.Ordinal);
         var sentOut = new System.Collections.Concurrent.ConcurrentDictionary<string, long>(StringComparer.Ordinal);
+        // ARV-230: the entries Ingest accepted, by device index and track id; a walk's exit is sent only after its entry (PilotTracks).
+        var accepted = new System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.Ordinal);
         string firstRejection = null;
         var started = DateTime.UtcNow;
 
@@ -55,7 +57,7 @@ public static class PilotRun
             var previous = padding > 0 ? now.Ticks : Interlocked.Exchange(ref lastPush[index], now.Ticks);
             var since = previous == 0 ? now.AddSeconds(-1) : new DateTime(previous, DateTimeKind.Utc);
             var push = PilotTracks.Body(zones[device.Zone], index, Interlocked.Increment(ref packages[index]), since, now, padding > 0 ? 1 : settings.PeoplePerDevice,
-                padding > 0 ? 1 : settings.SamplesPerPerson, settings.DwellSeconds, padding);
+                padding > 0 ? 1 : settings.SamplesPerPerson, settings.DwellSeconds, track => accepted.ContainsKey(Accepted(index, track)), padding);
             var body = push.Body;
             measure.Begin();
             var clock = Stopwatch.StartNew();
@@ -65,6 +67,8 @@ public static class PilotRun
                 measure.Record(clock.Elapsed.TotalMilliseconds, response.StatusCode, body.Length);
                 if (response.StatusCode == HttpStatusCode.Accepted)
                 {
+                    foreach (var track in push.EntryTracks)
+                        accepted.TryAdd(Accepted(index, track), true);
                     sentIn.AddOrUpdate(device.Zone, push.Entries, (_, n) => n + push.Entries);
                     sentOut.AddOrUpdate(device.Zone, push.Exits, (_, n) => n + push.Exits);
                     // Ingest refuses a bad event on its own and still answers 202: a refusal here is a harness or an Ingest problem,
@@ -318,6 +322,8 @@ public static class PilotRun
         Console.WriteLine(md.ToString());
         return problems.Count > 0 ? 1 : capacity.Count > 0 ? 2 : 0;
     }
+
+    private static string Accepted(int device, string track) => LoadSettings.Invariant($"{device} {track}");
 
     private static IReadOnlyDictionary<string, int> Outcomes(Measure measure) =>
         JsonSerializer.SerializeToElement(measure.Summary(), new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })

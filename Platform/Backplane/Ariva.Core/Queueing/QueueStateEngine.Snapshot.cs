@@ -50,6 +50,12 @@ public sealed record QueueHandoverState(string Key, DateTime Seen, DateTime Dead
 /// <summary>Late events of one minute.</summary>
 public sealed record LateMinuteState(DateTime MinuteUtc, long Count);
 
+/// <summary>
+/// ARV-230: a track's run of position samples: its anchor (the latest sample applied or buffered) and its pending sample (the
+/// latest within the hand-over window after it, held outside the buffer), whose time, flag and arrival order are here.
+/// </summary>
+public sealed record QueueRunState(string TrackKey, DateTime AnchorUtc, DateTime? PendingUtc = null, bool PendingDegraded = false, long PendingSequence = 0);
+
 /// <summary>A held entrant in a snapshot.</summary>
 public sealed record QueueEntrantState(DateTime EntryUtc, string TrackKey, string Group, bool Degraded, WaitMethod Method, long Order, DateTime? LastSeenUtc);
 
@@ -90,6 +96,12 @@ public sealed record QueueEngineState
     /// </summary>
     public DateTime? PendingAnchorUtc { get; init; }
 
+    /// <summary>
+    /// ARV-230 (zone snapshot version 11): each track's run of position samples. Empty in a snapshot written before, which restores
+    /// without runs: its held samples are all in its buffer, and runs start anew with the next samples.
+    /// </summary>
+    public IReadOnlyList<QueueRunState> Runs { get; init; } = [];
+
     // What happened since the last step (an Offer can process events when the buffer is full).
     public IReadOnlyList<MovementCount> Movements { get; init; } = [];
     /// <summary>Line crossings since the last step (ARV-113); a snapshot written before has none.</summary>
@@ -116,6 +128,8 @@ public sealed partial class QueueStateEngine
         QueueZone = _geometry.QueueZone,
         Buffer = [.. _buffer.UnorderedItems.OrderBy(i => i.Priority, DueOrder.Instance)
             .Select(i => new QueueBufferedState(QueueInputState.From(i.Element.Input), i.Element.Ahead, i.Priority.Sequence))],
+        Runs = [.. _runs.Values.OrderBy(r => r.Track, StringComparer.Ordinal)
+            .Select(r => new QueueRunState(r.Track, r.Anchor, r.Pending?.TimeUtc, r.Pending?.Degraded ?? false, r.Pending is null ? 0 : r.PendingSequence))],
         Held = [.. _held.Select(e => new QueueEntrantState(e.EntryUtc, e.TrackKey, e.Group, e.Degraded, e.Method, e.Order, e.LastSeenUtc))],
         ResolvedTracks = [.. _resolvedOrder],
         Occupancy = [.. _occupancy.OrderBy(o => o.Key, StringComparer.Ordinal).Select(o => new QueueOccupancyState(o.Key, o.Value.Count, o.Value.AtUtc, o.Value.Degraded))],
@@ -155,7 +169,9 @@ public sealed partial class QueueStateEngine
             throw new InvalidDataException($"Queue engine snapshot version {state.Version} is not {QueueEngineState.CurrentVersion}.");
         if (!string.Equals(state.QueueZone, geometry.QueueZone, StringComparison.Ordinal))
             throw new InvalidDataException($"The snapshot is for {state.QueueZone}, not {geometry.QueueZone}.");
-        if ((state.Buffer?.Count ?? 0) > s.MaxBufferedEvents || (state.Held?.Count ?? 0) > s.MaxOpenEntrants ||
+        var pendingSamples = (state.Runs ?? []).Count(r => r?.PendingUtc is not null);
+        if ((state.Buffer?.Count ?? 0) + pendingSamples > s.MaxBufferedEvents || (state.Runs?.Count ?? 0) > s.MaxSightingRuns ||
+            (state.Held?.Count ?? 0) > s.MaxOpenEntrants ||
             (state.ResolvedTracks?.Count ?? 0) > s.MaxRememberedTracks || (state.Occupancy?.Count ?? 0) > 1 + geometry.OverflowZones.Count ||
             (state.Handovers?.Count ?? 0) > 2 * s.MaxOpenEntrants + 1024 || (state.Counters?.Count ?? 0) != 11 ||
             (state.LateByMinute?.Count ?? 0) > MaxLateMinutes ||
@@ -225,6 +241,13 @@ public sealed partial class QueueStateEngine
                 held = time;
         }
 
+        // ARV-230: a run's pending sample is a held event too (never ahead).
+        foreach (var run in state.Runs ?? [])
+        {
+            if (run?.PendingUtc is { } pendingAt && QueueInputState.Utc(pendingAt) > held)
+                held = QueueInputState.Utc(pendingAt);
+        }
+
         var before = held > engine._watermark ? held : engine._watermark;
         engine._clock = state.ClockUtc.HasValue ? QueueInputState.Utc(state.ClockUtc.Value) : before;
         if (held > engine._clock)
@@ -234,6 +257,7 @@ public sealed partial class QueueStateEngine
         if (engine._clock == DateTime.MinValue && engine._watermark != DateTime.MinValue)
             throw new InvalidDataException("The queue engine snapshot has a watermark but no clock.");
 
+        RestoreRuns(engine, state);
         engine._cursor = QueueInputState.Utc(state.CursorUtc);
         engine._residualSuspect = state.ResidualSuspect;
         if (state.PendingAnchorUtc is { } pending)
@@ -291,6 +315,53 @@ public sealed partial class QueueStateEngine
         engine._beyondHorizon = state.BeyondHorizon;
         engine._more = state.More;
         return engine;
+    }
+
+    /// <summary>
+    /// The tracks' runs of position samples from a snapshot (ARV-230), checked as the engine keeps them (CWE-501): a track once; an
+    /// anchor that is a plausible UTC time, not after the clock, and in the buffer as that track's sample when it is after the
+    /// watermark (a sample is buffered when it anchors a run, and leaves the buffer only as the watermark reaches it), except at the
+    /// instant a full step stopped inside (it leaves the watermark one tick before that instant, part of it applied, and the event
+    /// it stopped at first in the buffer, as for the pending empty-queue check); a pending sample after the
+    /// anchor and within the hand-over window of it, after the watermark (one the watermark reached would be in the buffer) and
+    /// arrived before the snapshot's next sequence. Anything else is refused, so a snapshot cannot hold a sample back from the
+    /// order the events are applied in, nor drop the samples of a time it chose.
+    /// </summary>
+    private static void RestoreRuns(QueueStateEngine engine, QueueEngineState state)
+    {
+        if (state.Runs is not { Count: > 0 } runs)
+            return;
+        var buffered = engine._buffer.UnorderedItems.Select(i => i.Element.Input).OfType<QueueTrackSeen>()
+            .Select(seen => (seen.TrackKey, seen.TimeUtc)).ToHashSet();
+        DateTime? splitInstant = engine._watermark < DateTime.MaxValue && engine._buffer.TryPeek(out _, out var first) && first.Time == engine._watermark.AddTicks(1)
+            ? first.Time
+            : null;
+        foreach (var r in runs)
+        {
+            if (r is null || string.IsNullOrEmpty(r.TrackKey) || engine._runs.ContainsKey(r.TrackKey))
+                throw new InvalidDataException("The queue engine snapshot has an empty track run, or a track's run twice.");
+            var anchor = QueueInputState.Utc(r.AnchorUtc);
+            if (!ZoneProcessor.Plausible(anchor))
+                throw new InvalidDataException("The queue engine snapshot has a track run whose anchor is not a plausible time.");
+            if (anchor > engine._clock || (anchor > engine._watermark && anchor != splitInstant && !buffered.Contains((r.TrackKey, anchor))))
+                throw new InvalidDataException("The queue engine snapshot has a track run whose anchor is after its clock, or after its watermark and not held.");
+            var run = new SightingRun(r.TrackKey, anchor);
+            if (r.PendingUtc is { } pendingAt)
+            {
+                var at = QueueInputState.Utc(pendingAt);
+                if (at <= anchor || at - anchor > engine._settings.HandoverWindow || at <= engine._watermark ||
+                    r.PendingSequence < 0 || r.PendingSequence >= engine._sequence)
+                    throw new InvalidDataException("The queue engine snapshot has a pending position sample outside its run's window, behind the watermark or out of order.");
+                run.Pending = new QueueTrackSeen(r.TrackKey, at, r.PendingDegraded);
+                run.PendingSequence = r.PendingSequence;
+                engine._pending++;
+                engine._flushes.Enqueue(run, at);
+                run.FlushScheduled = true;
+            }
+
+            engine._runs.Add(r.TrackKey, run);
+            engine.ScheduleEnd(run);
+        }
     }
 
     /// <summary>

@@ -278,10 +278,12 @@ test('the pilot hall and the D5 burst through the whole pipeline: no failures, t
 	expect(new Date(report.startedUtc).getTime(), 'the report is this run\'s').toBeGreaterThanOrEqual(runStarted.getTime() - 1_000);
 	await testInfo.attach('pilot-report.md', { path: path.join(output, 'pilot-report.md'), contentType: 'text/markdown' });
 
-	// Stream applies an event once its zone's watermark passes it (90 seconds of lateness) and checkpoints every 5 seconds:
-	// two and a half minutes after the last push, every crossing the harness sent is counted or refused.
-	await new Promise((resolve) => setTimeout(resolve, 150_000));
-	measurements = { ...(await measure(report.crossingsSent)), connections: { peakTotal: connectionsTotal, peakByHost: Object.fromEntries(connections) } };
+	// Stream applies an event once its zone's watermark passes it (90 seconds of lateness, behind a clock that may stay a push
+	// interval, 60 seconds, behind the receive time) and checkpoints every 5 seconds, a zone's minutes with its state: once every
+	// zone's stored watermark is past the harness's end, every crossing the harness sent is counted or refused (ARV-230: a fixed
+	// 150 seconds was the edge, and the last seconds' crossings were not yet counted). At most 5 minutes.
+	const watermarks = await zonesPastWatermark(new Date(), 300_000);
+	measurements = { ...(await measure(report.crossingsSent)), watermarks, connections: { peakTotal: connectionsTotal, peakByHost: Object.fromEntries(connections) } };
 	fs.writeFileSync(path.join(output, 'pilot-measurements.json'), JSON.stringify(measurements, null, 2));
 	await testInfo.attach('pilot-measurements.json', { path: path.join(output, 'pilot-measurements.json'), contentType: 'application/json' });
 
@@ -314,22 +316,52 @@ test('the pilot hall and the D5 burst through the whole pipeline: no failures, t
 	expect(measurements.staffing.laneRows, 'staffing rows for the hall').toBeGreaterThan(0);
 });
 
-// Stream's capacity at the pilot profile, judged on the same run. It fails until ARV-230 (ARV-232 bounded the connections it
-// needed too; ARV-124a stays open until it passes): the queue engine holds every track position for its lateness (90 s) and checkpoints each zone's whole
-// state every 5 s, about 18 MB of JSON a hall zone, so Stream stopped three to six minutes into the run in ARV-124a's runs 3
-// to 7 (out of the heap its pod allows, 1,125 MiB of a 1500Mi limit, in runs 3, 4 and 7, whose logs were read; wiki 05).
+// Stream's capacity at the pilot profile, judged on the same run. Before ARV-230 the queue engine held every track position for
+// its lateness (90 s) and checkpointed each zone's whole state every 5 s, about 18 MB of JSON a hall zone, so Stream stopped three
+// to six minutes into ARV-124a's runs 3 to 7 (out of the heap its pod allows, 1,125 MiB of a 1500Mi limit; wiki 05). Since ARV-230
+// a track's positions are kept in a run (an anchor and one pending sample), about 0.3 MB a hall zone; ARV-232 bounded the database
+// connections it needed too.
 test('Stream keeps up with the pilot hall and the D5 burst: it runs throughout, catches up after the burst and counts every crossing', async () => {
 	expect(report, 'the first test ran the harness').toBeDefined();
 	expect(report.capacity).toEqual([]);
 	expect(report.stream.queueEngine.catchUpSeconds).not.toBeNull();
 	expect(measurements.desks.deskMinutes, 'Stream\'s desk feed wrote the hall\'s desk minutes from AMAN\'s records').toBeGreaterThan(0);
-	// Every crossing Ingest accepted is counted by Stream, in the hall and on the burst's zones alike.
+	// Every crossing Ingest accepted is counted by Stream, in the hall and on the burst's zones alike, once each zone's watermark
+	// has passed the run's end.
+	expect(measurements.watermarks.past, 'every zone\'s stored watermark passed the run\'s end').toBe(measurements.watermarks.zones);
 	for (const zone of measurements.counting) {
 		expect(zone.sentIn, zone.zone).toBeGreaterThan(0);
 		expect(zone.countedIn / zone.sentIn, `${zone.zone}: entries counted of those sent`).toBeGreaterThanOrEqual(0.98);
-		expect(zone.countedOut / zone.sentOut, `${zone.zone}: exits counted of those sent`).toBeGreaterThanOrEqual(0.98);
+		// A walk's exit is sent once its entry was accepted (ARV-230, PilotTracks): a burst zone's walks outlast the burst, so it
+		// sends none, and counts none.
+		if (zone.sentOut > 0) expect(zone.countedOut / zone.sentOut, `${zone.zone}: exits counted of those sent`).toBeGreaterThanOrEqual(0.98);
+		else expect(zone.countedOut, `${zone.zone}: no exit sent, none counted`).toBe(0);
 	}
 });
+
+/**
+ * Waits until every zone of the site has a stored watermark at or after `ended`, polling every 5 seconds for at most `limitMs`;
+ * returns how many zones got there of how many, and the seconds waited.
+ */
+async function zonesPastWatermark(ended: Date, limitMs: number) {
+	const db = staffingDatabase();
+	await db.connect();
+	const keys = allZones.map((z) => `${site}/${z}`);
+	const started = Date.now();
+	try {
+		for (;;) {
+			const { rows } = await db.query(
+				"SELECT count(*) FILTER (WHERE (state->'engine'->>'watermarkUtc')::timestamptz >= $2)::int AS past FROM stream_zone_state WHERE zone_key = ANY($1)",
+				[keys, ended]
+			);
+			const past = rows[0]?.past ?? 0;
+			if (past === keys.length || Date.now() - started >= limitMs) return { past, zones: keys.length, seconds: Math.round((Date.now() - started) / 1000) };
+			await new Promise((resolve) => setTimeout(resolve, 5_000));
+		}
+	} finally {
+		await db.end();
+	}
+}
 
 /** Reads what the run left in the database, Redis and Ariva.Api.Cronz's log. */
 async function measure(sent: Record<string, { in: number; out: number }>) {
