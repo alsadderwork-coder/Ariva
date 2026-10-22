@@ -431,8 +431,18 @@ test('a tampered bundle is refused with a fixed text and writes nothing', async 
 test('an oversized body answers 413 and a deeply nested one 400', async () => {
 	const headers = { 'Content-Type': 'application/json' };
 	const oversized = `{"formatVersion":1,"sourceSite":"${source}","parts":{"topology":"${'A'.repeat(21 * 1024 * 1024)}"}}`;
-	const tooLarge = await call('POST', configuration(spare), { token: stepped, raw: oversized, headers });
-	await expectStatus(tooLarge, 413, 'body over 20 MB');
+	// Past the endpoint's limit the host answers 413 from the Content-Length without reading, and closes the connection
+	// (Connection: close, ARV-233), so the client may instead see it closed while still sending (as in flight-schedules.spec.ts
+	// and aidx.spec.ts; seen once in ARV-233's story gate). Either way nothing is read.
+	const tooLarge = await call('POST', configuration(spare), { token: stepped, raw: oversized, headers }).then(
+		async (r) => {
+			await expectStatus(r, 413, 'body over 20 MB');
+			expect(r.headers()['connection'], 'an unread body closes its connection').toBe('close');
+			return r.status();
+		},
+		(e: Error) => `closed: ${e.message}`
+	);
+	expect([413, 'closed: fetch failed'], 'body over 20 MB').toContain(tooLarge);
 
 	const bigPart = rehashed(exported.bundle, 'deskCodeMappings', Buffer.alloc(9 * 1024 * 1024, 0x20));
 	const partTooLarge = await call('POST', configuration(spare), { token: stepped, data: bigPart });

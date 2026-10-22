@@ -892,7 +892,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 305,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Low (the limit holds; the answer is a reset for about 1 percent of refusals and 1 in 6,000 accepted pushes under a saturated machine), so Phase 3 by the owner's rule. But a reset on a measured sensor's push fails the pilot run's first test, which ARV-124a needs to pass: if it recurs once ARV-230 and ARV-232 are in, this story moves before the pilot (owner's decision). The pilot run reports these resets as a finding, not a failure, only within FloodRule's bounds (PilotRun.cs: one outcome per push started, exactly the limit accepted, so none of the reset pushes was accepted; resets of the kinds ResponseEnded and Unknown only, at most 2 percent of the refusals or 6), and anything else as a problem. The harness's loopback refusal (PilotSettings) has no self-test of its own (round 2 review, I4). Recurred on 2026-10-22 in ARV-232's pilot run with the database pools bounded: one reset (HttpRequestException, Unknown) on a burst push within its rate, 1 of 6,000, with nothing logged by Ingest and no pool exhausted. By the rule above it moves before the pilot: ARV-124a and ARV-230 now depend on it, since both need the run's first test to pass.",
       "dependsOn": [
         "ARV-071"

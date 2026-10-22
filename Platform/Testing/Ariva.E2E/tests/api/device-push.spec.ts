@@ -5,7 +5,8 @@ import { hosts, kafkaAvailable } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
 
 // ARV-023: sensor pushes on Ariva.Api.Ingest for the device's own zone and dialect: 202 with the counts; the unknown
-// line refused; another zone 403; another dialect 400; not JSON 415; over 256 KB 413; a Xovis firmware 5 logics push
+// line refused; another zone 403; another dialect 400; not JSON 415; over 256 KB 413 with Connection: close (ARV-233), and the
+// next push answered; a Xovis firmware 5 logics push
 // mapped to an interval count and an occupancy. ARV-024: an Ouster Detect occupations message through the declarative
 // mapping ouster-detect-v1, the mappings list, and an unknown mapping refused at registration.
 
@@ -82,7 +83,11 @@ test('a canonical push is accepted for the own zone and refused elsewhere', asyn
 	expect((await call('POST', `${hosts.ingest}/api/v1/ingest/zones/${encodeURIComponent('Snake B')}/events`, { headers: { 'X-Ariva-Device-Key': keys.Canonical }, data: JSON.parse(body) })).status(), 'another zone').toBe(403);
 	expect((await push('xovis', keys.Canonical, body)).status(), 'another dialect').toBe(400);
 	expect((await push('events', keys.Canonical, body, 'text/plain')).status(), 'not JSON').toBe(415);
-	expect((await push('events', keys.Canonical, ' '.repeat(300 * 1024) + '{}')).status(), 'over 256 KB').toBe(413);
+	// ARV-233: the body is refused unread, so the answer closes the connection: a device never reuses one Ingest closes after it.
+	const oversize = await push('events', keys.Canonical, ' '.repeat(300 * 1024) + '{}');
+	expect(oversize.status(), 'over 256 KB').toBe(413);
+	expect(oversize.headers()['connection'], 'an oversized push closes its connection').toBe('close');
+	await expectStatus(await push('events', keys.Canonical, body), 202);
 	expect((await call('POST', `${ingest}/events`, { data: JSON.parse(body) })).status(), 'no key').toBe(401);
 });
 

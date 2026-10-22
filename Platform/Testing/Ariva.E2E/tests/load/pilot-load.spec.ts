@@ -285,11 +285,7 @@ test('the pilot hall and the D5 burst through the whole pipeline: no failures, t
 	fs.writeFileSync(path.join(output, 'pilot-measurements.json'), JSON.stringify(measurements, null, 2));
 	await testInfo.attach('pilot-measurements.json', { path: path.join(output, 'pilot-measurements.json'), contentType: 'application/json' });
 
-	// Findings excuse nothing silently: each is on the report as an annotation, and only the bounded ARV-233 one exists.
-	for (const finding of report.findings ?? []) testInfo.annotations.push({ type: 'finding', description: finding });
-	// The stable parts of FloodRule's finding only, so a change of its wording cannot excuse something else.
-	const floodReset = (f: string) => f.startsWith('flood: ') && f.includes('got a connection reset instead of their 429') && f.endsWith('; ARV-233).');
-	expect((report.findings ?? []).every(floodReset), 'only the flood resets are a finding').toBe(true);
+	// ARV-233: nothing is excused, a connection reset on the flooding device included (FloodRule).
 	expect(report.problems, log.join('')).toEqual([]);
 	// 0, or 2 when only Stream's capacity fell short (the second test's verdict).
 	expect([0, 2]).toContain(code);
@@ -299,6 +295,8 @@ test('the pilot hall and the D5 burst through the whole pipeline: no failures, t
 		expect(pushes.outcomes['429'] ?? 0, pushes.name).toBe(0);
 	}
 	expect(oversize.outcomes['413']).toBe(oversize.requests);
+	expect(oversize.outcomes['413 without Connection: close'] ?? 0, 'every oversized push closes its connection (ARV-233)').toBe(0);
+	expect(flood.failures, 'no push of the flooding device ends in a reset (ARV-233)').toBe(0);
 	expect(flood.outcomes['429']).toBeGreaterThan(0);
 	expect(flood.outcomes['429 without Retry-After'] ?? 0).toBe(0);
 	expect(report.shape.burstPositionsPerSecond).toBe(15_000);
@@ -316,8 +314,8 @@ test('the pilot hall and the D5 burst through the whole pipeline: no failures, t
 	expect(measurements.staffing.laneRows, 'staffing rows for the hall').toBeGreaterThan(0);
 });
 
-// Stream's capacity at the pilot profile, judged on the same run. It fails until ARV-230 and ARV-232 (ARV-124a stays open
-// until it passes): the queue engine holds every track position for its lateness (90 s) and checkpoints each zone's whole
+// Stream's capacity at the pilot profile, judged on the same run. It fails until ARV-230 (ARV-232 bounded the connections it
+// needed too; ARV-124a stays open until it passes): the queue engine holds every track position for its lateness (90 s) and checkpoints each zone's whole
 // state every 5 s, about 18 MB of JSON a hall zone, so Stream stopped three to six minutes into the run in ARV-124a's runs 3
 // to 7 (out of the heap its pod allows, 1,125 MiB of a 1500Mi limit, in runs 3, 4 and 7, whose logs were read; wiki 05).
 test('Stream keeps up with the pilot hall and the D5 burst: it runs throughout, catches up after the burst and counts every crossing', async () => {

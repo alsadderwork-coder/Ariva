@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Net.Http.Headers;
 
 namespace Ariva.Api.Common.Middlewares;
@@ -13,7 +14,8 @@ namespace Ariva.Api.Common.Middlewares;
 /// <c>default-src 'none'</c> and names <c>base-uri 'none'</c> and <c>frame-ancestors 'none'</c>, so no endpoint can loosen the
 /// baseline by accident. Responses to requests that carry credentials get
 /// <c>Cache-Control: no-store</c>. The <c>Server</c> header is removed here and switched off in Kestrel. A text answer that
-/// names no charset gets <c>charset=utf-8</c> (ARV-092, <see cref="WithUtf8Charset"/>).
+/// names no charset gets <c>charset=utf-8</c> (ARV-092, <see cref="WithUtf8Charset"/>). An answer to a request whose declared
+/// body is larger than its endpoint takes gets <c>Connection: close</c> (ARV-233, <see cref="CannotBeDrained"/>).
 /// </summary>
 /// <param name="next">The next middleware.</param>
 public sealed class SecurityHeadersMiddleware(RequestDelegate next)
@@ -69,7 +71,33 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next)
             headers.CacheControl = "no-store";
         }
 
+        if (CannotBeDrained(context))
+        {
+            headers.Connection = "close";
+        }
+
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// ARV-233: true when the request is HTTP/1.x and declares a body larger than its endpoint takes (the request's maximum body
+    /// size, the endpoint's <c>[RequestSizeLimit]</c> or the server's). Its answer (413, or a refusal that never reads the body)
+    /// leaves the body unread, and Kestrel will not read past the limit to reach the next request, so it closes the connection
+    /// once the answer is sent. Without <c>Connection: close</c> in that answer a client keeps the connection for its next request,
+    /// which then ends in a connection reset rather than an answer (Ingest's 413 to an oversized push, under load: ResponseEnded
+    /// or an IOException on the request that reused it, ARV-124a's pilot run). With it, the client opens a new connection. HTTP/2
+    /// and HTTP/3 refuse such a stream alone, so the connection is not at stake there.
+    /// </summary>
+    /// <param name="context">The request context.</param>
+    /// <returns>True when the answer must close the connection.</returns>
+    public static bool CannotBeDrained(HttpContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var protocol = context.Request.Protocol;
+        return (HttpProtocol.IsHttp11(protocol) || HttpProtocol.IsHttp10(protocol))
+               && context.Request.ContentLength is { } length
+               && context.Features.Get<IHttpMaxRequestBodySizeFeature>()?.MaxRequestBodySize is { } most
+               && length > most;
     }
 
     /// <summary>

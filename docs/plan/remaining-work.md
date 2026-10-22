@@ -10,7 +10,7 @@ Snapshot of 2026-10-21, branch `story/mvp-phase1`. The backlog files in `backlog
 | Phase 1, the MVP (`prd-phase1.json`) | 70 of 86 | 16, almost all waiting for site answers or the owner (ARV-124 split in two on 2026-10-21; ARV-124a's run filed ARV-230 to ARV-232, ARV-232 done, and stays open until the others let it pass) |
 | Phase 2, displays and advertising (`prd-phase2.json`) | 8 of 8 | none |
 | ASVS gaps (`prd-asvs-gaps.json`) | 26 of 42 | 16 (ARV-096b split in four on 2026-10-21, all four parts done; ARV-227 done and ARV-236 filed by it) |
-| Phase 3, deferred hardening (`prd-phase3.json`) | 0 of 49 | 49, built after the pilot go-live gate unless pulled forward (ARV-228 and ARV-229 added by ARV-096b, ARV-233 by ARV-124a and pulled before the pilot, ARV-234 by ARV-096d, ARV-235 by ARV-096e) |
+| Phase 3, deferred hardening (`prd-phase3.json`) | 1 of 49 | 48, built after the pilot go-live gate unless pulled forward (ARV-228 and ARV-229 added by ARV-096b, ARV-233 by ARV-124a and pulled before the pilot, done, ARV-234 by ARV-096d, ARV-235 by ARV-096e) |
 | Azure DevOps move (`prd-azure-move.json`) | 0 of 9 | 9, new; see [azure-devops-move.md](azure-devops-move.md) |
 
 ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 157 of the 203 requirements that apply are met (77 percent), 43 partly, 3 gaps (V16.3.4 back to Partly: ARV-231).
@@ -22,8 +22,7 @@ ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 157 of the 203 requirements that 
 | ARV-226 | No certificate downloads while a chain is built: Redis, and the collectors without a site CA | Found in ARV-200; Medium, so before the pilot |
 | ARV-236 | Bump the third-party pins ARV-227's first weekly check found behind | Three Kafka patch releases, new digests under ZAP's stable tag and both Redis tags, and TimescaleDB to its newest line (`pg17-ts2.31` or later; the older line stops moving, and existing databases need the extension update); each bump moves every copy at once (wiki 04 section 6.8) and runs the tests that use the image; before the pilot |
 | ARV-230 | Queue engine: track positions out of the checkpointed state, so Stream fits its pod at the pilot rate | Found by ARV-124a: Stream runs out of its pod's heap three minutes into the pilot hall; High, next |
-| ARV-233 | A push gets its answer, not a connection reset, under load (in `prd-phase3.json`, pulled forward) | Found by ARV-124a; its reset recurred in ARV-232's pilot run on a measured sensor's push, which fails the run's first test, so it moves before the pilot (the owner's rule); ARV-124a and ARV-230 depend on it |
-| ARV-124a | Pilot-profile load test and the D5 burst | The harness, the run and the measurements are in (wiki 05); open until the pilot run passes after ARV-230 and ARV-233 (ARV-232 done; ARV-233's reset recurred in ARV-232's run, so it moves before the pilot) |
+| ARV-124a | Pilot-profile load test and the D5 burst | The harness, the run and the measurements are in (wiki 05); open until the pilot run passes after ARV-230 (ARV-232 and ARV-233 done: no push was reset in ARV-233's run) |
 | ARV-231 | Queue engine refusals visible (buffer full, forced advances, late and invalid events) | Found by ARV-124a; Medium, before the pilot |
 | ARV-124b | 24-hour soak and catch-up after a 30-minute stream outage | After ARV-230; needs a machine doing nothing else for a day, with disk for a day of Kafka and TimescaleDB growth; its numbers and ARV-124a's answer TC-33 (node sizes) |
 

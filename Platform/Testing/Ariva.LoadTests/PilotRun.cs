@@ -88,6 +88,8 @@ public static class PilotRun
 
                 if (response.StatusCode == HttpStatusCode.TooManyRequests && response.Headers.RetryAfter is null)
                     measure.Record(0, "429 without Retry-After");
+                if (response.StatusCode == HttpStatusCode.RequestEntityTooLarge && response.Headers.ConnectionClose != true)
+                    measure.Record(0, "413 without Connection: close");
             }
             catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
             {
@@ -184,13 +186,9 @@ public static class PilotRun
 
         var problems = new List<string>();
         var capacity = new List<string>();
-        var findings = new List<string>();
-        // The flooding device (ARV-233): see FloodRule.
-        var floodVerdict = FloodRule.Judge(flood.Started, FloodLimit, Outcomes(flood));
-        if (floodVerdict.Finding is not null)
-            findings.Add(floodVerdict.Finding);
-        if (floodVerdict.Problem is not null)
-            problems.Add(floodVerdict.Problem);
+        // The flooding device: see FloodRule.
+        if (FloodRule.Judge(flood.Started, FloodLimit, Outcomes(flood)) is { } floodProblem)
+            problems.Add(floodProblem);
         foreach (var m in new[] { steady, burst, recovery, oversize, live.Connects, live.Boards, aman })
         {
             if (m.Failures > 0)
@@ -200,7 +198,7 @@ public static class PilotRun
         // One outcome for each push started (the marks beside a 202 or a 429 are not outcomes of their own).
         foreach (var m in new[] { steady, burst, recovery, oversize })
         {
-            var answered = m.Total - m.Count("202 with rejected events") - m.Count("429 without Retry-After");
+            var answered = m.Total - m.Count("202 with rejected events") - m.Count("429 without Retry-After") - m.Count("413 without Connection: close");
             if (answered != m.Started)
                 problems.Add(LoadSettings.Invariant($"{m.Name}: {m.Started} pushes started, {answered} answered: not one outcome each."));
         }
@@ -217,8 +215,11 @@ public static class PilotRun
                 problems.Add($"{m.Name}: pushes answered other than 202 ({string.Join(", ", JsonSerializer.SerializeToElement(m.Summary(), new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }).GetProperty("outcomes").EnumerateObject().Select(o => $"{o.Name}: {o.Value}"))}).");
         }
 
-        if (oversize.Total == 0 || oversize.Count("413") != oversize.Total)
-            problems.Add(LoadSettings.Invariant($"oversize: {oversize.Total - oversize.Count("413")} of {oversize.Total} bodies over 256 KB were not refused with 413."));
+        if (oversize.Total == 0 || oversize.Count("413") != oversize.Started)
+            problems.Add(LoadSettings.Invariant($"oversize: {oversize.Started - oversize.Count("413")} of {oversize.Started} bodies over 256 KB were not refused with 413."));
+        // ARV-233: the body is refused unread, so the answer closes its connection; one that did not would reset a later push.
+        if (oversize.Count("413 without Connection: close") > 0)
+            problems.Add(LoadSettings.Invariant($"oversize: {oversize.Count("413 without Connection: close")} refusals with 413 did not close their connection (ARV-233)."));
         if (live.Boards.Total == 0 || live.Boards.Count("200") != live.Boards.Total)
             problems.Add(LoadSettings.Invariant($"displays: {live.Boards.Total - live.Boards.Count("200")} of {live.Boards.Total} board requests did not answer 200."));
         if (live.Screens < settings.Screens)
@@ -287,8 +288,7 @@ public static class PilotRun
             },
             Hosts = hosts,
             Problems = problems,
-            Capacity = capacity,
-            Findings = findings
+            Capacity = capacity
         };
 
         Directory.CreateDirectory(settings.Output);
@@ -314,8 +314,6 @@ public static class PilotRun
         md.AppendLine();
         md.AppendLine(problems.Count == 0 ? "No problems." : "Problems:\n" + string.Join("\n", problems.Select(p => "- " + p)));
         md.AppendLine(capacity.Count == 0 ? "\nStream kept up." : "\nCapacity:\n" + string.Join("\n", capacity.Select(f => "- " + f)));
-        if (findings.Count > 0)
-            md.AppendLine("\nFindings:\n" + string.Join("\n", findings.Select(f => "- " + f)));
         await File.WriteAllTextAsync(Path.Combine(settings.Output, "pilot-report.md"), md.ToString(), CancellationToken.None);
         Console.WriteLine(md.ToString());
         return problems.Count > 0 ? 1 : capacity.Count > 0 ? 2 : 0;
@@ -327,80 +325,64 @@ public static class PilotRun
 }
 
 /// <summary>
-/// The flooding device's verdict (ARV-233). Ingest accepts exactly the device's limit and refuses the rest with 429 and
-/// Retry-After; on a machine the whole stack saturates, a few refusals reached the client as a connection reset instead
-/// (HttpRequestError ResponseEnded or Unknown). Such resets are a finding, not a failure, only while: every push started has
-/// exactly one outcome; exactly the limit was accepted, so none of the resets let a push through; every other outcome is a
-/// 429 with Retry-After or a reset of those two kinds; and the resets are at most 2 percent of the refused pushes (6 at the
-/// least). Anything else, a 5xx, another transport error, a 429 without Retry-After, an accepted push with events Ingest
-/// refused or more resets, is a problem.
+/// The flooding device's verdict. Ingest accepts exactly the device's limit and refuses the rest with 429 and Retry-After: every
+/// push started has exactly one outcome, a 202 or a 429 with Retry-After, and exactly the limit is accepted. Anything else, a
+/// 5xx, a transport error (a connection reset included), a 429 without Retry-After or an accepted push with events Ingest refused,
+/// is a problem. ARV-124a's runs saw a few resets here, and one on a measured device: the connection Ingest closed after its 413
+/// to an oversized push went back to the harness's pool and the next push on it was reset (ARV-233). Since that 413 says
+/// Connection: close, a reset is a problem again.
 /// </summary>
 public static class FloodRule
 {
-    public const string Reset = "error HttpRequestException ";
-    private static readonly string[] ResetKinds = [Reset + "ResponseEnded", Reset + "Unknown"];
-
-    public sealed record Verdict(string Problem, string Finding);
-
-    public static Verdict Judge(int started, int limit, IReadOnlyDictionary<string, int> outcomes)
+    /// <summary>The problem with the flood's outcomes, or null when it held.</summary>
+    public static string Judge(int started, int limit, IReadOnlyDictionary<string, int> outcomes)
     {
         ArgumentNullException.ThrowIfNull(outcomes);
         int Count(string key) => outcomes.TryGetValue(key, out var n) ? n : 0;
         var accepted = Count("202");
         var refused = Count("429");
-        var resets = ResetKinds.Sum(Count);
         var withoutRetryAfter = Count("429 without Retry-After");
         var withRejected = Count("202 with rejected events");
         // The two marks stand beside a 202 or a 429 already counted, so they are not outcomes of their own.
-        var others = outcomes.Where(o => o.Key is not ("202" or "429" or "429 without Retry-After" or "202 with rejected events") && !ResetKinds.Contains(o.Key))
-            .Sum(o => o.Value);
-        var cap = Math.Max(6, (started - limit) / 50);
-        if (started == 0 || accepted + refused + resets + others != started)
-            return new(LoadSettings.Invariant($"flood: {started} pushes started, {accepted + refused + resets + others} answered: not one outcome each."), null);
+        var others = outcomes.Where(o => o.Key is not ("202" or "429" or "429 without Retry-After" or "202 with rejected events")).Sum(o => o.Value);
+        if (started == 0 || accepted + refused + others != started)
+            return LoadSettings.Invariant($"flood: {started} pushes started, {accepted + refused + others} answered: not one outcome each.");
         if (accepted != limit)
-            return new(LoadSettings.Invariant($"flood: {accepted} pushes accepted where the device's limit is {limit}."), null);
+            return LoadSettings.Invariant($"flood: {accepted} pushes accepted where the device's limit is {limit}.");
         if (refused == 0)
-            return new("flood: a device far past its rate was never refused with 429.", null);
+            return "flood: a device far past its rate was never refused with 429.";
         if (withoutRetryAfter > 0)
-            return new("flood: a 429 came without Retry-After.", null);
+            return "flood: a 429 came without Retry-After.";
         if (withRejected > 0)
-            return new(LoadSettings.Invariant($"flood: {withRejected} accepted pushes had events Ingest refused."), null);
+            return LoadSettings.Invariant($"flood: {withRejected} accepted pushes had events Ingest refused.");
         if (others > 0)
-            return new(LoadSettings.Invariant($"flood: {others} pushes failed (5xx or a transport error other than a reset after the answer)."), null);
-        if (resets > cap)
-            return new(LoadSettings.Invariant($"flood: {resets} of the {started - limit} refused pushes got a connection reset instead of their 429, more than {cap} (ARV-233)."), null);
-        return resets == 0
-            ? new(null, null)
-            : new(null, LoadSettings.Invariant($"flood: {resets} of the {started - limit} pushes past the device's limit got a connection reset instead of their 429 (the client saw exactly the limit accepted; ARV-233)."));
+            return LoadSettings.Invariant($"flood: {others} pushes failed (5xx or a transport error, a connection reset included: ARV-233).");
+        return null;
     }
 
     /// <summary>The rule's table: throws when a case is judged otherwise.</summary>
     public static void SelfTest()
     {
-        var cases = new (int Started, Dictionary<string, int> Outcomes, bool Problem, bool Finding)[]
+        const string Reset = "error HttpRequestException ";
+        var cases = new (int Started, Dictionary<string, int> Outcomes, bool Problem)[]
         {
-            (900, new() { ["202"] = 600, ["429"] = 300 }, false, false),
-            (900, new() { ["202"] = 600, ["429"] = 298, [Reset + "ResponseEnded"] = 2 }, false, true),
-            (900, new() { ["202"] = 600, ["429"] = 297, [Reset + "Unknown"] = 3 }, false, true),
-            (900, new() { ["202"] = 600, ["429"] = 294, [Reset + "Unknown"] = 6 }, false, true),
-            (900, new() { ["202"] = 600, ["429"] = 293, [Reset + "Unknown"] = 7 }, true, false),
-            (900, new() { ["202"] = 600, ["429"] = 1, [Reset + "Unknown"] = 299 }, true, false),
-            (900, new() { ["202"] = 601, ["429"] = 297, [Reset + "Unknown"] = 2 }, true, false),
-            (900, new() { ["202"] = 600, ["429"] = 299, [Reset + "ConnectionError"] = 1 }, true, false),
-            (900, new() { ["202"] = 600, ["429"] = 299, ["503"] = 1 }, true, false),
-            (900, new() { ["202"] = 600, ["429"] = 299 }, true, false),
-            (900, new() { ["202"] = 600, ["429"] = 300, ["429 without Retry-After"] = 1 }, true, false),
-            (900, new() { ["202"] = 600, ["429"] = 0, [Reset + "Unknown"] = 300 }, true, false),
-            (900, new() { ["202"] = 600, ["429"] = 300, [Reset + "Unknown"] = 1 }, true, false),
-            (900, new() { ["202"] = 600, ["429"] = 300, ["202 with rejected events"] = 1 }, true, false),
-            (1200, new() { ["202"] = 600, ["429"] = 588, [Reset + "ResponseEnded"] = 12 }, false, true),
-            (1200, new() { ["202"] = 600, ["429"] = 587, [Reset + "ResponseEnded"] = 13 }, true, false),
-            (0, new(), true, false)
+            (900, new() { ["202"] = 600, ["429"] = 300 }, false),
+            (900, new() { ["202"] = 600, ["429"] = 299, [Reset + "ResponseEnded"] = 1 }, true),
+            (900, new() { ["202"] = 600, ["429"] = 299, [Reset + "Unknown"] = 1 }, true),
+            (900, new() { ["202"] = 600, ["429"] = 299, [Reset + "ConnectionError"] = 1 }, true),
+            (900, new() { ["202"] = 601, ["429"] = 299 }, true),
+            (900, new() { ["202"] = 600, ["429"] = 299, ["503"] = 1 }, true),
+            (900, new() { ["202"] = 600, ["429"] = 299 }, true),
+            (900, new() { ["202"] = 600, ["429"] = 300, ["429 without Retry-After"] = 1 }, true),
+            (900, new() { ["202"] = 600, ["429"] = 0, [Reset + "Unknown"] = 300 }, true),
+            (900, new() { ["202"] = 600, ["429"] = 300, ["202 with rejected events"] = 1 }, true),
+            (900, new() { ["202"] = 600, ["429"] = 300, [Reset + "Unknown"] = 1 }, true),
+            (1200, new() { ["202"] = 600, ["429"] = 600 }, false),
+            (0, new(), true)
         };
-        foreach (var (started, outcomes, problem, finding) in cases)
+        foreach (var (started, outcomes, problem) in cases)
         {
-            var verdict = Judge(started, 600, outcomes);
-            if ((verdict.Problem is not null) != problem || (verdict.Finding is not null) != finding)
+            if ((Judge(started, 600, outcomes) is not null) != problem)
                 throw new InvalidOperationException(LoadSettings.Invariant($"FloodRule judged {string.Join(", ", outcomes.Select(o => $"{o.Key}: {o.Value}"))} of {started} otherwise than its table."));
         }
     }
