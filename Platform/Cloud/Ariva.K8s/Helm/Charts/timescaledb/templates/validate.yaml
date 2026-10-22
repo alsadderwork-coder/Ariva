@@ -5,7 +5,13 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 - The names are plain PostgreSQL identifiers, and the migration login is never the superuser (CWE-269).
 - TLS (ARV-082a, CWE-319): tls is a map and tls.enabled true or false; when on, tls.secretName names a Kubernetes secret
   (the certificate and key never come from values) and tls.minProtocolVersion is TLSv1.2 or TLSv1.3.
+- maxConnections (ARV-232) is a whole number from 20 to 5000.
 */ -}}
+{{- $maxConnections := .Values.maxConnections }}
+{{- $number := or (kindIs "float64" $maxConnections) (kindIs "int64" $maxConnections) (kindIs "int" $maxConnections) }}
+{{- if or (not $number) (lt (float64 $maxConnections) 20.0) (gt (float64 $maxConnections) 5000.0) (ne (float64 $maxConnections) (float64 (int $maxConnections))) }}
+{{- fail "maxConnections must be a whole number from 20 to 5000: the server's max_connections, the platform chart's databaseConnections.serverMaxConnections (ARV-232)" }}
+{{- end }}
 {{- if not (regexMatch "^sha256:[0-9a-f]{64}$" (toString .Values.image.digest)) }}
 {{- fail "image.digest must be a sha256 digest; the TimescaleDB image is pinned by tag and digest" }}
 {{- end }}

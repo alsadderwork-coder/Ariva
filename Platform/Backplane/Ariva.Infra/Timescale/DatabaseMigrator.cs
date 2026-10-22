@@ -28,7 +28,7 @@ internal sealed class DatabaseMigrator(
         // ARV-111a: a retention period out of range stops the job before anything changes, too.
         settings.Retention.EnsureValid();
         // ARV-096d: and a command or statement timeout out of range.
-        settings.EnsureValidTimeouts();
+        settings.EnsureValidLimits();
 
         var migrationConnection = settings.BuildMigrationConnectionString();
         var runner = new SqlScriptRunner(migrationConnection, loggerFactory.CreateLogger<SqlScriptRunner>());

@@ -84,6 +84,7 @@ public sealed class StoredNameCheckTests
         builder.Options.Should().Be("-c default_transaction_read_only=on");
         builder.ApplicationName.Should().Be("ariva-stored-name-check");
         builder.Username.Should().Be("ariva_app", "the hosts' runtime login, never the migration login");
+        builder.Pooling.Should().BeFalse("a one-off command keeps no pool (ARV-232)");
     }
 
     [Fact]

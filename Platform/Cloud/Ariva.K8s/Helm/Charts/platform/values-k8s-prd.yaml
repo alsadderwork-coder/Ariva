@@ -116,6 +116,10 @@ migration:
     reportDeliveryDays: 400
     advertisingPlayDays: 400
 
+# The database's max_connections (ARV-232) is not set here: with api-main, api-ingest and api-stream at up to 4 replicas and a
+# rolling update's extra pod the hosts may hold more than the chart's default allows (wiki 04 section 6.9), so the Helmfile sets
+# databaseConnections.serverMaxConnections and the timescaledb release's maxConnections from its state value
+# databaseMaxConnections (400 for prd), and a render without it is refused.
 apiMainHpaMin: 2
 apiMainHpaMax: 4
 apiIngestHpaMin: 2

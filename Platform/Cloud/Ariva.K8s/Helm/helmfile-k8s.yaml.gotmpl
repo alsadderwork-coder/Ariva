@@ -23,6 +23,10 @@
 # (logging.collector otlp or loki) and the log pseudonym key from a Secret (logging.pseudonymKeySecret). On in prd, which refuses
 # to render with it off; the release sets logging.required, so no values file drops either there. Off elsewhere. The collector
 # and the Secret's name come from the platform values file; create the Secret in the namespace first.
+# databaseMaxConnections: the database's max_connections (ARV-232), set on the timescaledb release (maxConnections) and on the
+# platform release (databaseConnections.serverMaxConnections) from this one value, so the platform chart's check of every
+# replica's connections reads the server's real limit. 200 holds one replica of each host with a rolling update's extra pods;
+# prd's HPA maxima need 400 (wiki 04, "Database connections"). For a site's own PostgreSQL, set it to what that server allows.
 # uploadScan: the platform release scans every upload with clamd beside api-main (ARV-092c; Charts/platform uploadScan, on
 # by default in every values file). On in prd, which refuses to render with it off; the release sets uploadScan.enabled, so
 # no values file turns it off there. Off elsewhere means only that the release does not force it. In prd the site's values
@@ -31,6 +35,7 @@ environments:
   dev:
     values:
       - valuesFile: values-k8s-dev.yaml
+        databaseMaxConnections: 200
         timescaledb: true
         timescaledbTls: false
         podTls: false
@@ -40,6 +45,7 @@ environments:
   demo:
     values:
       - valuesFile: values-k8s-demo.yaml
+        databaseMaxConnections: 200
         timescaledb: true
         timescaledbTls: false
         podTls: false
@@ -49,6 +55,7 @@ environments:
   prd:
     values:
       - valuesFile: values-k8s-prd.yaml
+        databaseMaxConnections: 400
         timescaledb: true
         timescaledbTls: true
         podTls: true
@@ -58,6 +65,7 @@ environments:
   localk8s:
     values:
       - valuesFile: values-localk8s.yaml
+        databaseMaxConnections: 200
         timescaledb: true
         timescaledbTls: false
         podTls: false
@@ -97,12 +105,15 @@ releases:
     timeout: 900
     values:
       - ./Charts/timescaledb/values.yaml
-    {{- if .Values | get "timescaledbTls" false }}
-    # set, so that no values file turns TLS off (ARV-082a)
     set:
+      # The platform release checks its replicas against the same number (ARV-232)
+      - name: maxConnections
+        value: {{ .Values.databaseMaxConnections }}
+      {{- if .Values | get "timescaledbTls" false }}
+      # set, so that no values file turns TLS off (ARV-082a)
       - name: tls.enabled
         value: true
-    {{- end }}
+      {{- end }}
 
   # Ariva platform: api hosts, simulation and web, with the migration and Kafka topics jobs as hooks
   - name: ariva-platform
@@ -113,8 +124,10 @@ releases:
     {{- end }}
     values:
       - ./Charts/platform/{{ .Values.valuesFile }}
-    {{- if or (.Values | get "buildNumber" "") (.Values | get "podTls" false) (.Values | get "networkPolicies" false) (.Values | get "logShipping" false) (.Values | get "uploadScan" false) }}
     set:
+      # The database's max_connections, as the timescaledb release sets it (ARV-232)
+      - name: databaseConnections.serverMaxConnections
+        value: {{ .Values.databaseMaxConnections }}
       {{- if .Values | get "buildNumber" "" }}
       - name: buildNumber
         value: {{ .Values.buildNumber | quote }}
@@ -139,7 +152,6 @@ releases:
       - name: uploadScan.enabled
         value: true
       {{- end }}
-    {{- end }}
 
 # Kafka and Redis
 # Ariva does not ship its own Kafka or Redis releases. Either:

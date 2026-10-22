@@ -6,6 +6,10 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 - The MQTT transport always has its TLS secret (ARV-024): device credentials never cross the network in clear.
 - The validation reader login (ARV-104g1) comes from a secret named by validationReader.secretName, and production
   requires it (optional false), so the pilot's ground-truth proof always has its reader.
+- The database connections (ARV-232, databaseConnections): every host's poolSize is a whole number from 2 to 100 (the bounds
+  of the hosts' Database:MaxPoolSize), the other counts and the replica counts whole numbers, and the connections every replica
+  may hold, over each host's largest replica count and the extra pods of a rolling update, with the migration job's and the
+  operators' share, fit serverMaxConnections less superuserReserved.
 - The retention periods (ARV-111a, migration.retention) are whole numbers of days within their bounds (the same bounds as
   RetentionSettings in Ariva.Infra), and no other key is given.
 - The monitoring thresholds (ARV-125b) are in range: minutes 1 to 1440, a severity of warning or critical, usedPercent
@@ -780,4 +784,64 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if and $np.enabled (has $source (list "public" "mirror")) (empty (($np.clamavMirror | default dict).to | default list)) }}
 {{- fail "uploadScan.signatures.source public or mirror needs networkPolicies.clamavMirror.to, the signature mirror's peers: with networkPolicies.enabled freshclam could not reach it (ARV-092c)" }}
 {{- end }}
+{{- end }}
+{{- /* ARV-232: the database connections every replica may hold fit what the server allows. */}}
+{{- $db := .Values.databaseConnections }}
+{{- if not (kindIs "map" $db) }}
+{{- fail "databaseConnections must be a map of serverMaxConnections, superuserReserved, migration, operators and poolSize (ARV-232)" }}
+{{- end }}
+{{- $counts := dict "serverMaxConnections" (list 10 100000) "superuserReserved" (list 0 1000) "migration" (list 1 100) "operators" (list 0 1000) }}
+{{- range $key, $range := $counts }}
+{{- $value := index $db $key }}
+{{- $number := or (kindIs "float64" $value) (kindIs "int64" $value) (kindIs "int" $value) }}
+{{- if or (not $number) (lt (float64 $value) (float64 (index $range 0))) (gt (float64 $value) (float64 (index $range 1))) (ne (float64 $value) (float64 (int $value))) }}
+{{- fail (printf "databaseConnections.%s must be a whole number from %d to %d (ARV-232)" $key (index $range 0) (index $range 1)) }}
+{{- end }}
+{{- end }}
+{{- $pools := $db.poolSize }}
+{{- if not (kindIs "map" $pools) }}
+{{- fail "databaseConnections.poolSize must be a map of main, ingest, stream, cronz and integration (ARV-232)" }}
+{{- end }}
+{{- $hosts := dict "main" "apiMain" "ingest" "apiIngest" "stream" "apiStream" "cronz" "apiCronz" "integration" "apiIntegration" }}
+{{- range $key, $_ := $pools }}
+{{- if not (hasKey $hosts $key) }}
+{{- fail (printf "databaseConnections.poolSize.%s is not a host; the hosts are cronz, ingest, integration, main and stream (ARV-232)" $key) }}
+{{- end }}
+{{- end }}
+{{- $needed := add (int $db.migration) (int $db.operators) }}
+{{- $parts := list }}
+{{- /* The pools a host keeps besides its runtime pool: api-main's validation reader (4), api-stream's desk term reads (2). */}}
+{{- $fixedPools := dict "main" 4 "stream" 2 }}
+{{- range $name := list "replicas" "apiMainReplicas" "apiMainHpaMax" "apiIngestReplicas" "apiIngestHpaMax" "apiStreamReplicas" "apiStreamHpaMax" "apiCronzReplicas" "apiCronzHpaMax" "apiIntegrationReplicas" "apiIntegrationHpaMax" }}
+{{- $count := index $.Values $name }}
+{{- if not (kindIs "invalid" $count) }}
+{{- $number := or (kindIs "float64" $count) (kindIs "int64" $count) (kindIs "int" $count) }}
+{{- if or (not $number) (lt (float64 $count) 0.0) (gt (float64 $count) 1000.0) (ne (float64 $count) (float64 (int $count))) }}
+{{- fail (printf "%s must be a whole number of replicas from 0 to 1000: the database connections are counted over it (ARV-232)" $name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $key := list "main" "ingest" "stream" "cronz" "integration" }}
+{{- $pool := index $pools $key }}
+{{- $number := or (kindIs "float64" $pool) (kindIs "int64" $pool) (kindIs "int" $pool) }}
+{{- if or (not $number) (lt (float64 $pool) 2.0) (gt (float64 $pool) 100.0) (ne (float64 $pool) (float64 (int $pool))) }}
+{{- fail (printf "databaseConnections.poolSize.%s must be a whole number from 2 to 100, the bounds of the hosts' Database:MaxPoolSize (ARV-232)" $key) }}
+{{- end }}
+{{- $prefix := index $hosts $key }}
+{{- $hpaMax := int (index $.Values (printf "%sHpaMax" $prefix) | default 1) }}
+{{- $fixed := int (index $.Values (printf "%sReplicas" $prefix) | default $.Values.replicas | default 1) }}
+{{- $replicas := max $hpaMax $fixed }}
+{{- /* A rolling update starts new pods before the old ones stop: Kubernetes' default maxSurge, 25 percent rounded up. api-main
+       recreates instead while its upload volume is ReadWriteOnce (api-main.yaml), so it has no extra pod then. */}}
+{{- $surge := int (ceil (divf $replicas 4.0)) }}
+{{- if and (eq $key "main") (eq ($.Values.fileStorage.accessMode | default "ReadWriteOnce") "ReadWriteOnce") }}
+{{- $surge = 0 }}
+{{- end }}
+{{- $extra := int (get $fixedPools $key | default 0) }}
+{{- $needed = add $needed (mul (add $replicas $surge) (add (int $pool) $extra)) }}
+{{- $parts = append $parts (printf "%s (%d + %d) x (%d + %d)" $key $replicas $surge (int $pool) $extra) }}
+{{- end }}
+{{- $allowed := sub (int $db.serverMaxConnections) (int $db.superuserReserved) }}
+{{- if gt $needed $allowed }}
+{{- fail (printf "the database connections every replica may hold, %d (%s, migration %d, operators %d), pass what the server allows, %d (databaseConnections.serverMaxConnections %d less superuserReserved %d): raise the server's max_connections with databaseConnections.serverMaxConnections (the Helmfile state value databaseMaxConnections sets both), or lower the replicas or the pools (ARV-232, wiki 04)" $needed (join ", " $parts) (int $db.migration) (int $db.operators) $allowed (int $db.serverMaxConnections) (int $db.superuserReserved)) }}
 {{- end }}

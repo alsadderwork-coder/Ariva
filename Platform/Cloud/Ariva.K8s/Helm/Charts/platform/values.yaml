@@ -125,6 +125,34 @@ integrationTokenSigningSecretName: ariva-integration-token-signing
 databaseCaSecretName: ariva-database-ca
 redisCaSecretName: ariva-redis-ca
 
+# Database connections (ARV-232). Each host keeps at most poolSize connections per replica in its runtime pool
+# (Database:MaxPoolSize, passed to every host from here; the hosts refuse a value outside 2 to 100). Besides it api-main keeps
+# the validation reader's pool (4) and api-stream the desk term reads' (2). The chart adds them up over each host's largest
+# replica count (its HPA maximum or its replicas, whichever is larger) and the extra pods of a rolling update (Kubernetes'
+# default maxSurge, 25 percent rounded up; none for api-main while it recreates on a ReadWriteOnce volume), with the migration
+# job's connections and a share kept for the operators (psql, backups, an exporter), and refuses to render when the total
+# passes what the server allows: serverMaxConnections less superuserReserved (PostgreSQL's superuser_reserved_connections, 3 by
+# default). serverMaxConnections is the server's max_connections: the Helmfile sets the timescaledb release's maxConnections and
+# this from one state value (databaseMaxConnections; 200, and 400 for prd, which sets no default of its own, so a production
+# render outside the Helmfile without it is refused); for a site's own PostgreSQL set it to what that server allows (wiki 04,
+# "Database connections"). One replica of each host without a rolling update (docker-compose, the AppHost, the lab) fits
+# PostgreSQL's default 100 (ConnectionBudgetTests).
+databaseConnections:
+  serverMaxConnections: 200
+  superuserReserved: 3
+  migration: 2
+  operators: 5
+  # Sized from the pilot load run (wiki 05, ARV-232): the request paths (ingest, main) with room for the D5 burst, stream and
+  # integration below their unbounded peaks (their consumers wait for a connection rather than fail), cronz for its jobs at
+  # once (the five TickerQ jobs, two of them at 03:15, with the outbox relay and the health checks). The same numbers are in
+  # each host's appsettings.service.json (ConnectionBudgetTests holds them together).
+  poolSize:
+    main: 14
+    ingest: 26
+    stream: 20
+    cronz: 8
+    integration: 12
+
 # Pod TLS (ARV-082b): the ingress reaches the pods over TLS and verifies them. Off by default, so dev, demo and localk8s render
 # plain HTTP as before; k8s-prd turns it on and the chart refuses it off there (validate.yaml, and the Helmfile state value
 # podTls). With it on:

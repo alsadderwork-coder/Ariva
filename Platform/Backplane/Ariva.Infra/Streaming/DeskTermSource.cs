@@ -48,9 +48,7 @@ public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider
         var result = new Dictionary<string, DeskTerm>(StringComparer.Ordinal);
         var bySite = zoneKeys.Select(Split).Where(k => k is not null).GroupBy(k => k.Value.Site, StringComparer.Ordinal);
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        // Short timeouts: the stream worker reads this inline, and a database that is away must not hold its consumer long.
-        var connectionString = new NpgsqlConnectionStringBuilder(database.BuildConnectionString()) { Timeout = 5, CommandTimeout = 10 }.ConnectionString;
-        await using var connection = new NpgsqlConnection(connectionString);
+        await using var connection = new NpgsqlConnection(ConnectionString(database));
         await connection.OpenAsync(ct);
         foreach (var site in bySite)
         {
@@ -175,6 +173,17 @@ public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider
     /// <summary>The desk terms of the given zone keys, the shadow's busy windows with the default sensor cycle settings.</summary>
     public virtual Task<IReadOnlyDictionary<string, DeskTerm>> LoadAsync(IReadOnlyCollection<string> zoneKeys, int windowMinutes, CancellationToken ct) =>
         LoadAsync(zoneKeys, windowMinutes, new SensorCycleSettings(), ct);
+
+    /// <summary>
+    /// The reads' connection string: the runtime one with short timeouts (the stream worker reads inline, and a database that is
+    /// away must not hold its consumer long), so a pool of its own, held to <see cref="DatabaseSettings.DeskTermPoolSize"/>
+    /// connections (ARV-232: these reads go one at a time; the chart counts the pool on api-stream's replicas).
+    /// </summary>
+    internal static string ConnectionString(DatabaseSettings database) =>
+        new NpgsqlConnectionStringBuilder(database.BuildConnectionString())
+        {
+            Timeout = 5, CommandTimeout = 10, MaxPoolSize = DatabaseSettings.DeskTermPoolSize
+        }.ConnectionString;
 
     /// <summary>Sensor-only desk minutes read back and left out because they failed their bounds (CWE-501), since start.</summary>
     public long RefusedSensorMinutes { get; private set; }

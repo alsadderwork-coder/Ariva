@@ -738,6 +738,18 @@ Every TickerQ job (Ariva.Api.Cronz) and every background loop of the hosts ends 
 | A host warns: "A message for <consumer> ran past its handler timeout of 70 s and was cancelled; it is retried, then dead-lettered"; the dead-letter topic holds it with `HandlerTimeoutException` | One attempt of the message waited on the database past the handler timeout | Find what held it (section 4.7); replay the dead letter once the database answers (section 4.5a) |
 | A host does not start: "Kafka:Consumers:HandlerTimeoutSeconds must be from 65 to 120 (ARV-096e)." or "Database:ConnectTimeoutSeconds is a whole number of seconds from 2 to 60 (ARV-096e)." | A value out of range in the release's settings | Correct it |
 
+### 4.21 Database connections (ARV-232)
+
+Every replica of a host keeps at most `Database:MaxPoolSize` connections (main 14, ingest 26, stream 20, cronz 8, integration 12) and names them after itself, so `SELECT application_name, count(*) FROM pg_stat_activity GROUP BY 1` shows each host's share (`ariva-main`, `ariva-stream` and so on; `ariva-migration` while the migration job runs, `ariva-validation-reader` and `ariva-stored-name-check` for their own pools). The chart refuses a release whose replicas, with a rolling update's extra pods, could need more connections than the server allows (wiki 04 section 6.9).
+
+| Where it shows, and the message | Cause | Action |
+|---|---|---|
+| A request answers 500 (or a consumer retries) and its host logs an `NpgsqlException`: "The connection pool has been exhausted, either raise 'Max Pool Size' (currently N) or 'Timeout' (currently 15 seconds) in your connection string." | Every connection of the host's pool was busy for `Database:ConnectTimeoutSeconds`: a slow statement holding them (section 4.19), or more load than the pool was sized for | Look at the host's connections in `pg_stat_activity` (state and query of its `application_name`): slow statements first. If the load is real, raise the host's `databaseConnections.poolSize` (and `databaseMaxConnections` with it) or add replicas within the budget |
+| PostgreSQL refuses a connection: "remaining connection slots are reserved" (SQLSTATE 53300) or "sorry, too many clients already" | The server's `max_connections` is below what the hosts and other clients hold: a client outside Ariva, or a site server whose limit is lower than `databaseMaxConnections` says | Count by `application_name` and `usename`; set `databaseMaxConnections` to the server's real limit (the chart then refuses replicas that do not fit) or raise the server's limit |
+| The release does not render: "the database connections every replica may hold, N (...), pass what the server allows, M ..." | The replicas' largest counts with a rolling update's extra pods, times the pools, need more than `databaseMaxConnections` less 3; in production rendered outside the Helmfile, `databaseConnections.serverMaxConnections` not set (`values-k8s-prd.yaml` sets none) | Raise `databaseMaxConnections` (it sets the timescaledb release's `max_connections` too, which restarts the database pod: do it in a maintenance window), or lower an HPA maximum or a pool; outside the Helmfile set the server's limit on both releases |
+| The release does not render: "apiIngestHpaMax must be a whole number of replicas from 0 to 1000 ..." (or another replica count) | A replica count or HPA maximum that is not a whole number in range | Correct it |
+| A host or the migration job does not start: "Database:MaxPoolSize is a whole number of connections from 2 to 100 (ARV-232)." | A value out of range in the release's settings | Correct it |
+
 ## 5. Routine checks
 
 | Frequency | Check |

@@ -121,7 +121,7 @@ public sealed class PersistenceSettingsTests
     [InlineData(61, false)]
     public void ConnectTimeout_Should_BeRefusedOutsideItsBounds_When_Configured(int seconds, bool valid)
     {
-        var check = new DatabaseSettings { ConnectTimeoutSeconds = seconds }.EnsureValidTimeouts;
+        var check = new DatabaseSettings { ConnectTimeoutSeconds = seconds }.EnsureValidLimits;
 
         if (valid)
             check.Should().NotThrow();
@@ -142,7 +142,7 @@ public sealed class PersistenceSettingsTests
     {
         var settings = new DatabaseSettings { CommandTimeoutSeconds = command, StatementTimeoutSeconds = statement };
 
-        var check = settings.EnsureValidTimeouts;
+        var check = settings.EnsureValidLimits;
 
         if (valid)
             check.Should().NotThrow();
@@ -161,6 +161,125 @@ public sealed class PersistenceSettingsTests
         var add = () => new ServiceCollection().AddArivaPersistence(configuration);
 
         add.Should().Throw<InvalidOperationException>().WithMessage($"*Database:{name} is a whole number of seconds from*");
+    }
+
+    [Theory]
+    [InlineData(1, false)]
+    [InlineData(2, true)]
+    [InlineData(20, true)]
+    [InlineData(100, true)]
+    [InlineData(101, false)]
+    public void MaxPoolSize_Should_BeRefusedOutsideItsBounds_When_Configured(int connections, bool valid)
+    {
+        // ARV-232: a host keeps at most this many connections; Npgsql's own 100 is the upper bound.
+        var check = new DatabaseSettings { MaxPoolSize = connections }.EnsureValidLimits;
+
+        if (valid)
+            check.Should().NotThrow();
+        else
+            check.Should().Throw<InvalidOperationException>().WithMessage("Database:MaxPoolSize is a whole number of connections from 2 to 100 (ARV-232).");
+    }
+
+    [Fact]
+    public void AddArivaPersistence_Should_RefuseToStart_When_ThePoolIsOutOfRange()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string> { ["Database:MaxPoolSize"] = "500" }).Build();
+
+        var add = () => new ServiceCollection().AddArivaPersistence(configuration);
+
+        add.Should().Throw<InvalidOperationException>().WithMessage("Database:MaxPoolSize is a whole number of connections from 2 to 100*");
+    }
+
+    [Fact]
+    public void BuildConnectionString_Should_BoundThePoolAndNameTheHost_When_BuildingTheRuntimeLogin()
+    {
+        // ARV-232: pg_stat_activity tells the hosts apart, and each host's pool has a ceiling of its own.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Application:ShortName"] = "stream",
+            ["Database:MaxPoolSize"] = "12"
+        }).Build();
+
+        var runtime = new NpgsqlConnectionStringBuilder(DatabaseSettings.FromConfiguration(configuration).BuildConnectionString());
+
+        runtime.ApplicationName.Should().Be("ariva-stream");
+        runtime.MaxPoolSize.Should().Be(12);
+        runtime.Pooling.Should().BeTrue();
+        new NpgsqlConnectionStringBuilder(new DatabaseSettings().BuildConnectionString()).MaxPoolSize.Should().Be(20, "the default when a host names none");
+    }
+
+    [Fact]
+    public void DeskTermConnectionString_Should_BeAPoolOfTwoWithShortTimeouts_When_StreamReadsDeskTerms()
+    {
+        // ARV-232: the desk term reads' own pool (their timeouts make it one), held to DeskTermPoolSize; the chart counts it on
+        // api-stream's replicas only.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Application:ShortName"] = "stream",
+            ["Database:MaxPoolSize"] = "20"
+        }).Build();
+
+        var desks = new NpgsqlConnectionStringBuilder(Ariva.Infra.Streaming.DeskTermSource.ConnectionString(DatabaseSettings.FromConfiguration(configuration)));
+
+        desks.MaxPoolSize.Should().Be(DatabaseSettings.DeskTermPoolSize).And.Be(2);
+        desks.Timeout.Should().Be(5);
+        desks.CommandTimeout.Should().Be(10);
+        desks.ApplicationName.Should().Be("ariva-stream");
+        desks.Pooling.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(null, "ariva")]
+    [InlineData("", "ariva")]
+    [InlineData("base", "ariva")]
+    [InlineData("main", "ariva-main")]
+    [InlineData("integration", "ariva-integration")]
+    public void ApplicationName_Should_FollowTheHostsShortName_When_Configured(string shortName, string expected)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string> { ["Application:ShortName"] = shortName }).Build();
+
+        DatabaseSettings.FromConfiguration(configuration).ApplicationName.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("Main")]
+    [InlineData("main;Pooling=false")]
+    [InlineData("main name")]
+    [InlineData("-main")]
+    [InlineData("main\n")]
+    public void ApplicationName_Should_RefuseAShortName_When_ItIsNotLowerCaseLettersDigitsAndHyphens(string shortName)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string> { ["Application:ShortName"] = shortName }).Build();
+
+        var load = () => DatabaseSettings.FromConfiguration(configuration);
+
+        load.Should().Throw<InvalidOperationException>().WithMessage("Application:ShortName must be lower case letters*");
+    }
+
+    [Fact]
+    public void ApplicationName_Should_NotBeConfigured_When_TheDatabaseSectionNamesOne()
+    {
+        // Derived only: a Database:ApplicationName in a settings file or the environment cannot pass for another host.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Application:ShortName"] = "cronz",
+            ["Database:ApplicationName"] = "ariva-main"
+        }).Build();
+
+        DatabaseSettings.FromConfiguration(configuration).ApplicationName.Should().Be("ariva-cronz");
+    }
+
+    [Fact]
+    public void BuildMigrationConnectionString_Should_NotPool_When_BuildingTheMigrationLogin()
+    {
+        // ARV-232: a host that migrates or checks the schema at start closes those connections for good.
+        var settings = new DatabaseSettings { Migration = new MigrationLoginSettings { Username = "ariva", Password = "x" } };
+
+        var migration = new NpgsqlConnectionStringBuilder(settings.BuildMigrationConnectionString());
+
+        migration.Pooling.Should().BeFalse();
+        migration.ApplicationName.Should().Be("ariva-migration");
+        new NpgsqlConnectionStringBuilder(new DatabaseSettings().BuildMigrationConnectionString()).Pooling.Should().BeFalse("without a migration login too");
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
 
@@ -10,9 +11,24 @@ namespace Ariva.Infra.Settings;
 /// options. The password comes from the environment or a Kubernetes secret (Database__Password), never from a
 /// committed file.
 /// </summary>
-public sealed class DatabaseSettings
+public sealed partial class DatabaseSettings
 {
     public const string SectionName = "Database";
+
+    /// <summary>The application name of a process without a host short name (tools, tests).</summary>
+    public const string DefaultApplicationName = "ariva";
+
+    /// <summary>The bounds of <see cref="MaxPoolSize"/>.</summary>
+    public const int MinMaxPoolSize = 2;
+
+    /// <inheritdoc cref="MinMaxPoolSize"/>
+    public const int MaxMaxPoolSize = 100;
+
+    /// <summary>
+    /// ARV-232: the desk term reads' own pool (their shorter timeouts make it a pool apart from the runtime one). Only
+    /// Ariva.Api.Stream makes them (its queue stream worker, <c>DeskTermSource</c>), one at a time.
+    /// </summary>
+    public const int DeskTermPoolSize = 2;
 
     /// <summary>The bounds of <see cref="CommandTimeoutSeconds"/>.</summary>
     public const int MinCommandTimeoutSeconds = 5;
@@ -94,6 +110,23 @@ public sealed class DatabaseSettings
     /// </summary>
     public int ConnectTimeoutSeconds { get; init; } = 15;
 
+    /// <summary>
+    /// ARV-232 (CWE-400, CWE-770): the most connections one host process keeps in its runtime pool (Npgsql's Maximum Pool Size,
+    /// 100 when unset). A request past it waits for a free connection, at most <see cref="ConnectTimeoutSeconds"/>, instead of taking
+    /// connections PostgreSQL keeps for the other hosts. Each host's value comes from its appsettings.service.json (sized from the
+    /// pilot load run, wiki 05) and, in a cluster, from the chart, which refuses a release whose replicas would need more connections
+    /// than the server allows (wiki 04). A host and the migration job refuse to start outside <see cref="MinMaxPoolSize"/> to
+    /// <see cref="MaxMaxPoolSize"/>.
+    /// </summary>
+    public int MaxPoolSize { get; init; } = 20;
+
+    /// <summary>
+    /// ARV-232: the name every runtime connection of this process carries (pg_stat_activity's application_name), so an operator
+    /// sees each host's share: "ariva-" and the host's Application:ShortName ("ariva-main", "ariva-stream"), or
+    /// <see cref="DefaultApplicationName"/> without one. Derived, never configured (a private setter is not bound).
+    /// </summary>
+    public string ApplicationName { get; private set; } = DefaultApplicationName;
+
     /// <summary>The login the migration job uses (DDL). Hosts never use it.</summary>
     public MigrationLoginSettings Migration { get; init; } = new();
 
@@ -113,8 +146,27 @@ public sealed class DatabaseSettings
     public static DatabaseSettings FromConfiguration(IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        return configuration.GetSection(SectionName).Get<DatabaseSettings>() ?? new DatabaseSettings();
+        var settings = configuration.GetSection(SectionName).Get<DatabaseSettings>() ?? new DatabaseSettings();
+        settings.ApplicationName = HostApplicationName(configuration["Application:ShortName"]);
+        return settings;
     }
+
+    /// <summary>
+    /// ARV-232: "ariva-" and a host's short name; <see cref="DefaultApplicationName"/> when there is none or it is the base files'
+    /// placeholder "base". A short name that is not lower case letters, digits and hyphens is refused (it would reach the server's
+    /// startup message).
+    /// </summary>
+    internal static string HostApplicationName(string shortName)
+    {
+        if (string.IsNullOrWhiteSpace(shortName) || shortName == "base")
+            return DefaultApplicationName;
+        if (!ShortNamePattern().IsMatch(shortName))
+            throw new InvalidOperationException("Application:ShortName must be lower case letters, digits and hyphens, at most 40, starting with a letter (ARV-232).");
+        return $"{DefaultApplicationName}-{shortName}";
+    }
+
+    [GeneratedRegex(@"\A[a-z][a-z0-9-]{0,39}\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
+    private static partial Regex ShortNamePattern();
 
     /// <summary>
     /// Why this configuration is not fit for k8s-prd, or null (ARV-082a, CWE-319, CWE-295): every connection to PostgreSQL uses
@@ -141,10 +193,17 @@ public sealed class DatabaseSettings
             yield return Range(nameof(ConnectTimeoutSeconds), MinConnectTimeoutSeconds, MaxConnectTimeoutSeconds, "ARV-096e");
     }
 
-    /// <summary>Stops a host or the migration job at start when a timeout is out of range.</summary>
-    public void EnsureValidTimeouts()
+    /// <summary>What is out of range in the pool (ARV-232); empty when it may be used.</summary>
+    public IEnumerable<string> PoolProblems()
     {
-        var problems = TimeoutProblems().ToList();
+        if (MaxPoolSize is < MinMaxPoolSize or > MaxMaxPoolSize)
+            yield return string.Create(CultureInfo.InvariantCulture, $"{SectionName}:{nameof(MaxPoolSize)} is a whole number of connections from {MinMaxPoolSize:N0} to {MaxMaxPoolSize:N0} (ARV-232).");
+    }
+
+    /// <summary>Stops a host or the migration job at start when a timeout or the pool is out of range.</summary>
+    public void EnsureValidLimits()
+    {
+        var problems = TimeoutProblems().Concat(PoolProblems()).ToList();
         if (problems.Count > 0)
             throw new InvalidOperationException(string.Join(" ", problems));
     }
@@ -152,16 +211,23 @@ public sealed class DatabaseSettings
     private static string Range(string name, int min, int max, string story = "ARV-096d") =>
         string.Create(CultureInfo.InvariantCulture, $"{SectionName}:{name} is a whole number of seconds from {min:N0} to {max:N0} ({story}).");
 
-    /// <summary>The hosts' connection: the runtime login, DML only once the migration job has run.</summary>
-    public string BuildConnectionString() => Build(Username, Password, "ariva");
+    /// <summary>
+    /// The hosts' connection: the runtime login, DML only once the migration job has run, under the host's application name and in
+    /// a pool of at most <see cref="MaxPoolSize"/> connections.
+    /// </summary>
+    public string BuildConnectionString() => Build(Username, Password, ApplicationName, pooled: true);
 
-    /// <summary>The migration job's connection; falls back to the runtime login when no migration login is set.</summary>
+    /// <summary>
+    /// The migration job's connection; falls back to the runtime login when no migration login is set. Never pooled (ARV-232): a host
+    /// that migrates at start (vm-local only) closes them for good, so they take no slot afterwards. The schema check outside vm-local
+    /// reads through the runtime pool.
+    /// </summary>
     public string BuildMigrationConnectionString() =>
         string.IsNullOrWhiteSpace(Migration.Username)
-            ? Build(Username, Password, "ariva-migration")
-            : Build(Migration.Username, Migration.Password, "ariva-migration");
+            ? Build(Username, Password, "ariva-migration", pooled: false)
+            : Build(Migration.Username, Migration.Password, "ariva-migration", pooled: false);
 
-    private string Build(string username, string password, string applicationName)
+    private string Build(string username, string password, string applicationName, bool pooled)
     {
         var builder = new NpgsqlConnectionStringBuilder
         {
@@ -173,8 +239,11 @@ public sealed class DatabaseSettings
             SslMode = UseEncryption ? SslMode.VerifyFull : SslMode.Disable,
             ApplicationName = applicationName,
             CommandTimeout = CommandTimeoutSeconds,
-            Timeout = ConnectTimeoutSeconds
+            Timeout = ConnectTimeoutSeconds,
+            Pooling = pooled
         };
+        if (pooled)
+            builder.MaxPoolSize = MaxPoolSize;
         ApplyRootCertificate(builder);
         return builder.ConnectionString;
     }

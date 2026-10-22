@@ -194,6 +194,9 @@ spec:
             # Log shipping and the log pseudonym key (ARV-091a; values logging)
             {{- . | nindent 12 }}
             {{- end }}
+            # The most connections this replica keeps in its runtime pool (ARV-232; databaseConnections, validate.yaml)
+            - name: Database__MaxPoolSize
+              value: {{ .Values.databaseConnections.poolSize.main | quote }}
             # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
             - name: Kafka__SaslPassword
               valueFrom:

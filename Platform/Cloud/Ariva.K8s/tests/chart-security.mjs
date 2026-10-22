@@ -64,7 +64,7 @@
 // (uploadScanFindings). The release guards refuse prd without the scan or without a signature source, mirror without a URL or
 // with one that could carry a credential (never repeated in the message), mounted without a claim, and the NetworkPolicies on
 // without the mirror's peers; each rule is self-tested on a render's fixture, a writable root, a missing digest and the
-// address on another host among the mutations. prd renders carry a site's choice (tests/fixtures/upload-scan-site.yaml).
+// address on another host among the mutations. prd renders carry a site's choice (tests/fixtures/prd-site.yaml).
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs              needs helm 3 on PATH (or HELM=path)
 //   node Platform/Cloud/Ariva.K8s/tests/chart-security.mjs --self-test  checks the rules against fixtures, no helm
 // Without helm the test is skipped locally and fails in CI (CI=true).
@@ -91,11 +91,12 @@ const parse = (text) => parseAllDocuments(text).map((doc) => doc.toJS()).filter(
 const parseAsKubernetes = (text) => parseAllDocuments(text, { version: '1.1' }).map((doc) => doc.toJS()).filter(Boolean);
 const fixture = (name) => fs.readFileSync(path.join(here, 'fixtures', name), 'utf8');
 /**
- * ARV-092c: a production site's signature source (its mirror with its CA, and the mirror's peers): k8s-prd has no default and
- * the chart refuses a release without one, so every render of values-k8s-prd.yaml takes this file right after it (render,
- * mergedValues, the Helmfile's prd), as a site's own values would; the guard cases clear it to prove the refusals.
+ * A production site's own values: its signature source (ARV-092c: its mirror with its CA, and the mirror's peers) and its
+ * database's max_connections (ARV-232). k8s-prd has no default for either and the chart refuses a release without them, so every
+ * render of values-k8s-prd.yaml takes this file right after it (render, mergedValues, the Helmfile's prd), as a site's own values
+ * would; the guard cases clear it to prove the refusals.
  */
-const PRD_SITE = path.join(here, 'fixtures', 'upload-scan-site.yaml');
+const PRD_SITE = path.join(here, 'fixtures', 'prd-site.yaml');
 /** ARV-092c: the chart's ClamAV pin (values.yaml uploadScan.image): repository, tag and digest. */
 const CHART_SCANNER = parseYaml(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8')).uploadScan.image;
 /** ARV-092c: the repository's clamd.conf (ARV-092b), whose limits the chart's clamd.conf must keep. */
@@ -1359,6 +1360,86 @@ for (const env of environments) {
 	}
 }
 
+// ARV-232: the server's max_connections comes from maxConnections on its command line, with TLS and without.
+for (const [label, sets, expected] of [
+	['timescaledb max_connections without TLS', [], 'max_connections=200'],
+	['timescaledb max_connections with TLS', ['tls.enabled=true'], 'max_connections=200'],
+	['timescaledb max_connections raised', ['maxConnections=400'], 'max_connections=400']
+]) {
+	const result = renderDatabase(sets);
+	const args = result.status === 0 ? (parse(result.stdout).find((doc) => doc.kind === 'StatefulSet')?.spec?.template?.spec?.containers?.[0]?.args ?? []) : [];
+	const flag = args.indexOf(expected);
+	if (result.status !== 0 || args[0] !== 'postgres' || flag < 1 || args[flag - 1] !== '-c') {
+		failed = true;
+		console.error(`FAIL ${label}: the server's arguments do not set ${expected}\n${result.stderr ?? ''}`);
+	} else {
+		console.log(`PASS ${label}: ${expected} on the server's command line`);
+	}
+}
+
+// ARV-232: the two charts' defaults name the same server limit (the platform chart counts against what the database chart sets).
+{
+	const platformLimit = parseYaml(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8')).databaseConnections?.serverMaxConnections;
+	const databaseLimit = parseYaml(fs.readFileSync(path.join(databaseChart, 'values.yaml'), 'utf8')).maxConnections;
+	if (platformLimit !== databaseLimit || !Number.isInteger(platformLimit)) {
+		failed = true;
+		console.error(`FAIL database connection defaults: the platform chart's databaseConnections.serverMaxConnections (${platformLimit}) is not the timescaledb chart's maxConnections (${databaseLimit})`);
+	} else {
+		console.log(`PASS database connection defaults: both charts name a server limit of ${platformLimit}`);
+	}
+}
+
+// ARV-232: a rolling update's extra pod counts for api-main only when it does not recreate (its upload volume shared), so a limit
+// that holds dev with api-main recreating refuses the same release with the volume ReadWriteMany.
+for (const [label, sets, accepted] of [
+	['dev at a limit of 180 with api-main recreating', ['databaseConnections.serverMaxConnections=180'], true],
+	['dev at a limit of 180 with api-main rolling on a shared volume', ['databaseConnections.serverMaxConnections=180', 'fileStorage.accessMode=ReadWriteMany'], false]
+]) {
+	const result = render('values-k8s-dev.yaml', sets);
+	const refusedForMain = result.status !== 0 && (result.stderr ?? '').includes('main (1 + 1) x (14 + 4)');
+	if (accepted ? result.status !== 0 : !refusedForMain) {
+		failed = true;
+		console.error(`FAIL database connections, ${label}: ${accepted ? 'refused' : 'not refused for api-main\'s extra pod'}\n${result.stderr ?? ''}`);
+	} else {
+		console.log(`PASS database connections, ${label}: ${accepted ? 'rendered' : 'refused, api-main\'s extra pod counted'}`);
+	}
+}
+
+// ARV-232: a fractional replica count (a number, as a values file gives it) is refused too, not counted as its whole part.
+{
+	const result = render('values-k8s-dev.yaml', [], '', [], ['--set-json', 'apiStreamHpaMax=1.5']);
+	if (result.status === 0 || !(result.stderr ?? '').includes('apiStreamHpaMax must be a whole number of replicas')) {
+		failed = true;
+		console.error(`FAIL release guard: a fractional HPA maximum must be refused but ${result.status === 0 ? 'rendered' : `failed otherwise\n${result.stderr}`}`);
+	} else {
+		console.log('PASS release guard: a fractional HPA maximum (1.5 as a number) is refused');
+	}
+}
+
+// ARV-232: every API host's deployment takes its runtime pool from databaseConnections.poolSize, as Database:MaxPoolSize.
+{
+	const result = render('values-k8s-dev.yaml', ['databaseConnections.poolSize.main=17', 'databaseConnections.poolSize.stream=9']);
+	const findings = [];
+	if (result.status !== 0) findings.push(`template failed\n${result.stderr}`);
+	else {
+		const docs = parse(result.stdout);
+		const expected = { 'api-main': '17', 'api-ingest': undefined, 'api-stream': '9', 'api-cronz': undefined, 'api-integration': undefined };
+		const values = parseAllDocuments(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8'))[0].toJS().databaseConnections.poolSize;
+		for (const [deployment, pool] of Object.entries(expected)) {
+			const container = docs.find((doc) => doc.kind === 'Deployment' && doc.metadata?.name === `${deployment}-deployment`)?.spec?.template?.spec?.containers?.find((c) => c.name === `${deployment}-container`);
+			const value = container?.env?.find((variable) => variable.name === 'Database__MaxPoolSize')?.value;
+			const want = pool ?? String(values[deployment.replace('api-', '')]);
+			if (value !== want) findings.push(`${deployment}: Database__MaxPoolSize is ${value}, not ${want}`);
+		}
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL database pools reach the hosts:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log('PASS database pools reach the hosts: every API deployment sets Database__MaxPoolSize from databaseConnections.poolSize');
+	}
+}
+
 // ARV-082a: TimescaleDB with TLS: the defaults (secret timescaledb-tls, TLS 1.2 at least), and a site's secret with TLS 1.3.
 for (const [label, sets, secretName, floor] of [
 	['timescaledb with tls.enabled', ['tls.enabled=true'], 'timescaledb-tls', 'TLSv1.2'],
@@ -1393,7 +1474,12 @@ for (const [label, sets] of [
 	['a database TLS secret name that is not a Kubernetes name', ['tls.enabled=true', 'tls.secretName=Db_TLS']],
 	['database TLS with TLS 1.1 as the floor', ['tls.enabled=true', 'tls.minProtocolVersion=TLSv1.1']],
 	['a tls.enabled that is not true or false', ['tls.enabled=yes']],
-	['the database tls values removed', ['tls=null']]
+	['the database tls values removed', ['tls=null']],
+	// ARV-232: the server's max_connections is a whole number in range.
+	['database max_connections below 20', ['maxConnections=5']],
+	['database max_connections above 5000', ['maxConnections=5001']],
+	['database max_connections that is not a whole number', ['maxConnections=100.5']],
+	['database max_connections that is not a number', ['maxConnections=abc']]
 ]) {
 	if (renderDatabase(sets).status === 0) {
 		failed = true;
@@ -1428,6 +1514,24 @@ const ingressEntry = (name, serviceName, subdomain, more = {}) => ({ name, comme
 
 for (const [label, file, sets, message, annotation] of [
 	['production without a build number', 'values-k8s-prd.yaml', []],
+	// ARV-232: the connections every replica may hold fit the server's max_connections, and each host's pool is in range.
+	['production replicas that need more database connections than the server allows', 'values-k8s-prd.yaml', [PRD, 'databaseConnections.serverMaxConnections=100'],
+		'pass what the server allows'],
+	['production at the chart\'s default server limit (values-k8s-prd.yaml sets none; the Helmfile does)', 'values-k8s-prd.yaml', [PRD, 'databaseConnections.serverMaxConnections=200'],
+		'ingest (4 + 1) x (26 + 0)'],
+	['one replica of each host at a server limit of 50', 'values-k8s-dev.yaml', ['databaseConnections.serverMaxConnections=50'], 'pass what the server allows'],
+	['an HPA maximum that takes api-ingest past the server limit', 'values-k8s-dev.yaml', ['apiIngestHpaMax=5'], 'ingest (5 + 2) x (26 + 0)'],
+	['fixed replicas that take api-ingest past the server limit', 'values-k8s-dev.yaml', ['apiIngestReplicas=3'], 'ingest (3 + 1) x (26 + 0)'],
+	['a replica count that is not a number', 'values-k8s-dev.yaml', ['apiIngestHpaMax=abc'], 'apiIngestHpaMax must be a whole number of replicas'],
+	['a negative replica count', 'values-k8s-dev.yaml', ['apiStreamReplicas=-5'], 'apiStreamReplicas must be a whole number of replicas'],
+	// Helm's --set reads 1.5 as text; the fraction itself is the --set-json case after this table.
+	['a replica count Helm reads as text', 'values-k8s-dev.yaml', ['replicas=1.5'], 'replicas must be a whole number of replicas'],
+	['a pool below 2', 'values-k8s-dev.yaml', ['databaseConnections.poolSize.stream=1'], 'databaseConnections.poolSize.stream must be a whole number from 2 to 100'],
+	['a pool above 100', 'values-k8s-dev.yaml', ['databaseConnections.poolSize.main=101'], 'databaseConnections.poolSize.main must be a whole number from 2 to 100'],
+	['a pool for a host that does not exist', 'values-k8s-dev.yaml', ['databaseConnections.poolSize.web=10'], 'databaseConnections.poolSize.web is not a host'],
+	['a host without a pool', 'values-k8s-dev.yaml', ['databaseConnections.poolSize.cronz=null'], 'databaseConnections.poolSize.cronz must be a whole number'],
+	['the database connection values removed', 'values-k8s-dev.yaml', ['databaseConnections=null'], 'databaseConnections must be a map'],
+	['a negative operators share', 'values-k8s-dev.yaml', ['databaseConnections.operators=-1'], 'databaseConnections.operators must be a whole number'],
 	['production with trunk', 'values-k8s-prd.yaml', ['buildNumber=trunk']],
 	['the latest tag', 'values-k8s-dev.yaml', ['buildNumber=latest']],
 	['production with the demo seed', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'demoSeed=true']],
@@ -2496,12 +2600,29 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		findings.push(...logShippingFindings(parseAsKubernetes(result.stdout), logShippingOptions(values, contextEnvironment, tls)));
 		// ARV-092c: the malware scanner beside api-main (prd: the site's mirror, PRD_SITE).
 		findings.push(...uploadScanFindings(parseAsKubernetes(result.stdout), uploadScanOptions(values)));
+		// ARV-232: the server runs at the state value databaseMaxConnections (200, and 400 in prd), the limit the platform release
+		// checks its replicas against (the refusal below proves the platform release reads the same value).
+		const serverArgs = docs.find((doc) => doc?.kind === 'StatefulSet' && doc.metadata?.name === 'timescaledb')?.spec?.template?.spec?.containers?.[0]?.args ?? [];
+		const maxConnections = `max_connections=${environment === 'prd' ? 400 : 200}`;
+		const flag = serverArgs.indexOf(maxConnections);
+		if (flag < 1 || serverArgs[flag - 1] !== '-c') findings.push(`the database's arguments do not set ${maxConnections}: ${JSON.stringify(serverArgs)}`);
 		if (findings.length) {
 			failed = true;
 			console.error(`FAIL helmfile -e ${environment}:\n  ${findings.join('\n  ')}`);
 		} else {
 			console.log(`PASS helmfile -e ${environment}: ${docs.length} objects, database and topics job included, TimescaleDB ${tls ? 'with TLS' : 'without TLS'}, ` +
 				`${tls ? 'the pods over TLS' : 'plain HTTP to the pods'}, the Ingresses' headers held and plain HTTP ${describeModes(docs)}, ${describeNetwork(result.stdout, values)}, ${describeLogShipping(values)}, ${describeUploadScan(values)}`);
+		}
+	}
+	// ARV-232: the platform release checks its replicas against the state value databaseMaxConnections, over a site's own
+	// databaseConnections.serverMaxConnections (the prd site fixture's 400): at 300 prd's replicas need more than the server allows.
+	{
+		const attempt = template('prd', ['--state-values-set', 'buildNumber=main-20261001.1', '--state-values-set', 'databaseMaxConnections=300']);
+		if (attempt.status === 0 || !attempt.stderr.includes('pass what the server allows')) {
+			failed = true;
+			console.error(`FAIL release guard: helmfile -e prd with databaseMaxConnections 300 must fail on the connection budget but ${attempt.status === 0 ? 'succeeded' : `failed otherwise\n${attempt.stderr}`}`);
+		} else {
+			console.log('PASS release guard: helmfile -e prd with databaseMaxConnections 300 is refused (the platform release reads the state value)');
 		}
 	}
 	// ARV-082a: prd refuses TimescaleDB without TLS.

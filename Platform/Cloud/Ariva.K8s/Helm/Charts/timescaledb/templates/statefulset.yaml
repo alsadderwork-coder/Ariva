@@ -93,12 +93,16 @@ spec:
             capabilities:
               drop: ["ALL"]
             readOnlyRootFilesystem: true
-          {{- if $tls.enabled }}
-          # TLS on every TCP connection (ARV-082a). The image's entrypoint passes these to the server it starts once to
-          # initialise an empty volume as well as to the server itself, and settings on the command line win over
-          # postgresql.conf and ALTER SYSTEM, so they hold on a new and on an existing volume alike.
+          # The image's entrypoint passes these to the server it starts once to initialise an empty volume as well as to the
+          # server itself, and settings on the command line win over postgresql.conf and ALTER SYSTEM, so they hold on a new and
+          # on an existing volume alike.
           args:
             - "postgres"
+            # The connections the platform's hosts may hold (ARV-232; the platform chart checks its replicas against it)
+            - "-c"
+            - {{ printf "max_connections=%d" (int .Values.maxConnections) | quote }}
+          {{- if $tls.enabled }}
+            # TLS on every TCP connection (ARV-082a)
             - "-c"
             - "ssl=on"
             - "-c"

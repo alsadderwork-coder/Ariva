@@ -1367,7 +1367,8 @@
         "ARV-115",
         "ARV-116",
         "ARV-230",
-        "ARV-232"
+        "ARV-232",
+        "ARV-233"
       ]
     },
     {
@@ -1411,7 +1412,8 @@
       "notes": "Size M to L. High by its effect: Stream cannot hold the pilot hall within its pod, so it comes before the pilot. Options for the stream engineer (Proposed): coalesce QueueTrackSeen per track key in the buffer (applying a sighting sets LastSeenUtc and a hand-over deadline, both superseded by a later sighting; keep its order against the track's own crossings); drop positions of tracks that are not open entrants; checkpoint only the zones that changed; write a zone's state with a streaming serializer rather than one string per zone (SaveStateAsync builds the whole UTF-8 string). The exception and its frames are quoted in backlog/progress.md (ARV-124a entry). Its criterion 3 needs ARV-232 too: with Stream alive through the burst the hosts held more database connections than PostgreSQL's default allows (run 2).",
       "dependsOn": [
         "ARV-071",
-        "ARV-232"
+        "ARV-232",
+        "ARV-233"
       ]
     },
     {
@@ -1452,7 +1454,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 43,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. Medium (a 503 under load at the default PostgreSQL limit), so before the pilot. Measured with the pilot load run's pg_stat_activity sampling (tests/load/pilot-load.spec.ts).",
       "dependsOn": [
         "ARV-071"

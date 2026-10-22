@@ -231,7 +231,9 @@ public sealed class StoredNameCheck(DatabaseSettings database)
         return new NpgsqlConnectionStringBuilder(database.BuildConnectionString())
         {
             ApplicationName = "ariva-stored-name-check",
-            Options = "-c default_transaction_read_only=on"
+            Options = "-c default_transaction_read_only=on",
+            // A one-off command (ARV-232): its connection is closed for good, not kept in a pool.
+            Pooling = false
         }.ConnectionString;
     }
 

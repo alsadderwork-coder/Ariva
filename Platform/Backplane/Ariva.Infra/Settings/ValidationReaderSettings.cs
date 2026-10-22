@@ -35,7 +35,7 @@ internal sealed partial class ValidationReaderSettings
     /// <summary>As the runtime login (0001): the migration's function refuses anything shorter.</summary>
     public const int MinimumPasswordLength = 16;
 
-    /// <summary>The application name the reader's connections carry (pg_stat_activity), apart from the hosts' "ariva".</summary>
+    /// <summary>The application name the reader's connections carry (pg_stat_activity), apart from the hosts' own (ariva-main).</summary>
     public const string ApplicationName = "ariva-validation-reader";
 
     /// <summary>

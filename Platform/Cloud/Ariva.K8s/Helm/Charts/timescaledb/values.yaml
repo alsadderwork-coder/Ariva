@@ -19,6 +19,12 @@ image:
   digest: sha256:2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2
   pullPolicy: IfNotPresent
 
+# The server's max_connections (ARV-232), passed on its command line so it holds on a new and an existing volume alike. The
+# platform chart's databaseConnections.serverMaxConnections must be the same number: it refuses a release whose replicas would
+# need more connections than this allows (less the 3 PostgreSQL keeps for superusers). The Helmfile sets both from one state
+# value, databaseMaxConnections (200, and 400 in prd). A whole number from 20 to 5000.
+maxConnections: 200
+
 # The data volume. PVCs can only grow; never lower size below the live capacity. The claim (data-timescaledb-0)
 # is kept when the release is deleted.
 persistence:

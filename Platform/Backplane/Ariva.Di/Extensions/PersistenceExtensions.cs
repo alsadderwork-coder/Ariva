@@ -24,7 +24,7 @@ public static class PersistenceExtensions
         var settings = DatabaseSettings.FromConfiguration(configuration);
         EnsureProductionTransport(settings, configuration);
         // ARV-096d: a command or statement timeout out of range stops the host (and the migration job, which builds it) at start.
-        settings.EnsureValidTimeouts();
+        settings.EnsureValidLimits();
         services.AddSingleton(settings);
         // ARV-104g1: the validation reader login (Database:ValidationReader), apart from the runtime login. Configured in the
         // clusters for api-main and the migration job only; held by the validation service, the migrator and the guard.

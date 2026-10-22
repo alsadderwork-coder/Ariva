@@ -3113,3 +3113,71 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - A Docker container in a cloud session reaches the internet only through the session's proxy: `--network host`, the proxy variables and `SSL_CERT_FILE` on the proxy's CA bundle.
   - Trivy's Java database is about 1 GB on first use; a session's disk allowance does not take it next to a built tree. Clean with `trivy clean --all`.
 - Status: passes set; committed (signed).
+
+## 2026-10-22 ARV-232: Database connections bounded per host and sized against PostgreSQL's limit (Phase 1, branch story/mvp-phase1; backend, chart, docs)
+
+- What changed:
+  - `DatabaseSettings`:
+    - `MaxPoolSize` (new, 20 for a process without a host file, 2 to 100, refused at start with the timeouts by `EnsureValidLimits`, which replaces `EnsureValidTimeouts`) goes into the runtime connection string as Npgsql's Maximum Pool Size.
+    - `ApplicationName` is derived, never configured: "ariva-" and the host's `Application:ShortName` (`ariva-main`, `ariva-ingest`, `ariva-stream`, `ariva-cronz`, `ariva-integration`), "ariva" without one; a short name that is not lower case letters, digits and hyphens (`\A...\z`, so a trailing newline is refused too) is refused.
+    - The migration connection string is not pooled, so a host that migrates or checks the schema at start closes those connections for good.
+  - The extra pools are bounded: api-stream's desk term reads (their shorter timeouts make a pool apart) at `DeskTermPoolSize` 2 (`DeskTermSource.ConnectionString`); the stored name check unpooled (a one-off command); api-main's validation reader stays at 4.
+  - Each host's `appsettings.service.json` names its pool: main 14, ingest 26, stream 20, cronz 8, integration 12.
+  - Chart:
+    - `databaseConnections` (new): the server's `max_connections`, its superuser reserve (3), the migration job's (2) and the operators' share (5), and each host's pool, passed to its deployment as `Database__MaxPoolSize`.
+    - `validate.yaml` adds up, for every host, its largest replica count (HPA maximum or replicas) and a rolling update's extra pods (Kubernetes' default maxSurge, 25 percent rounded up; none for api-main while it recreates on a ReadWriteOnce volume) times its pool and fixed pools (api-main 4, api-stream 2), with the migration job's and the operators' share. It refuses a render past `serverMaxConnections` less the reserve, naming each host's share, and checks every value, the replica counts included (whole numbers from 0 to 1000).
+    - The TimescaleDB chart sets `max_connections` on the server's command line from `maxConnections` (20 to 5000), with TLS and without.
+    - The Helmfile sets both from one state value, `databaseMaxConnections`: 200 in dev, demo and localk8s (one replica of each host with a rolling update's extra pods needs 161), 400 in prd (its HPA maxima with the extra pods need 377). The charts' defaults are 200; `values-k8s-prd.yaml` sets none, so a production render outside the Helmfile without the server's limit is refused (the chart tests' prd site fixture, renamed `tests/fixtures/prd-site.yaml`, carries 400 as a site's values would).
+- Measured (pilot load run, lab, one replica of each host at PostgreSQL's default 100; wiki 05): pools unbounded, the hosts filled the 97 connections a non-superuser may hold (stream 44, ingest 31, integration 15, main 9, cronz 2); bounded, at most 68 (ingest 25, stream 21 with its desk term pool, integration 12, main 6, cronz 3), no pool exhausted, no 5xx.
+- Tests:
+  - Unit:
+    - `PersistenceSettingsTests`: the pool's bounds and the refusal at start; the pool and the host's name in the runtime string; the names from short names, refused ones, and a configured `Database:ApplicationName` ignored; the migration string unpooled.
+    - `PersistenceSettingsTests`: the desk term string (pool 2, timeouts 5 and 10, the host's name). `StoredNameCheckTests`: unpooled.
+    - `ConnectionBudgetTests`: each host's settings name its connections and carry the chart's pool; one replica of each host without a rollout fits PostgreSQL's default 100 (93); the chart counts the fixed pools as the hosts hold them (api-main 4, api-stream 2).
+  - Chart (`chart-security.mjs`):
+    - refused: production at a server limit of 100 and at the default 200, dev at 50, an HPA maximum or fixed replicas past the limit, replica counts as text, negative or fractional (`--set-json`), pools out of range or for an unknown host, a host without a pool, the values removed, a negative share, the database's `maxConnections` out of range, fractional or text;
+    - dev at a limit of 180 renders with api-main recreating and is refused with its volume ReadWriteMany (its extra pod counted);
+    - the two charts' defaults agree; the pools reach every host's deployment; `max_connections` on the database's command line with TLS and without;
+    - every Helmfile environment starts the database at its `databaseMaxConnections` (200, prd 400), and `helmfile -e prd` at 300 is refused (the platform release reads the state value over a site's own).
+  - The pilot load run with the bounds (2026-10-22): no 5xx, no pool exhausted, the hosts at 68 connections at most. Its first test failed on one push of the burst's 6,000 that ended in a connection reset (HttpRequestException, Unknown), within its device's rate and with nothing logged by Ingest: ARV-233 again, so ARV-233 moves before the pilot (ARV-124a and ARV-230 depend on it). Stream stopped at 127 s, out of its heap (ARV-230). Criterion 3 (no 5xx, each host's peak recorded) holds as worded.
+- Docs:
+  - wiki 04: section 4's connections note, the `Database:MaxPoolSize` row, new section 6.9 (the budget with the rolling update's pods, the table per environment, the database restart a change of the limit makes, its memory, a site's own PostgreSQL).
+  - wiki 05: the measurements per host.
+  - wiki 10: new section 4.21 (pool exhausted, 53300, the refused render, a value out of range).
+  - costly-operations: section 14 row, the database row, section 15 item 16 closed.
+  - asvs-l2: summary, V15.1.3, V15.2.2 (stays Partly for ARV-089a and ARV-230), the gap row; cwe-controls CWE-120 row.
+  - test-cadence and wiki 16: the pilot run's capacity test now waits for ARV-230 only.
+  - remaining-work: Phase 1 70 of 86; ARV-233 listed before the pilot.
+  - backlog: ARV-233 (prd-phase3) noted as recurred and pulled before the pilot; ARV-124a and ARV-230 depend on it.
+- Decided:
+  - One replica of each host without a rollout fits PostgreSQL's default 100, so the lab, CI, compose and the AppHost need no server change; a cluster's rolling update needs 200, production's HPA maxima 400, both set by the Helmfile.
+  - Cronz's pool is 8, not its measured peak of 3: its five TickerQ jobs (two at 03:15), the outbox relay and the health checks can run at once, and a job that waits 15 s for a connection fails.
+  - Stream and Integration are bounded below their unbounded peaks: their consumers wait for a connection rather than fail; ARV-230 cuts Stream's checkpoint load.
+  - The chart refuses rather than documents (the criterion allowed either).
+- Security review (security-reviewer, CWE-400, CWE-770, with CWE-78/88 on the server's argument and CWE-501 on the derived name):
+  - Round 1 FAIL, three Medium:
+    - M1: the budget ignored a rolling update's extra pods (25 percent maxSurge, one pod per host at these counts), so dev sat at 97 of 97 and prd at 397 of 397 during an upgrade;
+    - M2: the desk term pool's bound had no test;
+    - M3: the CWE-120 row, the ASVS summary and V15.1.3, costly-operations, test-cadence and wiki 16 still called the pools unbounded or ARV-232 open.
+  - Round 1 Lows: the short-name pattern took a trailing newline (`$`, now `\A...\z`); the stored name check's unpooled string untested; the desk term pool counted on every host although only api-stream reads desk terms (now api-main 4, api-stream 2, the others 0); Cronz's pool of 4 ignored its daily jobs (now 8); prd's values file set 400 while the database chart defaulted to 100 (now prd sets none and a render without the limit is refused); replica counts unvalidated.
+  - Info taken: a memory note for the database at 400 connections; the schema check's comment (it reads through the runtime pool).
+  - Round 2 FAIL, one Medium: the Helmfile wiring of `databaseMaxConnections` to both releases had no test. Lows: the database restart a change of the limit makes was undocumented; the fractional replica case passed 1.5 as text.
+  - All fixed. Round 3 PASS (2026-10-22). Info left: the surge count assumes old pods close their connections within their grace period (wiki 04 says so); Cronz's 8 is unmeasured with its daily jobs at once; Ingest's headroom is thin (25 of 26 at the burst). The semgrep MCP was not connected in this session.
+- Gates (2026-10-22):
+  - `node scripts/verify.mjs story` on the final tree, with fresh E2E services. Every step passed:
+    - build; reference golden; unit 7,639;
+    - security scan and its self-test; the E2E message and artifact self-tests; ops and TLS self-tests; base images;
+    - published runtime and offline bundle self-tests;
+    - chart security with Helmfile (319);
+    - NuGet and three npm audits; docs; Windows paths;
+    - integration, the full suite (persistence changed): 765 passed, 1 skipped;
+    - E2E, the full suite (the change is wide): 911 passed, 1 skipped; no secret in the artifacts.
+  - `node scripts/verify.mjs quick` PASS.
+  - Earlier runs, none counted: two stopped for review fixes; one failed a unit test (below), fixed in its own commit.
+- Gotchas:
+  - Npgsql keeps one pool per distinct connection string, so a copy of the runtime string with other timeouts (the desk term reads) is a pool of its own, with the runtime pool's maximum unless it sets its own.
+  - Unbounded, one replica of each host filled PostgreSQL's 97 non-superuser connections at the pilot rate (Stream 44, Ingest 31, Integration 15, Main 9, Cronz 2).
+  - A private setter is not bound by `ConfigurationBinder`, so a derived setting cannot be set from a file or the environment.
+  - A gate failed `RunTimeoutInventoryTests` for Integration's AmanPoller once: Npgsql's synchronous connection open (NHibernate's) failed at the test's 2 s connect timeout while the run's 1 s timer callback had not yet run on the busy thread pool, so `RunBound` passed the driver's error on instead of the cut. Not reproduced in three runs of the class under six `yes` loops. Fixed in its own commit before this one: `RunBound` counts an error after its timeout has passed as the cut whether or not the timer has fired (the stop is checked first), worded "ended in an error before its cancellation"; `RunBoundTests` prove both, and the stop past the timeout, with a clock whose timers never fire. Security review: round 1 FAIL (the stop guard on the new path untested; the message said cancelled), round 2 PASS.
+  - Stopping a gate during its E2E step: kill the Playwright process and the E2E hosts too, not only `verify.mjs`. An orphaned run kept going, the next gate's service reset replaced its database (its hosts then failed every new connection with 28P01), and it wrote its failures into the next gate's log file (same path, so interleaved with NUL bytes): read the gate's own summary and `.verify/last.json`.
+- Status: passes set; committed (signed).
