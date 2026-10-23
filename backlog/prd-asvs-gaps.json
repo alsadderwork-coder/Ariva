@@ -870,6 +870,27 @@
       "passes": true,
       "notes": "Size XS. Owner approval 2026-10-13 (Ahmad, in the session): the two allowlist entries for the raw bidirectional characters in scripts 0020_alert_rule.sql (lines 11, 14, 28) and 0022_alert_lifecycle.sql (lines 25 to 27), inside regex classes that refuse them, are approved; record them with approvedBy: Ahmad and this date, scoped to exactly those lines and SEC-130.",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-242",
+      "title": "[ASVS] A run ends at its run timeout while a database connection opens: no synchronous open the run cannot cut",
+      "description": "Found in ARV-239's story gate (2026-10-23, 00:37 to 02:35 UTC): RunTimeoutInventoryTests.Loop_Should_EndItsRunAtTheRunTimeout_When_ItsDatabaseOrScannerStalls hung for two hours on the machine at load 16 (a checkpoint's Stryker run beside it), until its test host was killed. Two stacks minutes apart were the same: AmanPoller.RunOnceAsync, RunBound.RunAsync, AmanPoller.RoundAsync, SvcAmanPull.ClaimDueAsync, SvcDb.ExecuteCommandAsync and InTransactionAsync, NHibernateStorageProvider.BeginTransaction, then NHibernate's DriverConnectionProvider opening the connection with Npgsql's synchronous NpgsqlConnection.Open(), blocked in a socket receive during authentication (SocketAsyncContext.ReceiveFrom, ManualResetEventSlim.Wait) against the test's silent server. ARV-096e's RunBound relies on Npgsql's own connect timeout (2 s in the test) to end such an open, since Npgsql's synchronous open takes no token, and the open runs on the caller's thread before RunBound gets a task to time, so when that timeout does not fire nothing ends the run. A host's loop could hang the same way on a database that accepts a connection and never answers. Hypothesis, unconfirmed: under load the time left of the connect timeout reaches the synchronous read as 0 ms, which a socket's receive timeout takes as no timeout. Fix candidates: open connections asynchronously with the run's token before NHibernate begins its transaction (or a connection provider that opens asynchronously), so the run's token and timeout apply; and make RunBound time a run that blocks before returning its task (start the work so that the timeout can still end the run and report it). CWEs to review: CWE-400. ASVS 5.0: V15.2.2.",
+      "acceptanceCriteria": [
+        "Every bounded loop and job ends its run at its run timeout when its database accepts the connection and never answers, including while the connection authenticates, on a loaded machine (the inventory test run in a loop beside CPU hogs, and a test that holds the server silent after the connection is accepted, failing without the fix)",
+        "The root cause is named in backlog/progress.md (the hypothesis confirmed or replaced), with the Npgsql version and the path",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 113,
+      "passes": false,
+      "notes": "Filed 2026-10-23 from ARV-239's story gate (the stacks are in that entry of backlog/progress.md). Medium (a loop that never ends its run stops its work, here the AMAN pull, until the host restarts), so before the pilot by the owner's rule.",
+      "dependsOn": [
+        "ARV-096e"
+      ]
     }
   ]
 }

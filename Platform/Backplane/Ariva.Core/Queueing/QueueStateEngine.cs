@@ -179,6 +179,8 @@ public sealed partial class QueueStateEngine
         public QueueTrackSeen Pending { get; set; }
         public long PendingSequence { get; set; }
         public string PendingDevice { get; set; }
+        /// <summary>The pending sample was ahead of the clock when it arrived (ARV-239): it holds a place of the ahead tenth.</summary>
+        public bool PendingAhead { get; set; }
         public bool FlushScheduled { get; set; }
         public bool EndScheduled { get; set; }
     }
@@ -195,7 +197,8 @@ public sealed partial class QueueStateEngine
 
     private long _sequence;
     private long _order;
-    private int _aheadBuffered;
+    // Events ahead of the clock held, in the buffer or as runs' pending samples (ARV-239), at most a tenth of the buffer.
+    private int _aheadHeld;
     private int _degradedHeld;
     private DateTime _watermark = DateTime.MinValue;
     // The zone's event clock (ARV-148): the latest time of the events accepted, each at most the reference it arrived with.
@@ -215,6 +218,8 @@ public sealed partial class QueueStateEngine
     private int _pending;
     // ARV-231: the events each device holds, buffered or pending (only devices holding any), for its share of the buffer.
     private readonly Dictionary<string, int> _heldByDevice = new(StringComparer.Ordinal);
+    // ARV-239: of those, the events ahead of the clock each device holds, for its share of the ahead tenth.
+    private readonly Dictionary<string, int> _aheadByDevice = new(StringComparer.Ordinal);
     private bool _residualSuspect;
     // The time of the occupancy reading applied last, until the events of its instant are all applied. A full step that
     // ends inside that instant keeps it for the next step (ARV-114d), one tick after the watermark, so it is part of the
@@ -282,7 +287,8 @@ public sealed partial class QueueStateEngine
     /// than <see cref="QueueEngineSettings.MaxAhead"/> are refused, and events at or behind the watermark are late. An
     /// event held moves the zone's clock to its time, or to <paramref name="referenceUtc"/> when it lies ahead of it.
     /// <paramref name="device"/> is the device that sent it (a tracked event's key names it too): a device holds at most its
-    /// share of the buffer (ARV-231); an event of no device is held within the buffer's bound alone.
+    /// share of the buffer (ARV-231), and of the tenth of it kept for events ahead of the clock (ARV-239); an event of no device
+    /// is held within the buffer's bound and that tenth alone.
     /// </summary>
     public void Offer(QueueInput input, DateTime referenceUtc, string device = null)
     {
@@ -311,15 +317,11 @@ public sealed partial class QueueStateEngine
         var ahead = time > referenceUtc;
         // ARV-231 (CWE-400): the device that sent it (a tracked event's key names it too), held to its share of the buffer.
         var owner = device ?? OwnerOf(input);
-        if (ahead && _aheadBuffered >= _settings.MaxBufferedEvents / 10)
-        {
-            _bufferFull++;
-            Full(time);
+        // ARV-230: a track's position sample within its run takes no place of its own (see Hold), so it is never refused; ahead of
+        // the clock too (ARV-239).
+        var sighting = _settings.CoalescePositions && input is QueueTrackSeen { TrackKey: not null } sample ? sample : null;
+        if (AheadRefused())
             return;
-        }
-
-        // ARV-230: a track's position sample within its run takes no place of its own (see Hold), so it is never refused.
-        var sighting = _settings.CoalescePositions && !ahead && input is QueueTrackSeen { TrackKey: not null } sample ? sample : null;
         var needsPlace = sighting is null || NeedsPlace(sighting);
         // A device past its share, or a full buffer, gets room only from events that were due anyway, never moving the watermark
         // past what the clock allows; otherwise the event is refused, a device past its share alone, so one flooding device cannot
@@ -359,11 +361,9 @@ public sealed partial class QueueStateEngine
 
         var place = new Due(time, InputKey.Of(input, _geometry), _sequence++);
         if (sighting is not null)
-            Hold(sighting, place, owner);
+            Hold(sighting, place, owner, ahead);
         else
             Buffer(input, ahead, owner, place);
-        if (ahead)
-            _aheadBuffered++;
         // The zone's clock moves with the events it holds, each at most to the time it arrived (CWE-501: a device whose
         // clock runs ahead never carries the watermark past Ariva's receive clock, ARV-148).
         var seen = ahead ? referenceUtc : time;
@@ -379,6 +379,37 @@ public sealed partial class QueueStateEngine
         }
 
         bool BufferIsFull() => BufferedEvents >= _settings.MaxBufferedEvents;
+
+        // ARV-239 (CWE-400): an event ahead of the clock that takes a place holds one of the tenth kept for them, at most its
+        // device's share of it. The tenth is freed as the watermark reaches its events, and no forced advance is run to make room
+        // in it: past the share or with the tenth full, the event is refused.
+        bool AheadRefused()
+        {
+            if (!ahead)
+                return false;
+            if (sighting is not null && !TakesAheadPlace(sighting))
+                return false;
+            if (AheadOverShare())
+            {
+                _deviceShareFull++;
+                Full(time);
+                return true;
+            }
+
+            if (_aheadHeld < AheadBound)
+                return false;
+            _bufferFull++;
+            Full(time);
+            return true;
+        }
+
+        bool AheadOverShare()
+        {
+            if (owner is null)
+                return false;
+            var share = AheadShareOf(owner);
+            return share < AheadBound && _aheadByDevice.GetValueOrDefault(owner) >= share;
+        }
     }
 
     /// <summary>
@@ -502,7 +533,7 @@ public sealed partial class QueueStateEngine
             _buffer.Dequeue();
             Held(item.Device, -1);
             if (item.Ahead)
-                _aheadBuffered--;
+                Ahead(item.Device, -1);
             Expire(key.Time);
             // ARV-230: a position sample is not a count, so it neither moves the cursor nor narrows an interval reading's spread:
             // the spread does not depend on how often the zone's sensors sample positions, or on which samples the runs keep.
@@ -991,19 +1022,34 @@ public sealed partial class QueueStateEngine
     // only from events that were due anyway (forced advances, as for a full buffer), and is refused (DeviceShareFull) when they
     // free none of its places: a device sending what is due catches up, a flood within the lateness is refused alone. A floor at
     // the buffer's bound turns the shares off. Many devices at the floor can still fill the buffer together (bound over floor: 10
-    // at the defaults). The tenth that holds events ahead of the clock stays the zone's, not shared per device: a sensor within
-    // Ingest's clock tolerance stamps its latest samples a little ahead, and a per-device share of the tenth cost such a sensor
-    // most of its crossings (security review M3); one device whose clock runs far ahead can fill it (BufferFull, visible), and a
-    // fast sensor's ahead samples are not coalesced (ARV-239). Events of no device (a caller that names none) are bounded by the
-    // buffer alone.
+    // at the defaults). Events ahead of the clock hold at most a tenth of the buffer, and a device at most its share of that tenth
+    // (ARV-239): the tenth over the same devices, never less than a tenth of DeviceShareFloor (and one place). The tenth is freed
+    // as the watermark reaches its events, and no forced advance is run to make room in it, so a device past that share is
+    // refused at once (DeviceShareFull), and a full tenth refuses the event (BufferFull). A sensor within Ingest's clock tolerance needs few places of it, since its samples ahead of the clock are
+    // coalesced in their runs like the others (a per-device share without that cost such a sensor most of its crossings: ARV-231's
+    // security review M3). Events of no device (a caller that names none) are bounded by the buffer and the tenth alone.
 
     private void Buffer(QueueInput input, bool ahead, string device, Due place)
     {
         _buffer.Enqueue((input, ahead, device), place);
         Held(device, 1);
+        if (ahead)
+            Ahead(device, 1);
     }
 
     private void Held(string device, int change) => Count(_heldByDevice, device, change);
+
+    /// <summary>Counts an event ahead of the clock held (in the buffer, or as a run's pending sample) for its device.</summary>
+    private void Ahead(string device, int change)
+    {
+        _aheadHeld += change;
+        Count(_aheadByDevice, device, change);
+    }
+
+    /// <summary>The places of the buffer events ahead of the clock may hold.</summary>
+    private int AheadBound => _settings.MaxBufferedEvents / 10;
+
+    private int AheadShareOf(string device) => Math.Max(Math.Max(1, _settings.DeviceShareFloor / 10), AheadBound / Sharing(device));
 
     private static void Count(Dictionary<string, int> counts, string device, int change)
     {
@@ -1065,11 +1111,13 @@ public sealed partial class QueueStateEngine
     // an interval reading). Each track keeps a run: its anchor (the latest sample applied or in the buffer) and its pending sample
     // (the latest within the window after the anchor), held outside the buffer until the watermark reaches it or a later sample
     // ends the run (and the pending sample, buffered, anchors the next). A run holds at most two places in the window, whatever the
-    // sensors' rate (5 Hz positions held one place each before: about 20 MB of state a hall zone, ARV-124a). Samples ahead of the
-    // reference clock, without a track, behind their run's anchor, or of a track without a run when the runs are at their bound
-    // (MaxSightingRuns) are buffered as before: applying an extra sample never changes an outcome either. The zone processor
-    // offers each push's samples in time order, so a device that sends a push newest first still coalesces; only samples sent out
-    // of order across pushes take a place each, as they did before.
+    // sensors' rate (5 Hz positions held one place each before: about 20 MB of state a hall zone, ARV-124a). Samples without a
+    // track, behind their run's anchor, or of a track without a run when the runs are at their bound (MaxSightingRuns) are
+    // buffered as before: applying an extra sample never changes an outcome either. The zone processor offers each push's samples
+    // in time order, so a device that sends a push newest first still coalesces; only samples sent out of order across pushes take
+    // a place each, as they did before. Samples ahead of the reference clock are coalesced too (ARV-239): a place one of them takes
+    // (an anchor in the buffer, or the pending sample) is one of the tenth kept for events ahead of the clock, marked so until it is
+    // applied; it moves the clock only to its reference, as any event ahead of it.
 
     /// <summary>True when the sample takes a place of its own (in the buffer or as a run's pending sample); false when its run takes it.</summary>
     private bool NeedsPlace(QueueTrackSeen seen)
@@ -1082,13 +1130,31 @@ public sealed partial class QueueStateEngine
         return time != run.Anchor && run.Pending is null;
     }
 
-    /// <summary>Holds a position sample of <paramref name="device"/> in its track's run, or in the buffer (see the region's remarks).</summary>
-    private void Hold(QueueTrackSeen seen, Due place, string device)
+    /// <summary>
+    /// True when a sample ahead of the clock takes a place of the ahead tenth (ARV-239): a place of its own, or its run's pending
+    /// place held by a sample that was not ahead.
+    /// </summary>
+    private bool TakesAheadPlace(QueueTrackSeen seen)
+    {
+        if (NeedsPlace(seen))
+            return true;
+        _runs.TryGetValue(seen.TrackKey, out var run);
+        var pending = run.Pending;
+        if (pending is null)
+            return false;
+        return seen.TimeUtc > pending.TimeUtc && !run.PendingAhead;
+    }
+
+    /// <summary>
+    /// Holds a position sample of <paramref name="device"/> in its track's run, or in the buffer (see the region's remarks);
+    /// <paramref name="ahead"/> when it is ahead of the clock.
+    /// </summary>
+    private void Hold(QueueTrackSeen seen, Due place, string device, bool ahead)
     {
         var time = seen.TimeUtc;
         if (!_runs.TryGetValue(seen.TrackKey, out var run))
         {
-            Buffer(seen, false, device, place);
+            Buffer(seen, ahead, device, place);
             // The runs have their own bound (CWE-400): a track without one is not coalesced, its samples buffered as before.
             if (_runs.Count < _settings.MaxSightingRuns)
             {
@@ -1102,7 +1168,7 @@ public sealed partial class QueueStateEngine
 
         if (time < run.Anchor)
         {
-            Buffer(seen, false, device, place);
+            Buffer(seen, ahead, device, place);
             return;
         }
 
@@ -1116,7 +1182,7 @@ public sealed partial class QueueStateEngine
                 BufferPending(run);
             if (time - run.Anchor > _settings.HandoverWindow)
             {
-                Buffer(seen, false, device, place);
+                Buffer(seen, ahead, device, place);
                 run.Anchor = time;
                 ScheduleEnd(run);
                 return;
@@ -1128,7 +1194,10 @@ public sealed partial class QueueStateEngine
             run.Pending = seen;
             run.PendingSequence = place.Sequence;
             run.PendingDevice = device;
+            run.PendingAhead = ahead;
             Held(device, 1);
+            if (ahead)
+                Ahead(device, 1);
             _pending++;
             if (!run.FlushScheduled)
             {
@@ -1142,8 +1211,13 @@ public sealed partial class QueueStateEngine
             run.Pending = seen;
             run.PendingSequence = place.Sequence;
             Held(run.PendingDevice, -1);
+            if (run.PendingAhead)
+                Ahead(run.PendingDevice, -1);
             run.PendingDevice = device;
+            run.PendingAhead = ahead;
             Held(device, 1);
+            if (ahead)
+                Ahead(device, 1);
         }
 
         // Otherwise between the anchor and the pending sample, or at the latter: it changes nothing.
@@ -1153,11 +1227,12 @@ public sealed partial class QueueStateEngine
     private void BufferPending(SightingRun run)
     {
         var pending = run.Pending;
-        // Still held, now in the buffer: its device's count stays.
-        _buffer.Enqueue((pending, false, run.PendingDevice), new Due(pending.TimeUtc, InputKey.Of(pending, _geometry), run.PendingSequence));
+        // Still held, now in the buffer: its device's counts stay, ahead of the clock or not.
+        _buffer.Enqueue((pending, run.PendingAhead, run.PendingDevice), new Due(pending.TimeUtc, InputKey.Of(pending, _geometry), run.PendingSequence));
         run.Anchor = pending.TimeUtc;
         run.Pending = null;
         run.PendingDevice = null;
+        run.PendingAhead = false;
         _pending--;
         ScheduleEnd(run);
     }

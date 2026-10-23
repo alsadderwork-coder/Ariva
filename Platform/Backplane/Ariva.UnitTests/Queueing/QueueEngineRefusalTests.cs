@@ -325,7 +325,7 @@ public sealed class QueueEngineRefusalTests
         zone.Offer(Push(t0, ("in", t0), ("in", ahead), ("in", ahead.AddSeconds(1))), t0);
         var state = RoundTrip(zone.Capture());
         var notAfter = t0.AddHours(1);
-        state.Version.Should().Be(12);
+        state.Version.Should().Be(ZoneProcessorState.CurrentVersion);
         state.Engine.Buffer.Should().Contain(b => b.Device == "S-1");
         ZoneProcessor.Restore("PLE/Q", Hall, 1, settings, state, notAfter).Capture().Engine.Buffer.Should().HaveCount(state.Engine.Buffer.Count);
         var minute = state.FullBufferMinutes.Should().ContainSingle().Subject;

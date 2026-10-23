@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-239: position samples ahead of the clock coalesced, and a share of the ahead tenth per device (zone snapshot version 13, 2026-10-22)
+
+- Ariva.Api.Stream writes zone snapshot version 13: a run of position samples may now hold samples ahead of the receive clock (its anchor in the buffer, its pending sample marked `pendingAhead`). A version 12 snapshot restores as it is (its samples ahead of the clock all in its buffer); a rollback to a build before ARV-239 refuses version 13 snapshots and starts the zones afresh, as for version 11 (below).
+- Behaviour: a sensor whose clock runs up to Ingest's 500 ms tolerance fast no longer fills the tenth of the buffer kept for events ahead of the clock (a hall zone of 20 such sensors kept 766 of 1,199 entries before, every one now), and each device holds at most its share of that tenth (the tenth over the devices sharing the buffer, never below 1,000), so a device whose clock runs minutes ahead is refused alone (`DeviceShareFull`) instead of having the zone refuse every event ahead of the clock (`BufferFull`; wiki 10 section 4.22).
+- Nothing to configure: the share's floor is a tenth of `DeviceShareFloor`.
+
 ### ARV-231: queue engine refusals visible, and the buffer's share per device (zone snapshot version 12, 2026-10-22)
 
 - Ariva.Api.Stream writes zone snapshot version 12: the device of each anonymous event the queue engine holds (a tracked one's key names it), the step's new `DeviceShareFull` count and the minutes a full buffer touched. A version 11 snapshot restores as it is (its tracked events counted for their devices, its anonymous ones for none); a rollback to a build before ARV-231 refuses version 12 snapshots and starts the zones afresh, as for version 11 (below).

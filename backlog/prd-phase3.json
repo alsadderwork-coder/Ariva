@@ -958,10 +958,11 @@
     },
     {
       "id": "ARV-238",
-      "title": "[E4] Queue engine restore checks its hand-over deadlines",
-      "description": "Found by ARV-230's security review (Info, before that story). QueueStateEngine.Restore reads each hand-over deadline of a zone snapshot without checking that it is a sighting time plus the hand-over window, or that its track is held, so a crafted snapshot can fragment an entrant at a time it chooses. Writing it needs the database's write access to stream_zone_state, as every other snapshot field does; the runs ARV-230 added are already checked as the engine keeps them. CWEs to review: CWE-501.",
+      "title": "[E4] Queue engine restore checks its hand-over deadlines and requires its clock",
+      "description": "Found by ARV-230's security review (Info, before that story). QueueStateEngine.Restore reads each hand-over deadline of a zone snapshot without checking that it is a sighting time plus the hand-over window, or that its track is held, so a crafted snapshot can fragment an entrant at a time it chooses. Writing it needs the database's write access to stream_zone_state, as every other snapshot field does; the runs ARV-230 added are already checked as the engine keeps them. CWEs to review: CWE-501. ARV-239's security review (round 2, L3) adds: a snapshot that leaves out the engine's clock (ClockUtc) skips the bound on buffered events ahead of the clock (at most MaxAhead after it), so a forged one, or any before version 9, can hold the tenth of the buffer kept for such events full with events up to a day ahead, refusing every event ahead of the clock (fast sensors' crossings included) for that day; the engine always writes its clock from version 9 on. CWEs to review: CWE-501, CWE-120.",
       "acceptanceCriteria": [
         "Restore refuses a hand-over deadline that is not its sighting time plus the hand-over window, a sighting after the engine's clock, or (when the track is held) a sighting after the entrant's last sighting; a unit test per refusal, and genuine snapshots taken at random points restore and continue identically",
+        "From zone snapshot version 9 on, a snapshot without the engine's clock is refused (a ClockSinceVersion constant beside the others, with a test); before version 9, buffered events ahead of the clock are bounded by the derived clock plus the lateness and MaxAhead, or the residual is recorded in docs/security/cwe-controls.md",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -970,9 +971,29 @@
       ],
       "priority": 309,
       "passes": false,
-      "notes": "Size S. Low (needs write access to the zone state, which already holds every count), so Phase 3.",
+      "notes": "Size S. Low (needs write access to the zone state, which already holds every count), so Phase 3. 2026-10-23: L3 of ARV-239's review added (Low: write access to the zone state, and the tenth's own bound still holds).",
       "dependsOn": [
         "ARV-230"
+      ]
+    },
+    {
+      "id": "ARV-240",
+      "title": "[E4] Queue engine: a share of the sighting runs per device",
+      "description": "Found by ARV-239's security review (L2). The runs of position samples (ARV-230) are one pool a zone (MaxSightingRuns, 20,000), and a run outlives its places by the hand-over window. A device flooding unique tracks into a quiet zone (its buffer share 50,000), or two such devices in a 20-device hall, use up the pool; the honest sensors' new tracks are then not coalesced, and a fast sensor's samples ahead of the clock take a place each, so it reaches its share of the ahead tenth (1,000 to 1,250 places) within a few new tracks and its crossings ahead of the clock are refused (DeviceShareFull) while the flood lasts. No worse than before ARV-239 (those samples were never coalesced then), but it limits \"one flooding device is refused alone\" for fast sensors. Give each device a share of the runs as ARV-231 does for the buffer (the pool over the devices sharing it, a floor), a track of a device past its share buffered as now. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "A device flooding unique tracks into a quiet zone (ARV-231's quiet-zone flood) beside six sensors 500 ms fast leaves every fast sensor's crossing counted with no DeviceShareFull for them, proved by a unit test that fails without the share",
+        "The engine's steps stay those of the engine that applies every sample (ARV-230's and ARV-239's random scenarios), and a restore counts each device's runs as the engine that kept going",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 310,
+      "passes": false,
+      "notes": "Size S. Low (it needs a flooding device, which ARV-231 already makes visible, and costs only the fast sensors' crossings ahead of the clock while the flood lasts; no worse than before ARV-239), so Phase 3.",
+      "dependsOn": [
+        "ARV-239"
       ]
     }
   ]

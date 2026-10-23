@@ -189,9 +189,13 @@ public sealed record ZoneProcessorState
     /// 12 adds the buffer's shares per device (the device of each anonymous buffered event, a tracked one's named by its key, and
     /// the step's DeviceShareFull count) and the minutes a full buffer may have shortened, the engine's and the zone's (ARV-231);
     /// an earlier snapshot carries none and is refused if it says otherwise, and restores with its tracked events counted for their
-    /// devices, its anonymous ones for none, and no minute marked.
+    /// devices, its anonymous ones for none, and no minute marked. 13 adds runs of position samples ahead of the clock (a run's
+    /// anchor after the engine's clock, held in the buffer as a sample ahead of it or, in a quiet zone whose watermark followed
+    /// the receive clock, already applied; and its pending sample marked ahead, <see cref="QueueRunState.PendingAhead"/>,
+    /// ARV-239); an earlier snapshot carries neither and is refused if it does, and restores as before, its samples ahead of the
+    /// clock all in its buffer.
     /// </summary>
-    public const int CurrentVersion = 12;
+    public const int CurrentVersion = 13;
 
     /// <summary>The first version that may carry the queue engine's pending empty-queue check (ARV-114d).</summary>
     public const int PendingAnchorSinceVersion = 8;
@@ -204,6 +208,9 @@ public sealed record ZoneProcessorState
 
     /// <summary>The first version that may carry the buffer's devices and full-buffer minutes (ARV-231).</summary>
     public const int BufferSharesSinceVersion = 12;
+
+    /// <summary>The first version that may carry runs of position samples ahead of the clock (ARV-239).</summary>
+    public const int AheadRunsSinceVersion = 13;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }

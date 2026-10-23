@@ -2070,7 +2070,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 43,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. Medium (crossings of fast sensors refused once the shared tenth fills; a sensor more than 500 ms off is corrected by Ingest, so the exposure is sensors 200 to 500 ms fast), so before the pilot. Measure the pilot sensors' clock offsets first (ARV-104j's clock drift readings): if none is more than about 200 ms fast, the owner may move it to Phase 3.",
       "dependsOn": [
         "ARV-230",

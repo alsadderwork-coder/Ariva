@@ -85,11 +85,16 @@ public static class SnapshotChecks
         {
             if (state.Version < ZoneProcessorState.SightingRunsSinceVersion)
                 yield return $"A snapshot before version {ZoneProcessorState.SightingRunsSinceVersion} carries no runs of position samples.";
+            // ARV-239 (version 13): a run's samples may be ahead of the clock, its pending sample then marked so and after the zone's
+            // receive clock by at most MaxAhead (which the engine's Restore checks); an earlier snapshot holds neither.
+            var aheadRuns = runs.Any(r => r is not null && (r.PendingAhead || (e.ClockUtc.HasValue && r.AnchorUtc > e.ClockUtc.Value)));
+            if (aheadRuns && state.Version < ZoneProcessorState.AheadRunsSinceVersion)
+                yield return $"A snapshot before version {ZoneProcessorState.AheadRunsSinceVersion} carries no runs ahead of the clock.";
             foreach (var run in runs.Where(r => r is not null))
             {
                 Time(run.AnchorUtc);
                 Times(run.PendingUtc);
-                if (run.PendingUtc is { } pendingAt && state.ReferenceUtc != DateTime.MinValue && pendingAt > state.ReferenceUtc)
+                if (run.PendingUtc is { } pendingAt && !run.PendingAhead && state.ReferenceUtc != DateTime.MinValue && pendingAt > state.ReferenceUtc)
                     bad++;
             }
         }

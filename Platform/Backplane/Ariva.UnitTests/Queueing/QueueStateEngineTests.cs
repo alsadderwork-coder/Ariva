@@ -608,10 +608,11 @@ public sealed partial class QueueStateEngineTests
     [Fact]
     public void Bounds_Should_KeepFutureFloodsFromMovingTheWatermark_When_ADeviceSendsAheadOfTheClock()
     {
-        // A faulty device fills the buffer with events up to 5 minutes ahead; the others' events keep being processed.
+        // A faulty device fills the buffer with events up to 5 minutes ahead; the others' events keep being processed. Each sample
+        // names its own track: samples of one track at one instant are one reading, coalesced in its run (ARV-239).
         var engine = new QueueStateEngine(Geometry, new QueueEngineSettings { Lateness = TimeSpan.FromSeconds(30), MaxBufferedEvents = 100 });
         for (var k = 0; k < 500; k++)
-            engine.Offer(new QueueTrackSeen("S-99/x", At(4.9)), At(0));
+            engine.Offer(new QueueTrackSeen($"S-99/x{k}", At(4.9)), At(0));
         for (var k = 0; k < 20; k++)
             engine.Offer(In(k * 0.05), At(1));
         var step = engine.Advance(At(1.5));

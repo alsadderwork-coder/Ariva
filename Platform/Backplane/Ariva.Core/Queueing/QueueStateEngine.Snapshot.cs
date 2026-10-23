@@ -70,6 +70,13 @@ public sealed record QueueRunState(string TrackKey, DateTime AnchorUtc, DateTime
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string PendingDevice { get; init; }
+
+    /// <summary>
+    /// The pending sample was ahead of the clock when it arrived (ARV-239, zone snapshot version 13): it holds a place of the tenth
+    /// kept for such events, and it may be after the clock, by at most MaxAhead. Written only when true.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool PendingAhead { get; init; }
 }
 
 /// <summary>A held entrant in a snapshot.</summary>
@@ -153,7 +160,8 @@ public sealed partial class QueueStateEngine
         Runs = [.. _runs.Values.OrderBy(r => r.Track, StringComparer.Ordinal)
             .Select(r => new QueueRunState(r.Track, r.Anchor, r.Pending?.TimeUtc, r.Pending?.Degraded ?? false, r.Pending is null ? 0 : r.PendingSequence)
             {
-                PendingDevice = r.Pending is null || r.PendingDevice == OwnerOf(r.Pending) ? null : r.PendingDevice
+                PendingDevice = r.Pending is null || r.PendingDevice == OwnerOf(r.Pending) ? null : r.PendingDevice,
+                PendingAhead = r.Pending is not null && r.PendingAhead
             })],
         Held = [.. _held.Select(e => new QueueEntrantState(e.EntryUtc, e.TrackKey, e.Group, e.Degraded, e.Method, e.Order, e.LastSeenUtc))],
         ResolvedTracks = [.. _resolvedOrder],
@@ -214,9 +222,8 @@ public sealed partial class QueueStateEngine
             var restored = input.ToInput();
             if (buffered.Device is not null && !Sensing.DeviceCodes.IsValid(buffered.Device))
                 throw new InvalidDataException("The queue engine snapshot holds an event of a device that is not a device code.");
+            // Counted for its device, and in the ahead tenth when it was ahead of the clock (ARV-239).
             engine.Buffer(restored, ahead, buffered.Device ?? OwnerOf(restored), new Due(QueueInputState.Utc(input.TimeUtc), InputKey.Of(restored, geometry), sequence));
-            if (ahead)
-                engine._aheadBuffered++;
         }
 
         foreach (var e in state.Held ?? [])
@@ -264,17 +271,20 @@ public sealed partial class QueueStateEngine
         // clock behind what it holds). A snapshot written before ARV-148 has no clock: it starts at the latest of the
         // watermark and those events, and catches up with the next ones.
         var held = DateTime.MinValue;
+        var latestAhead = DateTime.MinValue;
         foreach (var (input, ahead, _) in state.Buffer ?? [])
         {
             var time = QueueInputState.Utc(input.TimeUtc);
             if (!ahead && time > held)
                 held = time;
+            if (ahead && time > latestAhead)
+                latestAhead = time;
         }
 
-        // ARV-230: a run's pending sample is a held event too (never ahead).
+        // ARV-230: a run's pending sample is a held event too; one ahead of the clock (ARV-239) moved it only to its reference.
         foreach (var run in state.Runs ?? [])
         {
-            if (run?.PendingUtc is { } pendingAt && QueueInputState.Utc(pendingAt) > held)
+            if (run?.PendingUtc is { } pendingAt && !run.PendingAhead && QueueInputState.Utc(pendingAt) > held)
                 held = QueueInputState.Utc(pendingAt);
         }
 
@@ -282,12 +292,19 @@ public sealed partial class QueueStateEngine
         engine._clock = state.ClockUtc.HasValue ? QueueInputState.Utc(state.ClockUtc.Value) : before;
         if (held > engine._clock)
             throw new InvalidDataException("The queue engine snapshot holds an event after its clock.");
+        // ARV-239: an event ahead of the clock was at most MaxAhead after the reference it arrived with, which the clock reached
+        // and never moves back from (a snapshot without a clock, written before ARV-148, has nothing to check this against).
+        if (state.ClockUtc.HasValue && latestAhead > Plus(engine._clock, engine._settings.MaxAhead))
+            throw new InvalidDataException("The queue engine snapshot holds an event further ahead of its clock than MaxAhead.");
         // The watermark moves only once an event has set the clock, so a moved watermark with an unset clock is not a state
         // the engine writes (CWE-501).
         if (engine._clock == DateTime.MinValue && engine._watermark != DateTime.MinValue)
             throw new InvalidDataException("The queue engine snapshot has a watermark but no clock.");
 
         RestoreRuns(engine, state);
+        // At most a tenth of the buffer holds events ahead of the clock, buffered or pending (ARV-239).
+        if (engine._aheadHeld > engine.AheadBound)
+            throw new InvalidDataException("The queue engine snapshot holds more events ahead of its clock than a tenth of its buffer.");
         engine._cursor = QueueInputState.Utc(state.CursorUtc);
         engine._residualSuspect = state.ResidualSuspect;
         if (state.PendingAnchorUtc is { } pending)
@@ -373,6 +390,7 @@ public sealed partial class QueueStateEngine
             return;
         var buffered = engine._buffer.UnorderedItems.Select(i => i.Element.Input).OfType<QueueTrackSeen>()
             .Select(seen => (seen.TrackKey, seen.TimeUtc)).ToHashSet();
+        var aheadUntil = Plus(engine._clock, engine._settings.MaxAhead);
         DateTime? splitInstant = engine._watermark < DateTime.MaxValue && engine._buffer.TryPeek(out _, out var first) && first.Time == engine._watermark.AddTicks(1)
             ? first.Time
             : null;
@@ -383,8 +401,12 @@ public sealed partial class QueueStateEngine
             var anchor = QueueInputState.Utc(r.AnchorUtc);
             if (!ZoneProcessor.Plausible(anchor))
                 throw new InvalidDataException("The queue engine snapshot has a track run whose anchor is not a plausible time.");
-            if (anchor > engine._clock || (anchor > engine._watermark && anchor != splitInstant && !buffered.Contains((r.TrackKey, anchor))))
-                throw new InvalidDataException("The queue engine snapshot has a track run whose anchor is after its clock, or after its watermark and not held.");
+            // A sample ahead of the clock may anchor a run (ARV-239), at most MaxAhead after the clock, which only moves forward; a
+            // quiet zone's watermark follows the receive clock, so such an anchor may be applied and still after the clock. One
+            // not yet applied is held in the buffer, as a sample ahead of the clock when after it (the events' check above).
+            var applied = anchor <= engine._watermark || anchor == splitInstant;
+            if (anchor > aheadUntil || (!applied && !buffered.Contains((r.TrackKey, anchor))))
+                throw new InvalidDataException("The queue engine snapshot has a track run whose anchor is further after its clock than MaxAhead, or after its watermark and not held.");
             var run = new SightingRun(r.TrackKey, anchor);
             if (r.PendingUtc is { } pendingAt)
             {
@@ -394,10 +416,17 @@ public sealed partial class QueueStateEngine
                     throw new InvalidDataException("The queue engine snapshot has a pending position sample outside its run's window, behind the watermark or out of order.");
                 if (r.PendingDevice is not null && !Sensing.DeviceCodes.IsValid(r.PendingDevice))
                     throw new InvalidDataException("The queue engine snapshot has a pending position sample of a device that is not a device code.");
+                // A pending sample after the clock was ahead of it, at most MaxAhead (ARV-239); one that was not is checked with the
+                // events held, never after the clock.
+                if (r.PendingAhead && at > aheadUntil)
+                    throw new InvalidDataException("The queue engine snapshot has a pending position sample further ahead of its clock than MaxAhead.");
                 run.Pending = new QueueTrackSeen(r.TrackKey, at, r.PendingDegraded);
                 run.PendingSequence = r.PendingSequence;
                 run.PendingDevice = r.PendingDevice ?? OwnerOf(run.Pending);
+                run.PendingAhead = r.PendingAhead;
                 engine.Held(run.PendingDevice, 1);
+                if (r.PendingAhead)
+                    engine.Ahead(run.PendingDevice, 1);
                 engine._pending++;
                 engine._flushes.Enqueue(run, at);
                 run.FlushScheduled = true;
