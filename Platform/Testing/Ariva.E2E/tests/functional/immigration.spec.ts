@@ -34,7 +34,10 @@ function database(): pg.Client {
 	});
 }
 
-type ImmigrationAnswer = { desksIncluded: boolean; halls: { kind: string; eGates: { attempts: number; rejects: { documentRead: number } } }[] };
+type ImmigrationAnswer = {
+	desksIncluded: boolean;
+	halls: { kind: string; eGates: { attempts: number; rejects: { documentRead: number } }; desks: unknown[]; gates: unknown[] }[];
+};
 
 // The e-gate figures sum a rolling window, the 15 whole minutes before the minute of each read (SvcImmigrationView), so a
 // read in a later minute drops the oldest minute's rows and adds the newest; and in a full run other suites write DMO
@@ -44,7 +47,11 @@ type ImmigrationAnswer = { desksIncluded: boolean; halls: { kind: string; eGates
 // (39 on the screen, then 40 from the API; 42 on the screen, then 31 from the API a minute later). The screen is compared
 // with the server's answer to its own read instead: the same window, figure for figure.
 
-/** The latest answer the page got from DMO's immigration endpoint (requests are numbered as they are answered). */
+/**
+ * The latest answer the page got from DMO's immigration endpoint (requests are numbered as they are answered). It is an
+ * answer body, as is what expectServedEGates returns: never put either in an expect message, a step title, an annotation,
+ * an attachment or console output (ARV-152; scripts/expect-messages.mjs does not follow a body through these helpers).
+ */
 function servedToPage(page: Page): () => ImmigrationAnswer | undefined {
 	let latest: { order: number; view: ImmigrationAnswer } | undefined;
 	let answered = 0;
@@ -233,12 +240,15 @@ test('a terminal duty manager sees lane and e-gate totals only: no desk or gate 
 	// The e-gate totals the screen shows are the server's for the page's own read (a later read may cover another window).
 	const { shown, view: pageView } = await expectServedEGates(page, served);
 	expect(pageView.desksIncluded).toBe(false);
+	expect(pageView.halls.flatMap((h) => [...h.desks, ...h.gates])).toEqual([]);
 	expect(shown.attempts).toBeGreaterThanOrEqual(20);
+	const pageAnswer = JSON.stringify(pageView);
 	await page.getByTestId('hall-Emigration').click();
 	// What the page shows and holds in its attributes (not the build's script names).
 	const html = `${await page.locator('main').innerText()}\n${await page.locator('main').innerHTML()}`;
 	for (const marker of deskMarkers) {
 		expect(answer, `${marker} in the answer`).not.toContain(marker);
+		expect(pageAnswer, `${marker} in the page's answer`).not.toContain(marker);
 		expect(html, `${marker} on the page`).not.toContain(marker);
 	}
 	await guards.expectClean();
