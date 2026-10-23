@@ -2091,7 +2091,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 44,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Medium (wrong figures can be shown for a site on Live operations), so before the pilot. The displays screen's fix (2026-10-22) is the pattern.",
       "dependsOn": []
     }

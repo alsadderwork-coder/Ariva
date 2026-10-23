@@ -601,6 +601,7 @@
 		},
 		"messages": {
 			"registered": "{code} registered.",
+			"issuedElsewhere": "The credential of {code} was issued at {site}, not at the site shown, so it is not shown here. Open {site} and issue the credential again to see it.",
 			"saved": "{code} saved.",
 			"moved": "{code} moved; it is commissioning again.",
 			"accessSaved": "Network access saved.",

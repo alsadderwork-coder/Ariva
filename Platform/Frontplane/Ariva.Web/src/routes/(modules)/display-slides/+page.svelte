@@ -29,6 +29,8 @@
 	let displayCodes = $state<string[]>([]);
 	let loading = $state(true);
 	let busy = $state(false);
+	/** Each site load's number: a load the site selector has moved on from drops its answers, whichever comes back last (ARV-241). */
+	let generation = 0;
 	let form = $state<{ key: number; editing: Slide | null } | null>(null);
 	let formKey = 0;
 
@@ -56,18 +58,26 @@
 	}
 
 	async function loadSite(): Promise<void> {
+		const mine = ++generation;
+		const code = siteCode;
 		form = null;
 		loading = true;
+		// Nothing of the site shown before stays on the screen, with its actions, while this one loads.
+		list = [];
+		displayCodes = [];
+		zoneNames = [];
 		const [found, profiles, boards] = await Promise.all([
-			slides.search(siteCode),
-			zonesApi.history(siteCode),
-			displays.search(siteCode)
+			slides.search(code),
+			zonesApi.history(code),
+			displays.search(code)
 		]);
+		if (mine !== generation) return;
 		if (found.hasErrors) failed(found.errorMessages.join(' '));
 		list = found.data ?? [];
 		displayCodes = (boards.data ?? []).map((d) => d.code).sort((a, b) => a.localeCompare(b));
 		const published = (profiles.data ?? []).find((p) => p.status === 'Published');
 		const zones = published ? ((await zonesApi.get(published.id)).data?.zones ?? []) : [];
+		if (mine !== generation) return;
 		zoneNames = zones
 			.filter((z) => z.kind === 'Queue')
 			.map((z) => z.name)
@@ -76,7 +86,9 @@
 	}
 
 	async function refresh(): Promise<void> {
+		const mine = generation;
 		const found = await slides.search(siteCode);
+		if (mine !== generation) return;
 		list = found.data ?? list;
 	}
 
@@ -111,8 +123,11 @@
 		const ids = list.map((s) => s.id);
 		[ids[index], ids[target]] = [ids[target], ids[index]];
 		busy = true;
+		const mine = generation;
 		const result = await slides.reorder(siteCode, ids);
 		busy = false;
+		// Another site was chosen meanwhile: its own load fills the screen.
+		if (mine !== generation) return;
 		if (result.hasErrors || !result.data) {
 			failed(result.errorMessages.join(' '));
 			return refresh();

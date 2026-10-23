@@ -862,6 +862,71 @@ test('campaign, zone and line names render as text', async ({ page }) => {
 	await guards.expectClean();
 });
 
+test("the observer's chosen site keeps its campaigns when the first site's list answers last", async ({ page }) => {
+	// ARV-241: the tablet loads the campaigns of the observer's first site (E2EO, with a running campaign) as it opens; the
+	// list of a site chosen before that answer came (E2SW, none) must stay on the tablet whichever answer comes last, or an
+	// observer could count for another site's campaign under the chosen site's name.
+	const name = `Tablet switch ${Date.now()}`;
+	await runningCampaign(name);
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webSwitchObserver);
+	const first = /\/api\/v1\/sites\/E2EO\/validation\/capture\/campaigns$/;
+	let release = (): void => {};
+	const held = new Promise<void>((resolve) => (release = resolve));
+	let asked = 0;
+	await page.route(first, async (route) => {
+		asked++;
+		await held;
+		await route.continue();
+	});
+	await page.goto('/validation/capture');
+	await expect.poll(() => asked, { message: 'the tablet asked for its first site' }).toBe(1);
+	await page.getByTestId('capture-site').selectOption('E2SW');
+	await expect(page.getByTestId('no-campaigns')).toBeVisible();
+
+	// Within the 30 seconds the tablet waits for an answer, so the late one is a list, not a timeout.
+	const late = page.waitForResponse(first);
+	release();
+	await late;
+	await page.waitForTimeout(500);
+
+	await expect(page.getByTestId('capture-site')).toHaveValue('E2SW');
+	await expect(page.getByTestId('campaign-option').filter({ hasText: name }), "E2EO's campaign never shows under E2SW").toHaveCount(0);
+	await expect(page.getByTestId('no-campaigns')).toBeVisible();
+	await guards.expectClean();
+});
+
+test("the first site's campaigns are not offered while the chosen site's list loads", async ({ page }) => {
+	// ARV-241 (security review round 1, M3): E2EO's list has answered and shows its campaign; while E2SW's list is held, none of
+	// E2EO's campaigns may be picked under E2SW.
+	const name = `Tablet switch wait ${Date.now()}`;
+	await runningCampaign(name);
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webSwitchObserver);
+	await page.goto('/validation/capture');
+	await expect(page.getByTestId('campaign-option').filter({ hasText: name })).toBeVisible();
+	const chosenSite = /\/api\/v1\/sites\/E2SW\/validation\/capture\/campaigns$/;
+	let release = (): void => {};
+	const held = new Promise<void>((resolve) => (release = resolve));
+	let asked = 0;
+	await page.route(chosenSite, async (route) => {
+		asked++;
+		await held;
+		await route.continue();
+	});
+	await page.getByTestId('capture-site').selectOption('E2SW');
+	await expect.poll(() => asked, { message: 'the tablet asked for the chosen site' }).toBe(1);
+
+	await expect(page.getByTestId('campaign-option'), "no campaign of E2EO's is offered while E2SW's list loads").toHaveCount(0);
+
+	const late = page.waitForResponse(chosenSite);
+	release();
+	await late;
+	await expect(page.getByTestId('no-campaigns')).toBeVisible();
+	await expect(page.getByTestId('campaign-option')).toHaveCount(0);
+	await guards.expectClean();
+});
+
 // ARV-104d: the desk state log.
 
 test("an observer logs four desks minute by minute on Ariva's clock; each bin is sent once it has ended, and a lost answer is sent again with the same key", async ({

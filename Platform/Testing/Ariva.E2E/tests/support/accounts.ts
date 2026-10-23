@@ -316,6 +316,12 @@ export function accounts() {
 		webObserver: account('e2e.webobserver', ['ValidationObserver'], false, false, ['E2EO']),
 		// The next observer on the same tablet: signs in after webObserver signed out with bins unsent (security review M1).
 		webObserver2: account('e2e.webobserver2', ['ValidationObserver'], false, false, ['E2EO']),
+		// ARV-241: an observer of two sites, E2EO first (validation-capture.spec.ts), and E2SW, empty, which the seed creates
+		// for it and site-switch.spec.ts uses for every screen with a site selector.
+		webSwitchObserver: account('e2e.webswitchobs', ['ValidationObserver'], false, false, ['E2EO', 'E2SW']),
+		// ARV-241: site-switch.spec.ts and devices.spec.ts switch the screens with a site selector from DMO to E2SW (password only:
+		// nothing the tests do with it is critical; a held registration is answered by the test, never sent).
+		switchAdmin: account('e2e.switchadmin', ['SystemAdministrator'], false, false, ['*']),
 		webValidationDual: account('e2e.webvaldual', ['TerminalDutyManager', 'ValidationObserver'], false, false, ['E2EO']),
 		// ARV-104h: the campaign screens' functional suite at a site of its own (E2EW). The border shift supervisor plans,
 		// starts and closes campaigns (a second factor: closing is critical), the duty manager reads them without desks, and the

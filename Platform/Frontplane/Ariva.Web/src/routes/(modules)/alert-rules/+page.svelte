@@ -22,6 +22,10 @@
 	/** The queue zones alone: health-check rules watch queue zones only (ARV-114b). */
 	let queueZoneNames = $state<string[]>([]);
 	let loading = $state(true);
+	/** Each site load's number: a load the site selector has moved on from drops its answers, whichever comes back last (ARV-241). */
+	let generation = 0;
+	/** The site whose rules the screen shows. */
+	let shownSite = '';
 	/** The open form: a new rule (editing null) or a saved one; the key makes a fresh form for each start. */
 	let form = $state<{ key: number; editing: AlertRule | null; initial: AlertRuleRequest } | null>(
 		null
@@ -84,16 +88,24 @@
 	}
 
 	async function loadSite(): Promise<void> {
+		const mine = ++generation;
+		const code = siteCode;
 		form = null;
 		loading = true;
-		const [found, profiles] = await Promise.all([
-			rules.search(siteCode),
-			zonesApi.history(siteCode)
-		]);
+		if (code !== shownSite) {
+			// Nothing of the site shown before stays on the screen, with its actions, while this one loads.
+			list = [];
+			zoneNames = [];
+			queueZoneNames = [];
+		}
+		const [found, profiles] = await Promise.all([rules.search(code), zonesApi.history(code)]);
+		if (mine !== generation) return;
 		if (found.hasErrors) failed(found.errorMessages.join(' '));
+		shownSite = code;
 		list = found.data?.data ?? [];
 		const published = (profiles.data ?? []).find((p) => p.status === 'Published');
 		const zones = published ? ((await zonesApi.get(published.id)).data?.zones ?? []) : [];
+		if (mine !== generation) return;
 		zoneNames = zones
 			.filter((z) => z.kind === 'Queue' || z.kind === 'Overflow')
 			.map((z) => z.name)

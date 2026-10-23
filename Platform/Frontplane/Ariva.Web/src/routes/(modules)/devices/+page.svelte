@@ -39,6 +39,8 @@
 	/** The site's floor plans by level (asked once per site). */
 	let plans: Record<string, zones.FloorPlan> = {};
 	let destroyed = false;
+	/** Each site load's number: a load the site selector has moved on from drops its answers, whichever comes back last (ARV-241). */
+	let generation = 0;
 	/** The site's levels and zones are in: registering needs them. */
 	let loaded = $state(false);
 
@@ -94,35 +96,51 @@
 			: $_('devices.failedOn', { values: { date } });
 	}
 
-	async function loadDevices(): Promise<void> {
-		const [found, health] = await Promise.all([
-			devicesApi.search(siteCode),
-			devicesApi.health(siteCode)
-		]);
+	/** The site's devices and their health; by default for the site shown, as a refresh after a change. */
+	async function loadDevices(mine = generation, code = siteCode): Promise<void> {
+		const [found, health] = await Promise.all([devicesApi.search(code), devicesApi.health(code)]);
+		if (mine !== generation) return;
 		if (found.hasErrors) failed(found.errorMessages[0] ?? '');
 		list = found.data?.data ?? [];
 		overview = health.data ?? null;
 	}
 
 	/** The published version's zones (else the draft's): the queue zones devices are assigned to and drawn over. */
-	async function loadZones(): Promise<void> {
-		const history = await zones.history(siteCode);
+	async function loadZones(mine: number, code: string): Promise<void> {
+		const history = await zones.history(code);
+		if (mine !== generation) return;
 		const pick =
 			(history.data ?? []).find((p) => p.status === 'Published') ??
 			(history.data ?? []).find((p) => p.status === 'Draft');
-		profileZones = pick ? ((await zones.get(pick.id)).data?.zones ?? []) : [];
+		const picked = pick ? ((await zones.get(pick.id)).data?.zones ?? []) : [];
+		if (mine !== generation) return;
+		profileZones = picked;
 	}
 
 	async function loadSite(): Promise<void> {
-		plans = await zones.floorPlans(siteCode);
+		const mine = ++generation;
+		const code = siteCode;
+		// Nothing of the site shown before stays on the screen, or answers for it, while this one loads.
+		list = [];
+		overview = null;
+		profileZones = [];
+		levels = [];
+		levelId = '';
+		plans = {};
+		dropPlan();
 		selectedId = null;
 		registering = false;
 		loaded = false;
 		// A credential belongs to the site it was issued at: switching sites drops it.
 		issued = null;
-		const levelResult = await topology.search<Level>('level', { siteCode });
+		const sitePlans = await zones.floorPlans(code);
+		if (mine !== generation) return;
+		plans = sitePlans;
+		const levelResult = await topology.search<Level>('level', { siteCode: code });
+		if (mine !== generation) return;
 		levels = levelResult.data?.data ?? [];
-		await Promise.all([loadDevices(), loadZones()]);
+		await Promise.all([loadDevices(mine, code), loadZones(mine, code)]);
+		if (mine !== generation) return;
 		loaded = true;
 		levelId =
 			list[0]?.levelId ??
@@ -167,17 +185,40 @@
 		issued = null;
 	});
 
+	/**
+	 * A credential is shown only under the site it was issued at (ARV-241): one whose answer comes after another site was
+	 * chosen is not shown there; the device's credential is then issued again from its own site.
+	 */
+	function reveal(next: Issued): boolean {
+		if (next.device.siteCode === siteCode) {
+			issued = next;
+			return true;
+		}
+		toast.warning(
+			$_('devices.messages.issuedElsewhere', {
+				values: { code: next.device.code, site: next.device.siteCode }
+			})
+		);
+		return false;
+	}
+
 	async function registered(next: Issued): Promise<void> {
 		registering = false;
-		issued = next;
+		if (!reveal(next)) return;
 		toast.success($_('devices.messages.registered', { values: { code: next.device.code } }));
+		const mine = generation;
 		await loadDevices();
+		if (mine !== generation) return;
 		selectedId = next.device.id;
 		levelId = next.device.levelId;
 	}
 
 	async function changed(device: Device | null): Promise<void> {
+		// A panel action that answers after another site was chosen changes nothing there.
+		if (device && device.siteCode !== siteCode) return;
+		const mine = generation;
 		await loadDevices();
+		if (mine !== generation) return;
 		if (device && device.levelId !== levelId) {
 			levelId = device.levelId;
 			await loadPlan();
@@ -406,7 +447,7 @@
 				{queueZones}
 				{mappings}
 				onChanged={changed}
-				onIssued={(next) => (issued = next)}
+				onIssued={reveal}
 				onClose={() => (selectedId = null)}
 				onFailed={failed}
 			/>

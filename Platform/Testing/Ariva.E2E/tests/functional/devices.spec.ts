@@ -181,6 +181,60 @@ test('a border supervisor sees the registry with its actions but cannot retire (
 	}
 });
 
+test('a registration answered after another site was chosen shows its credential under no other site', async ({ page }) => {
+	// ARV-241 (security review round 1, M1): the answer is held, then given as the server gives it for a device at DMO, while the
+	// empty site E2SW is shown. The request never reaches the server, so no step-up is asked and no device is made.
+	const guards = await guardPage(page);
+	const zone = await demoZone();
+	const deviceCode = `SW-${Date.now() % 100_000}`;
+	await signInThroughUi(page, accounts().switchAdmin);
+	await page.getByTestId('app-sidebar').getByRole('link', { name: 'Devices' }).click();
+	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Devices');
+	await page.getByTestId('register-device').click();
+	const form = page.getByTestId('register-form');
+	await form.getByLabel('Code').fill(deviceCode);
+	await form.getByLabel('Model').fill('E2E stereo');
+	await form.getByLabel('Level').selectOption({ label: 'ARR, Arrivals' });
+	await form.getByLabel('Queue zone').selectOption(zone.name);
+	await form.getByLabel('x (m)').fill(String(zone.x));
+	await form.getByLabel('y (m)').fill(String(zone.y));
+	let release = (): void => {};
+	const held = new Promise<void>((resolve) => (release = resolve));
+	let posted = 0;
+	await page.route(/\/api\/v1\/admin\/devices$/, async (route) => {
+		if (route.request().method() !== 'POST') return route.continue();
+		posted++;
+		await held;
+		const sent = route.request().postDataJSON() as Record<string, unknown>;
+		await route.fulfill({
+			status: 201,
+			json: {
+				device: {
+					...sent, id: crypto.randomUUID(), code: deviceCode, siteCode: 'DMO', dialect: 'Canonical', clockSource: 'Device', state: 'Commissioning',
+					footprint: { shape: 'Rectangle', lengthMetres: 4, widthMetres: 3, radiusMetres: null, assumed: true },
+					credentialPrefix: 'held', credentialIssuedOn: new Date().toISOString(), lastCalibratedOn: null, lastCalibrationPassed: null, retiredOn: null,
+					createdOn: new Date().toISOString(), allowedSources: null, clientCertificateSha256: null, mappingName: null
+				},
+				credential: 'a-held-answer-not-a-credential'
+			}
+		});
+	});
+	await form.getByRole('button', { name: 'Register a device' }).click();
+	await expect.poll(() => posted, { message: 'the registration was sent' }).toBe(1);
+	const chosen = page.waitForResponse(/\/api\/v1\/admin\/devices\?siteCode=E2SW&/);
+	await page.locator('#devices-site').selectOption('E2SW');
+	await chosen;
+
+	release();
+
+	await expect(page.getByText(`The credential of ${deviceCode} was issued at DMO`)).toBeVisible();
+	await expect(page.getByTestId('credential-reveal'), 'no credential under the site shown').toHaveCount(0);
+	await expect(page.locator('#devices-site')).toHaveValue('E2SW');
+	await expect(page.getByTestId('device-row')).toHaveCount(0);
+	allowStatuses(guards, 404);
+	await guards.expectClean();
+});
+
 test('the register form offers only the transports Ingest takes data from', async ({ page }) => {
 	// The sensor support model names seven transports; Ingest has HTTPS push and MQTT, and the server refuses the others.
 	await signInThroughUi(page, accounts().webBorder);

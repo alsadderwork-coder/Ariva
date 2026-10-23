@@ -77,6 +77,10 @@
 	let heldNavigation = $state<URL | null>(null);
 	let leaving = false;
 	let destroyed = false;
+	/** Each campaign load's number: a load for a site the selector has moved on from drops its answer (ARV-241). */
+	let generation = 0;
+	/** The site whose campaigns the tablet lists. */
+	let listedSite = '';
 	let timer: ReturnType<typeof setInterval> | undefined;
 
 	/** The account this screen captures for; its queued items go only under its token (security review M1). */
@@ -226,9 +230,17 @@
 
 	async function loadCampaigns(): Promise<void> {
 		if (!siteCode) return;
+		const mine = ++generation;
+		const site = siteCode;
 		loading = true;
-		const result = timed(await running(siteCode));
-		if (destroyed) return;
+		if (site !== listedSite) {
+			// Another site's campaigns are never offered under this one, not even while it loads.
+			campaigns = [];
+			problem = '';
+		}
+		const result = timed(await running(site));
+		if (destroyed || mine !== generation) return;
+		listedSite = site;
 		loading = false;
 		if (result.hasErrors) {
 			problem = $_('validation.failed', { values: { reason: result.errorMessages.join(' ') } });

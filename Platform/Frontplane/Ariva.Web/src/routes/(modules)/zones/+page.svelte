@@ -166,6 +166,15 @@
 		plan = image;
 	}
 
+	/** After an upload: the site's plans again, kept only while that site is still the one shown (ARV-241). */
+	async function reloadPlans(): Promise<void> {
+		const site = siteCode;
+		const sitePlans = await zones.floorPlans(site);
+		if (site !== siteCode) return;
+		plans = sitePlans;
+		await loadPlan();
+	}
+
 	onMount(async () => {
 		const result = await topology.sites();
 		siteList = result.data ?? [];
@@ -424,9 +433,7 @@
 		<FloorPlanUpload
 			levelId={level.id}
 			onCancel={() => (uploading = false)}
-			onUploaded={async () => (
-				(uploading = false), (plans = await zones.floorPlans(siteCode)), await loadPlan()
-			)}
+			onUploaded={async () => ((uploading = false), await reloadPlans())}
 		/>
 	</div>
 {/if}
