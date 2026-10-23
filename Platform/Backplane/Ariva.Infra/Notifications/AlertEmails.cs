@@ -135,7 +135,7 @@ public sealed class EmailSender(IUnitOfWork unitOfWork, IEmailTransport transpor
     public async Task<EmailRound> SendDueAsync(DateTime now, CancellationToken ct)
     {
         if (!Storage.IsTransactionActive())
-            Storage.BeginTransaction(IsolationLevel.ReadCommitted);
+            await Storage.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         var locked = await Storage.ExecuteSqlAsync<LockRow>("""SELECT pg_try_advisory_xact_lock(:key) AS "Taken" """,
             new Dictionary<string, object> { ["key"] = RoundLock }, ct);
         if (!locked.Single().Taken)

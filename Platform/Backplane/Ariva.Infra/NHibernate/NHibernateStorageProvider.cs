@@ -38,7 +38,20 @@ internal sealed class NHibernateStorageProvider(
 
     #region Transactions
 
-    public void BeginTransaction(IsolationLevel isolationLevel) => Session.BeginTransaction(isolationLevel);
+    /// <summary>
+    /// ARV-242 (CWE-400): NHibernate's BeginTransaction opens the session's connection synchronously, where Npgsql bounds each read
+    /// by the socket's receive timeout, set from the connection timeout left; less than a millisecond left becomes 0, no timeout
+    /// at all (Npgsql 10.0.0, NpgsqlTimeout.CheckAndApply and the read buffer's Timeout setter), so a silent database held a run
+    /// for two hours. The connection is opened here first, asynchronously, through NHibernate's own connection manager (the
+    /// driver, so the handshake keeps its policy), where Npgsql's own timer always ends a stalled startup at the connection
+    /// timeout (the token is not taken during the startup, measured, so a run ends at most one connection timeout past its own;
+    /// a token already cancelled opens nothing, <c>RunBound.MinRunTimeout</c>); the transaction then begins on it.
+    /// </summary>
+    public async Task BeginTransactionAsync(IsolationLevel isolationLevel, CancellationToken ct = default)
+    {
+        await Session.GetSessionImplementation().ConnectionManager.GetConnectionAsync(ct);
+        Session.BeginTransaction(isolationLevel);
+    }
 
     public bool IsTransactionActive() => _session?.GetCurrentTransaction()?.IsActive ?? false;
 

@@ -55,7 +55,7 @@ internal sealed class SvcSiteConfiguration(
 
         // One snapshot for every read, so a change committed during the export cannot split the bundle.
         if (!UnitOfWork.StorageProvider.IsTransactionActive())
-            UnitOfWork.StorageProvider.BeginTransaction(IsolationLevel.RepeatableRead);
+            await UnitOfWork.StorageProvider.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
 
         var source = await SourceAsync(siteCode, ct);
         // ARV-181b2, ARV-187 (defence in depth; Transfer is held by administrators, who see border data): rules on a

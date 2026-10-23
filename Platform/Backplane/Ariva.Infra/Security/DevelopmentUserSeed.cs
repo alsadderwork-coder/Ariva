@@ -21,7 +21,7 @@ internal sealed class DevelopmentUserSeed(IServiceScopeFactory scopes, AuthSetti
         scope.ServiceProvider.GetRequiredService<ICurrentUser>().SetSystemUser(Guid.Empty, "development-seed");
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var storage = unitOfWork.StorageProvider;
-        storage.BeginTransaction(System.Data.IsolationLevel.ReadCommitted);
+        await storage.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, cancellationToken);
 
         // Sites created in this run: the queries below do not see inserts the session has not flushed yet.
         var createdSites = new HashSet<string>(StringComparer.Ordinal);

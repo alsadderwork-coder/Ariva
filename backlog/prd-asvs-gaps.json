@@ -886,7 +886,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 113,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-23 from ARV-239's story gate (the stacks are in that entry of backlog/progress.md). Medium (a loop that never ends its run stops its work, here the AMAN pull, until the host restarts), so before the pilot by the owner's rule.",
       "dependsOn": [
         "ARV-096e"

@@ -4,6 +4,7 @@ using Ariva.Core.Sensing;
 using Ariva.Core.Services.Validation;
 using Ariva.Core.Validation.Comparison;
 using Microsoft.Extensions.DependencyInjection;
+using NHibernate;
 using NHibernate.Linq;
 
 namespace Ariva.Infra.Services.Validation;
@@ -92,8 +93,21 @@ internal sealed partial class SvcValidationResults
     }
 
     /// <summary>The campaign with this id at this site exactly (no caller: the caller's sites were checked before the flight); null otherwise.</summary>
-    internal Task<ValidationCampaign> CampaignByIdAsync(string siteCode, Guid campaignId, CancellationToken ct) =>
-        Query<ValidationCampaign>().FirstOrDefaultAsync(c => c.Id == campaignId && c.SiteCode == siteCode, ct);
+    /// <summary>
+    /// The campaign with its zones, lines and desks loaded now, asynchronously (ARV-242): read outside a transaction, a lazy load
+    /// later would reopen the connection with NHibernate's synchronous open, which no run's timeout bounds (the results freeze
+    /// is a bounded run).
+    /// </summary>
+    internal async Task<ValidationCampaign> CampaignByIdAsync(string siteCode, Guid campaignId, CancellationToken ct)
+    {
+        var campaign = await Query<ValidationCampaign>().FirstOrDefaultAsync(c => c.Id == campaignId && c.SiteCode == siteCode, ct);
+        if (campaign is null)
+            return null;
+        await NHibernateUtil.InitializeAsync(campaign.Zones, ct);
+        await NHibernateUtil.InitializeAsync(campaign.Lines, ct);
+        await NHibernateUtil.InitializeAsync(campaign.Desks, ct);
+        return campaign;
+    }
 
     /// <summary>The comparison's settings: F18's targets (the KPI annex's per campaign once agreed) and the Proposed checks.</summary>
     private static ComparisonSettings Settings { get; } = new();

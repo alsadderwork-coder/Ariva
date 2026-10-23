@@ -80,7 +80,7 @@ public sealed class RunTimeoutInventoryTests
             $"every loop {host} runs ends its runs at a run timeout or is named in Exempt with its reason");
         hosted.OfType<IBoundedRuns>().Select(s => s.GetType().Name).Should().BeEquivalentTo(expected, $"the loops {host} runs with a run timeout");
         foreach (var loop in hosted.OfType<IBoundedRuns>())
-            loop.RunTimeout.Should().BePositive().And.BeLessThanOrEqualTo(RunBound.MaxRunTimeout, loop.GetType().Name);
+            loop.RunTimeout.Should().BeGreaterThanOrEqualTo(RunBound.MinRunTimeout).And.BeLessThanOrEqualTo(RunBound.MaxRunTimeout, loop.GetType().Name);
     }
 
     /// <summary>The assemblies that hold Ariva's hosted services and jobs.</summary>
@@ -121,7 +121,7 @@ public sealed class RunTimeoutInventoryTests
         foreach (var type in JobTypes())
         {
             var job = ActivatorUtilities.CreateInstance(scope.ServiceProvider, type);
-            job.Should().BeAssignableTo<IBoundedRuns>(type.Name).Which.RunTimeout.Should().BePositive().And.BeLessThanOrEqualTo(RunBound.MaxRunTimeout, type.Name);
+            job.Should().BeAssignableTo<IBoundedRuns>(type.Name).Which.RunTimeout.Should().BeGreaterThanOrEqualTo(RunBound.MinRunTimeout).And.BeLessThanOrEqualTo(RunBound.MaxRunTimeout, type.Name);
         }
     }
 
@@ -132,8 +132,13 @@ public sealed class RunTimeoutInventoryTests
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(1);
 
     /// <summary>
-    /// The stalled host's connection timeout: Npgsql does not take a run's token while it opens a connection, so a server that
-    /// accepts and never answers holds a run until this ends it (<c>Database:ConnectTimeoutSeconds</c>, 15 s in the hosts).
+    /// The stalled host's connection timeout (<c>Database:ConnectTimeoutSeconds</c>, 15 s in the hosts): Npgsql's open does not take
+    /// a run's token while a server that accepted the connection holds its startup (measured on Npgsql 10.0.0, ARV-242), so such a
+    /// server holds a run until this ends the open. Every open is asynchronous since ARV-242 (NHibernate's before a transaction
+    /// begins too), where this timeout always ends it; NHibernate's synchronous open could wait for ever when less than a
+    /// millisecond of it was left for a read (a story gate's two hours). A run here ends by its timeout or, when its open started
+    /// late, at most one connection timeout past it; in the hosts every run timeout is at least the longest connection timeout a
+    /// host may set (<see cref="RunBound.MinRunTimeout"/>), so a run whose first step is the open fails within its own timeout.
     /// </summary>
     private const int ConnectTimeoutSeconds = 2;
 

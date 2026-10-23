@@ -47,7 +47,7 @@ public sealed class UnitOfWorkTests
     [Fact]
     public async Task EndAsync_Should_RollBack_When_NotPromisedToCommit()
     {
-        _storage.BeginTransaction(System.Data.IsolationLevel.ReadCommitted);
+        await _storage.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted);
 
         await _unitOfWork.EndAsync();
 
@@ -95,7 +95,7 @@ public sealed class UnitOfWorkTests
     [Fact]
     public async Task PromiseNotToCommit_Should_CancelEarlierPromise_When_Called()
     {
-        _storage.BeginTransaction(System.Data.IsolationLevel.ReadCommitted);
+        await _storage.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted);
         _unitOfWork.PromiseToCommit();
         _unitOfWork.PromiseNotToCommit();
 

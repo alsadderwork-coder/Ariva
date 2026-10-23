@@ -51,7 +51,7 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         _host.AsCallerAsync<bool>(null, async services =>
         {
             var unitOfWork = services.GetRequiredService<IUnitOfWork>();
-            unitOfWork.StorageProvider.BeginTransaction(IsolationLevel.ReadCommitted);
+            await unitOfWork.StorageProvider.BeginTransactionAsync(IsolationLevel.ReadCommitted);
             await new NHibernateDomainEventOutbox(_catalog, _host.Clock).WriteAsync(unitOfWork.StorageProvider, events, Ct);
             if (commit)
                 unitOfWork.PromiseToCommit();

@@ -65,7 +65,7 @@ public sealed class AlertEvaluation(IServiceScopeFactory scopes, AlertEvaluation
         try
         {
             if (!storage.IsTransactionActive())
-                storage.BeginTransaction(IsolationLevel.ReadCommitted);
+                await storage.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
             var acquired = (await storage.ExecuteSqlAsync<LockRow>("""SELECT pg_try_advisory_xact_lock(38, 0) AS "Acquired" """, null, ct)).Single().Acquired;
             if (!acquired)
                 return new AlertTickResult(false, 0, 0, 0, 0, 0);
@@ -193,11 +193,11 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
         unitOfWork.RegisterPostCommitAction(() => notices.PublishAsync([.. batch.Select(a => AlertNotice.From(a, now))], CancellationToken.None));
     }
 
-    private void Begin()
+    private async Task BeginAsync(CancellationToken ct)
     {
         currentUser.SetSystemUser(Guid.Empty, AlertEvaluation.SystemUserName);
         if (!Storage.IsTransactionActive())
-            Storage.BeginTransaction(IsolationLevel.ReadCommitted);
+            await Storage.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
     }
 
     /// <summary>
@@ -207,7 +207,7 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
     /// </summary>
     public async Task<AlertHousekeeping> HousekeepAsync(DateTime now, CancellationToken ct)
     {
-        Begin();
+        await BeginAsync(ct);
         var stale = await Storage.ExecuteSqlAsync<IdRow>("""
             SELECT s.id AS "Id" FROM alert_rule_state s JOIN alert_rule r ON r.id = s.rule_id WHERE r.deleted_on IS NOT NULL OR NOT r.enabled
             """, null, ct);
@@ -257,7 +257,7 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
 
     public async Task<AlertRuleTickResult> EvaluateAsync(Guid ruleId, DateTime now, int maxCatchUpMinutes, CancellationToken ct)
     {
-        Begin();
+        await BeginAsync(ct);
         var rule = await Storage.GetAsync<AlertRule>(ruleId, ct);
         if (rule is null || rule.IsDeleted || !rule.Enabled)
         {

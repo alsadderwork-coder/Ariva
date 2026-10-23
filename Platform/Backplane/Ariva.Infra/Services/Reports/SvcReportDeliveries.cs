@@ -36,7 +36,7 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
         // Email off (vm-local without a relay): nothing is owed, so nothing piles up to be sent later at once.
         if (!settings.Enabled)
             return [];
-        Begin();
+        await BeginAsync(ct);
         var locked = await ExecuteSqlAsync<LockRow>("""SELECT pg_try_advisory_xact_lock(:key) AS "Taken" """, new Dictionary<string, object> { ["key"] = RoundLock }, ct);
         if (!locked.Single().Taken)
             return [];
@@ -82,7 +82,7 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
 
     public async Task<ReportDeliveryOutcome> DeliverAsync(Guid deliveryId, CancellationToken ct = default)
     {
-        Begin();
+        await BeginAsync(ct);
         var now = timeProvider.GetUtcNow().UtcDateTime;
         // Claimed with whether the recipient may still have the report: the same rule as choosing it, checked now.
         var rows = await ExecuteSqlAsync<DueRow>("""
@@ -163,10 +163,10 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
         return ReportDeliveryOutcome.Sent;
     }
 
-    private void Begin()
+    private async Task BeginAsync(CancellationToken ct)
     {
         if (!UnitOfWork.StorageProvider.IsTransactionActive())
-            UnitOfWork.StorageProvider.BeginTransaction(IsolationLevel.ReadCommitted);
+            await UnitOfWork.StorageProvider.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
     }
 
     private async Task<IReadOnlyList<string>> RolesAsync(Guid userId, CancellationToken ct) =>

@@ -377,7 +377,7 @@ public sealed class UploadScreeningTests
             _failCommit = failCommit;
             var storage = new Mock<IStorageProvider>();
             storage.Setup(s => s.IsTransactionActive()).Returns(() => _transaction);
-            storage.Setup(s => s.BeginTransaction(It.IsAny<IsolationLevel>())).Callback(() => _transaction = true);
+            storage.Setup(s => s.BeginTransactionAsync(It.IsAny<IsolationLevel>(), It.IsAny<CancellationToken>())).Callback(() => _transaction = true).Returns(Task.CompletedTask);
             storage.Setup(s => s.SaveAsync(It.IsAny<AuditEntry>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((AuditEntry entry, CancellationToken _) =>
                 {

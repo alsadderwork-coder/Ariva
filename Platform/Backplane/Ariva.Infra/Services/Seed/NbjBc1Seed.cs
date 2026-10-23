@@ -45,7 +45,7 @@ internal sealed class NbjBc1Seed(IUnitOfWork unitOfWork, ICurrentUser currentUse
     {
         currentUser.SetSystemUser(Guid.Empty, SystemUserName);
         if (!Storage.IsTransactionActive())
-            Storage.BeginTransaction(IsolationLevel.ReadCommitted);
+            await Storage.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         await Storage.ExecuteSqlAsync<LockRow>("""SELECT 1 AS "Value" FROM pg_advisory_xact_lock(:key)""", new Dictionary<string, object> { ["key"] = SeedLock }, ct);
 
         var created = 0;

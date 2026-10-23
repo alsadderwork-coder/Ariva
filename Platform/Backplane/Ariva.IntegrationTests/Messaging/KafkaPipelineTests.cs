@@ -413,7 +413,7 @@ public sealed class KafkaPipelineTests(PostgresFixture postgres, KafkaFixture ka
         await using (var scope = host.Services.CreateAsyncScope())
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            unitOfWork.StorageProvider.BeginTransaction(System.Data.IsolationLevel.ReadCommitted);
+            await unitOfWork.StorageProvider.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted);
             await new Ariva.Infra.Messaging.Outbox.NHibernateDomainEventOutbox(host.Services.GetRequiredService<EventCatalog>(), TimeProvider.System)
                 .WriteAsync(unitOfWork.StorageProvider, [probe], Ct);
             unitOfWork.PromiseToCommit();

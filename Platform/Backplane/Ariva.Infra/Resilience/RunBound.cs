@@ -15,6 +15,15 @@ public static class RunBound
     /// <summary>The longest run timeout any job or loop may declare (the inventory test holds every one to it).</summary>
     public static readonly TimeSpan MaxRunTimeout = TimeSpan.FromHours(2);
 
+    /// <summary>
+    /// ARV-242: the shortest run timeout any job or loop may declare, the longest connection timeout a host may set. Npgsql's open
+    /// does not take the run's token while a database that accepted the connection holds its startup (Npgsql 10.0.0); every open
+    /// is asynchronous (<c>IStorageProvider.BeginTransactionAsync</c>), where the connection timeout always ends it. A run whose
+    /// first step is such an open therefore fails within its own timeout, and any run ends at most one connection timeout past
+    /// it: an open that starts late runs out its timeout, and the opens after the cut see the cancelled token and open nothing.
+    /// </summary>
+    public static readonly TimeSpan MinRunTimeout = TimeSpan.FromSeconds(Settings.DatabaseSettings.MaxConnectTimeoutSeconds);
+
     /// <summary>Runs <paramref name="work"/> until it ends, <paramref name="stopping"/> is cancelled or <paramref name="timeout"/> passes.</summary>
     public static async Task<T> RunAsync<T>(string run, TimeSpan timeout, TimeProvider timeProvider, Func<CancellationToken, Task<T>> work, CancellationToken stopping)
     {

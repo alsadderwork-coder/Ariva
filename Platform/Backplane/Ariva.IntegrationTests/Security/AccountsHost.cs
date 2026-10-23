@@ -127,7 +127,7 @@ public sealed class AccountsHost : IAsyncDisposable
         scope.ServiceProvider.GetRequiredService<ICurrentUser>().SetSystemUser(Guid.Empty, "it-seed");
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var storage = unitOfWork.StorageProvider;
-        storage.BeginTransaction(IsolationLevel.ReadCommitted);
+        await storage.BeginTransactionAsync(IsolationLevel.ReadCommitted);
 
         var user = new User(userName, userName, null);
         user.SetPassword(iterations == PasswordHasher.Iterations ? PasswordHasher.Hash(Password) : WeakHash(iterations), temporary);

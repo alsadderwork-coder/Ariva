@@ -76,7 +76,7 @@ internal sealed class UnitOfWork(IStorageProvider storageProvider, IDomainEventO
     private async Task CommitAsync(CancellationToken ct)
     {
         if (!StorageProvider.IsTransactionActive())
-            StorageProvider.BeginTransaction(IsolationLevel.ReadCommitted);
+            await StorageProvider.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
 
         // Flush first: entity changes reach the database and the session knows every entity that raised events.
         await StorageProvider.FlushAsync(ct);

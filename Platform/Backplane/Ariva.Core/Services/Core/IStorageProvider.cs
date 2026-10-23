@@ -14,7 +14,12 @@ public interface IStorageProvider
 {
     #region Transactions
 
-    void BeginTransaction(IsolationLevel isolationLevel);
+    /// <summary>
+    /// Begins a transaction. The session's connection is opened first, asynchronously (ARV-242): a database that accepts the
+    /// connection and never answers holds the caller until the connection timeout ends the open, never in a synchronous read
+    /// without a bound; a token already cancelled opens nothing.
+    /// </summary>
+    Task BeginTransactionAsync(IsolationLevel isolationLevel, CancellationToken ct = default);
     bool IsTransactionActive();
     Task CommitTransactionAsync(CancellationToken ct = default);
     Task RollbackTransactionAsync(CancellationToken ct = default);

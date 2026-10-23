@@ -24,7 +24,7 @@ internal sealed class BreakGlassAccounts(IUnitOfWork unitOfWork, AuthSettings se
     public async Task<BreakGlassCredential> IssueAsync(bool rotate, CancellationToken ct = default)
     {
         var storage = unitOfWork.StorageProvider;
-        storage.BeginTransaction(IsolationLevel.ReadCommitted);
+        await storage.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
         var now = timeProvider.GetUtcNow().UtcDateTime;
 
         var user = await storage.Query<User>().FirstOrDefaultAsync(u => u.IsBreakGlass, ct);

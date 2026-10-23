@@ -146,7 +146,7 @@ public sealed class BrokerOutageTests(FaultsFixture faults) : IAsyncLifetime
     {
         await using var scope = host.Services.CreateAsyncScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        unitOfWork.StorageProvider.BeginTransaction(IsolationLevel.ReadCommitted);
+        await unitOfWork.StorageProvider.BeginTransactionAsync(IsolationLevel.ReadCommitted);
         await new NHibernateDomainEventOutbox(_catalog, TimeProvider.System).WriteAsync(unitOfWork.StorageProvider,
             [.. steps.Select(step => new OutageProbe { Key = key, Step = step, CorrelationId = "corr-" + key })], Ct);
         unitOfWork.PromiseToCommit();

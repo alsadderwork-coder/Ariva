@@ -207,7 +207,7 @@ public sealed class BackupRestoreTests : IAsyncLifetime
             scope.ServiceProvider.GetRequiredService<ICurrentUser>().SetSystemUser(Guid.Empty, "it-restore-seed");
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             var storage = unitOfWork.StorageProvider;
-            storage.BeginTransaction(IsolationLevel.ReadCommitted);
+            await storage.BeginTransactionAsync(IsolationLevel.ReadCommitted);
             var user = new User(AdminUserName, "Restore administrator", null);
             user.SetPassword(PasswordHasher.Hash(AdminPassword), temporary: false);
             user.SetSites(true, [], null, DateTime.UtcNow);

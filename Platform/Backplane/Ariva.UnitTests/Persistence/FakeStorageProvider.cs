@@ -16,10 +16,11 @@ internal sealed class FakeStorageProvider : IStorageProvider
 
     public Exception CommitFailure { get; set; }
 
-    public void BeginTransaction(IsolationLevel isolationLevel)
+    public Task BeginTransactionAsync(IsolationLevel isolationLevel, CancellationToken ct = default)
     {
         Calls.Add("begin");
         _transactionActive = true;
+        return Task.CompletedTask;
     }
 
     public bool IsTransactionActive() => _transactionActive;

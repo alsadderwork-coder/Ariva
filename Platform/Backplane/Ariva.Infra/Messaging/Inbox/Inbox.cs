@@ -32,7 +32,7 @@ internal sealed class PostgresInbox(IStorageProvider storage, TimeProvider timeP
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(consumer);
         if (!storage.IsTransactionActive())
-            storage.BeginTransaction(IsolationLevel.ReadCommitted);
+            await storage.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
 
         var rows = await storage.ExecuteSqlAsync<ClaimRow>(
             """

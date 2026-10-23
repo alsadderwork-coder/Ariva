@@ -39,30 +39,30 @@ internal abstract class SvcDb(IUnitOfWork unitOfWork)
     /// For changes that must be atomic in the database rather than read, changed and written through the session.
     /// </summary>
     protected Task<List<T>> ExecuteCommandAsync<T>([ConstantExpected] string sql, IReadOnlyDictionary<string, object> parameters = null, CancellationToken ct = default) where T : class, new() =>
-        InTransactionAsync(storage => storage.ExecuteSqlAsync<T>(sql, parameters, ct));
+        InTransactionAsync(storage => storage.ExecuteSqlAsync<T>(sql, parameters, ct), ct);
 
     #endregion
 
     #region Commands
 
     protected Task<T> SaveAsync<T>(T entity, CancellationToken ct = default) where T : class, IDomain =>
-        InTransactionAsync(storage => storage.SaveAsync(entity, ct));
+        InTransactionAsync(storage => storage.SaveAsync(entity, ct), ct);
 
     protected Task<T> UpdateAsync<T>(T entity, CancellationToken ct = default) where T : class, IDomain =>
-        InTransactionAsync(storage => storage.UpdateAsync(entity, ct));
+        InTransactionAsync(storage => storage.UpdateAsync(entity, ct), ct);
 
     protected Task<T> SaveOrUpdateAsync<T>(T entity, CancellationToken ct = default) where T : class, IDomain =>
-        InTransactionAsync(storage => storage.SaveOrUpdateAsync(entity, ct));
+        InTransactionAsync(storage => storage.SaveOrUpdateAsync(entity, ct), ct);
 
     protected Task<T> MergeAsync<T>(T entity, CancellationToken ct = default) where T : class, IDomain =>
-        InTransactionAsync(storage => storage.MergeAsync(entity, ct));
+        InTransactionAsync(storage => storage.MergeAsync(entity, ct), ct);
 
     protected Task DeleteAsync<T>(T entity, CancellationToken ct = default) where T : class, IDomain =>
         InTransactionAsync(async storage =>
         {
             await storage.DeleteAsync(entity, ct);
             return true;
-        });
+        }, ct);
 
     /// <summary>
     /// Sends pending changes to the database now, inside the transaction. The session flushes only at commit and orders
@@ -74,7 +74,7 @@ internal abstract class SvcDb(IUnitOfWork unitOfWork)
         {
             await storage.FlushAsync(ct);
             return true;
-        });
+        }, ct);
 
     protected Task AttachAsync<T>(T entity, CancellationToken ct = default) where T : class, IDomain => Storage.AttachAsync(entity, ct);
 
@@ -84,10 +84,10 @@ internal abstract class SvcDb(IUnitOfWork unitOfWork)
 
     #endregion
 
-    private async Task<TResult> InTransactionAsync<TResult>(Func<IStorageProvider, Task<TResult>> command)
+    private async Task<TResult> InTransactionAsync<TResult>(Func<IStorageProvider, Task<TResult>> command, CancellationToken ct)
     {
         if (!Storage.IsTransactionActive())
-            Storage.BeginTransaction(IsolationLevel.ReadCommitted);
+            await Storage.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
 
         var result = await command(Storage);
         UnitOfWork.PromiseToCommit();
