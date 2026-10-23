@@ -33,6 +33,11 @@
 	let issued = $state<{ code: string; address: string } | null>(null);
 	/** The display whose new credential is being confirmed on the page. */
 	let renewing = $state<string | null>(null);
+	/**
+	 * Counts the site loads: an answer that arrives after another site was chosen (or the same one loaded again) is dropped,
+	 * so the first load of the default site, answered late, never shows its displays, policy or zones under the chosen site.
+	 */
+	let generation = 0;
 
 	const canCreate = $derived(auth.can('Display.Create'));
 	const canEdit = $derived(auth.can('Display.Edit'));
@@ -49,19 +54,28 @@
 	}
 
 	async function loadSite(): Promise<void> {
+		const mine = ++generation;
+		const code = siteCode;
 		form = null;
 		issued = null;
 		loading = true;
+		// Nothing of the previous site stays on the screen meanwhile: the policy panel and the library are made anew for the
+		// chosen site, so a policy change begun at the previous site cannot be saved to this one.
+		list = [];
+		advertising = null;
+		zoneNames = [];
 		const [found, profiles, policy] = await Promise.all([
-			displays.search(siteCode),
-			zonesApi.history(siteCode),
-			canViewAdvertising ? advertisingApi.get(siteCode) : Promise.resolve(null)
+			displays.search(code),
+			zonesApi.history(code),
+			canViewAdvertising ? advertisingApi.get(code) : Promise.resolve(null)
 		]);
+		if (mine !== generation) return;
 		if (found.hasErrors) failed(found.errorMessages.join(' '));
 		list = found.data ?? [];
 		advertising = policy?.data ?? null;
 		const published = (profiles.data ?? []).find((p) => p.status === 'Published');
 		const zones = published ? ((await zonesApi.get(published.id)).data?.zones ?? []) : [];
+		if (mine !== generation) return;
 		zoneNames = zones
 			.filter((z) => z.kind === 'Queue')
 			.map((z) => z.name)
@@ -89,10 +103,13 @@
 	}
 
 	async function refresh(): Promise<void> {
+		const mine = generation;
+		const code = siteCode;
 		const [found, policy] = await Promise.all([
-			displays.search(siteCode),
-			canViewAdvertising ? advertisingApi.get(siteCode) : Promise.resolve(null)
+			displays.search(code),
+			canViewAdvertising ? advertisingApi.get(code) : Promise.resolve(null)
 		]);
+		if (mine !== generation) return;
 		list = found.data ?? list;
 		if (policy?.data) advertising = policy.data;
 	}
@@ -344,6 +361,8 @@
 			policy={advertising}
 			canEdit={canEditAdvertising}
 			onChanged={async (policy) => {
+				// A save answered after another site was chosen is that other site's policy.
+				if (policy.siteCode !== siteCode) return;
 				advertising = policy;
 				await refresh();
 			}}
