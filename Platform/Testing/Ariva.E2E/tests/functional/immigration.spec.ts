@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import pg from 'pg';
 import { createClient } from 'redis';
 import { accounts, call, signIn } from '../support/accounts';
@@ -32,6 +32,62 @@ function database(): pg.Client {
 		user: process.env.Database__Migration__Username || 'postgres',
 		password: process.env.Database__Migration__Password
 	});
+}
+
+type ImmigrationAnswer = { desksIncluded: boolean; halls: { kind: string; eGates: { attempts: number; rejects: { documentRead: number } } }[] };
+
+// The e-gate figures sum a rolling window, the 15 whole minutes before the minute of each read (SvcImmigrationView), so a
+// read in a later minute drops the oldest minute's rows and adds the newest; and in a full run other suites write DMO
+// e-gate rows in bursts while this one runs (the simulator's AMAN plays each demo minute on the shared clock, ten minutes
+// in ten seconds at speed 60 in sensor-emulator.spec.ts, single minutes in feed-emulators.spec.ts and aman-feed.spec.ts,
+// each laid on the wall clock's minutes). A read of the API after the screen's own can therefore be higher or lower
+// (39 on the screen, then 40 from the API; 42 on the screen, then 31 from the API a minute later). The screen is compared
+// with the server's answer to its own read instead: the same window, figure for figure.
+
+/** The latest answer the page got from DMO's immigration endpoint (requests are numbered as they are answered). */
+function servedToPage(page: Page): () => ImmigrationAnswer | undefined {
+	let latest: { order: number; view: ImmigrationAnswer } | undefined;
+	let answered = 0;
+	page.on('response', (response) => {
+		if (response.request().method() !== 'GET' || !response.ok() || new URL(response.url()).pathname !== '/api/v1/sites/DMO/immigration') return;
+		const order = ++answered;
+		void response.json().then(
+			(view: ImmigrationAnswer) => {
+				if (!latest || order > latest.order) latest = { order, view };
+			},
+			() => undefined
+		);
+	});
+	return () => latest?.view;
+}
+
+/** The arrival hall's e-gate attempts and document read rejects in a server answer. */
+function eGatesOf(view: ImmigrationAnswer | undefined) {
+	const eGates = view?.halls.find((h) => h.kind === 'Immigration')?.eGates;
+	return eGates && { attempts: eGates.attempts, documentRead: eGates.rejects.documentRead };
+}
+
+/** The same figures as the screen shows them. */
+async function shownEGates(page: Page) {
+	return {
+		attempts: Number(await page.getByTestId('egate-attempts').textContent()),
+		documentRead: Number(await page.locator('[data-testid="rejects"] [data-reject="documentRead"] span').last().textContent())
+	};
+}
+
+/**
+ * The screen shows the server's figures for the window the page read. The page reads them again once a minute, so the
+ * comparison is retried while a new answer is being rendered.
+ */
+async function expectServedEGates(page: Page, served: () => ImmigrationAnswer | undefined) {
+	let matched: { shown: Awaited<ReturnType<typeof shownEGates>>; view: ImmigrationAnswer } | undefined;
+	await expect(async () => {
+		const shown = await shownEGates(page);
+		const view = served();
+		expect(shown).toEqual(eGatesOf(view));
+		matched = { shown, view: view! };
+	}).toPass({ timeout: 10_000 });
+	return matched!;
 }
 
 /** The mapped desk id of an Ariva desk code at the arrival hall. */
@@ -86,18 +142,10 @@ test.afterAll(async () => {
 test('a border shift supervisor sees each lane, the desks and the e-gates of the arrival hall', async ({ page }) => {
 	test.skip(!redisUrl, 'the lane waits come from the live hub (ARIVA_E2E_REDIS_URL)');
 	const guards = await guardPage(page);
+	const served = servedToPage(page);
 	const redis = createClient({ url: redisUrl });
 	await redis.connect();
 	try {
-		// The simulator keeps adding e-gate attempts and the screen loads its figures once a minute, so a count on the screen
-		// lies between a read taken before the page loaded and one taken after it was checked (an exact match raced: 39 on
-		// the screen, 40 a moment later from the API).
-		const token = (await signIn(accounts().webBorder)).accessToken;
-		const arrivalsNow = async () => {
-			const view = await (await call('GET', api(), { token })).json();
-			return { view, hall: view.halls.find((h: { kind: string }) => h.kind === 'Immigration') };
-		};
-		const before = (await arrivalsNow()).hall.eGates;
 		await signInThroughUi(page, accounts().webBorder);
 		await page.getByTestId('app-sidebar').getByRole('link', { name: 'Immigration' }).click();
 		await expect(page.getByRole('heading', { level: 1 })).toHaveText('Immigration');
@@ -130,19 +178,21 @@ test('a border shift supervisor sees each lane, the desks and the e-gates of the
 		await expect(egLane).toContainText('E-gate eligible');
 		for (const lane of ['CIT', 'RES', 'VIS', 'CRW']) await expect(page.locator(`[data-testid="lane-row"][data-lane="${lane}"]`)).toBeVisible();
 
-		// The server's figures, as the screen shows them.
+		// The server's figures, as the screen shows them: those of the page's own read, which holds the planted interval
+		// (20 attempts, 3 document read rejects).
 		await expect(page.getByTestId('egate-attempts')).toHaveText(/^\d+$/);
-		const shownAttempts = Number(await page.getByTestId('egate-attempts').textContent());
-		const shownReads = Number(await page.locator('[data-testid="rejects"] [data-reject="documentRead"] span').last().textContent());
-		const { view, hall: arrivals } = await arrivalsNow();
+		const { shown, view: pageView } = await expectServedEGates(page, served);
+		expect(pageView.desksIncluded).toBe(true);
+		expect(shown.attempts).toBeGreaterThanOrEqual(20);
+		expect(shown.documentRead).toBeGreaterThanOrEqual(3);
+		// The same account asking the API directly gets the desks too.
+		const token = (await signIn(accounts().webBorder)).accessToken;
+		const view = await (await call('GET', api(), { token })).json();
+		const arrivals = view.halls.find((h: { kind: string }) => h.kind === 'Immigration');
 		expect(view.desksIncluded).toBe(true);
 		expect(arrivals.desks.find((d: { desk: string }) => d.desk === 'AR-02')).toMatchObject({ lane: 'CIT' });
 		expect(arrivals.desks.find((d: { desk: string }) => d.desk === 'AR-02').transactions).toBeGreaterThanOrEqual(4);
 		expect(arrivals.eGates.attempts).toBeGreaterThanOrEqual(20);
-		expect(shownAttempts).toBeGreaterThanOrEqual(before.attempts);
-		expect(shownAttempts).toBeLessThanOrEqual(arrivals.eGates.attempts);
-		expect(shownReads).toBeGreaterThanOrEqual(before.rejects.documentRead);
-		expect(shownReads).toBeLessThanOrEqual(arrivals.eGates.rejects.documentRead);
 		await expect(page.getByTestId('extra-load')).toContainText('desk-minutes');
 		await expect(page.locator('[data-testid="desk"][data-desk="AR-02"]')).toBeVisible();
 		await expect(page.locator('[data-testid="gate"][data-gate="AG-1"]')).toBeVisible();
@@ -164,6 +214,7 @@ test('a border shift supervisor sees each lane, the desks and the e-gates of the
 
 test('a terminal duty manager sees lane and e-gate totals only: no desk or gate code anywhere', async ({ page }) => {
 	const guards = await guardPage(page);
+	const served = servedToPage(page);
 	await signInThroughUi(page, accounts().web);
 	await page.getByTestId('app-sidebar').getByRole('link', { name: 'Immigration' }).click();
 	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Immigration');
@@ -179,7 +230,10 @@ test('a terminal duty manager sees lane and e-gate totals only: no desk or gate 
 	expect(arrivals.desks).toEqual([]);
 	expect(arrivals.gates).toEqual([]);
 	expect(arrivals.eGates.attempts).toBeGreaterThanOrEqual(20);
-	await expect(page.getByTestId('egate-attempts')).toHaveText(String(arrivals.eGates.attempts));
+	// The e-gate totals the screen shows are the server's for the page's own read (a later read may cover another window).
+	const { shown, view: pageView } = await expectServedEGates(page, served);
+	expect(pageView.desksIncluded).toBe(false);
+	expect(shown.attempts).toBeGreaterThanOrEqual(20);
 	await page.getByTestId('hall-Emigration').click();
 	// What the page shows and holds in its attributes (not the build's script names).
 	const html = `${await page.locator('main').innerText()}\n${await page.locator('main').innerHTML()}`;
