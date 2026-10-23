@@ -204,6 +204,39 @@ test('a change sends an approved item back to draft after a warning; retiring as
 	await guards.expectClean();
 });
 
+test('a late answer for the site the screen opened with leaves the site chosen since on the screen', async ({ page }) => {
+	// The screen loads its first site (DMO, advertising off) as it opens; choosing another site before that load answers must
+	// keep the chosen site's policy and library whichever answer comes last (the 2026-10-22 story gate saw DMO's late
+	// answer hide the library of the site chosen).
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().mediaWebManager);
+	let release = (): void => {};
+	const held = new Promise<void>((resolve) => (release = resolve));
+	let asked = 0;
+	await page.route(/\/api\/v1\/admin\/sites\/DMO\/advertising-policy$/, async (route) => {
+		asked++;
+		await held;
+		await route.continue();
+	});
+	await page.getByTestId('app-sidebar').getByRole('link', { name: 'Passenger displays' }).click();
+	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Passenger displays');
+	await expect.poll(() => asked, { message: 'the screen asked for its first site' }).toBe(1);
+	await page.locator('#displays-site').selectOption(site);
+	const library = page.getByTestId('advertising-library');
+	await expect(library).toBeVisible();
+	await expect(page.getByTestId('advertising-policy')).toHaveAttribute('data-allowed', 'true');
+
+	const late = page.waitForResponse(/\/api\/v1\/admin\/sites\/DMO\/advertising-policy$/);
+	release();
+	await late;
+	// Nothing on the page may change after the late answer; give the page's handlers a moment to run before looking again.
+	await page.waitForTimeout(500);
+	await expect(page.locator('#displays-site')).toHaveValue(site);
+	await expect(page.getByTestId('advertising-policy')).toHaveAttribute('data-allowed', 'true');
+	await expect(library).toBeVisible();
+	await guards.expectClean();
+});
+
 test('the library is not on the screen of a site whose advertising policy is off', async ({ page }) => {
 	const guards = await guardPage(page);
 	const manager = (await signIn(accounts().mediaWebManager)).accessToken;

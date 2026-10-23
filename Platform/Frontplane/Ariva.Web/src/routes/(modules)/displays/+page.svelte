@@ -33,6 +33,8 @@
 	let issued = $state<{ code: string; address: string } | null>(null);
 	/** The display whose new credential is being confirmed on the page. */
 	let renewing = $state<string | null>(null);
+	/** Each site load's number: a load the site selector has moved on from drops its answers, whichever comes back last. */
+	let generation = 0;
 
 	const canCreate = $derived(auth.can('Display.Create'));
 	const canEdit = $derived(auth.can('Display.Edit'));
@@ -49,19 +51,23 @@
 	}
 
 	async function loadSite(): Promise<void> {
+		const mine = ++generation;
+		const code = siteCode;
 		form = null;
 		issued = null;
 		loading = true;
 		const [found, profiles, policy] = await Promise.all([
-			displays.search(siteCode),
-			zonesApi.history(siteCode),
-			canViewAdvertising ? advertisingApi.get(siteCode) : Promise.resolve(null)
+			displays.search(code),
+			zonesApi.history(code),
+			canViewAdvertising ? advertisingApi.get(code) : Promise.resolve(null)
 		]);
+		if (mine !== generation) return;
 		if (found.hasErrors) failed(found.errorMessages.join(' '));
 		list = found.data ?? [];
 		advertising = policy?.data ?? null;
 		const published = (profiles.data ?? []).find((p) => p.status === 'Published');
 		const zones = published ? ((await zonesApi.get(published.id)).data?.zones ?? []) : [];
+		if (mine !== generation) return;
 		zoneNames = zones
 			.filter((z) => z.kind === 'Queue')
 			.map((z) => z.name)
@@ -89,10 +95,13 @@
 	}
 
 	async function refresh(): Promise<void> {
+		const mine = generation;
+		const code = siteCode;
 		const [found, policy] = await Promise.all([
-			displays.search(siteCode),
-			canViewAdvertising ? advertisingApi.get(siteCode) : Promise.resolve(null)
+			displays.search(code),
+			canViewAdvertising ? advertisingApi.get(code) : Promise.resolve(null)
 		]);
+		if (mine !== generation) return;
 		list = found.data ?? list;
 		if (policy?.data) advertising = policy.data;
 	}

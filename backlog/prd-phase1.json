@@ -2076,6 +2076,24 @@
         "ARV-230",
         "ARV-231"
       ]
+    },
+    {
+      "id": "ARV-241",
+      "title": "[E12] Screens with a site selector keep the chosen site when an earlier site's load answers last",
+      "description": "Found by ARV-239's story gate (2026-10-22): the Passenger displays screen loads its first site (DMO) as it opens, and choosing another site before that load answered let the late answer replace the chosen site's displays, zones and advertising policy, so the library of a site allowed advertising disappeared under its name (advertising-media.spec.ts failed on both tries; fixed on that screen the same day, with a test that holds the first site's answer). Seven other screens load per site the same way with no guard: Live operations (and its floor plan), Devices (and its plan), Zones, Display instructions, Alert rules, Immigration and Validation capture. On Live operations a supervisor could see one site's queues under another site's name until the next refresh. The server still refuses what the user may not see (site scope), so no data crosses a boundary; the risk is wrong figures shown for a site. Guard each load as the displays screen and the advertisement library do (a load number; an answer for a load the selector moved on from is dropped). CWEs to review: none (correctness).",
+      "acceptanceCriteria": [
+        "Each of the seven screens keeps the chosen site's data when the first site's answers come after the chosen site's, proved by a Playwright functional test per screen that holds the first site's answer (page.route) and fails without the guard",
+        "Loads the screens start on their own (refresh, polling, live updates) apply only to the site shown when they answer",
+        "node scripts/verify.mjs web passes (svelte-check, lint, build)",
+        "The story's Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 44,
+      "passes": false,
+      "notes": "Size S. Medium (wrong figures can be shown for a site on Live operations), so before the pilot. The displays screen's fix (2026-10-22) is the pattern.",
+      "dependsOn": []
     }
   ]
 }
