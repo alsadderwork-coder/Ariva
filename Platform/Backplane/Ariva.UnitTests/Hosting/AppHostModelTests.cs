@@ -10,11 +10,13 @@ using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Ariva.UnitTests.Hosting;
 
 /// <summary>
-/// ARV-066: Ariva.AppHost's application model, built in process without starting anything. Every host runs in vm-local
+/// ARV-066: Ariva.AppHost's application model, built in process (the testing builder also starts DCP in the background,
+/// see <see cref="VariablesAsync"/>). Every host runs in vm-local
 /// with URL query redaction kept on, gets its dependencies as the configuration parts it reads, and waits for its
 /// readiness probe; the simulator holds only its key's digest; the E2E switches and the host variables file apply.
 /// ARV-139c: the development-only site is off for api-main in every run and cannot be turned on by the host variables file
@@ -22,6 +24,8 @@ namespace Ariva.UnitTests.Hosting;
 /// demo accounts' sign-in variables only, and never together with the E2E or scripted-demo settings.
 /// ARV-092b: the pinned, offline ClamAV container with Ariva's clamd.conf read-only, ready only once clamd answers PONG, and
 /// api-main, the only host that takes uploads, the only one given it.
+/// ARV-164: these tests need no container runtime. Aspire only logs that it is missing (<see cref="BuildAsync"/>), and every
+/// read of a resource's variables is bounded (<see cref="VariablesAsync"/>), so nothing here can hang the unit run.
 /// </summary>
 public sealed class AppHostModelTests
 {
@@ -40,6 +44,9 @@ public sealed class AppHostModelTests
             "--Parameters:redis-password=redis-password-for-tests",
             $"--Parameters:simulation-operator-key={SimulatorKey}",
             "--AppHost:Web=false",
+            // ARV-164: no wait for a container runtime that does not answer, so Aspire logs it instead of failing the start
+            // before DCP allocates the endpoints (VariablesAsync). A runtime that answers is used as before.
+            "--DcpPublisher:ContainerRuntimeInitializationTimeout=00:00:00",
             .. extra
         ];
         var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.Ariva_AppHost>(args, TestContext.Current.CancellationToken);
@@ -49,8 +56,62 @@ public sealed class AppHostModelTests
     private static IEnumerable<IResource> Resources(DistributedApplication app) =>
         app.Services.GetRequiredService<DistributedApplicationModel>().Resources;
 
-    private static async Task<Dictionary<string, string>> VariablesAsync(IResource resource) =>
-        await ((IResourceWithEnvironment)resource).GetEnvironmentVariableValuesAsync(DistributedApplicationOperation.Run);
+    #region Reading a resource's variables (ARV-164)
+
+    // The testing builder lets the AppHost's own Run go ahead once the model is built, so DCP starts in the background, and
+    // a variable built from an endpoint (Database__Host, Kafka__BootstrapServers, Redis__ConnectionString, Email__Smtp__Host,
+    // MalwareScan__Host) resolves only once DCP has allocated that endpoint. DCP allocates endpoints without a container
+    // runtime, but before it runs Aspire waits DcpPublisher:ContainerRuntimeInitializationTimeout (30 s under the testing
+    // builder) for one that does not answer and then fails the start; the read, to which GetEnvironmentVariableValuesAsync
+    // passes no cancellation token, then waited for ever. BuildAsync turns that wait off. Should DCP still allocate nothing,
+    // the read is bounded, and ends with the start's own error when the start fails first. Aspire leaves out a variable that
+    // fails to resolve (cancelled by the bound, or a failed endpoint) and reports it only in the result's Exception, so a
+    // read with one is refused: an incomplete set would let NotContain and NotContainKey pass on nothing.
+
+    private static readonly TimeSpan AllocationBound = TimeSpan.FromSeconds(60);
+
+    // A start can also fail after DCP has allocated the endpoints; the read then completes, and gets this long to do so.
+    private static readonly TimeSpan ReadGrace = TimeSpan.FromSeconds(2);
+
+    private static async Task<Dictionary<string, string>> VariablesAsync(DistributedApplication app, IResource resource)
+    {
+        string Unallocated() => $"DCP allocated no endpoint for the variables of {resource.Name} within {AllocationBound.TotalSeconds:0} s, and the AppHost's start had not failed.";
+
+        using var bound = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        bound.CancelAfter(AllocationBound);
+        var read = ExecutionConfigurationBuilder.Create(resource).WithEnvironmentVariablesConfig()
+            .BuildAsync(new DistributedApplicationExecutionContext(DistributedApplicationOperation.Run), NullLogger.Instance, bound.Token);
+        // Under the testing builder this starts nothing of its own: it waits for the start the AppHost's Run began, and
+        // fails with that start's error.
+        var started = app.StartAsync(bound.Token);
+        try
+        {
+            await Task.WhenAny(read, started);
+            if (started.IsFaulted && await Task.WhenAny(read, Task.Delay(ReadGrace, bound.Token)) != read)
+                Assert.Fail($"The AppHost did not start, so DCP allocated no endpoint for the variables of {resource.Name}: {started.Exception.GetBaseException().Message}");
+
+            var result = await read;
+            TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+            if (bound.IsCancellationRequested)
+                Assert.Fail(Unallocated());
+            if (result.Exception is not null)
+                Assert.Fail($"A variable of {resource.Name} did not resolve: {result.Exception.GetBaseException().Message}");
+            return result.EnvironmentVariables.ToDictionary();
+        }
+        catch (OperationCanceledException) when (!TestContext.Current.CancellationToken.IsCancellationRequested)
+        {
+            Assert.Fail(Unallocated());
+            throw;
+        }
+        finally
+        {
+            await bound.CancelAsync();
+            await ((Task)read).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            await started.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+    }
+
+    #endregion
 
     [Fact]
     public async Task Hosts_Should_RunInVmLocal_WithRedactionOn_AndTheirDependencies()
@@ -61,7 +122,7 @@ public sealed class AppHostModelTests
 
         foreach (var project in projects)
         {
-            var variables = await VariablesAsync(project);
+            var variables = await VariablesAsync(app, project);
             variables["DOTNET_ENVIRONMENT"].Should().Be("vm-local", project.Name);
             variables["ASPNETCORE_ENVIRONMENT"].Should().Be("vm-local", project.Name);
             variables["OTEL_DOTNET_EXPERIMENTAL_ASPNETCORE_DISABLE_URL_QUERY_REDACTION"].Should().Be("false", "access_token never reaches a span ({0})", project.Name);
@@ -71,7 +132,7 @@ public sealed class AppHostModelTests
             (await ArgumentsAsync(project)).Should().NotContain("--environment", project.Name);
         }
 
-        var main = await VariablesAsync(projects.Single(p => p.Name == "api-main"));
+        var main = await VariablesAsync(app, projects.Single(p => p.Name == "api-main"));
         main["Database__Name"].Should().Be("ariva");
         main["Database__Username"].Should().Be("ariva_app");
         main["Database__Password"].Should().Be("runtime-password-for-tests");
@@ -87,14 +148,14 @@ public sealed class AppHostModelTests
         main["Database__ValidationReader__Username"].Should().Be("ariva_validation");
         main["Database__ValidationReader__Password"].Should().Be("validation-reader-password-for-tests");
         foreach (var project in projects.Where(p => p.Name != "api-main"))
-            (await VariablesAsync(project)).Keys.Should().NotContain(k => k.StartsWith("Database__ValidationReader__", StringComparison.Ordinal), project.Name);
+            (await VariablesAsync(app, project)).Keys.Should().NotContain(k => k.StartsWith("Database__ValidationReader__", StringComparison.Ordinal), project.Name);
 
         // ARV-092b: api-main takes the uploads, so it alone is given the malware scanner, and starts once clamd answers.
         main["MalwareScan__Host"].Should().NotBeNullOrWhiteSpace();
         main["MalwareScan__Port"].Should().NotBeNullOrWhiteSpace();
         projects.Single(p => p.Name == "api-main").Annotations.OfType<WaitAnnotation>().Should().Contain(w => w.Resource.Name == "clamav");
         foreach (var project in projects.Where(p => p.Name != "api-main"))
-            (await VariablesAsync(project)).Keys.Should().NotContain(k => k.StartsWith("MalwareScan__", StringComparison.Ordinal), project.Name);
+            (await VariablesAsync(app, project)).Keys.Should().NotContain(k => k.StartsWith("MalwareScan__", StringComparison.Ordinal), project.Name);
     }
 
     [Fact]
@@ -107,7 +168,7 @@ public sealed class AppHostModelTests
         $"{image.Registry}/{image.Image}@sha256:{image.SHA256}".Should().Be(
             "docker.io/clamav/clamav@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260",
             "the digest of docker-compose.dev.yml, CI and the integration tests (scripts/base-images.mjs)");
-        (await VariablesAsync(clamav))["CLAMAV_NO_FRESHCLAMD"].Should().Be("true", "no mirror traffic, the same verdicts in every run");
+        (await VariablesAsync(app, clamav))["CLAMAV_NO_FRESHCLAMD"].Should().Be("true", "no mirror traffic, the same verdicts in every run");
         var conf = clamav.Annotations.OfType<ContainerMountAnnotation>().Should().ContainSingle(m => m.Target == "/etc/clamav/clamd.conf").Which;
         conf.Type.Should().Be(ContainerMountType.BindMount);
         conf.IsReadOnly.Should().BeTrue("Ariva's limits, which the container cannot change");
@@ -161,7 +222,7 @@ public sealed class AppHostModelTests
     public async Task Simulator_Should_HoldOnlyItsKeysDigest()
     {
         await using var app = await BuildAsync();
-        var variables = await VariablesAsync(Resources(app).Single(r => r.Name == "simulation"));
+        var variables = await VariablesAsync(app, Resources(app).Single(r => r.Name == "simulation"));
 
         variables["Simulation__Control__Keys__0__Sha256"].Should().Be(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(SimulatorKey))));
         variables.Values.Should().NotContain(SimulatorKey);
@@ -206,10 +267,10 @@ public sealed class AppHostModelTests
         try
         {
             await using var app = await BuildAsync($"--AppHost:HostEnvironmentFile={file}");
-            var cronz = await VariablesAsync(Resources(app).Single(r => r.Name == "api-cronz"));
+            var cronz = await VariablesAsync(app, Resources(app).Single(r => r.Name == "api-cronz"));
             cronz["Cronz__Dashboard__Enabled"].Should().Be("true");
             cronz["Email__Smtp__Port"].Should().Be("25251", "the file wins over the AppHost's own wiring");
-            (await VariablesAsync(Resources(app).Single(r => r.Name == "api-main"))).Should().NotContainKey("Cronz__Dashboard__Enabled");
+            (await VariablesAsync(app, Resources(app).Single(r => r.Name == "api-main"))).Should().NotContainKey("Cronz__Dashboard__Enabled");
         }
         finally
         {
@@ -259,7 +320,7 @@ public sealed class AppHostModelTests
         try
         {
             await using var app = await BuildAsync($"--AppHost:HostEnvironmentFile={file}", "--Seed:NbjSite=true");
-            (await VariablesAsync(Resources(app).Single(r => r.Name == "api-main")))["Seed__NbjSite"]
+            (await VariablesAsync(app, Resources(app).Single(r => r.Name == "api-main")))["Seed__NbjSite"]
                 .Should().Be("false", "the pin comes after the host variables file, and only the AppHost's own switch decides");
             Volume(app).Should().Be("ariva-apphost-timescaledb");
         }
@@ -281,14 +342,14 @@ public sealed class AppHostModelTests
         {
             await using var app = await BuildAsync("--AppHost:NbjSite=true", $"--AppHost:AccountsFile={file}");
             var projects = Resources(app).OfType<ProjectResource>().ToList();
-            var main = await VariablesAsync(projects.Single(p => p.Name == "api-main"));
+            var main = await VariablesAsync(app, projects.Single(p => p.Name == "api-main"));
 
             main["Seed__NbjSite"].Should().Be("true");
             main["Auth__DevelopmentUsers__0__UserName"].Should().Be("demo.admin", "the demo accounts still sign in");
             main["Auth__TotpRequired"].Should().Be("false");
             foreach (var project in projects.Where(p => p.Name != "api-main"))
-                (await VariablesAsync(project)).Keys.Should().NotContain(k => k.StartsWith("Seed__", StringComparison.Ordinal) || k.StartsWith("Auth__DevelopmentUsers__", StringComparison.Ordinal), project.Name);
-            (await VariablesAsync(projects.Single(p => p.Name == "simulation"))).Should().NotContainKey("Simulation__Control__Keys__1__Name", "the scripted demo cannot drive this run");
+                (await VariablesAsync(app, project)).Keys.Should().NotContain(k => k.StartsWith("Seed__", StringComparison.Ordinal) || k.StartsWith("Auth__DevelopmentUsers__", StringComparison.Ordinal), project.Name);
+            (await VariablesAsync(app, projects.Single(p => p.Name == "simulation"))).Should().NotContainKey("Simulation__Control__Keys__1__Name", "the scripted demo cannot drive this run");
             Volume(app).Should().Be("ariva-apphost-timescaledb-nbj", "the usual volume never holds the site's rows");
             Resources(app).OfType<ContainerResource>().Single(r => r.Name == "timescaledb").Annotations.OfType<ContainerLifetimeAnnotation>().Single().Lifetime
                 .Should().Be(ContainerLifetime.Persistent);
