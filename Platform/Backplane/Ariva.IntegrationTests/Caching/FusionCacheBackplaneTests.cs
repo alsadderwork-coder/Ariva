@@ -14,7 +14,7 @@ public sealed class RedisFixture : IAsyncLifetime
     /// The Redis image of the suite (the fault tests' too), by tag and digest: docker-compose.dev.yml's and CI's, one digest
     /// everywhere (ARV-096, scripts/base-images.mjs).
     /// </summary>
-    public const string Image = "redis:8.2-alpine@sha256:b51665e66f00759be7c3152ad5ac3c66fb2f619c13ef62dea7cc1f9914524635";
+    public const string Image = "redis:8.2-alpine@sha256:d1389b3f3f981460b9b0918c4d7390c6e9decb8c69b9f09a02e1b6fd7554ade7";
 
     private RedisContainer _container;
 

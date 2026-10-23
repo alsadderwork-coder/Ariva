@@ -19,19 +19,31 @@
 #                                   owners, the runtime role's privileges, members of Ariva's roles, no C, untrusted-language
 #                                   or SECURITY DEFINER function (but Ariva's retention purge exactly as script 0054 ships
 #                                   it, grants included), other language, extension or event trigger outside the
-#                                   extensions, schema_version and TimescaleDB jobs
+#                                   extensions, TimescaleDB's extensions at the image's versions, schema_version and
+#                                   TimescaleDB jobs
 #   keyring [--certificate-sha256 HEX]...   the Data Protection keys and the certificate each needs
 #   after-kafka-loss --confirm-stream-stopped [--dry-run]
 #                                   re-sends the newest event of every key of the compacted topics and clears the
 #                                   stream worker's saved positions, after Kafka's topics were recreated empty
+#   update-extensions               updates TimescaleDB's extensions in the database to the versions the image ships
+#                                   (ALTER EXTENSION ... UPDATE), after the pod restarted on a newer image and with the
+#                                   Ariva deployments scaled to 0 (ARV-236; wiki 04 section 6.8)
 #
 # Logins (CWE-269). Every Ariva step runs as the migration login (the database owner: CREATEROLE, never superuser) over
 # TCP to 127.0.0.1, with the password the pod already holds in its environment (ARIVA_MIGRATION_PASSWORD, from the
 # timescaledb-credentials secret); the password is never on a command line. TimescaleDB allows a logical restore only to
 # a superuser: timescaledb_pre_restore() stops its background workers, and pg_restore writes the extension's catalog and
-# creates chunks in _timescaledb_internal, which belong to the extension owner. Those three steps, and nothing else, run as
-# the database superuser over the pod's local socket (peer authentication: no password exists for it here). Every object
-# keeps the owner the dump records, the migration login. The runtime login is never in a backup: the migration job
+# creates chunks in _timescaledb_internal, which belong to the extension owner. Those three steps run as the database
+# superuser over the pod's local socket (peer authentication: no password exists for it here); every object keeps the
+# owner the dump records, the migration login. The extensions' update is the only other superuser step (ARV-236; proposed,
+# pending the owner's decision, docs/product/decisions.md): only an extension's owner may update it, here the superuser
+# the image created it as, and its update scripts create C functions. It differs from the restore's steps: it runs
+# TimescaleDB's own update scripts on a live database, whose extension schema (public) the migration login owns and can
+# write, so an object that login planted there could be picked up by a script running as the superuser (PostgreSQL's
+# "Security Considerations for Extensions"). Before any superuser statement the command refuses functions and operators
+# named as the system's or the extensions' own outside the extensions, and any other extension (planted_objects); that
+# narrows the risk, it does not close it: it relies on TimescaleDB's scripts qualifying everything else, which ARV-236
+# did not review. Nothing else runs as the superuser. The runtime login is never in a backup: the migration job
 # (api-main --migrate) creates it after a restore with the deployment's own password.
 #
 # What may be restored (CWE-345). The superuser runs the dump's SQL, so its origin is the gate, and that gate is outside
@@ -69,7 +81,7 @@ SOCKET_DIR=/var/run/postgresql
 
 say() { printf 'ariva-db: %s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
-usage() { say "usage: ariva-db.sh <backup|manifest|check-dump|restore|check|keyring|after-kafka-loss> [options]; see the header of this file"; exit 2; }
+usage() { say "usage: ariva-db.sh <backup|manifest|check-dump|restore|check|keyring|after-kafka-loss|update-extensions> [options]; see the header of this file"; exit 2; }
 
 valid_identifier() { [[ "$1" =~ ^[a-z_][a-z0-9_]{0,62}$ ]]; }
 valid_file() { [[ "$1" == "-" ]] || { [[ "$1" =~ ^/[A-Za-z0-9._/-]{1,255}$ ]] && [[ "$1" != *..* ]]; }; }
@@ -90,7 +102,8 @@ as_migration() {
     --set=ON_ERROR_STOP=1 --host=127.0.0.1 --port="$PORT" --username="$LOGIN" --dbname="$DATABASE" "$@"
 }
 
-# psql as the database superuser over the local socket (peer authentication; the restore's TimescaleDB steps only).
+# psql as the database superuser over the local socket (peer authentication; the restore's TimescaleDB steps and the
+# extensions' update only: OpsScriptTests holds every call to one of four fixed statements).
 as_superuser() {
   PGAPPNAME=ariva-ops psql --no-psqlrc --quiet --no-password --set=ON_ERROR_STOP=1 \
     --host="$SOCKET_DIR" --port="$PORT" --username="$SUPERUSER" --dbname="$DATABASE" "$@"
@@ -459,6 +472,16 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'languages|plpgsql only'
                       ELSE 'FAIL languages|' || string_agg(name, ', ' ORDER BY name) END FROM other_languages
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'extensions|plpgsql, timescaledb and timescaledb_toolkit only'
                       ELSE 'FAIL extensions|' || string_agg(name, ', ' ORDER BY name) END FROM other_extensions
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'extension versions|TimescaleDB''s extensions at the versions the image ships'
+                      ELSE 'FAIL extension versions|' || string_agg(name || ' ' || installed_version || ' (the image ships ' || default_version
+                           || CASE WHEN has_path THEN '): run update-extensions' ELSE '; it has no update from it): roll the image forward' END,
+                           ', ' ORDER BY name) || ' (ARV-236)' END
+                 FROM (SELECT a.name, a.installed_version, a.default_version,
+                              EXISTS (SELECT 1 FROM pg_extension_update_paths(a.name) u
+                                       WHERE u.source = a.installed_version AND u.target = a.default_version AND u.path IS NOT NULL) AS has_path
+                         FROM pg_available_extensions a
+                        WHERE a.name IN ('timescaledb', 'timescaledb_toolkit') AND a.installed_version IS NOT NULL
+                          AND a.installed_version <> a.default_version) behind
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'event triggers|none outside the extensions'
                       ELSE 'FAIL event triggers|' || string_agg(name, ', ' ORDER BY name) END FROM event_triggers
 UNION ALL SELECT CASE
@@ -589,6 +612,140 @@ SQL
   fi
 }
 
+# Reads for the extensions' update, as the migration login with the search path fixed to the system catalog for the session
+# (a startup option, which wins over the login's own settings), so no object or setting of that login changes what a
+# name in these statements means; every catalog name is qualified as well.
+as_migration_catalog() {
+  PGOPTIONS='-c search_path=pg_catalog,pg_temp' as_migration "$@"
+}
+
+# TimescaleDB's extensions whose installed version is not the one the image ships, as name|installed|shipped|update path
+# (t or f) lines. No update path: the image is older than the database's extension (a rollback of the database image).
+extensions_behind() {
+  as_migration_catalog --tuples-only --no-align --field-separator='|' <<'SQL'
+SELECT a.name, a.installed_version, a.default_version,
+       EXISTS (SELECT 1 FROM pg_catalog.pg_extension_update_paths(a.name) u
+                WHERE u.source = a.installed_version AND u.target = a.default_version AND u.path IS NOT NULL)
+  FROM pg_catalog.pg_available_extensions a
+ WHERE a.name IN ('timescaledb', 'timescaledb_toolkit') AND a.installed_version IS NOT NULL
+   AND a.installed_version <> a.default_version
+ ORDER BY a.name;
+SQL
+}
+
+# What the extensions' update scripts could pick up instead of the system's or their own objects: a function, procedure,
+# aggregate or operator outside the three extensions (plpgsql, timescaledb, timescaledb_toolkit) named as one in
+# pg_catalog or one of theirs, any other extension, and settings made for every session of this database (ALTER DATABASE
+# ... SET, which the database owner may make and the superuser's update session would inherit; Ariva makes none). One line
+# per object; none expected.
+planted_objects() {
+  as_migration_catalog --tuples-only --no-align <<'SQL'
+WITH members AS (
+    SELECT d.classid, d.objid
+      FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_extension e ON e.oid = d.refobjid
+     WHERE d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass AND d.deptype = 'e'
+       AND e.extname IN ('plpgsql', 'timescaledb', 'timescaledb_toolkit')),
+function_names AS (
+    SELECT p.proname FROM pg_catalog.pg_proc p
+     WHERE p.pronamespace = 'pg_catalog'::pg_catalog.regnamespace
+        OR EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND m.objid = p.oid)),
+operator_names AS (
+    SELECT o.oprname FROM pg_catalog.pg_operator o
+     WHERE o.oprnamespace = 'pg_catalog'::pg_catalog.regnamespace
+        OR EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_operator'::pg_catalog.regclass AND m.objid = o.oid))
+SELECT 'function ' || n.nspname || '.' || p.proname
+  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+   AND p.proname IN (SELECT proname FROM function_names)
+   AND NOT EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND m.objid = p.oid)
+UNION
+SELECT 'operator ' || n.nspname || '.' || o.oprname
+  FROM pg_catalog.pg_operator o JOIN pg_catalog.pg_namespace n ON n.oid = o.oprnamespace
+ WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+   AND o.oprname IN (SELECT oprname FROM operator_names)
+   AND NOT EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_operator'::pg_catalog.regclass AND m.objid = o.oid)
+UNION
+SELECT 'extension ' || e.extname FROM pg_catalog.pg_extension e WHERE e.extname NOT IN ('plpgsql', 'timescaledb', 'timescaledb_toolkit')
+UNION
+SELECT 'database setting ' || pg_catalog.array_to_string(s.setconfig, ', ')
+  FROM pg_catalog.pg_db_role_setting s JOIN pg_catalog.pg_database d ON d.oid = s.setdatabase
+ WHERE d.datname = pg_catalog.current_database() AND s.setrole = 0
+ORDER BY 1;
+SQL
+}
+
+# Sessions of Ariva's logins on the database other than this one, as "login (count)" lines: the migration login and every
+# member of ariva_runtime or ariva_validation_reader (the hosts). A row of another login's session shows its login but not
+# always its backend type, so a row without one counts; TimescaleDB's background workers do not.
+ariva_sessions() {
+  as_migration_catalog --tuples-only --no-align <<'SQL'
+SELECT a.usename || ' (' || count(*) || ')'
+  FROM pg_catalog.pg_stat_activity a
+ WHERE a.datname = pg_catalog.current_database() AND a.pid <> pg_catalog.pg_backend_pid()
+   AND (a.backend_type IS NULL OR a.backend_type = 'client backend')
+   AND (a.usename = CURRENT_USER
+        OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
+                    WHERE m.member = a.usesysid AND g.rolname IN ('ariva_runtime', 'ariva_validation_reader')))
+ GROUP BY a.usename
+ ORDER BY 1;
+SQL
+}
+
+# ARV-236: a newer image ships newer versions of the extensions, and the database keeps the one it has until the
+# extension's owner updates it. It runs with the Ariva deployments scaled to 0 (wiki 04 section 6.8): a connection that
+# loaded the old library is closed by TimescaleDB at its next statement (FATAL), and a long transaction would hold the
+# update's locks. In order, before any statement as the superuser: refuse an extension the image cannot update (no update
+# path), a session of an Ariva login, and anything planted_objects finds; then each ALTER EXTENSION as the first and only statement of a psql
+# session of its own, since TimescaleDB loads its library at a session's first statement and refuses the update once the
+# old one is loaded ("cannot be updated after the old version has already been loaded"); psql without psqlrc sends nothing
+# before it, and lock_timeout (a startup option, not a statement) ends a wait for a lock after 30 seconds with nothing
+# changed. The statements are constants: no value reaches them.
+cmd_update_extensions() {
+  (($# == 0)) || usage
+  check_settings
+  require_migration_login
+  local behind name installed shipped path planted
+  behind="$(extensions_behind)"
+  if [[ -z "$behind" ]]; then
+    say "TimescaleDB's extensions in $DATABASE are at the versions the image ships: nothing to update"
+    return
+  fi
+  while IFS='|' read -r name installed shipped path; do
+    [[ -n "$name" && "$path" != "t" ]] || continue
+    die "$name $installed has no update to $shipped, the version the image ships: the image is older than the database's extension (for example a rollback of the database image after update-extensions); roll the image forward (wiki 18)"
+  done <<<"$behind"
+  # The hosts scaled to 0: their pods may take a few seconds to end after the scale (up to 10 here, then refused).
+  local sessions attempt
+  for attempt in 1 2 3 4 5 6; do
+    sessions="$(ariva_sessions)"
+    [[ -n "$sessions" && "$attempt" -lt 6 ]] || break
+    sleep 2
+  done
+  [[ -z "$sessions" ]] || die "Ariva's logins still have sessions on $DATABASE: ${sessions//$'\n'/, }. Scale the Ariva deployments to 0 first (kubectl -n <namespace> scale deployment --all --replicas=0) and wait for their pods to end; nothing was changed"
+  planted="$(planted_objects)"
+  [[ -z "$planted" ]] || die "refused before any statement as the superuser: ${planted//$'\n'/, }. The extensions' update scripts run as the superuser with the extension's schema on their search path, so objects named as the system's or TimescaleDB's own, outside the extensions, could run in their place. Find out who created them (wiki 10 section 4.13), remove them, then run update-extensions again"
+  while IFS='|' read -r name installed shipped path; do
+    [[ -n "$name" ]] || continue
+    say "updating $name from $installed to $shipped (superuser over the local socket, the session's first statement)"
+    case "$name" in
+      timescaledb)
+        PGOPTIONS='-c lock_timeout=30s' as_superuser <<'SQL'
+ALTER EXTENSION timescaledb UPDATE;
+SQL
+        ;;
+      timescaledb_toolkit)
+        PGOPTIONS='-c lock_timeout=30s' as_superuser <<'SQL'
+ALTER EXTENSION timescaledb_toolkit UPDATE;
+SQL
+        ;;
+      *) die "unexpected extension $name" ;;
+    esac
+  done <<<"$behind"
+  behind="$(extensions_behind)"
+  [[ -z "$behind" ]] || die "an extension is still behind the image after its update: ${behind//$'\n'/, }"
+  say "done: TimescaleDB's extensions in $DATABASE are at the versions the image ships; scale the deployments back, run check, and take a new backup (a backup restores only into its own TimescaleDB version)"
+}
+
 main() {
   (($# >= 1)) || usage
   local command="$1"; shift
@@ -611,6 +768,7 @@ main() {
     check) cmd_check "${rest[@]}" ;;
     keyring) cmd_keyring "${rest[@]}" ;;
     after-kafka-loss) cmd_after_kafka_loss "${rest[@]}" ;;
+    update-extensions) cmd_update_extensions "${rest[@]}" ;;
     *) usage ;;
   esac
 }

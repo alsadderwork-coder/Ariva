@@ -113,6 +113,48 @@ public sealed partial class OpsScriptTests
             .And.Contain("GRANT EXECUTE ON FUNCTION ariva_retention_purge(text, integer) TO ariva_runtime", "the grants the check pins");
     }
 
+    [Fact]
+    public void Superuser_Should_RunOnlyTimescaleDbsFixedStatements_When_TheScriptIsRead()
+    {
+        // ARV-126 and ARV-236 (CWE-269): the database superuser runs TimescaleDB's restore mode steps and the extensions' update,
+        // each a constant statement in a quoted heredoc with no psql variable, option or command string that could carry a value,
+        // and pg_restore of a dump whose origin the signed manifest decides. Nothing else runs as the superuser.
+        var text = Script.Value;
+        var calls = SuperuserCall().Matches(text).ToList();
+
+        calls.Select(call => call.Groups["sql"].Value.Trim()).Should().BeEquivalentTo(
+            ["SELECT timescaledb_pre_restore();", "SELECT timescaledb_post_restore();", "ALTER EXTENSION timescaledb UPDATE;", "ALTER EXTENSION timescaledb_toolkit UPDATE;"],
+            "each superuser session runs one fixed statement");
+        calls.Select(call => call.Groups["args"].Value.Trim()).Should().OnlyContain(args => args.Length == 0 || args == "--tuples-only --no-align");
+        calls.Select(call => call.Groups["prefix"].Value.Trim()).Should().OnlyContain(prefix => prefix.Length == 0 || prefix == "PGOPTIONS='-c lock_timeout=30s'",
+            "nothing but a startup option precedes a call on its line, so the update stays its session's first statement");
+        Regex.Matches(text, @"\bas_superuser\b").Count.Should().Be(calls.Count + 1, "as_superuser is defined once and called only as above");
+
+        // Every line of code that names the superuser, signs in to PostgreSQL, dumps or restores: the two helpers, the backup's
+        // pg_dump (the migration login), the restore's pg_restore (and its table of contents reads, which open no connection),
+        // the setting and its checks. No -U and no PGUSER anywhere.
+        var code = text.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith('#')).ToList();
+        code.Where(line => SuperuserName().IsMatch(line)).Should().BeEquivalentTo(
+        [
+            "SUPERUSER=\"${POSTGRES_USER:-postgres}\"",
+            "valid_identifier \"$SUPERUSER\" || die \"the superuser name is not a plain lower-case identifier\"",
+            "--host=\"$SOCKET_DIR\" --port=\"$PORT\" --username=\"$SUPERUSER\" --dbname=\"$DATABASE\" \"$@\"",
+            "local args=(--exit-on-error --no-password --host=\"$SOCKET_DIR\" --port=\"$PORT\" --username=\"$SUPERUSER\" --dbname=\"$DATABASE\")",
+            "--superuser) (($# >= 2)) || usage; SUPERUSER=\"$2\"; shift 2 ;;"
+        ]);
+        code.Where(line => PostgresClient().IsMatch(line)).Should().BeEquivalentTo(
+        [
+            "PGPASSWORD=\"$MIGRATION_PASSWORD\" PGAPPNAME=ariva-ops PGCONNECT_TIMEOUT=15 psql --no-psqlrc --quiet --no-password \\",
+            "PGAPPNAME=ariva-ops psql --no-psqlrc --quiet --no-password --set=ON_ERROR_STOP=1 \\",
+            "PGPASSWORD=\"$MIGRATION_PASSWORD\" PGAPPNAME=ariva-ops pg_dump \"${args[@]}\"",
+            "toc=\"$(pg_restore --list)\" || die \"the input is not a custom-format dump\"",
+            "toc=\"$(pg_restore --list \"$input\")\" || die \"$input is not a custom-format dump\"",
+            "PGAPPNAME=ariva-ops pg_restore \"${args[@]}\"",
+            "PGAPPNAME=ariva-ops pg_restore \"${args[@]}\" \"$input\""
+        ]);
+        code.Should().NotContain(line => line.Contains("PGUSER", StringComparison.Ordinal) || Regex.IsMatch(line, @"(^|\s)-U(\s|$)"));
+    }
+
     #endregion
 
     #region Patterns
@@ -131,6 +173,15 @@ public sealed partial class OpsScriptTests
 
     [GeneratedRegex(@"\bpsql --no-psqlrc")]
     private static partial Regex PsqlOutsideHelpers();
+
+    [GeneratedRegex(@"^(?<prefix>[^\n]*?)\bas_superuser\b(?<args>[^<\n]*)<<'SQL'[^\n]*\n(?<sql>.*?)\nSQL\n", RegexOptions.Singleline | RegexOptions.Multiline)]
+    private static partial Regex SuperuserCall();
+
+    [GeneratedRegex(@"\bSUPERUSER\b")]
+    private static partial Regex SuperuserName();
+
+    [GeneratedRegex(@"\b(psql|pg_restore|pg_dump)\b")]
+    private static partial Regex PostgresClient();
 
     #endregion
 }

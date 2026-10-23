@@ -12,7 +12,7 @@ namespace Ariva.IntegrationTests.Setup;
 public static class KafkaContainers
 {
     /// <summary>The broker image of the suite, by tag and digest (ARV-096; scripts/base-images.mjs checks the pin and proposes new digests).</summary>
-    public const string Image = "confluentinc/cp-kafka:7.6.1@sha256:620734d9fc0bb1f9886932e5baf33806074469f40e3fe246a3fdbb59309535fa";
+    public const string Image = "confluentinc/cp-kafka:7.6.14@sha256:b20da2c030172c556f1a5569ef70110e1b2937dcc03356a90da93ffa4467791f";
 
     /// <summary>
     /// ARV-156: Testcontainers.Kafka 4.15.0 starts the container with

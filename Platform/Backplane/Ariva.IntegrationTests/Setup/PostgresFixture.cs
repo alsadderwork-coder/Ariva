@@ -16,7 +16,7 @@ public sealed class PostgresFixture : IAsyncLifetime
     /// The chart's TimescaleDB image, by tag and digest (Charts/timescaledb/values.yaml; ARV-096): scripts/base-images.mjs holds this
     /// constant to the chart's digest, as it holds docker-compose.dev.yml, CI and the AppHost.
     /// </summary>
-    public const string Image = "timescale/timescaledb-ha:pg17-ts2.30@sha256:2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2";
+    public const string Image = "timescale/timescaledb-ha:pg17-ts2.31@sha256:cae378810532f8402c306d5a2bc6acc2c7550193d12f2b5ef9b2532efe0e98c0";
 
     private const string Database = "ariva_it";
     private const string Username = "ariva";

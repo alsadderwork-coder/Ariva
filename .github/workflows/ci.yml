@@ -300,7 +300,7 @@ jobs:
     # accounts. Same image as the integration tests and the dev environment. The password only lives for this job.
     services:
       postgres:
-        image: timescale/timescaledb-ha:pg17-ts2.30@sha256:2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2
+        image: timescale/timescaledb-ha:pg17-ts2.31@sha256:cae378810532f8402c306d5a2bc6acc2c7550193d12f2b5ef9b2532efe0e98c0
         env:
           POSTGRES_PASSWORD: e2e-${{ github.run_id }}-${{ github.run_attempt }}
         ports:
@@ -312,7 +312,7 @@ jobs:
           --health-retries 20
       # The live hub (ARV-035) reads Stream's snapshots from Redis; the suite publishes one as Stream would.
       redis:
-        image: redis:8.2-alpine@sha256:b51665e66f00759be7c3152ad5ac3c66fb2f619c13ef62dea7cc1f9914524635
+        image: redis:8.2-alpine@sha256:d1389b3f3f981460b9b0918c4d7390c6e9decb8c69b9f09a02e1b6fd7554ade7
         ports:
           - 6380:6379
         options: >-
@@ -322,7 +322,7 @@ jobs:
           --health-retries 20
       # Ingest answers a sensor push 202 only once its events are in Kafka (ARV-023); one KRaft broker, the dev image.
       kafka:
-        image: apache/kafka:4.1.0@sha256:bff074a5d0051dbc0bbbcd25b045bb1fe84833ec0d3c7c965d1797dd289ec88f
+        image: apache/kafka:4.1.2@sha256:5cc2a2fd93fa2687b44015eee04fb2c3edd9e526bd64bf8bec5ff1e268772e0e
         env:
           KAFKA_NODE_ID: 1
           KAFKA_PROCESS_ROLES: broker,controller

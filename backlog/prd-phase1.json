@@ -2094,6 +2094,27 @@
       "passes": true,
       "notes": "Size S. Medium (wrong figures can be shown for a site on Live operations), so before the pilot. The displays screen's fix (2026-10-22) is the pattern.",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-244",
+      "title": "[E17] A restore refuses a backup of another TimescaleDB version, and restores it through that version",
+      "description": "Found in ARV-236 (2026-10-23), which moved the chart's database image from pg17-ts2.30 to pg17-ts2.31 (TimescaleDB 2.30.2 to 2.31.0 on a database created under the old image). TimescaleDB's documentation requires a logical dump to be restored into a database whose extension is at the dump's own version: its catalog tables travel as data and may change shape between versions. The backup's manifest records the versions (extensions), but ariva-db.sh restore compares nothing: it restores any dump into the extension the image created, so a backup taken before an image bump is restored against another version during an incident (what that does was not tried in ARV-236: a failure part way through pg_restore means starting again from a new volume). The image ships older libraries and install scripts (pg17-ts2.31 ships 2.17.0 to 2.31.0), so the restore can create the extension at the dump's version in the empty database (as the superuser, the session's first statement, as update-extensions does), restore, then update it. CWEs to review: CWE-78, CWE-269 (superuser steps), CWE-345 (the version comes from the signed manifest or the dump itself, never from an unsigned input).",
+      "acceptanceCriteria": [
+        "ariva-ops.mjs restore passes the signed manifest's TimescaleDB version to ariva-db.sh restore, and a restore given --sha256 without a manifest reads the version from the dump (or refuses with the reason); a version that is not a plain dotted number is refused",
+        "ariva-db.sh restore refuses a dump whose TimescaleDB version the image does not ship, and restores one of an older version it ships by creating the extension at that version first (the superuser over the local socket, the first statement of its session), then updating it after the restore (update-extensions); a dump of the database's own version restores as before",
+        "An integration test restores a dump taken at the previous version the image ships into a fresh server (both extensions at the image's versions afterwards, the hosts start on it, check passes), and another of a version the image does not ship is refused before anything changes",
+        "node scripts/ops/ariva-ops.mjs --self-test covers the version from the manifest, the refusal of a malformed one and the --sha256 path",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (wiki 04 section 10.4, wiki 10 section 4.13; node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 42,
+      "passes": false,
+      "notes": "Filed 2026-10-23 by ARV-236. Medium: a restore during an incident fails on any backup older than the last database image bump, so before the pilot. Until then wiki 04 section 10.4 and the ARV-236 release note give the manual steps. Size S.",
+      "dependsOn": [
+        "ARV-236"
+      ]
     }
   ]
 }

@@ -3,4 +3,4 @@ name: ariva-timescaledb
 description: Single node TimescaleDB (PostgreSQL 17) for Ariva, self managed in the release namespace (ARV-062)
 type: application
 version: 0.2.0
-appVersion: "pg17-ts2.30"
+appVersion: "pg17-ts2.31"

@@ -40,8 +40,8 @@ var simulatorKey = builder.AddParameter("simulation-operator-key", Password(), s
 // The migration login owns the schema (ARV-006); the hosts create the DML-only runtime login at startup in vm-local.
 var timescale = builder.AddPostgres("timescaledb", builder.AddParameter("database-owner", "ariva"), ownerPassword, settings.DatabasePort)
     .WithImageRegistry("docker.io")
-    .WithImage("timescale/timescaledb-ha", "pg17-ts2.30")
-    .WithImageSHA256("2fcc39a5d4c8a65f58691ef92c7819df5773db72397b2dd8493f114659b519c2")
+    .WithImage("timescale/timescaledb-ha", "pg17-ts2.31")
+    .WithImageSHA256("cae378810532f8402c306d5a2bc6acc2c7550193d12f2b5ef9b2532efe0e98c0")
     .WithEnvironment("POSTGRES_DB", "ariva")
     .WithEnvironment("TIMESCALEDB_TELEMETRY", "off")
     .WithEnvironment("ARIVA_READONLY_PASSWORD", readonlyPassword)
@@ -58,12 +58,12 @@ if (!string.IsNullOrWhiteSpace(settings.DatabaseVolumeForRun))
 
 // Aspire 13.6's own images for Kafka and Redis, named here so that they are pinned rather than taken from the package.
 var kafka = builder.AddKafka("kafka", settings.KafkaPort)
-    .WithImage("confluentinc/confluent-local", "8.2.0")
-    .WithImageSHA256("11b351dc22765780047a07b02d1f19a820bbdd3fae2cfe7ba4ef0d0a26b52248");
+    .WithImage("confluentinc/confluent-local", "8.2.4")
+    .WithImageSHA256("7434d641ecf0e31f2304485d6e992cc5e31fa1532629aacf1b71ceae5cf89e6b");
 
 var redis = builder.AddRedis("redis", settings.RedisPort, redisPassword)
     .WithImage("library/redis", "8.6")
-    .WithImageSHA256("192fab3335680aa420049026a18dc6baa30a69406cd29af35145bca0523d781a");
+    .WithImageSHA256("e6dae84f7db289dde3384fdb18d182556784e5a681df3a3f54d1289952364ce8");
 
 var smtp = builder.AddContainer("smtp4dev", "rnwood/smtp4dev", "3.15.0")
     .WithImageRegistry("docker.io")

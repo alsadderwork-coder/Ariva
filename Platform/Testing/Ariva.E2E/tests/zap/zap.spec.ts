@@ -21,7 +21,7 @@ import { loadTriage, readAlerts, summary, untriagedHigh, type ZapAlert } from '.
  */
 
 /** ghcr.io/zaproxy/zaproxy:2.17.0. Bump with the release notes; the image is large, so it is pulled once per run. */
-export const zapImage = 'ghcr.io/zaproxy/zaproxy@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef';
+export const zapImage = 'ghcr.io/zaproxy/zaproxy@sha256:5ccfff9a411743ab2615136a2edd7416bec9ce41572fa94e935df38c14adb2b6';
 /** The web image's own nginx base (Platform/Frontplane/Ariva.Web/Dockerfile), serving the run's production build. */
 export const nginxImage = 'nginx:1.30.5-alpine3.24@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94';
 

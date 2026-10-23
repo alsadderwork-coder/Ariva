@@ -540,7 +540,7 @@
       ],
       "priority": 112,
       "passes": false,
-      "notes": "Filed by ARV-227 on 2026-10-22 from the first live run of --patches. Kept out of ARV-227 so the watch and the bumps are reviewed and tested apart: a bump changes what the integration tests, the E2E run and the chart's TimescaleDB run on. Before the pilot: the chart's TimescaleDB is what k8s-prd deploys, and PostgreSQL's minor releases reach it only through a newer line. ARV-227's security review (round 1, M3) found the retiring TimescaleDB lines.",
+      "notes": "Filed by ARV-227 on 2026-10-22 from the first live run of --patches. Kept out of ARV-227 so the watch and the bumps are reviewed and tested apart: a bump changes what the integration tests, the E2E run and the chart's TimescaleDB run on. Before the pilot: the chart's TimescaleDB is what k8s-prd deploys, and PostgreSQL's minor releases reach it only through a newer line. ARV-227's security review (round 1, M3) found the retiring TimescaleDB lines. Built 2026-10-23 (backlog/progress.md): every pin bumped, --check and --patches pass, TimescaleDB 2.31 with ariva-db.sh update-extensions (the superuser use pending the owner, decisions.md 2026-10-23), story gate and full E2E pass, security review PASS in round 2. passes stays false until the AppHost has started once and an image scan has run (Docker Hub and ECR public refused this session's pulls on their rate limits), and the ZAP baseline workflow and a third-party-images.yml run have passed on GitHub (the session's network policy denies ghcr.io's blob host, and third-party-images.yml is not on main yet).",
       "dependsOn": [
         "ARV-227"
       ]

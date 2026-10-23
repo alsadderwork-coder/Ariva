@@ -10,6 +10,7 @@
 //   node scripts/ops/ariva-ops.mjs keyring --namespace <ns> --certificate <tls.crt> [--certificate <previous.crt>]
 //   node scripts/ops/ariva-ops.mjs check --namespace <ns> [--runtime-login <name>] [--reader-login <name>]
 //   node scripts/ops/ariva-ops.mjs after-kafka-loss --namespace <ns> --confirm-stream-stopped [--dry-run]
+//   node scripts/ops/ariva-ops.mjs update-extensions --namespace <ns>   (after the database pod restarted on a newer image)
 //   node scripts/ops/ariva-ops.mjs --self-test
 // Options for every command: --context <kube context>, --pod <database pod> (timescaledb-0), --container <name>
 // (timescaledb), --plan (print the commands without running them).
@@ -214,8 +215,11 @@ export function plan(o, now = new Date()) {
       if (!o.confirmStreamStopped) throw new UsageError('scale api-stream to 0 first, then pass --confirm-stream-stopped');
       return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['after-kafka-loss', '--confirm-stream-stopped', ...(o.dryRun ? ['--dry-run'] : [])]) }] };
     }
+    case 'update-extensions':
+      // ARV-236: TimescaleDB's extensions to the versions the image ships, as the superuser over the pod's socket (ariva-db.sh).
+      return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['update-extensions']) }] };
     default:
-      throw new UsageError('unknown command; use backup, restore, files-restore, keyring, check, after-kafka-loss or --self-test');
+      throw new UsageError('unknown command; use backup, restore, files-restore, keyring, check, after-kafka-loss, update-extensions or --self-test');
   }
 }
 
@@ -557,6 +561,8 @@ async function selfTest() {
     ok(thumbprint === '5F5CA77443021ECA47897BC9395F6F063393DA08729B6A62B8B5B3C2E8521B75', 'the certificate SHA-256 as openssl x509 -fingerprint -sha256 prints it');
     const keyring = plan(parse(['keyring', '--namespace', 'ariva', '--certificate', certificate]));
     assert.deepEqual(keyring.steps[1].cmd[1].slice(-3), ['keyring', '--certificate-sha256', thumbprint]); checks++;
+    const update = plan(parse(['update-extensions', '--namespace', 'ariva']));
+    assert.deepEqual(update.steps[1].cmd[1].slice(-2), ['/tmp/ariva-db.sh', 'update-extensions']); checks++;
     fs.writeFileSync(path.join(temp, 'tls.key'), '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n');
     refuses(() => certificateSha256(path.join(temp, 'tls.key')), 'a private key given as the certificate');
 
