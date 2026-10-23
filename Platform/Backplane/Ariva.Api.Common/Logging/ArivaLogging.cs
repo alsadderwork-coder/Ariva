@@ -72,7 +72,7 @@ public static class ArivaLogging
     /// <param name="metrics">The security metrics, where the redaction enricher counts a property it had to replace; none in tests.</param>
     /// <param name="services">
     /// The host's services, for the collector clients <see cref="AddCollectorClients"/> registered (ARV-200); needed only when a
-    /// collector's CA file is set.
+    /// collector's CA file is set or a collector is reached over https (ARV-226).
     /// </param>
     /// <returns>The same configuration.</returns>
     public static LoggerConfiguration Configure(LoggerConfiguration logger, IConfiguration configuration, string environment, SecurityEventMetrics metrics = null,
@@ -96,12 +96,13 @@ public static class ArivaLogging
         var protection = LogProtection.From(configuration, environment);
         var lokiUri = LokiUri(configuration);
         var lokiCredentials = lokiUri is null ? null : LokiCredentialsFrom(configuration, environment, lokiUri);
-        // ARV-200: a collector whose certificate comes from the site PKI is reached through its pinned client.
-        var lokiClient = lokiUri is not null && CollectorTrust.RootsFrom(configuration, CollectorTrust.LokiSetting) is not null
-            ? PinnedLokiClient(lokiUri, services)
+        // ARV-200: a collector whose certificate comes from the site PKI is reached through its pinned client; ARV-226: one reached
+        // over https without it, through a client pinned to the image's public CAs; either downloads no certificate.
+        var lokiClient = lokiUri is not null && (CollectorTrust.RootsFrom(configuration, CollectorTrust.LokiSetting) is not null || LokiOverHttps(configuration))
+            ? PinnedLokiClient(lokiUri, configuration, services)
             : null;
         var otlp = OtlpSettings.From(configuration);
-        var otlpHandler = otlp.Enabled && CollectorTrust.RootsFrom(configuration, CollectorTrust.OtlpSetting) is not null
+        var otlpHandler = otlp.Enabled && (CollectorTrust.RootsFrom(configuration, CollectorTrust.OtlpSetting) is not null || OtlpOverHttps(configuration))
             ? PinnedOtlpHandler(otlp, configuration, services)
             : null;
 
@@ -192,8 +193,8 @@ public static class ArivaLogging
         string.Equals(configuration["Application:Environment"], ArivaEnvironment.K8sPrd, StringComparison.Ordinal);
 
     /// <summary>
-    /// ARV-200: the log sinks' pinned clients for a collector whose CA file is set (<see cref="CollectorClients"/>), registered for
-    /// the logger and disposed by the host after it. A CA file that cannot serve stops the host here, before any sink exists.
+    /// ARV-200: the log sinks' pinned clients for a collector whose CA file is set (<see cref="CollectorClients"/>), and ARV-226: for
+    /// one reached over https without it, registered for the logger and disposed by the host after it. A CA file that cannot serve stops the host here, before any sink exists.
     /// </summary>
     /// <param name="services">The host's services.</param>
     /// <param name="configuration">The host's configuration.</param>
@@ -207,25 +208,45 @@ public static class ArivaLogging
             services.AddSingleton(_ => clients);
     }
 
-    /// <summary>The Loki sink's pinned client (ARV-200), over https only.</summary>
-    private static LokiHttpClient PinnedLokiClient(Uri lokiUri, IServiceProvider services)
+    /// <summary>The Loki sink's pinned client (ARV-200, ARV-226): with a CA file, over https only.</summary>
+    private static LokiHttpClient PinnedLokiClient(Uri lokiUri, IConfiguration configuration, IServiceProvider services)
     {
-        CollectorTrust.EnsureHttps(lokiUri);
+        if (CollectorTrust.RootsFrom(configuration, CollectorTrust.LokiSetting) is not null)
+            CollectorTrust.EnsureHttps(lokiUri);
         return new LokiHttpClient(PinnedClients(services, CollectorTrust.LokiClient, CollectorTrust.LokiSetting).CreateClient(CollectorTrust.LokiClient));
     }
 
-    /// <summary>The OTLP sink's pinned handler (ARV-200), over https only.</summary>
+    /// <summary>The OTLP sink's pinned handler (ARV-200, ARV-226): with a CA file, over https only.</summary>
     private static HttpMessageHandler PinnedOtlpHandler(OtlpSettings otlp, IConfiguration configuration, IServiceProvider services)
     {
-        CollectorTrust.EnsureHttps(otlp, configuration);
+        if (CollectorTrust.RootsFrom(configuration, CollectorTrust.OtlpSetting) is not null)
+            CollectorTrust.EnsureHttps(otlp, configuration);
         return PinnedClients(services, CollectorTrust.OtlpLogsClient, CollectorTrust.OtlpSetting).CreateHandler(CollectorTrust.OtlpLogsClient);
     }
 
-    /// <summary>The host's pinned collector clients, which must hold <paramref name="client"/>: a client of any other origin keeps the public roots.</summary>
+    /// <summary>
+    /// True when the Loki sink is on and reaches Loki over https: its client is then pinned, to the site CA or to the image's
+    /// public CAs (ARV-226).
+    /// </summary>
+    internal static bool LokiOverHttps(IConfiguration configuration) => LokiUri(configuration) is { } uri && CollectorTrust.IsHttps(uri.AbsoluteUri);
+
+    /// <summary>
+    /// True when the OTLP export is on and may reach its collector over https (its endpoint, or the variable the sink reads last):
+    /// the sink's handler is then pinned, to the site CA or to the image's public CAs (ARV-226).
+    /// </summary>
+    internal static bool OtlpOverHttps(IConfiguration configuration) =>
+        OtlpSettings.From(configuration) is { Enabled: true } otlp &&
+        (CollectorTrust.IsHttps(otlp.Endpoint.AbsoluteUri) || CollectorTrust.IsHttps(configuration[OtlpSettings.EndpointVariable]));
+
+    /// <summary>
+    /// The host's pinned collector clients, which must hold <paramref name="client"/>: a client of any other origin would trust any
+    /// public CA, or download certificates while it builds the collector's chain.
+    /// </summary>
     private static CollectorClients PinnedClients(IServiceProvider services, string client, string setting) =>
         services?.GetService<CollectorClients>() is { } clients && clients.IsPinned(client)
             ? clients
-            : throw new InvalidOperationException($"{setting} is set, but the logger was built without the host's pinned collector clients (AddCollectorClients).");
+            : throw new InvalidOperationException(
+                $"{setting} is set or the collector is reached over https, but the logger was built without the host's pinned collector clients (AddCollectorClients).");
 
     /// <summary>Loki's address when the Loki sink is on, otherwise null.</summary>
     private static Uri LokiUri(IConfiguration configuration) =>

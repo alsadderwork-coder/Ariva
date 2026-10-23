@@ -81,7 +81,7 @@ public sealed class SensingArchive(DatabaseSettings database, TimeProvider timeP
         if (rows.Count == 0)
             return new SensingArchiveWrite(0, 0, 0, skippedEvents);
 
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
@@ -309,7 +309,7 @@ public sealed class SensingArchive(DatabaseSettings database, TimeProvider timeP
             throw new ArgumentOutOfRangeException(nameof(query), "A replay covers a UTC range of at most 31 days, from before to.");
         var kinds = (query.Kinds is { Count: > 0 } k ? k.AsEnumerable() : Enum.GetValues<SensingKind>()).Select(x => x.ToString()).ToArray();
 
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         // One day per statement: no snapshot held for the whole range, and each statement within its own timeout.
         for (var from = query.FromUtc; from < query.ToUtc; from = from.AddDays(1))

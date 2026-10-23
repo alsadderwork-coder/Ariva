@@ -383,8 +383,7 @@ public sealed partial class LogShippingTests : IDisposable
 
     #region Helpers
 
-    private static void Build(IConfiguration configuration, string environment) =>
-        ArivaLogging.Configure(new LoggerConfiguration(), configuration, environment).CreateLogger().Dispose();
+    private static void Build(IConfiguration configuration, string environment) => HostLogger.Build(configuration, environment);
 
     /// <summary>Settings as written in the theories, <c>key=value</c> (split at the first '='), with Application:Environment.</summary>
     private static IConfiguration Settings(string environment, params string[] settings) =>

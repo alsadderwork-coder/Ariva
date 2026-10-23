@@ -17,6 +17,7 @@ using Ariva.Core.Services.Sensing;
 using Ariva.Infra.Security;
 using Ariva.Infra.Sensing;
 using Ariva.Infra.Sensing.Declarative;
+using Ariva.UnitTests.Logging.Fixtures;
 using FluentAssertions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
@@ -695,6 +696,91 @@ public sealed class MqttTransportTests
         options.ClientCertificateMode.Should().Be(ClientCertificateMode.AllowCertificate);
         options.ClientCertificateValidation(certificate, null, SslPolicyErrors.RemoteCertificateChainErrors).Should().BeTrue();
         options.HandshakeTimeout.Should().Be(TimeSpan.FromSeconds(7));
+        // ARV-226: the client certificate's chain downloads nothing and checks no revocation, on every platform.
+        options.CheckCertificateRevocation.Should().BeFalse();
+        handshake.CertificateChainPolicy.DisableCertificateDownloads.Should().BeTrue();
+        handshake.CertificateChainPolicy.RevocationMode.Should().Be(X509RevocationMode.NoCheck);
+        handshake.CertificateRevocationCheckMode.Should().Be(X509RevocationMode.NoCheck);
+    }
+
+    [Fact]
+    public async Task Listener_Should_DownloadNoCertificate_When_ADeviceCertificateLeavesOutItsIntermediate()
+    {
+        // ARV-226 (CWE-918): SslStream builds the chain of a client certificate during the handshake, before any device is known;
+        // the listener's chain asks no address the certificate names, and the device's pin decides alone (ARV-022).
+        Gateway.Find = Gateway.Default;
+        var ct = TestContext.Current.CancellationToken;
+        await using var issuer = await IssuerSite.StartAsync(ct);
+        var (authority, intermediate, device) = TlsCollector.IssueBehindAnIntermediate("Ariva test device CA", issuer.Address);
+        using var authorityCertificate = authority;
+        using var intermediateCertificate = intermediate;
+        using var deviceCertificate = device;
+        var (app, _, port) = await StartAsync();
+        await using var _ = app;
+
+        await PresentAsync(port, device, ct);
+
+        issuer.Requests.Should().BeEmpty("no request leaves for the address the device's certificate names");
+        if (OperatingSystem.IsLinux())
+        {
+            // The control: a server handshake with the platform's chain policy and an online revocation check, Kestrel's default,
+            // fetches that address while it builds the client certificate's chain.
+            using var server = TlsCollector.NewAuthority("Ariva test control server");
+            using var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var serving = ServeOnceAsync(listener, server, ct);
+            await PresentAsync(((IPEndPoint)listener.LocalEndpoint).Port, device, ct);
+            await serving;
+            issuer.Requests.Should().NotBeEmpty("a handshake allowed to download fetches the address the certificate names");
+        }
+    }
+
+    /// <summary>A TLS client that presents <paramref name="certificate"/> alone, then waits for the server to judge it.</summary>
+    private static async Task PresentAsync(int port, X509Certificate2 certificate, CancellationToken ct)
+    {
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(IPAddress.Loopback, port, ct);
+        await using var tls = new SslStream(tcp.GetStream());
+        using var patience = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        patience.CancelAfter(TimeSpan.FromSeconds(5));
+        try
+        {
+            await tls.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            {
+                TargetHost = "localhost",
+                // Offline: the client sends the certificate alone and builds no chain of its own, so any request is the server's.
+                ClientCertificateContext = SslStreamCertificateContext.Create(certificate, null, offline: true),
+                // The test reaches a server of its own on loopback; what is under test is the server's chain of the client's certificate.
+                RemoteCertificateValidationCallback = (_, presented, _, _) => presented is not null
+            }, patience.Token);
+            // With TLS 1.3 the server reads the client's certificate after the client's side of the handshake ended: wait for its answer.
+            await tls.ReadAtLeastAsync(new byte[1], 1, throwOnEndOfStream: false, patience.Token);
+        }
+        catch (Exception e) when (e is AuthenticationException or IOException or OperationCanceledException)
+        {
+            // Refused, closed or silent: the server built the chain, or not, before any of these.
+        }
+    }
+
+    /// <summary>One TLS server handshake that asks for a client certificate with the platform's chain policy, then closes.</summary>
+    private static async Task ServeOnceAsync(TcpListener listener, X509Certificate2 certificate, CancellationToken ct)
+    {
+        using var socket = await listener.AcceptTcpClientAsync(ct);
+        await using var tls = new SslStream(socket.GetStream());
+        try
+        {
+            await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+            {
+                ServerCertificate = certificate,
+                ClientCertificateRequired = true,
+                CertificateRevocationCheckMode = X509RevocationMode.Online,
+                RemoteCertificateValidationCallback = (_, presented, _, _) => presented is not null
+            }, ct);
+        }
+        catch (Exception e) when (e is AuthenticationException or IOException)
+        {
+            // The client went away: the chain was built, or not, before.
+        }
     }
 
     [Fact]

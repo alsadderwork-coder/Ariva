@@ -49,7 +49,7 @@ public sealed class RetentionRound(DatabaseSettings database, RetentionJobSettin
     /// <summary>One run over the data sets; <see cref="RetentionRun.HeldElsewhere"/> when another replica is running it.</summary>
     public async Task<RetentionRun> RunAsync(CancellationToken ct = default)
     {
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         if (!await ScalarAsync<bool>(connection, TryLock, ct))
             return new RetentionRun(true, []);

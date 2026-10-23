@@ -210,9 +210,79 @@ public sealed class CollectorTrustTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task PublicClients_Should_DownloadNoCertificate_When_ACollectorWithoutACaFileLeavesOutItsIntermediate()
+    {
+        // ARV-226: a collector reached over https without a CA file of its own gets a client of Ariva's pinned without roots, so
+        // with the image's public CAs, which downloads no certificate; a client with the platform's default policy fetches the
+        // address the collector's certificate names, before the collector is authenticated.
+        await using var issuer = await IssuerSite.StartAsync(Ct);
+        await using var collector = await TlsCollector.StartBehindAnIntermediateAsync("Ariva test public CA", issuer.Address, Ct);
+        var services = new ServiceCollection();
+        CollectorTrust.Pin(services, null, [CollectorTrust.LokiClient]);
+        services.AddHttpClient("plain");
+        await using var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IHttpClientFactory>();
+        using var pinned = factory.CreateClient(CollectorTrust.LokiClient);
+
+        var send = () => pinned.GetAsync(new Uri(collector.Address), Ct);
+
+        await send.Should().ThrowAsync<HttpRequestException>("no CA of the image's issued the collector's certificate");
+        issuer.Requests.Should().BeEmpty("CWE-918: no request leaves for the address the certificate names");
+        CollectorTrust.IsPinned(provider, CollectorTrust.LokiClient).Should().BeTrue();
+        CollectorTrust.IsPinned(provider, "plain").Should().BeFalse();
+        if (OperatingSystem.IsLinux())
+        {
+            // The control: the factory's default handler fetches that address, so the silence above is the pin's.
+            using var plain = factory.CreateClient("plain");
+            var fetch = () => plain.GetAsync(new Uri(collector.Address), Ct);
+            await fetch.Should().ThrowAsync<HttpRequestException>();
+            issuer.Requests.Should().NotBeEmpty("a client with the platform's default policy fetches the address the certificate names");
+        }
+    }
+
+    [Fact]
+    public async Task Loki_Should_DownloadNoCertificate_When_ItIsReachedOverHttpsWithoutACaFile()
+    {
+        await using var issuer = await IssuerSite.StartAsync(Ct);
+        await using var collector = await TlsCollector.StartBehindAnIntermediateAsync("Ariva test public CA", issuer.Address, Ct);
+
+        Ship(Configuration(("Loki:Enabled", "true"), ("Loki:Uri", collector.Address)));
+
+        (await collector.ReceivedAsync("POST", Silence, Ct)).Should().BeFalse("no CA of the image's issued the collector's certificate");
+        issuer.Requests.Should().BeEmpty("the Loki sink's client downloads no certificate (ARV-226)");
+    }
+
+    [Fact]
+    public async Task OtlpLogs_Should_DownloadNoCertificate_When_TheCollectorIsReachedOverHttpsWithoutACaFile()
+    {
+        await using var issuer = await IssuerSite.StartAsync(Ct);
+        await using var collector = await TlsCollector.StartBehindAnIntermediateAsync("Ariva test public CA", issuer.Address, Ct);
+
+        Ship(Configuration(("Otlp:Enabled", "true"), ("Otlp:Endpoint", collector.Address), ("Otlp:Protocol", "http/protobuf")));
+
+        (await collector.ReceivedAsync("POST", Silence, Ct)).Should().BeFalse("no CA of the image's issued the collector's certificate");
+        issuer.Requests.Should().BeEmpty("the OTLP log sink's handler downloads no certificate (ARV-226)");
+    }
+
     #endregion
 
     #region The OTLP exporters
+
+    [Theory]
+    [MemberData(nameof(TraceProtocols))]
+    public async Task Traces_Should_DownloadNoCertificate_When_TheCollectorIsReachedOverHttpsWithoutACaFile(string protocol, string line)
+    {
+        // ARV-226: the exporters take Ariva's client with the image's public CAs, over gRPC and http/protobuf alike.
+        await using var issuer = await IssuerSite.StartAsync(Ct);
+        await using var collector = await TlsCollector.StartBehindAnIntermediateAsync("Ariva test public CA", issuer.Address, Ct);
+        await using var provider = Telemetry(collector.Address, protocol, caFile: null);
+
+        ExportTrace(provider);
+
+        (await collector.ReceivedAsync(line, Silence, Ct)).Should().BeFalse("no CA of the image's issued the collector's certificate");
+        issuer.Requests.Should().BeEmpty("the exporters' client downloads no certificate");
+    }
 
     [Theory]
     [MemberData(nameof(TraceProtocols))]
@@ -436,6 +506,28 @@ public sealed class CollectorTrustTests : IDisposable
         var configure = () => ArivaLogging.Configure(new LoggerConfiguration(), configuration, ArivaEnvironment.VmLocal);
 
         configure.Should().Throw<InvalidOperationException>().WithMessage("*AddCollectorClients*");
+    }
+
+    [Theory]
+    [InlineData("Loki")]
+    [InlineData("OTLP")]
+    public async Task Configure_Should_StopTheHost_When_ACollectorIsReachedOverHttpsWithoutACaFileAndTheFactoryHoldsNoPinnedClient(string collector)
+    {
+        // ARV-226: without a CA file too, a sink never makes its own client, whose chain would download what the collector left out.
+        var configuration = collector == "Loki"
+            ? Configuration(("Loki:Enabled", "true"), ("Loki:Uri", "https://localhost:3100"))
+            : Configuration(("Otlp:Enabled", "true"), ("Otlp:Endpoint", "https://localhost:4317"));
+        var services = new ServiceCollection();
+        services.AddHttpClient();
+        await using var provider = services.BuildServiceProvider();
+
+        var unpinned = () => ArivaLogging.Configure(new LoggerConfiguration(), configuration, ArivaEnvironment.VmLocal, null, provider);
+        var bare = () => ArivaLogging.Configure(new LoggerConfiguration(), configuration, ArivaEnvironment.VmLocal);
+
+        unpinned.Should().Throw<InvalidOperationException>().WithMessage("*reached over https*pinned collector clients (AddCollectorClients)*");
+        bare.Should().Throw<InvalidOperationException>().WithMessage("*AddCollectorClients*");
+        using var host = HostLogger.Create(configuration, ArivaEnvironment.VmLocal);
+        host.Logger.Should().NotBeNull("the host registers the pinned clients before it builds the logger");
     }
 
     [Theory]

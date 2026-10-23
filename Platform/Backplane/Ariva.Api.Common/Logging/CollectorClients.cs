@@ -7,7 +7,8 @@ namespace Ariva.Api.Common.Logging;
 /// <summary>
 /// ARV-200: the log sinks' clients for a collector whose CA file is set (<see cref="CollectorTrust.LokiSetting"/>,
 /// <see cref="CollectorTrust.OtlpSetting"/>), pinned to that CA (<see cref="CollectorTrust.Pin"/>) in a client factory of their
-/// own. The host's factory gives every client the standard resilience pipeline, whose telemetry logs through the host's logger
+/// own; ARV-226: and for a collector reached over https without one, with the image's public CAs, so neither downloads a
+/// certificate. The host's factory gives every client the standard resilience pipeline, whose telemetry logs through the host's logger
 /// factory: a client taken from it while Serilog's logger is being built builds that logger again, a recursion that stopped every
 /// k8s-prd host with a collector CA. This factory has no pipeline and no logger, so the logger takes its clients at once, as the
 /// sinks made their own clients before (they batch and retry by themselves); the host disposes it after the logger, so the last
@@ -30,8 +31,8 @@ public sealed class CollectorClients : IDisposable
     #region Methods
 
     /// <summary>
-    /// The pinned clients the configuration's CA files call for, or null when it sets none. A CA file that cannot serve stops the
-    /// host here, before any sink exists (<see cref="CollectorTrust.RootsFrom"/>).
+    /// The pinned clients the configuration's CA files and https collectors call for, or null when it has neither. A CA file that
+    /// cannot serve stops the host here, before any sink exists (<see cref="CollectorTrust.RootsFrom"/>).
     /// </summary>
     /// <param name="configuration">The host's configuration.</param>
     public static CollectorClients From(IConfiguration configuration)
@@ -39,9 +40,14 @@ public sealed class CollectorClients : IDisposable
         ArgumentNullException.ThrowIfNull(configuration);
         var services = new ServiceCollection();
         var pinned = false;
-        foreach (var (setting, client) in new[] { (CollectorTrust.LokiSetting, CollectorTrust.LokiClient), (CollectorTrust.OtlpSetting, CollectorTrust.OtlpLogsClient) })
+        foreach (var (setting, client, overHttps) in new[]
+                 {
+                     (CollectorTrust.LokiSetting, CollectorTrust.LokiClient, ArivaLogging.LokiOverHttps(configuration)),
+                     (CollectorTrust.OtlpSetting, CollectorTrust.OtlpLogsClient, ArivaLogging.OtlpOverHttps(configuration))
+                 })
         {
-            if (CollectorTrust.RootsFrom(configuration, setting) is not { } roots)
+            var roots = CollectorTrust.RootsFrom(configuration, setting);
+            if (roots is null && !overHttps)
                 continue;
             CollectorTrust.Pin(services, roots, [client]);
             pinned = true;

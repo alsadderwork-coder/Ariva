@@ -247,7 +247,8 @@ public sealed class MailKitTransport(EmailSettings settings, SmtpSettings smtp) 
         var notTried = new HashSet<Guid>();
         if (emails.Count == 0)
             return new EmailBatch(failures, notTried);
-        using var client = new SmtpClient { Timeout = smtp.TimeoutSeconds * 1000 };
+        // ARV-226: a client whose handshake downloads no certificate and checks no revocation.
+        using var client = new SmtpRelayClient { Timeout = smtp.TimeoutSeconds * 1000, CheckCertificateRevocation = false };
         var security = smtp.Security switch
         {
             "SslOnConnect" => SecureSocketOptions.SslOnConnect,

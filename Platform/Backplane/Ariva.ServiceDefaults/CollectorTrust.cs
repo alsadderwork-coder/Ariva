@@ -15,7 +15,10 @@ namespace Ariva.ServiceDefaults;
 /// own CA files (ARV-082a): never the public roots beside them, and nothing else changes, so the outbound integrations keep
 /// the public roots. Each collector has a named client of its own (<see cref="Pin"/>), pinned through IHttpClientFactory,
 /// with the host name still checked by the TLS handshake. Revocation is not checked, as for the database and Redis, and no
-/// certificate is ever downloaded (CWE-918): the collector sends its intermediates in the handshake.
+/// certificate is ever downloaded (CWE-918): the collector sends its intermediates in the handshake. A collector reached over
+/// https without a CA file of its own goes through a client of Ariva's too (ARV-226), with the image's public CAs and the same
+/// policy, so no certificate is downloaded either (pinned without roots); one over plain http (development) keeps the sinks' own
+/// clients.
 /// </summary>
 public static class CollectorTrust
 {
@@ -106,18 +109,18 @@ public static class CollectorTrust
     /// certificate download), the TLS handshake still checking the collector's host name; follows no redirect and keeps no
     /// cookie (CWE-918: a collector's redirect would send a batch and its headers to another host); and keeps their requests
     /// out of the logs they carry (a logged request of the Loki client would be shipped by the same client). Each pinned name
-    /// is recorded, so a sink can require its client to be pinned (<see cref="IsPinned"/>).
+    /// is recorded, so a sink can require its client to be pinned (<see cref="IsPinned"/>). Without <paramref name="roots"/>,
+    /// the clients trust the image's public CAs, with the same policy otherwise (ARV-226).
     /// </summary>
     /// <param name="services">The host's services.</param>
-    /// <param name="roots">The collector's CA certificates (<see cref="RootsFrom"/>).</param>
+    /// <param name="roots">The collector's CA certificates (<see cref="RootsFrom"/>), or null for the image's public CAs.</param>
     /// <param name="clients">The clients that reach that collector.</param>
     /// <returns>The builders, for a caller that adds more to a client.</returns>
     public static IReadOnlyList<IHttpClientBuilder> Pin(IServiceCollection services, X509Certificate2Collection roots, IEnumerable<string> clients)
     {
         ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(roots);
         ArgumentNullException.ThrowIfNull(clients);
-        if (roots.Count == 0)
+        if (roots is { Count: 0 })
             throw new ArgumentException("A collector is pinned to one certificate at least.", nameof(roots));
 
         return clients
@@ -136,6 +139,10 @@ public static class CollectorTrust
             })
             .ToList();
     }
+
+    /// <summary>True when <paramref name="address"/> is an https address: its connections are the ones a chain is built for.</summary>
+    public static bool IsHttps(string address) =>
+        Uri.TryCreate(address, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps;
 
     /// <summary>
     /// True when <paramref name="client"/> was pinned in these services (<see cref="Pin"/>): a factory hands out a client of
@@ -195,16 +202,21 @@ public static class CollectorTrust
 
     // A policy per handler, which the factory builds for each handler lifetime; that handler's connections share it and only
     // read it (its application policy is set here, so the handshake adds none). The chain is built from what the collector
-    // sent, never by fetching a missing intermediate from the address a certificate names (CWE-918), as OutboundTransport does.
+    // sent, never by fetching a missing intermediate from the address a certificate names (CWE-918), as OutboundTransport does:
+    // against the collector's CA alone, or the system's CAs without one (ARV-226).
     private static X509ChainPolicy Policy(X509Certificate2Collection roots)
     {
         var policy = new X509ChainPolicy
         {
-            TrustMode = X509ChainTrustMode.CustomRootTrust,
             RevocationMode = X509RevocationMode.NoCheck,
             DisableCertificateDownloads = true
         };
-        policy.CustomTrustStore.AddRange(roots);
+        if (roots is not null)
+        {
+            policy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            policy.CustomTrustStore.AddRange(roots);
+        }
+
         policy.ApplicationPolicy.Add(new Oid(ServerAuthentication));
         return policy;
     }

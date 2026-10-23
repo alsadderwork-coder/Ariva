@@ -131,7 +131,7 @@ internal sealed partial class SvcValidationResults(
         var connectionString = new NpgsqlConnectionStringBuilder(reader.BuildReaderConnectionString(database)) { CommandTimeout = CommandTimeoutSeconds }.ConnectionString;
         try
         {
-            await using var connection = new NpgsqlConnection(connectionString);
+            await using var connection = PostgresConnections.Create(connectionString);
             await connection.OpenAsync(ct);
 
             // L7: count first, through a LIMITed query, so a read beyond the bound is refused before any row is held.

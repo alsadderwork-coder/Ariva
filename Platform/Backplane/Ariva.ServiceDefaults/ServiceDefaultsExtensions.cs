@@ -82,12 +82,15 @@ public static class ServiceDefaultsExtensions
         var otlp = OtlpSettings.From(configuration);
         if (!otlp.Enabled)
             return services;
-        // ARV-200: a collector whose certificate comes from the site PKI: the exporters' client trusts that CA alone. The
-        // exporters take a factory client of their own over http/protobuf only and build one over gRPC, so their options
+        // ARV-200: a collector whose certificate comes from the site PKI: the exporters' client trusts that CA alone. ARV-226: one
+        // reached over https without it: the exporters' client trusts the image's public CAs, and either downloads no certificate.
+        // The exporters take a factory client of their own over http/protobuf only and build one over gRPC, so their options
         // name the pinned client for both protocols, under every options name (a null name configures them all).
-        if (CollectorTrust.RootsFrom(configuration, CollectorTrust.OtlpSetting) is { } roots)
-        {
+        var roots = CollectorTrust.RootsFrom(configuration, CollectorTrust.OtlpSetting);
+        if (roots is not null)
             CollectorTrust.EnsureHttps(otlp, configuration);
+        if (roots is not null || CollectorTrust.IsHttps(otlp.Endpoint.AbsoluteUri) || CollectorTrust.IsHttps(configuration[OtlpSettings.EndpointVariable]))
+        {
             CollectorTrust.Pin(services, roots, [CollectorTrust.OtlpExporterClient]);
             services.AddTransient<IConfigureOptions<OtlpExporterOptions>>(provider => new ConfigureNamedOptions<OtlpExporterOptions, IHttpClientFactory>(
                 null, provider.GetRequiredService<IHttpClientFactory>(), (exporter, clients) => exporter.HttpClientFactory = () => ExporterClient(clients, exporter)));

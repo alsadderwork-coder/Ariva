@@ -1,8 +1,10 @@
 using System.Reflection;
+using Ariva.Infra.NHibernate.Drivers;
 using Ariva.Infra.NHibernate.Mapping;
 using Ariva.Infra.Settings;
 using NHibernate;
 using NHibernate.Cfg;
+using NHibernate.Connection;
 using NHibernate.Engine;
 using NHibernate.Tool.hbm2ddl;
 using NHibernate.Type;
@@ -96,7 +98,19 @@ internal sealed class NHibernateSessionFactoryProvider
             .ToArray();
         configuration.AddMapping(mapper.CompileMappingFor(entities));
 
-        return (configuration, configuration.BuildSessionFactory());
+        var factory = configuration.BuildSessionFactory();
+        // ARV-226 (CWE-918): NHibernate opens its connections through its driver, and only Ariva's gives each one the handshake
+        // policy that downloads no certificate (PostgresConnections); another driver or provider from the settings is refused. The
+        // check may follow the build because building opens no connection (keyword auto quoting is off, above).
+        var provider = ((ISessionFactoryImplementor)factory).ConnectionProvider;
+        if (provider is not DriverConnectionProvider || provider.Driver is not NHibernatePostgresClientDriver)
+        {
+            factory.Dispose();
+            throw new InvalidOperationException(
+                "Database:NHibernate:ConnectionDriver must be Ariva's NHibernatePostgresClientDriver and ConnectionProvider NHibernate's DriverConnectionProvider (or types derived from them): only they open connections whose handshake downloads no certificate.");
+        }
+
+        return (configuration, factory);
     }
 
     /// <summary>Explicit mappings for entities that do not fit the conventions. Keep this short.</summary>

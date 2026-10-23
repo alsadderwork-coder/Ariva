@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using Ariva.Api.Common.Extensions;
+using Ariva.Infra.Settings;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using MQTTnet.AspNetCore;
@@ -118,7 +119,8 @@ public static class MqttExtensions
     /// the versions the pods offer (<see cref="PodTransportExtensions.Protocols"/>), whatever the operating system would allow; and on
     /// Linux the pods' suites (<see cref="PodTransportExtensions.CipherSuites"/>): TLS 1.3's three and, for TLS 1.2, ECDHE with AES-GCM
     /// or ChaCha20-Poly1305, so no CBC suite and no static RSA key exchange. Client certificates stay optional and are checked against
-    /// a device's pin, not a CA. Not used in vm-local without TLS (<see cref="MqttSettings.RequireTls"/>).
+    /// a device's pin, not a CA; their chain downloads nothing and checks no revocation (ARV-226). Not used in vm-local without TLS
+    /// (<see cref="MqttSettings.RequireTls"/>).
     /// </summary>
     /// <param name="certificate">The server certificate with its private key.</param>
     /// <param name="handshakeTimeout">The time a client has to finish the handshake.</param>
@@ -134,14 +136,19 @@ public static class MqttExtensions
             ClientCertificateMode = ClientCertificateMode.AllowCertificate,
             // A device's certificate is pinned by its SHA-256 (ARV-022), not chained to a CA.
             ClientCertificateValidation = (_, _, _) => true,
+            // ARV-226 (CWE-918): the chain SslStream still builds for a client certificate fetches no revocation data and downloads no
+            // intermediate from an address the certificate names, before any device is known; the pin decides alone, as before.
+            CheckCertificateRevocation = false,
             HandshakeTimeout = handshakeTimeout
         };
-        if (OperatingSystem.IsLinux())
+        // CipherSuitesPolicy is a Linux feature of SslStream (the images run on Linux); one policy for every handshake.
+        var suites = OperatingSystem.IsLinux() ? new CipherSuitesPolicy(PodTransportExtensions.CipherSuites) : null;
+        options.OnAuthenticate = (_, authentication) =>
         {
-            // CipherSuitesPolicy is a Linux feature of SslStream (the images run on Linux); one policy for every handshake.
-            var policy = new CipherSuitesPolicy(PodTransportExtensions.CipherSuites);
-            options.OnAuthenticate = (_, authentication) => authentication.CipherSuitesPolicy = policy;
-        }
+            CertificateDownloads.Refuse(authentication);
+            if (suites is not null)
+                authentication.CipherSuitesPolicy = suites;
+        };
 
         return options;
     }

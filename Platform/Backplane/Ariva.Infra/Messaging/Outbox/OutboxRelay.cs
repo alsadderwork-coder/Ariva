@@ -148,7 +148,7 @@ public sealed class OutboxRelay(
     /// </summary>
     public async Task<OutboxBacklog> MeasureAsync(CancellationToken ct)
     {
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand(
             """
@@ -169,7 +169,7 @@ public sealed class OutboxRelay(
 
         var passTime = TimeSpan.FromSeconds(Math.Max(1, kafka.Outbox.PassSeconds));
         var passStarted = timeProvider.GetTimestamp();
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
 

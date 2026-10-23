@@ -9,7 +9,7 @@ Snapshot of 2026-10-21, branch `story/mvp-phase1`. The backlog files in `backlog
 | Phase 0 (`prd-phase0.json`) | 78 of 79 | ARV-002: its last criterion is a dev cluster release by a person, deferred by the owner to ARV-137 |
 | Phase 1, the MVP (`prd-phase1.json`) | 74 of 88 | 14, almost all waiting for site answers or the owner (ARV-124 split in two on 2026-10-21; ARV-124a's run filed ARV-230 to ARV-232; ARV-230 to ARV-232 done, and ARV-124a closed with ARV-230's pilot run on 2026-10-22; ARV-239 filed by ARV-231's review and done; ARV-241 filed by ARV-239's story gate) |
 | Phase 2, displays and advertising (`prd-phase2.json`) | 8 of 8 | none |
-| ASVS gaps (`prd-asvs-gaps.json`) | 26 of 43 | 17 (ARV-096b split in four on 2026-10-21, all four parts done; ARV-227 done and ARV-236 filed by it; ARV-242 filed by ARV-239's story gate) |
+| ASVS gaps (`prd-asvs-gaps.json`) | 27 of 43 | 16 (ARV-096b split in four on 2026-10-21, all four parts done; ARV-227 done and ARV-236 filed by it; ARV-242 filed by ARV-239's story gate; ARV-226 done) |
 | Phase 3, deferred hardening (`prd-phase3.json`) | 1 of 52 | 51, built after the pilot go-live gate unless pulled forward (ARV-228 and ARV-229 added by ARV-096b, ARV-233 by ARV-124a and pulled before the pilot, done, ARV-234 by ARV-096d, ARV-235 by ARV-096e, ARV-237 and ARV-238 by ARV-230, ARV-240 by ARV-239) |
 | Azure DevOps move (`prd-azure-move.json`) | 0 of 9 | 9, new; see [azure-devops-move.md](azure-devops-move.md) |
 
@@ -19,7 +19,6 @@ ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 158 of the 203 requirements that 
 
 | Story | What it does | Notes |
 |---|---|---|
-| ARV-226 | No certificate downloads while a chain is built: Redis, and the collectors without a site CA | Found in ARV-200; Medium, so before the pilot |
 | ARV-241 | Screens with a site selector keep the chosen site when an earlier site's load answers last | Found by ARV-239's story gate (the Passenger displays screen, fixed in 7a6ba97); seven other screens; Medium, before the pilot |
 | ARV-242 | A run ends at its run timeout while a database connection opens | Found by ARV-239's story gate (a loop's run stuck two hours in Npgsql's synchronous open); Medium, before the pilot |
 | ARV-236 | Bump the third-party pins ARV-227's first weekly check found behind | Three Kafka patch releases, new digests under ZAP's stable tag and both Redis tags, and TimescaleDB to its newest line (`pg17-ts2.31` or later; the older line stops moving, and existing databases need the extension update); each bump moves every copy at once (wiki 04 section 6.8) and runs the tests that use the image; before the pilot |

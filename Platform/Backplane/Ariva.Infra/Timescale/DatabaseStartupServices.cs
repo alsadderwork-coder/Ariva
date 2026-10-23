@@ -14,7 +14,7 @@ internal sealed class DevelopmentMigrationService(DatabaseMigrator migrator, Dat
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await using var connection = new NpgsqlConnection(settings.BuildMigrationConnectionString());
+        await using var connection = PostgresConnections.Create(settings.BuildMigrationConnectionString());
         await connection.OpenAsync(cancellationToken);
         await using (var acquire = new NpgsqlCommand("SELECT pg_advisory_lock(@key)", connection))
         {

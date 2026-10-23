@@ -30,7 +30,7 @@ internal sealed class OutboxDeadLetterStore(DatabaseSettings database, TimeProvi
         if (Encoding.UTF8.GetByteCount(payload) > DeadLetters.MaxLetterBytes)
             throw new InvalidOperationException($"The dead letter for {letter.Topic} is larger than a Kafka message may be.");
 
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand(
             """

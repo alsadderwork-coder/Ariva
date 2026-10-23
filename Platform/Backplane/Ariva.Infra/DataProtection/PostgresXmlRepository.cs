@@ -21,7 +21,7 @@ internal sealed class PostgresXmlRepository(DatabaseSettings settings) : IXmlRep
 
     public IReadOnlyCollection<XElement> GetAllElements()
     {
-        using var connection = new NpgsqlConnection(settings.BuildConnectionString());
+        using var connection = PostgresConnections.Create(settings.BuildConnectionString());
         connection.Open();
         using var command = new NpgsqlCommand("SELECT xml FROM data_protection_key ORDER BY created_on, friendly_name", connection);
         using var reader = command.ExecuteReader();
@@ -42,7 +42,7 @@ internal sealed class PostgresXmlRepository(DatabaseSettings settings) : IXmlRep
         ArgumentNullException.ThrowIfNull(element);
         ArgumentException.ThrowIfNullOrWhiteSpace(friendlyName);
 
-        using var connection = new NpgsqlConnection(settings.BuildConnectionString());
+        using var connection = PostgresConnections.Create(settings.BuildConnectionString());
         connection.Open();
         using var command = new NpgsqlCommand(
             "INSERT INTO data_protection_key (friendly_name, xml) VALUES (@name, @xml) ON CONFLICT (friendly_name) DO NOTHING", connection);

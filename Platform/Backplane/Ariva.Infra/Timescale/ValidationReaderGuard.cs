@@ -48,7 +48,7 @@ internal sealed class ValidationReaderGuard(
         if (!database.VerifySchemaOnStartup && !database.AllowSchemaUpdate)
             return;
 
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(cancellationToken);
         var login = await ShadowReadAccess.CurrentLoginAsync(connection, cancellationToken);
         if (await ShadowReadAccess.CanReadAsync(connection, login, cancellationToken))

@@ -139,7 +139,7 @@ public class ReplayStore(DatabaseSettings database)
     public virtual async Task<string> RecordAsync(ReplayRun run, string requestedBy, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(run);
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var insert = new NpgsqlCommand("""
             INSERT INTO replay_run (id, format, site_code, zones, from_utc, to_utc, profile_version, settings_hash, input_records, output_records,
@@ -169,7 +169,7 @@ public class ReplayStore(DatabaseSettings database)
     {
         if (replayHash is not { Length: 64 } || !replayHash.All(char.IsAsciiHexDigitLower))
             return [];
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var query = new NpgsqlCommand("""
             SELECT id, created_on, requested_by, recorded_by, input_head, output_head, previous_hash, row_hash

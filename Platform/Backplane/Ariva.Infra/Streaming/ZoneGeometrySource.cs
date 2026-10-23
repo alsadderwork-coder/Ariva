@@ -28,7 +28,7 @@ public class ZoneGeometrySource(DatabaseSettings database)
     /// </summary>
     public virtual async Task<ZoneGeometry> LoadAsync(string siteCode, string queueZoneName, int? version, CancellationToken ct)
     {
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand("""
             WITH profile AS (
@@ -129,7 +129,7 @@ public class ZoneGeometrySource(DatabaseSettings database)
     /// <summary>The queue zones of a version of the site's zone profile (published or retired), or of the published one; in name order.</summary>
     public virtual async Task<(int Version, IReadOnlyList<string> Zones)?> QueueZonesAsync(string siteCode, int? version, CancellationToken ct)
     {
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand("""
             WITH profile AS (

@@ -37,7 +37,7 @@ public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider 
         if (usable.Count == 0)
             return 0;
 
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var insert = new NpgsqlCommand("""
             INSERT INTO device_health_event (received_utc, site_code, queue_zone_name, device_id, device_code, event_id, online, commissioned, status_utc, clock_state)
@@ -64,7 +64,7 @@ public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider 
         ArgumentException.ThrowIfNullOrWhiteSpace(queueZoneName);
         if (fromUtc.Kind != DateTimeKind.Utc || toUtc.Kind != DateTimeKind.Utc || toUtc <= fromUtc || toUtc - fromUtc > SensingReplayQuery.MaxRange)
             throw new ArgumentOutOfRangeException(nameof(toUtc), "A replay covers a UTC range of at most 31 days, from before to.");
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand("""
             SELECT received_utc, site_code, queue_zone_name, device_id, device_code, event_id, online, commissioned, status_utc, clock_state

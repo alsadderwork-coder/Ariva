@@ -100,9 +100,20 @@ public sealed class TlsCollector : IAsyncDisposable
     /// </summary>
     public static async Task<TlsCollector> StartBehindAnIntermediateAsync(string authorityName, Uri caIssuers, CancellationToken cancellationToken)
     {
+        var (authority, intermediate, certificate) = IssueBehindAnIntermediate(authorityName, caIssuers);
+        return await StartAsync(authority, intermediate, certificate, cancellationToken);
+    }
+
+    /// <summary>
+    /// The certificates of <see cref="StartBehindAnIntermediateAsync"/> without a collector, for a server of another protocol
+    /// (ARV-226): a new CA, an intermediate it issued, and a certificate for localhost with its key that the intermediate issued,
+    /// naming <paramref name="caIssuers"/> as its issuer's address.
+    /// </summary>
+    public static (X509Certificate2 Authority, X509Certificate2 Intermediate, X509Certificate2 Server) IssueBehindAnIntermediate(string authorityName, Uri caIssuers)
+    {
         var authority = NewAuthority(authorityName);
         var intermediate = IssueAuthority(authority, $"{authorityName} intermediate");
-        return await StartAsync(authority, intermediate, Issue(intermediate, "localhost", caIssuers), cancellationToken);
+        return (authority, intermediate, Issue(intermediate, "localhost", caIssuers));
     }
 
     /// <summary>Waits until a request whose line starts with <paramref name="prefix"/> arrived, or the patience ran out.</summary>

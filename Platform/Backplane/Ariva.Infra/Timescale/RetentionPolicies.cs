@@ -69,7 +69,7 @@ internal static class RetentionPolicies
         retention.EnsureValid();
 
         var changes = new List<RetentionChange>();
-        await using var connection = new NpgsqlConnection(migrationConnection);
+        await using var connection = PostgresConnections.Create(migrationConnection);
         await connection.OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
         await ScalarAsync<object>(connection, transaction, Lock, ct, ("key", LockKey));

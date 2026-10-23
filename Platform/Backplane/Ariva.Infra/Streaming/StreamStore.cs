@@ -46,7 +46,7 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
     {
         ArgumentNullException.ThrowIfNull(checkpoint);
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
@@ -736,7 +736,7 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
     /// <summary>Records a partition count of a topic set (kept for good: records produced under it stay in the topics).</summary>
     public async Task SavePartitionCountAsync(string topicSet, int partitions, CancellationToken ct)
     {
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand(
             "INSERT INTO stream_partition_count (topic_set, partitions, first_seen) VALUES (@set, @partitions, @now) ON CONFLICT DO NOTHING", connection);
@@ -749,7 +749,7 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
     /// <summary>Every partition count recorded for a topic set.</summary>
     public async Task<IReadOnlyList<int>> LoadPartitionCountsAsync(string topicSet, CancellationToken ct)
     {
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand("SELECT partitions FROM stream_partition_count WHERE topic_set = @set", connection);
         command.Parameters.AddWithValue("set", topicSet);
@@ -766,7 +766,7 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
         ArgumentNullException.ThrowIfNull(partitions);
         if (partitions.Count == 0)
             return [];
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand("""
             SELECT s.topic, s.partition_no, s.next_offset FROM stream_offset s
@@ -786,7 +786,7 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
     /// <summary>A zone's saved state, or null; a state above <see cref="MaxStateBytes"/> or unreadable throws.</summary>
     public async Task<ZoneProcessorState> LoadStateAsync(string zoneKey, CancellationToken ct)
     {
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand("SELECT state_bytes, state::text FROM stream_zone_state WHERE zone_key = @zone", connection);
         command.Parameters.AddWithValue("zone", zoneKey);

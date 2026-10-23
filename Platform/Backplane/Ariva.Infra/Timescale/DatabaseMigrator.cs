@@ -55,7 +55,7 @@ internal sealed class DatabaseMigrator(
             return;
         }
 
-        await using var connection = new NpgsqlConnection(migrationConnection);
+        await using var connection = PostgresConnections.Create(migrationConnection);
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@name, @password)", connection);
         command.Parameters.AddWithValue("name", settings.Username);
@@ -79,7 +79,7 @@ internal sealed class DatabaseMigrator(
     /// </summary>
     private async Task EnsureValidationReaderLoginAsync(string migrationConnection, CancellationToken ct)
     {
-        await using var connection = new NpgsqlConnection(migrationConnection);
+        await using var connection = PostgresConnections.Create(migrationConnection);
         await connection.OpenAsync(ct);
 
         if (reader.IsConfigured)

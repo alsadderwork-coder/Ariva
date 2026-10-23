@@ -214,7 +214,7 @@ public sealed class StaffingRecommendations(IServiceScopeFactory scopes, Databas
 
     private async Task<NpgsqlConnection> OpenAsync(CancellationToken ct)
     {
-        var connection = new NpgsqlConnection(database.BuildConnectionString());
+        var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         return connection;
     }

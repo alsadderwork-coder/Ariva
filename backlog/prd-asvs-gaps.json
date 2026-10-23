@@ -436,7 +436,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 111,
-      "passes": false,
+      "passes": true,
       "notes": "Filed by ARV-200 on 2026-10-20 from its security reviews (round 1 M1 follow-up; round 2 L4, the collectors without a site CA). Medium, so before the pilot by the owner's rule. The collectors' clients (ARV-200) and the outbound transport already disable downloads.",
       "dependsOn": [
         "ARV-200"

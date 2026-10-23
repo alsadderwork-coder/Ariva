@@ -38,7 +38,7 @@ internal sealed class DatabaseReadiness(DatabaseSettings settings) : IHealthChec
     {
         try
         {
-            await using var connection = new NpgsqlConnection(settings.BuildConnectionString());
+            await using var connection = PostgresConnections.Create(settings.BuildConnectionString());
             await connection.OpenAsync(cancellationToken);
             await using var command = new NpgsqlCommand("SELECT 1", connection);
             await command.ExecuteScalarAsync(cancellationToken);

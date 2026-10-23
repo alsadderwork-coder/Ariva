@@ -63,6 +63,9 @@ public sealed class RedisConnection : IAsyncDisposable
 /// <summary>The "Redis" section. Off in the base file (vm-local without dev-up, E2E); on in the cluster files.</summary>
 public sealed class RedisSettings
 {
+    /// <summary>The server authentication purpose the Redis server's certificate must hold.</summary>
+    private const string ServerAuthentication = "1.3.6.1.5.5.7.3.1";
+
     public bool Enabled { get; init; }
     public string ConnectionString { get; init; } = "localhost:6379";
 
@@ -77,29 +80,65 @@ public sealed class RedisSettings
 
     /// <summary>
     /// The connection's options, for the cache and the live hub's backplane alike: never aborting on a failed first connect,
-    /// and with TLS pinned to the internal CA when one is named (<see cref="IsIssuedByPinnedCa"/>).
+    /// and over TLS with the handshake's own options (<see cref="Handshake"/>): pinned to the internal CA when one is named
+    /// (<see cref="IsIssuedByPinnedCa"/>), the system's CAs otherwise, and never a certificate downloaded (ARV-226).
     /// </summary>
     public ConfigurationOptions Options()
     {
         var options = ConfigurationOptions.Parse(ConnectionString);
         options.AbortOnConnectFail = false;
         options.ClientName ??= "ariva";
-        if (options.Ssl && !string.IsNullOrWhiteSpace(CaCertificatePath))
+        if (!options.Ssl)
+            return options;
+        X509Certificate2Collection roots = null;
+        if (!string.IsNullOrWhiteSpace(CaCertificatePath))
         {
-            var roots = new X509Certificate2Collection();
+            roots = new X509Certificate2Collection();
             roots.ImportFromPemFile(CaCertificatePath);
-            options.CertificateValidation += (_, certificate, presented, errors) => IsIssuedByPinnedCa(certificate, presented, errors, roots);
         }
 
+        // StackExchange.Redis takes these options for the whole handshake, in place of its own TLS settings (its validation event,
+        // its revocation check), so the chain the handshake builds follows this policy too, not only the check after it.
+        var sslHost = options.SslHost;
+        var protocols = options.SslProtocols;
+        options.SslClientAuthenticationOptions = host => Handshake(string.IsNullOrEmpty(sslHost) ? host : sslHost, protocols, roots);
         return options;
+    }
+
+    /// <summary>
+    /// ARV-226 (CWE-918): the TLS handshake's options for the Redis server <paramref name="host"/>. The handshake builds the server's
+    /// chain with a policy that downloads no certificate and checks no revocation (no request leaves for an address a certificate
+    /// names, before the server is authenticated), requires server authentication usage, and trusts <paramref name="roots"/> alone
+    /// when given (then <see cref="IsIssuedByPinnedCa"/> judges the result), the system's CAs otherwise; the host name is checked.
+    /// </summary>
+    internal static SslClientAuthenticationOptions Handshake(string host, System.Security.Authentication.SslProtocols? protocols, X509Certificate2Collection roots)
+    {
+        var policy = new X509ChainPolicy { RevocationMode = X509RevocationMode.NoCheck, DisableCertificateDownloads = true };
+        policy.ApplicationPolicy.Add(new Oid(ServerAuthentication));
+        if (roots is { Count: > 0 })
+        {
+            policy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            policy.CustomTrustStore.AddRange(roots);
+        }
+
+        return new SslClientAuthenticationOptions
+        {
+            TargetHost = host,
+            EnabledSslProtocols = protocols ?? System.Security.Authentication.SslProtocols.None,
+            CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
+            CertificateChainPolicy = policy,
+            RemoteCertificateValidationCallback = roots is { Count: > 0 }
+                ? (_, certificate, presented, errors) => IsIssuedByPinnedCa(certificate, presented, errors, roots)
+                : (_, _, _, errors) => errors == SslPolicyErrors.None
+        };
     }
 
     /// <summary>
     /// ARV-082a (CWE-295): the Redis server's certificate is accepted only when it chains to one of the pinned CAs, whatever the
     /// system store makes of it (StackExchange.Redis's own TrustIssuer accepts any certificate the system store trusts, and
     /// reads the first CA of the file only). Any handshake error other than an unknown chain, a host name mismatch above
-    /// all, refuses it; so does a certificate not meant for a server. Revocation is not checked, as for every outbound
-    /// connection (no request leaves for a CRL or OCSP address the certificate names).
+    /// all, refuses it; so does a certificate not meant for a server. Revocation is not checked and no certificate is downloaded,
+    /// as for every outbound connection (no request leaves for a CRL, OCSP or issuer address the certificate names, ARV-226).
     /// </summary>
     internal static bool IsIssuedByPinnedCa(X509Certificate certificate, X509Chain presented, SslPolicyErrors errors, X509Certificate2Collection roots)
     {
@@ -110,7 +149,8 @@ public sealed class RedisSettings
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
         chain.ChainPolicy.CustomTrustStore.AddRange(roots);
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-        chain.ChainPolicy.ApplicationPolicy.Add(new Oid("1.3.6.1.5.5.7.3.1"));
+        chain.ChainPolicy.DisableCertificateDownloads = true;
+        chain.ChainPolicy.ApplicationPolicy.Add(new Oid(ServerAuthentication));
         // The server's own intermediates, if it sent any; they help build the chain but are never trusted on their own.
         if (presented is not null)
             foreach (var element in presented.ChainElements)

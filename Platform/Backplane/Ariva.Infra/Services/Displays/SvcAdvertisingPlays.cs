@@ -129,7 +129,7 @@ internal sealed class SvcAdvertisingPlays(
     /// </summary>
     private async Task<(int Inserted, int Duplicates)> WriteAsync(Guid displayId, IReadOnlyList<AdvertisingPlay> candidates, DateTime now, CancellationToken ct)
     {
-        await using var connection = new NpgsqlConnection(database.BuildConnectionString());
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
         await using (var locking = new NpgsqlCommand("SELECT pg_advisory_xact_lock(1441, hashtext(CAST(@display AS text)))", connection, transaction))

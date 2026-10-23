@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Npgsql;
+using Ariva.Infra.Settings;
 
 namespace Ariva.Infra.Timescale;
 
@@ -38,7 +39,7 @@ public sealed class SqlScriptRunner(string connectionString, ILogger<SqlScriptRu
     {
         ArgumentNullException.ThrowIfNull(scripts);
 
-        await using var connection = new NpgsqlConnection(connectionString);
+        await using var connection = PostgresConnections.Create(connectionString);
         await connection.OpenAsync(ct);
         await AdvisoryLockAsync(connection, acquire: true, ct);
         try
@@ -72,7 +73,7 @@ public sealed class SqlScriptRunner(string connectionString, ILogger<SqlScriptRu
     {
         ArgumentNullException.ThrowIfNull(scripts);
 
-        await using var connection = new NpgsqlConnection(connectionString);
+        await using var connection = PostgresConnections.Create(connectionString);
         await connection.OpenAsync(ct);
         var applied = await ReadAppliedAsync(connection, ct, tableMayBeMissing: true);
         ThrowIfDrifted(scripts, applied);
@@ -84,7 +85,7 @@ public sealed class SqlScriptRunner(string connectionString, ILogger<SqlScriptRu
 
     public async Task<IReadOnlyList<AppliedScript>> ReadAppliedAsync(CancellationToken ct = default)
     {
-        await using var connection = new NpgsqlConnection(connectionString);
+        await using var connection = PostgresConnections.Create(connectionString);
         await connection.OpenAsync(ct);
         return await ReadAppliedAsync(connection, ct, tableMayBeMissing: true);
     }

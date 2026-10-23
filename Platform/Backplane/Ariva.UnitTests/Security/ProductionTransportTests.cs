@@ -1,5 +1,4 @@
 using System.Net.Security;
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Ariva.Di.Extensions;
@@ -13,6 +12,7 @@ using Microsoft.AspNetCore.SignalR.StackExchangeRedis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using Ariva.UnitTests.Logging.Fixtures;
 using Ariva.UnitTests.Setup;
 using StackExchange.Redis;
 
@@ -233,14 +233,18 @@ public sealed class ProductionTransportTests : IDisposable
         callback.Should().NotBeNull("the live hub's backplane is pinned like the cache");
         Validate(callback, ours, SslPolicyErrors.RemoteCertificateChainErrors).Should().BeTrue();
         Validate(callback, theirs, SslPolicyErrors.None).Should().BeFalse("a certificate the system store trusts but no pinned CA issued");
+        var handshake = options.SslClientAuthenticationOptions("redis");
+        handshake.CertificateChainPolicy.DisableCertificateDownloads.Should().BeTrue("the backplane's handshake downloads no certificate (ARV-226)");
+        handshake.CertificateChainPolicy.RevocationMode.Should().Be(X509RevocationMode.NoCheck);
+        handshake.CertificateRevocationCheckMode.Should().Be(X509RevocationMode.NoCheck);
     }
 
-    /// <summary>The validation the options hand the TLS handshake (an event of ConfigurationOptions, kept in a private member).</summary>
+    /// <summary>
+    /// The validation the options hand the TLS handshake: the handshake options' callback (ARV-226), which replace every TLS setting
+    /// of StackExchange.Redis's own, the CertificateValidation event included; null when the connection has no TLS.
+    /// </summary>
     private static RemoteCertificateValidationCallback CallbackOf(ConfigurationOptions options) =>
-        typeof(ConfigurationOptions).GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
-            .Where(f => f.FieldType == typeof(RemoteCertificateValidationCallback))
-            .Select(f => (RemoteCertificateValidationCallback)f.GetValue(options))
-            .SingleOrDefault(c => c is not null);
+        options.SslClientAuthenticationOptions?.Invoke("redis").RemoteCertificateValidationCallback;
 
     private static bool Validate(RemoteCertificateValidationCallback callback, X509Certificate2 certificate, SslPolicyErrors errors)
     {
@@ -295,7 +299,7 @@ public sealed class ProductionTransportTests : IDisposable
             values["Otlp:Endpoint"] = "https://collector:4317";
         var configuration = Configuration(environment, values);
 
-        var configure = () => Ariva.Api.Common.Logging.ArivaLogging.Configure(new Serilog.LoggerConfiguration(), configuration, environment).CreateLogger().Dispose();
+        var configure = () => HostLogger.Build(configuration, environment);
 
         if (refused)
             configure.Should().Throw<InvalidOperationException>().WithMessage(message, "the sink reads the variable after Ariva's own setting");

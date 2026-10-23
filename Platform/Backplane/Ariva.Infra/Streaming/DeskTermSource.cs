@@ -48,7 +48,7 @@ public class DeskTermSource(DatabaseSettings database, TimeProvider timeProvider
         var result = new Dictionary<string, DeskTerm>(StringComparer.Ordinal);
         var bySite = zoneKeys.Select(Split).Where(k => k is not null).GroupBy(k => k.Value.Site, StringComparer.Ordinal);
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        await using var connection = new NpgsqlConnection(ConnectionString(database));
+        await using var connection = PostgresConnections.Create(ConnectionString(database));
         await connection.OpenAsync(ct);
         foreach (var site in bySite)
         {

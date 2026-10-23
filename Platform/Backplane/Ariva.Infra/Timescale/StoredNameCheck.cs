@@ -124,7 +124,7 @@ public sealed class StoredNameCheck(DatabaseSettings database)
     /// <summary>Reads every covered value once and returns those that break their rule, in place, site and id order.</summary>
     public async Task<StoredNameCheckResult> RunAsync(CancellationToken ct = default)
     {
-        await using var connection = new NpgsqlConnection(ReadOnlyConnectionString(database));
+        await using var connection = PostgresConnections.Create(ReadOnlyConnectionString(database));
         await connection.OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
         await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", connection, transaction))
