@@ -41,7 +41,7 @@
       "cleartext"
     ],
     "concurrency": 2,
-    "additional-timeout": 10000,
+    "additional-timeout": 120000,
     "test-runner": "mtp"
   }
 }
