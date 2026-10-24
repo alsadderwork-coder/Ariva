@@ -450,9 +450,14 @@ const steps = {
     steps.build();
     // The scenario engine's golden fingerprints must come from the current sim.js (ARV-027); the unit tests check the port against them.
     run('reference scenario golden up to date', 'node', ['scripts/simulation/reference-golden.mjs', '--check']);
-    // The TRX names every case that ran, so a total that differs between two runs can be traced to the case.
-    run('unit tests', 'dotnet', ['test', 'Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj', '--no-build',
-      '--logger', `trx;LogFileName=${path.join(ROOT, '.verify', 'unit-tests.trx')}`]);
+    // ARV-164: the test executable runs the suite itself (Microsoft Testing Platform, in process), not dotnet test. There the
+    // VSTest adapter reads the runner's messages as JSON lines from its standard output, which also carries the Pact verifier's
+    // native report and display names with raw control characters; a line it cannot read is dropped without a failure, so a
+    // case could go missing from a run (7,811 against 7,812 on one tree). The TRX names every case that ran, so a total that
+    // differs between two runs can be traced to the case. PACT_DO_NOT_TRACK, which the runsettings set for dotnet test, is set
+    // for every child process above.
+    run('unit tests', 'dotnet', [path.join('Platform', 'Backplane', 'Ariva.UnitTests', 'bin', 'Debug', 'net10.0', 'Ariva.UnitTests.dll'),
+      '--results-directory', path.join(ROOT, '.verify'), '--report-xunit-trx', '--report-xunit-trx-filename', 'unit-tests.trx']);
   },
   integration: () => run('integration tests', 'dotnet', ['test', 'Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj']),
   web: () => {

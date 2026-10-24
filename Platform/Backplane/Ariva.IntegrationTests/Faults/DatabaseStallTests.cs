@@ -21,7 +21,7 @@ namespace Ariva.IntegrationTests.Faults;
 
 /// <summary>
 /// ARV-072, PostgreSQL stalled or cut off under the sensing path. On a push, Ariva.Api.Ingest needs the database only to
-/// look the device's credential and its zone up (cached a minute); a cold lookup against a stalled database fails after
+/// look the device's credential and its zone up (cached a minute); a lookup with nothing cached against a stalled database fails after
 /// SvcDeviceGateway.LookupTimeout as a dependency outage, which the host answers 503 with Retry-After, so the sensor
 /// keeps its batch and pushes it again (the back-pressure) instead of piling requests up for Npgsql's 30 seconds. Behind
 /// Kafka, Ariva.Api.Stream archives every batch; a database outage is waited out and the batch is archived once it is
@@ -31,6 +31,12 @@ namespace Ariva.IntegrationTests.Faults;
 public sealed class DatabaseStallTests(FaultsFixture faults) : IAsyncLifetime
 {
     private const string Proxy = "postgres";
+
+    /// <summary>
+    /// What a warmed lookup may take past <see cref="SvcDeviceGateway.LookupTimeout"/>: the hard timeout's continuation on
+    /// the thread pool (10 ms on a quiet machine; seconds when the pool is starved by a loaded machine).
+    /// </summary>
+    private static readonly TimeSpan TimeoutContinuationMargin = TimeSpan.FromSeconds(5);
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
@@ -119,13 +125,22 @@ public sealed class DatabaseStallTests(FaultsFixture faults) : IAsyncLifetime
         using var cache = new FusionCache(new FusionCacheOptions());
         var prefix = await SeedDeviceAsync();
 
+        // ARV-164: FusionCache's hard timeout starts when the factory returns its task, and a query's first run translates it
+        // (NHibernate's LINQ provider) before the factory's first await: 1.5 to 1.8 s cold on a quiet machine, and the 10.08 s
+        // of one loaded run. A host that has served a push has done that, so the lookup is warmed with an unknown prefix (a
+        // miss, cached under its own key), and its connection is cleared from the pool so the stalled lookup opens one
+        // through the stalled proxy, as it did cold. Remove this warm-up when ARV-247 makes the bound cover the first query.
+        (await LookUpAsync(provider, cache, "ardk_" + Guid.NewGuid().ToString("N")[..8])).Failure.Should().BeNull("the database answers before the stall");
+        await using (var pooled = new NpgsqlConnection(provider.GetRequiredService<DatabaseSettings>().BuildConnectionString()))
+            NpgsqlConnection.ClearPool(pooled);
+
         await faults.StallAsync(Proxy);
 
         var (failure, answered) = await LookUpAsync(provider, cache, prefix);
         failure.Should().NotBeNull("a registered device cannot be looked up while the database does not answer, and must not be let in");
         DependencyOutage.Is(failure!).Should().BeTrue($"the push is answered 503 with Retry-After, not 401 ({failure.GetType().Name})");
         answered.Should().BeGreaterThanOrEqualTo(SvcDeviceGateway.LookupTimeout - TimeSpan.FromMilliseconds(200))
-            .And.BeLessThan(SvcDeviceGateway.LookupTimeout + TimeSpan.FromSeconds(5), "the device is answered after the lookup's bound, not Npgsql's 30 seconds");
+            .And.BeLessThan(SvcDeviceGateway.LookupTimeout + TimeoutContinuationMargin, "the device is answered after the lookup's bound, not Npgsql's 30 seconds");
 
         await faults.RestoreAsync(Proxy);
 

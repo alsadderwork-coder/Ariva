@@ -6,8 +6,24 @@ using Microsoft.Extensions.Configuration;
 namespace Ariva.UnitTests.Security;
 
 /// <summary>ARV-008: where the key-protection certificate comes from, per environment, and the cache settings.</summary>
-public sealed class DataProtectionCertificateTests
+public sealed class DataProtectionCertificateTests : IDisposable
 {
+    // ARV-164: the development certificate's folders (a private key each) go with the test, not into the temporary folder.
+    private readonly List<string> _folders = [];
+
+    private string Folder()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ariva-dp-" + Guid.CreateVersion7().ToString("N"));
+        _folders.Add(directory);
+        return directory;
+    }
+
+    public void Dispose()
+    {
+        foreach (var directory in _folders.Where(Directory.Exists))
+            Directory.Delete(directory, recursive: true);
+    }
+
     public static TheoryData<string> ClusterFiles =>
     [
         "appsettings.base.k8s-dev.json",
@@ -26,7 +42,7 @@ public sealed class DataProtectionCertificateTests
     [Fact]
     public void Load_Should_CreateDevelopmentCertificateOnceAndReuseIt_When_DevelopmentCertificateIsOn()
     {
-        var directory = Path.Combine(Path.GetTempPath(), "ariva-dp-" + Guid.CreateVersion7().ToString("N"));
+        var directory = Folder();
         var configuration = Configuration(new()
         {
             ["DataProtection:UseDevelopmentCertificate"] = "true",
@@ -48,7 +64,7 @@ public sealed class DataProtectionCertificateTests
     [Fact]
     public void Load_Should_IncludePreviousCertificates_When_RotationIsConfigured()
     {
-        var directory = Path.Combine(Path.GetTempPath(), "ariva-dp-" + Guid.CreateVersion7().ToString("N"));
+        var directory = Folder();
         DataProtectionCertificates.Load(Configuration(new()
         {
             ["DataProtection:UseDevelopmentCertificate"] = "true",

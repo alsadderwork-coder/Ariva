@@ -29,8 +29,116 @@ public sealed class AppHostModelTests
 
     private static readonly string[] Projects = ["api-main", "api-ingest", "api-stream", "api-cronz", "api-integration", "simulation"];
 
+    /// <summary>
+    /// ARV-164: building the model waits for the container runtime, for ever when the Docker daemon is not running (a container
+    /// restart stops it), and the unit run then never ended. Checked once per run, bounded, with a failure that names it. A
+    /// DOCKER_HOST of another scheme (ssh://) is not checked here; <see cref="ModelTimeout"/> bounds those tests.
+    /// </summary>
+    private static readonly Lazy<Task> DockerReady = new(PingDockerAsync);
+
+    private static async Task PingDockerAsync()
+    {
+        var host = Environment.GetEnvironmentVariable("DOCKER_HOST");
+        var where = string.IsNullOrEmpty(host) ? "the default Docker endpoint" : "DOCKER_HOST";
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        string answer;
+        try
+        {
+            await using var stream = await DockerStreamAsync(host, timeout.Token);
+            if (stream is null)
+                return;
+            await stream.WriteAsync("GET /_ping HTTP/1.0\r\nHost: docker\r\n\r\n"u8.ToArray(), timeout.Token);
+            // At most 1 KB: the answer is a status line, a few headers and "OK"; anything longer is not a ping's answer.
+            var buffer = new byte[1024];
+            var read = 0;
+            int count;
+            while (read < buffer.Length && (count = await stream.ReadAsync(buffer.AsMemory(read), timeout.Token)) > 0)
+                read += count;
+            answer = Encoding.ASCII.GetString(buffer, 0, read);
+        }
+        catch (Exception e) when (e is SocketException or IOException or OperationCanceledException or TimeoutException or UnauthorizedAccessException or UriFormatException or ArgumentException)
+        {
+            throw new InvalidOperationException($"The Docker daemon is not reachable at {where} ({e.GetType().Name}): the AppHost model tests need it (Aspire waits for the container runtime). Start it and run again.", e);
+        }
+
+        var lineEnd = answer.IndexOf("\r\n", StringComparison.Ordinal);
+        var headersEnd = answer.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+        var status = lineEnd < 0 ? [] : answer[..lineEnd].Split(' ');
+        if (status.Length < 2 || !status[0].StartsWith("HTTP/1.", StringComparison.Ordinal) || status[1] != "200" || headersEnd < 0 || answer[(headersEnd + 4)..] != "OK")
+            throw new InvalidOperationException($"The Docker daemon at {where} did not answer its ping: the AppHost model tests need it. Start it and run again.");
+    }
+
+    /// <summary>
+    /// The daemon's endpoint: DOCKER_HOST (unix://, tcp:// or npipe://), else the default socket or, on Windows, its named pipe;
+    /// null when there is nothing to check this way (another scheme, left to the tests' timeout).
+    /// </summary>
+    private static async Task<Stream> DockerStreamAsync(string host, CancellationToken ct)
+    {
+        if (!string.IsNullOrEmpty(host) && host.StartsWith("tcp://", StringComparison.Ordinal))
+        {
+            var address = new Uri(host);
+            var tcp = new TcpClient();
+            try
+            {
+                await tcp.ConnectAsync(address.Host, address.Port, ct);
+                return tcp.GetStream();
+            }
+            catch
+            {
+                tcp.Dispose();
+                throw;
+            }
+        }
+
+        var pipeName = !string.IsNullOrEmpty(host) && host.StartsWith("npipe://", StringComparison.Ordinal) ? host[(host.LastIndexOf('/') + 1)..]
+            : string.IsNullOrEmpty(host) && OperatingSystem.IsWindows() ? "docker_engine" : null;
+        if (pipeName is not null)
+        {
+            var pipe = new System.IO.Pipes.NamedPipeClientStream(".", pipeName, System.IO.Pipes.PipeDirection.InOut, System.IO.Pipes.PipeOptions.Asynchronous);
+            try
+            {
+                await pipe.ConnectAsync(ct);
+                return pipe;
+            }
+            catch
+            {
+                await pipe.DisposeAsync();
+                throw;
+            }
+        }
+
+        string path;
+        if (string.IsNullOrEmpty(host))
+            path = "/var/run/docker.sock";
+        else if (host.StartsWith("unix://", StringComparison.Ordinal))
+            path = host["unix://".Length..];
+        else
+            return null;
+        if (string.IsNullOrEmpty(host) && !File.Exists(path))
+            throw new IOException("No Docker socket at /var/run/docker.sock (a daemon that stopped removes it; for Colima, Podman or a Docker context, set DOCKER_HOST to the runtime's socket).");
+        var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        try
+        {
+            await socket.ConnectAsync(new UnixDomainSocketEndPoint(path), ct);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The backstop for a runtime the ping leaves unchecked (an ssh:// host or another scheme): a test that builds the model
+    /// takes seconds, so one past this is waiting for a container runtime (the build, the resolution of a variable that names a
+    /// container's endpoint, or the model's dispose) and fails rather than stall the run.
+    /// </summary>
+    private const int ModelTimeout = 120_000;
+
     private static async Task<DistributedApplication> BuildAsync(params string[] extra)
     {
+        await DockerReady.Value;
         string[] args =
         [
             "--Parameters:database-owner-password=owner-password-for-tests",
@@ -52,7 +160,7 @@ public sealed class AppHostModelTests
     private static async Task<Dictionary<string, string>> VariablesAsync(IResource resource) =>
         await ((IResourceWithEnvironment)resource).GetEnvironmentVariableValuesAsync(DistributedApplicationOperation.Run);
 
-    [Fact]
+    [Fact(Timeout = ModelTimeout)]
     public async Task Hosts_Should_RunInVmLocal_WithRedactionOn_AndTheirDependencies()
     {
         await using var app = await BuildAsync();
@@ -97,7 +205,7 @@ public sealed class AppHostModelTests
             (await VariablesAsync(project)).Keys.Should().NotContain(k => k.StartsWith("MalwareScan__", StringComparison.Ordinal), project.Name);
     }
 
-    [Fact]
+    [Fact(Timeout = ModelTimeout)]
     public async Task Clamav_Should_RunThePinnedImage_Offline_WithTheRepositorysConfReadOnly()
     {
         await using var app = await BuildAsync();
@@ -157,7 +265,7 @@ public sealed class AppHostModelTests
         (await ClamdPing.CheckAsync("127.0.0.1", port, TestContext.Current.CancellationToken)).Status.Should().Be(HealthStatus.Unhealthy);
     }
 
-    [Fact]
+    [Fact(Timeout = ModelTimeout)]
     public async Task Simulator_Should_HoldOnlyItsKeysDigest()
     {
         await using var app = await BuildAsync();
@@ -169,7 +277,7 @@ public sealed class AppHostModelTests
         variables.Keys.Should().NotContain(k => k.StartsWith("Database__", StringComparison.Ordinal), "the simulator never touches the database");
     }
 
-    [Fact]
+    [Fact(Timeout = ModelTimeout)]
     public async Task Timescale_Should_UseTheComposeImage_WithItsDataVolume()
     {
         await using var app = await BuildAsync();
@@ -185,7 +293,7 @@ public sealed class AppHostModelTests
         timescale.Annotations.OfType<ContainerLifetimeAnnotation>().Single().Lifetime.Should().Be(ContainerLifetime.Persistent);
     }
 
-    [Fact]
+    [Fact(Timeout = ModelTimeout)]
     public async Task E2eSwitches_Should_DropStream_AndKeepNoData()
     {
         await using var app = await BuildAsync("--AppHost:Stream=false", "--AppHost:Persistent=false", "--AppHost:DatabaseVolume=", "--AppHost:ClamdPort=23310");
@@ -198,7 +306,7 @@ public sealed class AppHostModelTests
             .Port.Should().Be(23310);
     }
 
-    [Fact]
+    [Fact(Timeout = ModelTimeout)]
     public async Task HostEnvironmentFile_Should_ApplyLast_To_TheNamedResource()
     {
         var file = Path.Combine(Path.GetTempPath(), $"ariva-apphost-{Guid.NewGuid():N}.json");
@@ -252,7 +360,7 @@ public sealed class AppHostModelTests
         return file;
     }
 
-    [Fact]
+    [Fact(Timeout = ModelTimeout)]
     public async Task DevelopmentSite_Should_StayOff_When_TheHostVariablesFileOrTheAppHostsSeedSettingsSayOn()
     {
         var file = await TempFileAsync("""{"api-main": {"Seed__NbjSite": "true"}}""");
@@ -269,7 +377,7 @@ public sealed class AppHostModelTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = ModelTimeout)]
     public async Task DevelopmentSite_Should_TurnOnForApiMainOnly_WithTheSeparateVolumeAndTheAccounts_When_TheSwitchIsOn()
     {
         var file = await TempFileAsync("""
@@ -299,7 +407,7 @@ public sealed class AppHostModelTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = ModelTimeout)]
     public async Task DevelopmentSite_Should_RefuseToBuild_When_CombinedWithTheE2eOrTheScriptedDemoSettings()
     {
         var file = await TempFileAsync("""{"api-main": {"Auth__TotpRequired": "false"}}""");

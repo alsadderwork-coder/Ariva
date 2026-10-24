@@ -428,9 +428,42 @@ public sealed class MqttTransportTests
         // ARV-125a: the hosts register it with AddArivaMonitoring; the listener records its certificate's end of validity.
         builder.Services.AddSingleton<Ariva.Infra.Monitoring.CertificateMetrics>();
         builder.WebHost.UseArivaMqttListener();
-        var app = builder.Build();
-        await app.StartAsync(TestContext.Current.CancellationToken);
+        // ARV-164: the certificate folder goes with the host (the container disposes what it built when the host is disposed).
+        builder.Services.AddSingleton(_ => new FolderLease(directory));
+        WebApplication app;
+        try
+        {
+            app = builder.Build();
+        }
+        catch
+        {
+            directory.Delete(recursive: true);
+            throw;
+        }
+
+        app.Services.GetRequiredService<FolderLease>();
+        try
+        {
+            await app.StartAsync(TestContext.Current.CancellationToken);
+        }
+        catch
+        {
+            await app.DisposeAsync();
+            throw;
+        }
+
         return (app, sink, port);
+    }
+
+    /// <summary>Deletes a test host's own temporary folder when the host's services are disposed.</summary>
+    private sealed class FolderLease(DirectoryInfo folder) : IDisposable
+    {
+        public void Dispose()
+        {
+            folder.Refresh();
+            if (folder.Exists)
+                folder.Delete(recursive: true);
+        }
     }
 
     [Fact]

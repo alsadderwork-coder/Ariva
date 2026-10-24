@@ -205,7 +205,51 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
 {
     private readonly TaskCompletionSource _startGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private string DevelopmentKeyDirectory { get; } = Path.Combine(Path.GetTempPath(), "ariva-unit-tests", Guid.NewGuid().ToString("N"));
+    /// <summary>The host's own folder for its development keys and test certificates: unique, readable by this user only.</summary>
+    private string DevelopmentKeyDirectory { get; } = Directory.CreateTempSubdirectory("ariva-host-").FullName;
+
+    /// <summary>
+    /// The host's keys and certificates go with it (ARV-164: every host left its folder behind, 154,000 of them and 1.5 GB in
+    /// the temporary folder, until the disk ran short under the integration suite). Best effort, after the host is disposed:
+    /// a folder that cannot be removed never hides the test's own result.
+    /// </summary>
+    public override async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await base.DisposeAsync();
+        }
+        finally
+        {
+            DeleteDevelopmentKeyDirectory();
+        }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        try
+        {
+            base.Dispose(disposing);
+        }
+        finally
+        {
+            if (disposing)
+                DeleteDevelopmentKeyDirectory();
+        }
+    }
+
+    private void DeleteDevelopmentKeyDirectory()
+    {
+        try
+        {
+            if (Directory.Exists(DevelopmentKeyDirectory))
+                Directory.Delete(DevelopmentKeyDirectory, recursive: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Left for the temporary folder's own cleanup.
+        }
+    }
 
     /// <summary>A CA certificate (PEM) in the host's own temporary folder, for the pinned database CA no in-process host connects with.</summary>
     private string TestDatabaseCa()
