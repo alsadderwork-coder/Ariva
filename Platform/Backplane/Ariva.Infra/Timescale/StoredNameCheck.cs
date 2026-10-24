@@ -180,8 +180,7 @@ public sealed class StoredNameCheck(DatabaseSettings database)
     /// </summary>
     internal static string Positions(string rule, string value)
     {
-        var offenders = DisplayText.Offenders(value, allowLineBreaks: rule == NoteRule)
-            .Where(o => rule != PersonRule || o.CodePoint is not (0x200C or 0x200D))
+        var offenders = DisplayText.Offenders(value, allowLineBreaks: rule == NoteRule, allowJoiners: rule == PersonRule)
             .Select(o => string.Create(CultureInfo.InvariantCulture, $"U+{o.CodePoint:X4} at {o.Position}"))
             .ToList();
         return offenders.Count == 0 ? "(longer than its rule allows; text not shown)" : string.Join(", ", offenders) + " (text not shown)";

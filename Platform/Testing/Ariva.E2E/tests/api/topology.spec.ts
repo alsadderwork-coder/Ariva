@@ -118,12 +118,15 @@ test('injection and markup payloads are refused or stored as inert text', async 
 	expect((await call('GET', `${api}/desks?sortBy=${encodeURIComponent('code; DROP TABLE desk')}`, { token: admin })).status()).toBe(400);
 	expect((await call('GET', `${api}/desks?pageSize=501`, { token: admin })).status()).toBe(400);
 });
-test('names with control or invisible characters are refused with one fixed text, and Arabic names are taken (ARV-159)', async () => {
+test('names with control or invisible characters are refused with one fixed text, and Arabic names and the subdivision flags are taken (ARV-159, ARV-169)', async () => {
 	const fixed = 'A name holds no control characters, invisible format characters or broken characters.';
 	for (const [why, name] of [
 		['a right-to-left override', 'Hall \u202Eevil'],
 		['a zero-width space', 'Hall\u200BA'],
 		['a tag character', 'Hall \u{E0041}'],
+		// ARV-169: the England flag emoji is taken whole; a tag after it is not.
+		['a tag after a subdivision flag', 'Hall \u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}\u{E0041}'],
+		['a subdivision flag without its cancel tag', 'Hall \u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}'],
 		['a bell', 'Hall\u0007']
 	] as const) {
 		for (const [method, url, data] of [
@@ -146,10 +149,16 @@ test('names with control or invisible characters are refused with one fixed text
 	}
 	expect((await (await call('GET', `${api}/terminals/${ids.t1}`, { token: admin })).json()).name, 'a refused rename changes nothing').toBe('Terminal 1 renamed');
 
-	// "Arrivals hall" in Arabic, and "airport" with its vowel marks.
-	for (const [code, name, floor] of [['L7', '\u0635\u0627\u0644\u0629 \u0627\u0644\u0648\u0635\u0648\u0644', 7], ['L8', '\u0645\u064E\u0637\u0627\u0631', 8]] as const) {
+	// "Arrivals hall" in Arabic, "airport" with its vowel marks, and (ARV-169) a name with the Wales flag emoji, a whole RGI
+	// subdivision sequence: the waving black flag, the tags for gbwls and the cancel tag.
+	for (const [code, name, floor] of [
+		['L7', '\u0635\u0627\u0644\u0629 \u0627\u0644\u0648\u0635\u0648\u0644', 7],
+		['L8', '\u0645\u064E\u0637\u0627\u0631', 8],
+		['L6', 'Cardiff hall \u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}', 6]
+	] as const) {
 		const level = await create('levels', { terminalId: ids.t1, code, name, floorNumber: floor, widthMetres: 10, depthMetres: 10 });
 		expect(level.name).toBe(name);
+		expect((await (await call('GET', `${api}/levels/${level.id}`, { token: admin })).json()).name, 'read back as stored').toBe(name);
 	}
 });
 

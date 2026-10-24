@@ -45,6 +45,71 @@ public sealed class DisplayTextTests
     public void IsClean_Should_JudgeEveryCodePoint_When_TextIsRead(string because, string text, bool clean) =>
         DisplayText.IsClean(text).Should().Be(clean, because);
 
+    #region Subdivision flags (ARV-169)
+
+    // The three RGI subdivision flags: U+1F3F4, the tags for gb and the subdivision, the cancel tag U+E007F.
+    private const string England = "\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F";
+    private const string Scotland = "\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F";
+    private const string Wales = "\U0001F3F4\U000E0067\U000E0062\U000E0077\U000E006C\U000E0073\U000E007F";
+
+    public static TheoryData<string, string, bool> Flags => new()
+    {
+        { "England alone", England, true },
+        { "Scotland inside a text", "Team " + Scotland + " A", true },
+        { "Wales at the end", "Cardiff " + Wales, true },
+        { "the three together", England + Scotland + Wales, true },
+        { "the waving black flag alone", "\U0001F3F4 Gate", true },
+        { "a subdivision outside the three (US California)", "\U0001F3F4\U000E0075\U000E0073\U000E0063\U000E0061\U000E007F", false },
+        { "a malformed subdivision (gbxyz)", "\U0001F3F4\U000E0067\U000E0062\U000E0078\U000E0079\U000E007A\U000E007F", false },
+        { "upper case tags", "\U0001F3F4\U000E0047\U000E0042\U000E0045\U000E004E\U000E0047\U000E007F", false },
+        { "a sequence without its cancel tag", England[..^2], false },
+        { "a truncated sequence", England[..6] + "\U000E007F", false },
+        { "a tag after a flag", England + Tag, false },
+        { "a cancel tag after a flag", England + "\U000E007F", false },
+        { "the flag's tags without the waving flag", "Gate" + England[2..], false },
+        { "a cancel tag alone", "Gate\U000E007F", false },
+        { "a flag broken by a space", "\U0001F3F4 \U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F", false },
+        { "a flag broken by a variation selector", "\U0001F3F4\uFE0F" + England[2..], false },
+        { "a flag broken by a zero-width joiner", "\U0001F3F4\u200D" + England[2..], false },
+        { "an unterminated sequence before a whole flag", England[..^2] + England, false },
+        { "the waving flag before a whole flag", "\U0001F3F4" + England, true }
+    };
+
+    [Theory]
+    [MemberData(nameof(Flags))]
+    public void IsClean_Should_TakeOnlyTheThreeSubdivisionFlagsWhole_When_TagsAppear(string because, string text, bool clean) =>
+        DisplayText.IsClean(text).Should().Be(clean, because);
+
+    [Fact]
+    public void Offenders_Should_ReportNothingForTheFlags_And_TheTagsAroundThem_When_Read()
+    {
+        DisplayText.Offenders(England + " " + Scotland + " " + Wales).Should().BeEmpty();
+        DisplayText.Offenders(England + Tag).Should().Equal((8, 0xE0041));
+        DisplayText.Offenders(England + Scotland + Tag).Should().Equal((15, 0xE0041));
+        DisplayText.Offenders(Tag + England + Tag).Should().Equal((1, 0xE0041), (9, 0xE0041));
+        DisplayText.Offenders("A" + England[2..]).Should().HaveCount(6, "every tag of the sequence, and its cancel tag, without the waving flag");
+        DisplayText.Require(" " + Wales + " Cardiff ", 50, "name").Should().Be(Wales + " Cardiff");
+    }
+
+    [Fact]
+    public void IsClean_Should_RefuseALoneSurrogateInsideAFlag_When_Read()
+    {
+        // Built here: theory data is serialised, which would turn a lone surrogate into a replacement character.
+        DisplayText.IsClean(England[..4] + '\xDB40' + England[4..]).Should().BeFalse("a high surrogate alone inside the sequence");
+        DisplayText.IsClean(England + '\xDB40').Should().BeFalse("a high surrogate alone right after a flag");
+        DisplayText.IsClean('\xD83C' + England).Should().BeFalse("a high surrogate alone before a flag");
+    }
+
+    [Fact]
+    public void Names_Should_TakeTheSubdivisionFlags_When_ASiteOrTopologyIsNamed()
+    {
+        TopologyCodes.IsName("Gate A " + England).Should().BeTrue();
+        TopologyCodes.IsName("Gate A " + England + Tag).Should().BeFalse("a tag beyond the flag");
+        FluentActions.Invoking(() => Site.CreateIllustrative("DMO", "Cardiff " + Wales)).Should().NotThrow();
+    }
+
+    #endregion
+
     [Fact]
     public void IsClean_Should_RefuseALoneSurrogate_When_ItIsAnywhere()
     {
@@ -131,6 +196,19 @@ public sealed class DisplayTextTests
         SvcUsers.IsUsableDisplayName("Amal Haddad").Should().BeTrue();
         SvcUsers.IsUsableDisplayName("Amal" + Tag + " Haddad").Should().BeFalse();
         SvcUsers.IsUsableDisplayName("Amal \U0001F6EB").Should().BeTrue("an emoji is no format character");
+    }
+
+    [Fact]
+    public void User_Should_TakeTheSubdivisionFlags_And_JudgeTheJoinersWhereTheyStand_When_InTheDisplayName()
+    {
+        // ARV-169: the name is judged as stored. Removing the joiners first let a joiner split a flag's tags through.
+        SvcUsers.IsUsableDisplayName("Amal " + England).Should().BeTrue();
+        SvcUsers.IsUsableDisplayName("Amal \U0001F3F4\u200D" + England[2..]).Should().BeFalse("a joiner between the waving flag and its tags");
+        SvcUsers.IsUsableDisplayName("Amal " + England[..6] + "\u200C" + England[6..]).Should().BeFalse("a non-joiner between the tags");
+        SvcUsers.IsUsableDisplayName("\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645").Should().BeTrue("a Persian name keeps its non-joiner");
+        SvcUsers.IsUsableDisplayName("Amal " + '\xD83C' + "\u200D" + '\xDFF4').Should().BeFalse("a surrogate pair split by a joiner is two lone surrogates");
+        DisplayText.IsClean("A\u200DB").Should().BeFalse("only a person's name takes the joiners");
+        DisplayText.IsClean("A\u200DB", allowJoiners: true).Should().BeTrue();
     }
 
     [Fact]

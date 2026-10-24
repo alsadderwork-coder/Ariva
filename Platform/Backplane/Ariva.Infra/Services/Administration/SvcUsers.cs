@@ -110,11 +110,12 @@ internal sealed class SvcUsers(
 
     /// <summary>
     /// A name is shown on screens and in the audit trail: no control, invisible or broken characters (CWE-117, CWE-79),
-    /// except the zero-width non-joiner and joiner, which Persian and some Indic names need.
+    /// except the zero-width non-joiner and joiner, which Persian and some Indic names need. The name is judged as it is
+    /// stored, the joiners in place (ARV-169: removing them first let a joiner split a subdivision flag's tags through).
     /// </summary>
     internal static bool IsUsableDisplayName(string displayName) =>
         string.IsNullOrWhiteSpace(displayName) ||
-        (displayName.Trim().Length <= 200 && DisplayText.IsClean(displayName.Trim().Replace("\u200C", "", StringComparison.Ordinal).Replace("\u200D", "", StringComparison.Ordinal)));
+        (displayName.Trim().Length <= 200 && DisplayText.IsClean(displayName.Trim(), allowJoiners: true));
 
     private static bool IsUsableEmail(string email) => string.IsNullOrWhiteSpace(email) || Ariva.Infra.Notifications.EmailAddresses.IsValid(email.Trim());
 

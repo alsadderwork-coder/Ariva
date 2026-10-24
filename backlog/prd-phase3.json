@@ -113,7 +113,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
-      "passes": false,
+      "passes": true,
       "notes": "Size XS. Owner decision 2026-10-13. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back).",
       "dependsOn": []
     },
@@ -1116,6 +1116,29 @@
       "notes": "Size S. Rated low (availability; a device keeps its batch and pushes again, a user's request answers 503). 2026-10-24, from ARV-164. Touches the authentication paths (the device credential lookup, the session and permission lookups): check the owner's sign-in freeze before starting.",
       "dependsOn": [
         "ARV-164"
+      ]
+    },
+    {
+      "id": "ARV-248",
+      "title": "[E3] Display texts refuse the invisible code points outside the format category",
+      "description": "Found in the ARV-169 security review (2026-10-24, recommended, pre-existing): DisplayText refuses control (Cc) and format (Cf) characters only, so other invisible code points still pass every display text and name: the variation selectors U+FE00 to U+FE0F and U+E0100 to U+E01EF (256 invisible code points, enough to hide arbitrary bytes after any visible character), the Hangul fillers U+115F, U+1160, U+3164 and U+FFA0, the combining grapheme joiner U+034F, U+17B4 and U+17B5, and the Mongolian free variation selectors U+180B to U+180F. The source scanner (SEC-130) already refuses the Hangul fillers and the supplementary variation selectors in files, so the runtime rule is weaker than the file rule. Needs an owner decision, since U+FE0F is part of many emoji. CWEs to review: CWE-501, CWE-79.",
+      "acceptanceCriteria": [
+        "Owner decision recorded in docs/product/decisions.md: which of the code points above a display text refuses, and how a variation selector is taken (for example at most one U+FE0E or U+FE0F, directly after a code point that is not a mark)",
+        "DisplayText refuses the decided code points per code point, everywhere it is used (display texts, topology and site names, user display names, floor plan file names, the import and --check-stored-names), with unit tests of escapes only",
+        "--check-stored-names reports stored values that the new rule refuses, without repeating a person's name",
+        "The CWE-501 and CWE-79 rows state the rule exactly",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. 2026-10-24, from the ARV-169 review (rated Medium by the reviewer, pre-existing, not blocking ARV-169). Waits for the owner's decision on variation selectors.",
+      "dependsOn": [
+        "ARV-169"
       ]
     }
   ]

@@ -184,7 +184,8 @@ internal sealed class SvcFloorPlans(
             return ("floor-plan", null);
         // One rule in Ariva.Core (ARV-162): paths, then a lone surrogate, control or format character judged per code point,
         // so the invisible ones outside the basic plane are refused too: tag characters (U+E0001, U+E0020 to U+E007F),
-        // shorthand format controls (U+1BCA0 to U+1BCA3), musical formatting (U+1D173 to U+1D17A).
+        // shorthand format controls (U+1BCA0 to U+1BCA3), musical formatting (U+1D173 to U+1D17A); the three subdivision flag
+        // emoji are taken whole (ARV-169).
         if (!FloorPlan.HasSafeFileNameCharacters(name))
             return (null, TopologyErrors.UnsafeFileName);
 

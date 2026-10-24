@@ -52,6 +52,10 @@ public sealed class StoredNameCheckTests
         { StoredNameCheck.NoteRule, "Done\x202E evil", null, ["Done\\u202E evil"] },
         { StoredNameCheck.PersonRule, "\x0645\x06CC\x200C\x062E\x0648\x0627\x0647\x0645", null, [] },
         { StoredNameCheck.PersonRule, "Amal \x202EHaddad", null, ["Amal \\u202EHaddad"] },
+        // ARV-169: the England flag emoji is a name's; a joiner between the waving flag and its tags is not.
+        { StoredNameCheck.PersonRule, "Amal \U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F", null, [] },
+        { StoredNameCheck.PersonRule, "Amal \U0001F3F4\x200D\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F", null,
+            ["Amal \\U0001F3F4\\u200D\\U000E0067\\U000E0062\\U000E0065\\U000E006E\\U000E0067\\U000E007F"] },
         { StoredNameCheck.ListRule, "Snake A\nSnake B", null, [] },
         { StoredNameCheck.ListRule, "Snake A\nSnake\x200BB\nSnake \U000E0041", null, ["Snake\\u200BB", "Snake \\U000E0041"] },
         { StoredNameCheck.EntriesRule, """[{"zone":"Snake A","labels":{"en":"Citizens","ar":"\u0645\u0648\u0627\u0637\u0646"}}]""", null, [] },
@@ -177,6 +181,9 @@ public sealed class StoredNameCheckTests
         // A person's name keeps its zero-width non-joiner (Persian); the override at code point 6 is named, the name is not.
         var name = "Mehdi\x202E\x0645\x06CC\x200C\x062E";
         StoredNameCheck.Positions(StoredNameCheck.PersonRule, name).Should().Be("U+202E at 6 (text not shown)");
+        // ARV-169: the joiner itself is a name's, the tags it splits from the waving flag are not.
+        StoredNameCheck.Positions(StoredNameCheck.PersonRule, "A\U0001F3F4\x200D\U000E0067\U000E007F")
+            .Should().Be("U+E0067 at 4, U+E007F at 5 (text not shown)");
         // A note keeps its line breaks; a tag character outside the basic plane counts as one code point.
         StoredNameCheck.Positions(StoredNameCheck.NoteRule, "Desks\nopened\U000E0041 at 9\x0007")
             .Should().Be("U+E0041 at 13, U+0007 at 19 (text not shown)");
