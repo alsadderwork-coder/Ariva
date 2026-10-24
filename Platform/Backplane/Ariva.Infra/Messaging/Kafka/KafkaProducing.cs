@@ -748,7 +748,11 @@ internal sealed class DisabledMessageBus : ISvcMessageBus
         throw new InvalidOperationException("Kafka is disabled (Kafka:Enabled false); this host cannot publish events.");
 }
 
-/// <summary>Dead letters on Ariva's producer, keyed by the source message's key so a replay keeps its partition.</summary>
+/// <summary>
+/// Dead letters on Ariva's producer, keyed by the source message's key so a replay keeps its partition. A letter flagged in
+/// <see cref="DeadLetters.TextReplacedHeader"/> (ARV-175) carries the key with its NUL characters or lone surrogates
+/// replaced, so its partition can differ: a replay of it reads the record's key from the source topic.
+/// </summary>
 internal sealed class KafkaDeadLetterSink(KafkaProduce produce) : IDeadLetterSink
 {
     public Task SendAsync(DeadLetter letter, CancellationToken ct)

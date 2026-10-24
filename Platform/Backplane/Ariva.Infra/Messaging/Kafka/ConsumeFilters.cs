@@ -219,8 +219,9 @@ public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProv
 /// record was neither processed nor dead-lettered (ARV-166's residual, closed here).
 /// </para>
 /// <para>
-/// Only when the letter cannot be kept (no store, the database away, its bound, a host already disposed, or a NUL or lone
-/// surrogate in the record's key, headers or error text, which PostgreSQL refuses until ARV-175 sanitises them) does the loop end
+/// Only when the letter cannot be kept (no store, the database away, its bound, or a host already disposed; a NUL or lone
+/// surrogate in the record's key, headers or error text no longer stops it: <see cref="DeadLetters.Create"/> replaces them,
+/// ARV-175) does the loop end
 /// as ARV-166 did: with an <see cref="OperationCanceledException"/> that carries the message's own token, whichever of the
 /// two tokens ended it. MassTransit's retry filter passes on only a cancellation of that token and retries anything else,
 /// and the receive pipe's rescue filter sends every exception but an <see cref="OperationCanceledException"/> to the error
@@ -315,9 +316,8 @@ internal static class DeadLetterRetry
         }
         catch (Exception e)
         {
-            // The database away, the bound, a host already disposed, text PostgreSQL refuses (a NUL, until ARV-175): nothing
-            // durable was written, so the record must not
-            // complete. The exception names the failure, not the letter.
+            // The database away, the bound or a host already disposed (text PostgreSQL refuses no longer reaches here since
+            // ARV-175): nothing durable was written, so the record must not complete. The exception names the failure, not the letter.
             logger.LogError(e, "Dead letter for {Topic} partition {Partition} offset {Offset} could not be kept in the outbox either",
                 letter.Topic, letter.Partition, letter.Offset);
             return false;

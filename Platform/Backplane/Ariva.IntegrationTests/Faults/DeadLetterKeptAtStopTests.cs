@@ -52,7 +52,9 @@ public sealed class KeptProbeConsumer : IConsumer<OutageProbe>
 /// commits the later record's offset, past the poison record, every time: before ARV-171 the poison record was faulted
 /// there and so skipped, neither processed nor dead-lettered. Now the letter is in the outbox before the record completes,
 /// and once the topic takes messages again the relay of the next host sends it. The unreadable-record path (the rider's
-/// dead-letter pipe, at receive level) is proven the same way.
+/// dead-letter pipe, at receive level) is proven the same way, with a NUL character in the record's key and in a header value
+/// (ARV-175): PostgreSQL text refuses NUL, so before ARV-175 that letter could not be kept and the record was left
+/// unacknowledged; now each NUL is replaced with U+FFFD, the letter is flagged, and its outbox row is keyed by a digest.
 /// <para>
 /// Every wait is for a condition within one budget (ARV-156); the topic's limit is restored in every case.
 /// </para>
@@ -264,7 +266,12 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
     public async Task Stop_Should_KeepTheRefusedDeadLetterAndSkipNoRecord_When_ALaterRecordOfThePartitionCompletes(bool unreadable)
     {
         var run = Guid.NewGuid().ToString("N")[..8];
-        var poison = "P-" + run;
+        var poison = unreadable ? "P-" + run + "\0" : "P-" + run;
+        // The kept letter's outbox row, and so its record on the dead-letter topic, is keyed by the record's key, or by a digest
+        // of the key as the letter holds it when a character was replaced (ARV-175).
+        var letterKey = unreadable
+            ? "sha256-" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(poison.Replace('\0', '\uFFFD'))))
+            : poison;
         var later = KeyOutside("L", run, poison);
         var slow = KeyOutside("S", run, poison, later);
         var raw = Encoding.UTF8.GetBytes("not a message (ARV-171) " + run);
@@ -288,7 +295,10 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
             if (unreadable)
             {
                 using var producer = new Confluent.Kafka.ProducerBuilder<string, byte[]>(new Confluent.Kafka.ProducerConfig { BootstrapServers = faults.KafkaDirectBootstrap }).Build();
-                await producer.ProduceAsync(KafkaTopics.SlaBreachDetected, new Confluent.Kafka.Message<string, byte[]> { Key = poison, Value = raw }, Ct);
+                await producer.ProduceAsync(KafkaTopics.SlaBreachDetected, new Confluent.Kafka.Message<string, byte[]>
+                {
+                    Key = poison, Value = raw, Headers = new Confluent.Kafka.Headers { { "probe", Encoding.UTF8.GetBytes("v\0w") } }
+                }, Ct);
             }
             else
             {
@@ -313,7 +323,7 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
             Logged(Kept).Should().Be(1, "the refused dead letter was kept in the outbox at the stop");
             counts.Sum(KafkaProducerMetrics.DeadLettersName, ("topic", KafkaTopics.SlaBreachDetected), ("group", Group), ("outcome", KafkaProducerMetrics.KeptOutcome))
                 .Should().Be(1);
-            (await KeptRowsAsync(poison)).Should().Equal([false], "one outbox row holds the letter, not sent yet: the topic still refuses");
+            (await KeptRowsAsync(letterKey)).Should().Equal([false], "one outbox row holds the letter, not sent yet: the topic still refuses");
 
             // The topic takes messages again: the next host's relay sends the kept letter.
             await AcceptDeadLettersAsync();
@@ -321,12 +331,12 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
             var next = await StartHostAsync();
             try
             {
-                await WaitForAsync(async () => (await KeptRowsAsync(poison)) is [true], "the relay sent the kept dead letter");
-                await WaitForAsync(() => LettersFor(poison).Count >= 1, "the dead letter on the dead-letter topic");
+                await WaitForAsync(async () => (await KeptRowsAsync(letterKey)) is [true], "the relay sent the kept dead letter");
+                await WaitForAsync(() => LettersFor(letterKey).Count >= 1, "the dead letter on the dead-letter topic");
                 await WaitForAsync(async () => await OffsetsAsync() is var o && o.Committed == o.End, "every record committed");
                 await Task.Delay(TimeSpan.FromSeconds(3), Ct);
 
-                var letter = LettersFor(poison).Should().ContainSingle("the record completed after its letter was kept, so it was not delivered and dead-lettered again").Subject;
+                var letter = LettersFor(letterKey).Should().ContainSingle("the record completed after its letter was kept, so it was not delivered and dead-lettered again").Subject;
                 letter.Topic.Should().Be(KafkaTopics.SlaBreachDetected);
                 letter.Partition.Should().Be(0);
                 letter.Offset.Should().Be(poisonOffset, "the letter names the record");
@@ -336,6 +346,8 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
                     letter.ErrorType.Should().Be(typeof(InvalidDataException).FullName);
                     Convert.FromBase64String(letter.BodyBase64).Should().Equal(raw, "the raw record travels with the letter");
                     Count(poison).Should().Be(0, "an unreadable record never reaches the consumer");
+                    letter.Key.Should().Be("P-" + run + "\uFFFD", "the NUL replaced, so PostgreSQL took the letter (ARV-175)");
+                    letter.Headers.Should().Contain("probe", "v\uFFFDw").And.Contain(DeadLetters.TextReplacedHeader, "headers,key");
                 }
                 else
                 {

@@ -5,6 +5,7 @@ using Ariva.Core.Messaging;
 using Ariva.Core.Services;
 using Ariva.Infra.Messaging;
 using Ariva.Infra.Messaging.Inbox;
+using Ariva.Infra.Messaging.Kafka;
 using Ariva.Infra.Messaging.Outbox;
 using Ariva.Infra.Settings;
 using Ariva.IntegrationTests.Security;
@@ -61,11 +62,11 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
     /// <summary>The relay's retry after a broker failure in these tests (the default).</summary>
     private static readonly TimeSpan BrokerRetry = TimeSpan.FromSeconds(new OutboxRelaySettings().BrokerRetrySeconds);
 
-    private OutboxRelay Relay(IOutboxTransport transport, int passSeconds = 60) => new(
+    private OutboxRelay Relay(IOutboxTransport transport, int passSeconds = 60, short batchSize = 50, TimeProvider clock = null) => new(
         _host.Provider.GetRequiredService<DatabaseSettings>(),
-        new KafkaSettings { Outbox = new OutboxRelaySettings { BatchSize = 50, PassSeconds = passSeconds } },
+        new KafkaSettings { Outbox = new OutboxRelaySettings { BatchSize = batchSize, PassSeconds = passSeconds } },
         transport,
-        _host.Clock,
+        clock ?? _host.Clock,
         NullLogger<OutboxRelay>.Instance);
 
     private static OutboxProbe Probe(string alert, int step) => new() { AlertId = alert, Step = step, CorrelationId = "corr-" + alert };
@@ -361,6 +362,258 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE sent_on IS NULL")).Should().Be(2, "measuring sends nothing");
     }
 
+    /// <summary>
+    /// ARV-175: a dead-letter topic whose broker is away holds back only itself. The pass sends its events first (though they
+    /// were written after the letters), then the dead letters; the failing letter's topic is held, its second letter waits
+    /// untouched, and the other dead-letter topic is sent. The hold outlives the pass and the relay: it is kept on the topic's
+    /// rows, so another relay (another pod, or this one after a restart) claims none of them for
+    /// <see cref="OutboxRelay.DeadLetterTopicHold"/>, though the failed letter's broker retry has passed, and then sends both.
+    /// An event's broker failure still ends the pass.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_HoldBackOnlyTheDeadLetterTopic_When_ItsBrokerIsAway()
+    {
+        await ResetAsync();
+        var store = new OutboxDeadLetterStore(_host.Provider.GetRequiredService<DatabaseSettings>(), _host.Clock);
+        var first = Letter(KafkaTopics.SlaDisputeChanged, 1);
+        await store.KeepAsync(first, Ct);
+        await store.KeepAsync(Letter(KafkaTopics.SlaDisputeChanged, 2), Ct);
+        await store.KeepAsync(Letter(KafkaTopics.AlertStateChanged, 3), Ct);
+        await WriteAsync(true, Probe("D", 1), Probe("D", 2));
+        var away = KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged);
+        var transport = new RecordingTransport { BrokerDownFor = away };
+
+        var pass = await Relay(transport).RunOnceAsync(Ct);
+
+        pass.Should().Be(new RelayPass(true, 5, 3, 1, 1), "two events and the other topic's letter sent, the away topic's second letter held");
+        transport.Sent.Select(m => m.Topic).Should().Equal(KafkaTopics.AlertStateChanged, KafkaTopics.AlertStateChanged,
+            KafkaTopics.DeadLetter(KafkaTopics.AlertStateChanged));
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE id = @id", DeadLetters.IdOf(first))).Should().Be(0,
+            "the broker's absence is not the letter's failure (ARV-165)");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE sent_on IS NULL")).Should().Be(2);
+
+        (await ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE topic = @topic AND sent_on IS NULL AND next_attempt_on = @at",
+            away, (_host.Clock.GetUtcNow() + OutboxRelay.DeadLetterTopicHold).UtcDateTime)).Should().Be(2, "both of the topic's letters are held on their rows");
+
+        // The hold outlives the pass and the relay: past the broker retry the first letter would be due again, and the second
+        // always was, but another relay claims neither until the hold has passed.
+        transport.BrokerDownFor = null;
+        await WriteAsync(true, Probe("D", 3));
+        _host.Clock.Advance(BrokerRetry + TimeSpan.FromSeconds(1));
+        (await Relay(transport).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 1, 1, 0, 0), "only the new event is claimed");
+        _host.Clock.Advance(OutboxRelay.DeadLetterTopicHold);
+        (await Relay(transport).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 2, 2, 0, 0), "the hold has passed");
+        transport.Sent.Skip(4).Select(m => m.Topic).Should().Equal(away, away);
+
+        // The control: an event's broker failure ends the pass before any letter.
+        await ResetAsync();
+        await store.KeepAsync(Letter(KafkaTopics.AlertStateChanged, 4), Ct);
+        await WriteAsync(true, Probe("E", 1), Probe("F", 1));
+        var down = new RecordingTransport { BrokerDownFor = KafkaTopics.AlertStateChanged };
+
+        (await Relay(down).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 3, 0, 1, 2), "the first event's failure ends the pass");
+        down.Sent.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// ARV-175: a dead-letter topic that fails for a reason that is neither the broker's absence nor the letter's own (here the
+    /// topic's authorization, a non-row failure) holds back only itself as well: the letter counts an attempt and backs off,
+    /// its topic's second letter waits untouched, the events and the other topic's letter are sent. The same failure on an
+    /// event ends the pass.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_HoldBackOnlyTheDeadLetterTopic_When_ItFailsForAReasonThatIsNotTheLetters()
+    {
+        await ResetAsync();
+        var store = new OutboxDeadLetterStore(_host.Provider.GetRequiredService<DatabaseSettings>(), _host.Clock);
+        var first = Letter(KafkaTopics.SlaDisputeChanged, 1);
+        await store.KeepAsync(first, Ct);
+        await store.KeepAsync(Letter(KafkaTopics.SlaDisputeChanged, 2), Ct);
+        await store.KeepAsync(Letter(KafkaTopics.AlertStateChanged, 3), Ct);
+        await WriteAsync(true, Probe("D", 1), Probe("D", 2));
+        var transport = new RecordingTransport { RefusedFor = KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged) };
+
+        var pass = await Relay(transport).RunOnceAsync(Ct);
+
+        pass.Should().Be(new RelayPass(true, 5, 3, 1, 1), "two events and the other topic's letter sent, the refused topic's second letter held");
+        transport.Sent.Select(m => m.Topic).Should().Equal(KafkaTopics.AlertStateChanged, KafkaTopics.AlertStateChanged,
+            KafkaTopics.DeadLetter(KafkaTopics.AlertStateChanged));
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE id = @id", DeadLetters.IdOf(first))).Should().Be(1, "not the broker's absence: it counts");
+        (await _host.ReadAsync<string>("SELECT last_error FROM outbox_message WHERE id = @id", DeadLetters.IdOf(first))).Should().Contain("KafkaException");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE sent_on IS NULL AND last_error IS NULL")).Should().Be(1,
+            "the topic's second letter was not tried");
+
+        // The control: the same failure on an event ends the pass before any letter.
+        await ResetAsync();
+        await store.KeepAsync(Letter(KafkaTopics.AlertStateChanged, 4), Ct);
+        await WriteAsync(true, Probe("E", 1), Probe("F", 1));
+        var refused = new RecordingTransport { RefusedFor = KafkaTopics.AlertStateChanged };
+
+        (await Relay(refused).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 3, 0, 1, 2), "the first event's failure ends the pass");
+        refused.Sent.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// ARV-175: a dead-letter send that never ends (a topic whose partition leader is away strands the produce) costs a pass at
+    /// most <see cref="OutboxRelay.DeadLetterPassBound"/>, not the pass's 60 seconds: the events go first, the stuck letter
+    /// fails on the dead letters' share (no attempt counted), the rest of the letters wait untouched, and the next pass of this
+    /// relay (any relay) sends the other topic's letter without trying the stuck topic again.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_GiveDeadLettersOnlyTheirShareOfThePass_When_ADeadLetterSendNeverEnds()
+    {
+        await ResetAsync();
+        var store = new OutboxDeadLetterStore(_host.Provider.GetRequiredService<DatabaseSettings>(), _host.Clock);
+        var stuck = Letter(KafkaTopics.SlaDisputeChanged, 1);
+        await store.KeepAsync(stuck, Ct);
+        await store.KeepAsync(Letter(KafkaTopics.SlaDisputeChanged, 2), Ct);
+        await store.KeepAsync(Letter(KafkaTopics.AlertStateChanged, 3), Ct);
+        await WriteAsync(true, Probe("H", 1), Probe("H", 2));
+        var away = KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged);
+        var transport = new RecordingTransport { HangFor = away };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        var pass = await Relay(transport).RunOnceAsync(Ct).WaitAsync(TimeSpan.FromSeconds(50), Ct);
+
+        clock.Elapsed.Should().BeGreaterThanOrEqualTo(OutboxRelay.DeadLetterPassBound - TimeSpan.FromMilliseconds(100))
+            .And.BeLessThan(OutboxRelay.DeadLetterPassBound + TimeSpan.FromSeconds(10), "the dead letters' share ends the wait, not the pass's 60 seconds");
+        pass.Should().Be(new RelayPass(true, 5, 2, 1, 2), "the events sent; the stuck letter failed; its topic's second letter and the other topic's wait");
+        (pass.Sent + pass.Failed + pass.HeldBack).Should().Be(pass.Claimed);
+        transport.Sent.Select(m => m.Topic).Should().Equal(KafkaTopics.AlertStateChanged, KafkaTopics.AlertStateChanged);
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE id = @id", DeadLetters.IdOf(stuck))).Should().Be(0,
+            "a send that outlived its bound is the broker's slowness, not the letter's failure (ARV-165)");
+        (await _host.ReadAsync<string>("SELECT last_error FROM outbox_message WHERE id = @id", DeadLetters.IdOf(stuck)))
+            .Should().Contain("OutboxPassTimeoutException").And.Contain("a relay pass gives dead letters");
+
+        var next = await Relay(transport).RunOnceAsync(Ct).WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        next.Should().Be(new RelayPass(true, 1, 1, 0, 0), "the stuck topic is held back, so only the other topic's letter is claimed");
+        transport.Sent.Select(m => m.Topic).Should().EndWith(KafkaTopics.DeadLetter(KafkaTopics.AlertStateChanged));
+    }
+
+    /// <summary>
+    /// ARV-175: a backlog of dead letters cannot crowd events out of a pass. With a batch of two, three letters kept before two
+    /// events: the pass claims a batch of each, so both events are claimed and sent first (one claim of two rows in order of
+    /// writing would have taken two letters and no event).
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_ClaimTheEvents_When_ABatchOfDeadLettersWasWrittenBeforeThem()
+    {
+        await ResetAsync();
+        var store = new OutboxDeadLetterStore(_host.Provider.GetRequiredService<DatabaseSettings>(), _host.Clock);
+        for (var offset = 1; offset <= 3; offset++)
+            await store.KeepAsync(Letter(KafkaTopics.SlaDisputeChanged, offset), Ct);
+        await WriteAsync(true, Probe("C", 1), Probe("C", 2));
+        var transport = new RecordingTransport();
+
+        var pass = await Relay(transport, batchSize: 2).RunOnceAsync(Ct);
+
+        pass.Should().Be(new RelayPass(true, 4, 4, 0, 0), "a batch of events and a batch of letters");
+        transport.Sent.Select(m => m.Topic).Should().Equal(KafkaTopics.AlertStateChanged, KafkaTopics.AlertStateChanged,
+            KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged), KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged));
+    }
+
+    /// <summary>
+    /// ARV-175: a dead-letter send cut short by the pass's own time (the events used it) is not its topic's fault: the pass ends
+    /// as for an event, the letter is due again after the broker retry, and the topic is not held. The pass's time is measured
+    /// on a clock the events' sends move, so the cut is exact.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_EndThePassWithoutHoldingTheTopic_When_ThePassesOwnTimeRunsOutOnADeadLetter()
+    {
+        await ResetAsync();
+        var store = new OutboxDeadLetterStore(_host.Provider.GetRequiredService<DatabaseSettings>(), _host.Clock);
+        var cut = Letter(KafkaTopics.SlaDisputeChanged, 1);
+        await store.KeepAsync(cut, Ct);
+        await store.KeepAsync(Letter(KafkaTopics.SlaDisputeChanged, 2), Ct);
+        await WriteAsync(true, Probe("P", 1));
+        var away = KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged);
+        var stepped = new SteppedClock(_host.Clock);
+        var transport = new RecordingTransport
+        {
+            HangFor = away,
+            OnSend = m => { if (m.Topic == KafkaTopics.AlertStateChanged) stepped.Step(TimeSpan.FromMilliseconds(1900)); }
+        };
+
+        var pass = await Relay(transport, passSeconds: 2, clock: stepped).RunOnceAsync(Ct).WaitAsync(TimeSpan.FromSeconds(30), Ct);
+
+        pass.Should().Be(new RelayPass(true, 3, 1, 1, 1), "the event sent; the letter cut by the pass's last 100 ms; the pass ended there");
+        (await _host.ReadAsync<string>("SELECT last_error FROM outbox_message WHERE id = @id", DeadLetters.IdOf(cut))).Should().Contain("relay pass's 2 seconds");
+        (await _host.ReadAsync<DateTime>("SELECT next_attempt_on FROM outbox_message WHERE id = @id", DeadLetters.IdOf(cut)))
+            .Should().Be((_host.Clock.GetUtcNow() + BrokerRetry).UtcDateTime, "due again after the broker retry, not held");
+        (await ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE topic = @topic AND next_attempt_on IS NULL", away)).Should().Be(1,
+            "the topic's other letter is not held");
+
+        transport.HangFor = null;
+        _host.Clock.Advance(BrokerRetry);
+        (await Relay(transport).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 2, 2, 0, 0), "both letters sent as soon as the broker retry passed");
+    }
+
+    /// <summary>
+    /// ARV-175: a letter whose key, header names and values and error message carry NUL characters and lone surrogates is kept
+    /// at a stop (PostgreSQL text refuses NUL and jsonb refuses both, so it was not before), with each replaced by U+FFFD and
+    /// flagged; the row is keyed by the key's digest, the record's place stays exact, and the relay then sends it as JSON.
+    /// </summary>
+    [Fact]
+    public async Task Keep_Should_StoreAndSendTheLetter_When_ItsTextHoldsNulAndLoneSurrogates()
+    {
+        await ResetAsync();
+        var store = new OutboxDeadLetterStore(_host.Provider.GetRequiredService<DatabaseSettings>(), _host.Clock);
+        var letter = DeadLetters.Create(KafkaTopics.SlaDisputeChanged, 2, 77, "k\0ey", [9], [new("h\0", "v\0"), new("pair", "\uD800")],
+            "it-consumer", new InvalidOperationException("bad \uDC00 text"), _host.Clock.GetUtcNow().UtcDateTime);
+
+        await store.KeepAsync(letter, Ct);
+
+        var id = DeadLetters.IdOf(letter);
+        (await _host.ReadAsync<string>("SELECT message_key FROM outbox_message WHERE id = @id", id)).Should().StartWith("sha256-");
+        (await _host.ReadAsync<string>("SELECT payload->>'key' FROM outbox_message WHERE id = @id", id)).Should().Be("k\uFFFDey");
+        (await _host.ReadAsync<string>("SELECT payload->'headers'->>'ariva-dead-letter-text-replaced' FROM outbox_message WHERE id = @id", id))
+            .Should().Be("error,headers,key");
+        (await _host.ReadAsync<string>("SELECT payload->'headers'->>'h\uFFFD' FROM outbox_message WHERE id = @id", id)).Should().Be("v\uFFFD");
+        (await _host.ReadAsync<string>("SELECT payload->>'errorMessage' FROM outbox_message WHERE id = @id", id)).Should().Be("bad \uFFFD text");
+        (await _host.ReadAsync<string>("SELECT (payload->>'partition') || '/' || (payload->>'offset') || '/' || (payload->>'consumer') FROM outbox_message WHERE id = @id", id))
+            .Should().Be("2/77/it-consumer", "a replay fetches the original record by its exact place");
+
+        var transport = new RecordingTransport();
+        (await Relay(transport).RunOnceAsync(Ct)).Sent.Should().Be(1);
+        transport.Sent.Should().ContainSingle().Which.Topic.Should().Be(KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged));
+    }
+
+    /// <summary>One value read with a topic and a time bound as parameters (ARV-175).</summary>
+    private async Task<T> ReadAsync<T>([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, string topic, DateTime? at = null)
+    {
+        await using var connection = new NpgsqlConnection(_host.Provider.GetRequiredService<DatabaseSettings>().BuildConnectionString());
+        await connection.OpenAsync(Ct);
+#pragma warning disable CA2100 // test helper: every caller passes a literal (ConstantExpected, CA1857 is an error)
+        await using var command = new NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
+        command.Parameters.AddWithValue("topic", topic);
+        if (at is { } value)
+            command.Parameters.AddWithValue("at", value);
+        var result = await command.ExecuteScalarAsync(Ct);
+        return result is DBNull or null ? default : (T)result;
+    }
+
+    private DeadLetter Letter(string topic, long offset) => DeadLetters.Create(topic, 0, offset, "key-" + offset, [1, 2, 3], [new("h", "v")],
+        "it-consumer", new InvalidOperationException("boom"), _host.Clock.GetUtcNow().UtcDateTime);
+
+    /// <summary>
+    /// The host's clock for dates, and a time stamp that moves only when a test steps it (ARV-175): the relay measures its pass's
+    /// time on it. Timers still run in real time, so a send's bound ends after what was left of the stepped time.
+    /// </summary>
+    private sealed class SteppedClock(ManualClock clock) : TimeProvider
+    {
+        private long _ticks;
+
+        public override DateTimeOffset GetUtcNow() => clock.GetUtcNow();
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => Interlocked.Read(ref _ticks);
+
+        public void Step(TimeSpan by) => Interlocked.Add(ref _ticks, by.Ticks);
+    }
+
     /// <summary>A producer that has not started (ARV-167): the relay waits, and still measures.</summary>
     private sealed class NotReadyTransport : IOutboxTransport
     {
@@ -379,15 +632,30 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         /// <summary>A send that never ends and ignores its token (a stranded produce).</summary>
         public bool Hang { get; set; }
 
+        /// <summary>A topic whose broker is away (ARV-175): its sends fail as <see cref="BrokerDown"/> makes every send fail.</summary>
+        public string BrokerDownFor { get; set; }
+
+        /// <summary>A topic the broker refuses (ARV-175): a failure that is neither the broker's absence nor the row's own.</summary>
+        public string RefusedFor { get; set; }
+
+        /// <summary>A topic whose sends never end and ignore their token (ARV-175: its partition leader is away).</summary>
+        public string HangFor { get; set; }
+
+        /// <summary>Called as each send starts (ARV-175: to move a test clock).</summary>
+        public Action<OutboxEnvelope> OnSend { get; set; }
+
         /// <summary>The broker's absence, as the Kafka transport classifies it (ARV-165).</summary>
         public bool IsBrokerUnavailable(Exception error) => error is TimeoutException { Message: "Local: Message timed out" };
 
         public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
         {
-            if (Hang)
+            OnSend?.Invoke(message);
+            if (Hang || string.Equals(message.Topic, HangFor, StringComparison.Ordinal))
                 return new TaskCompletionSource().Task;
-            if (BrokerDown)
+            if (BrokerDown || string.Equals(message.Topic, BrokerDownFor, StringComparison.Ordinal))
                 throw new TimeoutException("Local: Message timed out");
+            if (string.Equals(message.Topic, RefusedFor, StringComparison.Ordinal))
+                throw new Confluent.Kafka.KafkaException(Confluent.Kafka.ErrorCode.TopicAuthorizationFailed);
             if (Catalog is not null && !Catalog.TryResolve(message.MessageType, out _))
                 throw new UnknownEventTypeException(message.MessageType);
             using var payload = JsonDocument.Parse(message.Payload);

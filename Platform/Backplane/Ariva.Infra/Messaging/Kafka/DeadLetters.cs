@@ -9,7 +9,8 @@ namespace Ariva.Infra.Messaging.Kafka;
 /// message only, no stack trace. The body is cut at <see cref="DeadLetters.MaxBodyBytes"/> (flagged, with the full
 /// length), and further if the whole letter would pass <see cref="DeadLetters.MaxLetterBytes"/> (ARV-171), so the letter
 /// always fits Kafka's 1 MB limit; a cut body cannot be replayed from the letter and is read from the source topic by
-/// partition and offset while its retention lasts.
+/// partition and offset while its retention lasts. Likewise a letter flagged in <see cref="DeadLetters.TextReplacedHeader"/>
+/// (ARV-175) no longer holds the record's key or headers exactly: they too are read from the source topic.
 /// </summary>
 public sealed record DeadLetter(
     string Topic,
@@ -62,6 +63,21 @@ public static class DeadLetters
     /// <summary>Marks a letter whose headers were left out so that it fits (their number is the value).</summary>
     public const string HeadersDroppedHeader = "ariva-dead-letter-headers-dropped";
 
+    /// <summary>
+    /// Marks a letter whose key, a header name or value, or error message held a NUL character or a lone surrogate (ARV-175):
+    /// each was replaced with U+FFFD, since PostgreSQL text refuses NUL and jsonb refuses both, so the letter could not be
+    /// kept otherwise. The value names the parts that held one (<c>key</c>, <c>headers</c>, <c>error</c>), never the
+    /// characters; the record itself is fetched from the source topic by the letter's exact topic, partition and offset.
+    /// </summary>
+    public const string TextReplacedHeader = "ariva-dead-letter-text-replaced";
+
+    /// <summary>
+    /// Put before a record's own header whose name starts like the letter's flags (<c>ariva-dead-letter-</c>), so a record
+    /// cannot set a flag such as <see cref="TextReplacedHeader"/> (ARV-175): the flags are the letter's, never the record's.
+    /// </summary>
+    public const string RecordHeaderPrefix = "record:";
+
+    private const string FlagPrefix = "ariva-dead-letter-";
     private const int MaxErrorLength = 2000;
     private const int MaxHeaders = 50;
     private const int MaxHeaderLength = 1000;
@@ -110,25 +126,42 @@ public static class DeadLetters
     /// fits <see cref="MaxLetterBytes"/> (ARV-171). The JSON encoder writes a character outside ASCII as six bytes, so long
     /// headers could otherwise take a letter past Kafka's limit, where every send of it fails for good. The body gives way
     /// first (flagged as cut, with its full length), then the headers (left out, their number in
-    /// <see cref="HeadersDroppedHeader"/>), and last the key and the error message.
+    /// <see cref="HeadersDroppedHeader"/>), and last the key and the error message. Every text part is then made printable
+    /// for PostgreSQL (ARV-175, <see cref="Printable"/>, flagged in <see cref="TextReplacedHeader"/>), after it is cut, since a
+    /// cut can split a surrogate pair. A record's header named like a flag is kept under <see cref="RecordHeaderPrefix"/>.
+    /// The topic, partition, offset and consumer are kept exactly.
     /// </summary>
     public static DeadLetter Create(string topic, int? partition, long? offset, string key, byte[] body,
         IEnumerable<KeyValuePair<string, string>> headers, string consumer, Exception error, DateTime failedOn)
     {
         ArgumentNullException.ThrowIfNull(error);
         body ??= [];
+        var replaced = new SortedSet<string>(StringComparer.Ordinal);
         var kept = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (name, value) in (headers ?? []).Take(MaxHeaders))
         {
             if (name is null)
                 continue;
             var text = value ?? string.Empty;
-            kept[name.Length <= MaxHeaderLength ? name : name[..MaxHeaderLength]] = text.Length <= MaxHeaderLength ? text : text[..MaxHeaderLength];
+            var keptName = Printable(name.Length <= MaxHeaderLength ? name : name[..MaxHeaderLength], out var nameReplaced);
+            if (keptName.StartsWith(FlagPrefix, StringComparison.OrdinalIgnoreCase))
+                keptName = RecordHeaderPrefix + keptName;
+            var keptValue = Printable(text.Length <= MaxHeaderLength ? text : text[..MaxHeaderLength], out var valueReplaced);
+            if (nameReplaced || valueReplaced)
+                replaced.Add("headers");
+            kept[keptName] = keptValue;
         }
 
         var message = error.Message ?? string.Empty;
-        message = message.Length <= MaxErrorLength ? message : message[..MaxErrorLength];
-        key ??= string.Empty;
+        message = Printable(message.Length <= MaxErrorLength ? message : message[..MaxErrorLength], out var messageReplaced);
+        if (messageReplaced)
+            replaced.Add("error");
+        key = Printable(key ?? string.Empty, out var keyReplaced);
+        if (keyReplaced)
+            replaced.Add("key");
+        if (replaced.Count > 0)
+            kept[TextReplacedHeader] = string.Join(',', replaced);
+
         var bodyKept = Math.Min(body.Length, MaxBodyBytes);
         DeadLetter Build(int bodyBytes, IReadOnlyDictionary<string, string> withHeaders, string withKey, string withMessage) => new(
             topic ?? "unknown",
@@ -157,17 +190,66 @@ public static class DeadLetters
 
         if (size > MaxLetterBytes)
         {
+            // The record's headers left out are counted; the letter's own flag is not one of them.
+            var droppedCount = kept.Count - (replaced.Count > 0 ? 1 : 0);
             var dropped = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                [HeadersDroppedHeader] = kept.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                [HeadersDroppedHeader] = droppedCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
             };
+            if (replaced.Count > 0)
+                dropped[TextReplacedHeader] = string.Join(',', replaced);
             letter = Build(0, dropped, key, message);
             if (SizeOf(letter) > MaxLetterBytes)
-                letter = Build(0, dropped, key.Length <= LastResortLength ? key : key[..LastResortLength],
-                    message.Length <= LastResortLength ? message : message[..LastResortLength]);
+            {
+                // The last cut can split a surrogate pair too: the half left is replaced and flagged.
+                var lastKey = Printable(key.Length <= LastResortLength ? key : key[..LastResortLength], out var keyCutReplaced);
+                var lastMessage = Printable(message.Length <= LastResortLength ? message : message[..LastResortLength], out var messageCutReplaced);
+                if (keyCutReplaced)
+                    replaced.Add("key");
+                if (messageCutReplaced)
+                    replaced.Add("error");
+                if (replaced.Count > 0)
+                    dropped[TextReplacedHeader] = string.Join(',', replaced);
+                letter = Build(0, dropped, lastKey, lastMessage);
+            }
         }
 
         return letter;
+    }
+
+    /// <summary>
+    /// The text with every NUL character and every unpaired surrogate replaced with U+FFFD (ARV-175), so PostgreSQL text and
+    /// jsonb take it; the same string when it held none. A surrogate pair is kept.
+    /// </summary>
+    public static string Printable(string text, out bool replaced)
+    {
+        replaced = false;
+        if (string.IsNullOrEmpty(text))
+            return text;
+        System.Text.StringBuilder builder = null;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            var pairedHigh = char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]);
+            if (pairedHigh)
+            {
+                builder?.Append(c).Append(text[i + 1]);
+                i++;
+                continue;
+            }
+
+            if (c == '\0' || char.IsSurrogate(c))
+            {
+                builder ??= new System.Text.StringBuilder(text.Length).Append(text, 0, i);
+                builder.Append('\uFFFD');
+                replaced = true;
+                continue;
+            }
+
+            builder?.Append(c);
+        }
+
+        return builder?.ToString() ?? text;
     }
 
     /// <summary>The size of the letter's JSON as it goes to Kafka and into an outbox row.</summary>
@@ -191,17 +273,22 @@ public static class DeadLetters
 
     /// <summary>
     /// The outbox row's key for a letter (ARV-171): the record's key when it fits <c>message_key</c>, <c>none</c> when it is
-    /// empty (as the direct send keys it), else a digest of it. The letter itself keeps the full key, for a replay.
+    /// empty (as the direct send keys it), else a digest of it. The letter itself keeps the full key, for a replay. A key in
+    /// which <see cref="Create"/> replaced a character (ARV-175) is no longer the record's, so it is keyed by its digest too.
     /// </summary>
     public static string OutboxKeyOf(DeadLetter letter)
     {
         ArgumentNullException.ThrowIfNull(letter);
         if (string.IsNullOrEmpty(letter.Key))
             return "none";
-        if (Outbox.OutboxLimits.FitsMessageKey(letter.Key))
+        if (Outbox.OutboxLimits.FitsMessageKey(letter.Key) && !KeyWasReplaced(letter))
             return letter.Key;
         return "sha256-" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(letter.Key)));
     }
+
+    private static bool KeyWasReplaced(DeadLetter letter) =>
+        letter.Headers is not null && letter.Headers.TryGetValue(TextReplacedHeader, out var parts)
+        && parts.Split(',').Contains("key", StringComparer.Ordinal);
 
     /// <summary>The dead-letter topic of the letter's source topic.</summary>
     public static string TopicFor(DeadLetter letter)

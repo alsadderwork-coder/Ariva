@@ -58,6 +58,26 @@ public sealed class DeadLetterOutboxTests
     }
 
     [Fact]
+    public void Create_Should_FlagTheHalfPairAndCountOnlyTheRecordsHeaders_When_TheLastCutSplitsTheKeysPair()
+    {
+        // ARV-175: the last cut (200 characters) falls between the halves of an emoji; a NUL in a header flags the headers first.
+        var key = new string('a', 199) + string.Concat(Enumerable.Repeat("\U0001F600", 100_000)); // 1.2 MB of JSON on its own
+        var headers = new[] { new KeyValuePair<string, string>("h", "v\0") };
+
+        var letter = DeadLetters.Create(KafkaTopics.FlowNowcast, 3, 42, key, [1], headers, "ariva-main.probe",
+            new InvalidOperationException("probe"), DateTime.UtcNow);
+
+        DeadLetters.SizeOf(letter).Should().BeLessThanOrEqualTo(DeadLetters.MaxLetterBytes);
+        letter.Key.Should().HaveLength(200).And.EndWith("a\uFFFD");
+        letter.Headers.Should().Equal(new Dictionary<string, string>
+        {
+            [DeadLetters.HeadersDroppedHeader] = "1",
+            [DeadLetters.TextReplacedHeader] = "headers,key"
+        }, "one record header was left out (the letter's own flag is not counted), and the cut key's half pair replaced");
+        DeadLetters.OutboxKeyOf(letter).Should().StartWith("sha256-");
+    }
+
+    [Fact]
     public void Create_Should_KeepAnOrdinaryLetterWhole_When_ItFits()
     {
         var letter = DeadLetters.Create(KafkaTopics.FlowNowcast, 3, 42, "zone-9", [1, 2, 3], [new("a", "b")], "ariva-main.probe",
@@ -93,6 +113,90 @@ public sealed class DeadLetterOutboxTests
         outboxKey.Should().StartWith("sha256-").And.HaveLength(71);
         OutboxLimits.FitsMessageKey(outboxKey).Should().BeTrue();
         DeadLetters.OutboxKeyOf(Letter() with { Key = key }).Should().Be(outboxKey);
+    }
+
+    [Fact]
+    public void Create_Should_ReplaceNulAndFlagTheLetter_When_TheKeyAndAHeaderHoldOne()
+    {
+        // ARV-175: PostgreSQL text refuses NUL, so a letter with one could not be kept.
+        var letter = DeadLetters.Create(KafkaTopics.FlowNowcast, 3, 42, "zone\0-9", [1], [new("h\0", "v\0w"), new("a", "b")], "ariva-main.probe",
+            new InvalidOperationException("probe"), DateTime.UtcNow);
+
+        letter.Key.Should().Be("zone\uFFFD-9");
+        letter.Headers.Should().Contain("h\uFFFD", "v\uFFFDw").And.Contain("a", "b")
+            .And.Contain(DeadLetters.TextReplacedHeader, "headers,key", "the parts named, never the characters");
+        (letter.Topic, letter.Partition, letter.Offset, letter.Consumer).Should().Be((KafkaTopics.FlowNowcast, 3, 42L, "ariva-main.probe"),
+            "a replay fetches the original record by its exact place");
+        DeadLetters.OutboxKeyOf(letter).Should().StartWith("sha256-", "the key is no longer the record's");
+    }
+
+    [Fact]
+    public void Create_Should_ReplaceALoneSurrogate_When_TheErrorMessageHoldsOne()
+    {
+        // ARV-175: jsonb refuses an unpaired surrogate; a pair is kept.
+        var letter = DeadLetters.Create(KafkaTopics.FlowNowcast, 3, 42, "zone-9", [1], [new("smile", "\U0001F600")], "ariva-main.probe",
+            new InvalidOperationException("bad \uD800 and \uDC00 text"), DateTime.UtcNow);
+
+        letter.ErrorMessage.Should().Be("bad \uFFFD and \uFFFD text");
+        letter.Headers.Should().Contain("smile", "\U0001F600").And.Contain(DeadLetters.TextReplacedHeader, "error");
+        DeadLetters.OutboxKeyOf(letter).Should().Be("zone-9", "the key held nothing to replace");
+    }
+
+    [Fact]
+    public void Create_Should_ReplaceTheHalfPair_When_ACutSplitsASurrogatePair()
+    {
+        // A header value is cut at 1,000 characters: here between the two halves of an emoji.
+        var letter = DeadLetters.Create(KafkaTopics.FlowNowcast, 3, 42, "zone-9", [1], [new("long", new string('a', 999) + "\U0001F600")], "ariva-main.probe",
+            new InvalidOperationException("probe"), DateTime.UtcNow);
+
+        letter.Headers["long"].Should().HaveLength(1000).And.EndWith("a\uFFFD");
+        letter.Headers[DeadLetters.TextReplacedHeader].Should().Be("headers");
+    }
+
+    [Fact]
+    public void Create_Should_AddNoFlag_When_NothingWasReplaced()
+    {
+        var letter = Letter();
+
+        letter.Headers.Should().NotContainKey(DeadLetters.TextReplacedHeader);
+        DeadLetters.OutboxKeyOf(letter).Should().Be("zone-1");
+    }
+
+    [Fact]
+    public void Create_Should_KeepTheRecordsHeaderApartFromTheFlags_When_ItIsNamedLikeOne()
+    {
+        // ARV-175: a record cannot set the letter's flags; a spoofed "key" flag would have keyed a clean key by its digest.
+        var letter = DeadLetters.Create(KafkaTopics.FlowNowcast, 3, 42, "zone-9", [1],
+            [new(DeadLetters.TextReplacedHeader, "key"), new("Ariva-Dead-Letter-Headers-Dropped", "3")], "ariva-main.probe",
+            new InvalidOperationException("probe"), DateTime.UtcNow);
+
+        letter.Headers.Should().NotContainKey(DeadLetters.TextReplacedHeader).And.NotContainKey("Ariva-Dead-Letter-Headers-Dropped");
+        letter.Headers.Should().Contain(DeadLetters.RecordHeaderPrefix + DeadLetters.TextReplacedHeader, "key")
+            .And.Contain(DeadLetters.RecordHeaderPrefix + "Ariva-Dead-Letter-Headers-Dropped", "3");
+        DeadLetters.OutboxKeyOf(letter).Should().Be("zone-9", "nothing was replaced in the key");
+
+        var flagged = DeadLetters.Create(KafkaTopics.FlowNowcast, 3, 42, "zone\0-9", [1], [new(DeadLetters.TextReplacedHeader, "error")], "ariva-main.probe",
+            new InvalidOperationException("probe"), DateTime.UtcNow);
+        flagged.Headers.Should().Contain(DeadLetters.TextReplacedHeader, "key", "the letter's own flag, not the record's")
+            .And.Contain(DeadLetters.RecordHeaderPrefix + DeadLetters.TextReplacedHeader, "error");
+    }
+
+    [Theory]
+    [InlineData(@"", @"", false)]
+    [InlineData(@"plain", @"plain", false)]
+    [InlineData(@"a\u0000b", @"a\uFFFDb", true)]
+    [InlineData(@"\uD83D\uDE00", @"\uD83D\uDE00", false)]
+    [InlineData(@"\uDE00x", @"\uFFFDx", true)]
+    [InlineData(@"x\uD83D", @"x\uFFFD", true)]
+    [InlineData(@"\uD83D\uD83D\uDE00", @"\uFFFD\uD83D\uDE00", true)]
+    [InlineData(@"\uDE00\uD83D", @"\uFFFD\uFFFD", true)]
+    public void Printable_Should_ReplaceOnlyNulAndUnpairedSurrogates_When_GivenText(string escapedText, string escapedExpected, bool replaced)
+    {
+        // Escaped, since xUnit serializes theory data and a lone surrogate would not survive it.
+        var text = System.Text.RegularExpressions.Regex.Unescape(escapedText);
+
+        DeadLetters.Printable(text, out var wasReplaced).Should().Be(System.Text.RegularExpressions.Regex.Unescape(escapedExpected));
+        wasReplaced.Should().Be(replaced);
     }
 
     /// <summary>ARV-125a: the dead letters counted by outcome, for the letters of <see cref="Letter"/>.</summary>

@@ -114,8 +114,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 38,
-      "passes": false,
-      "notes": "Size S. Was planned before the pilot, after ARV-174. Follow-up 4 of the same review (WRITE on every dead-letter topic for each per-service principal) is in ARV-083's notes. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back). 2026-10-14: the shutdown budget (finding 3: terminationGracePeriodSeconds 60, ShutdownTimeout about 50 s) moved into ARV-165, whose shorter bus stop wait made it needed before the pilot. From the ARV-165 security review (2026-10-14, F1, low): Local_MsgTimedOut also covers one topic-partition without a leader (a partial outage), and since ARV-165 a broker-unavailable failure does not count against the row, so such a row is retried every 5 s for ever, each attempt holding a relay pass up to 30 s, and the \"stuck after N attempts\" Error never fires (only Warnings). Escalate a broker-unavailable streak past a few minutes (an Error and a metric), pair it with this story's per-topic hold, and optionally skip passes while the cached broker probe (BrokersAnswerAsync) answers false, which removes the 30 s holds of a full outage.",
+      "passes": true,
+      "notes": "Size S. Was planned before the pilot, after ARV-174. Follow-up 4 of the same review (WRITE on every dead-letter topic for each per-service principal) is in ARV-083's notes. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back). 2026-10-14: the shutdown budget (finding 3: terminationGracePeriodSeconds 60, ShutdownTimeout about 50 s) moved into ARV-165, whose shorter bus stop wait made it needed before the pilot. From the ARV-165 security review (2026-10-14, F1, low): Local_MsgTimedOut also covers one topic-partition without a leader (a partial outage), and since ARV-165 a broker-unavailable failure does not count against the row, so such a row is retried every 5 s for ever, each attempt holding a relay pass up to 30 s, and the \"stuck after N attempts\" Error never fires (only Warnings). Escalate a broker-unavailable streak past a few minutes (an Error and a metric), pair it with this story's per-topic hold, and optionally skip passes while the cached broker probe (BrokersAnswerAsync) answers false, which removes the 30 s holds of a full outage. 2026-10-23: this part was left out of ARV-175 (outside its criteria) and filed as ARV-245; ARV-175 also claims dead letters apart from events, gives them at most 5 s of a pass and keeps the topic hold on the topic's rows, so every relay honours it (its security reviews, backlog/progress.md).",
       "dependsOn": [
         "ARV-171"
       ]
@@ -1013,6 +1013,48 @@
       "notes": "Filed 2026-10-23 by ARV-242's security review (round 2, L1). Low, so Phase 3 by the owner's rule.",
       "dependsOn": [
         "ARV-242"
+      ]
+    },
+    {
+      "id": "ARV-245",
+      "title": "[E6] Outbox relay: a broker-unavailable streak escalates, and passes wait while the brokers do not answer",
+      "description": "From the ARV-165 security review (2026-10-14, F1, low), parked in ARV-175's notes and left out of ARV-175 (2026-10-23), whose criteria did not include it. Local_MsgTimedOut also covers one topic-partition without a leader (a partial outage), and since ARV-165 a broker-unavailable failure does not count against the row, so such a row is tried every Kafka:Outbox:BrokerRetrySeconds for ever, each attempt holding a relay pass up to its produce bound, and the 'stuck after N attempts' Error never fires (only Warnings). ARV-175 claims event rows and dead-letter rows separately and sends the events first, gives dead letters at most 5 s of a pass, and holds a dead-letter topic that fails for a reason not its own for a minute on its rows (for every relay), so a dead-letter topic delays events by at most 5 s once a minute (and once more per letter kept for it meanwhile); an event topic without a leader still ends each pass at its first row, after up to the produce bound. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "A row that has failed with the broker unavailable for longer than a configured streak (minutes, validated) is logged once as an Error naming its topic and the streak's length, and counted by a metric with its topic as a bounded tag; the streak resets when the row is sent",
+        "While the cached broker probe (KafkaProduce.BrokersAnswerAsync) answers false, the relay skips its passes (the backlog is still measured), so a full outage no longer holds a pass for its produce bound each time; a pass resumes within the broker retry of the probe answering again",
+        "Unit or integration tests: the Error and the metric after the streak and not before; a skipped pass while the probe answers false and a resumed one after; the existing ARV-165 and ARV-175 relay tests still pass",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (wiki 10 section 4.5a, the monitoring rules; node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Filed 2026-10-23 by ARV-175 from its notes (the ARV-165 review's F1). Low, so Phase 3 by the owner's rule of 2026-10-14. Size S.",
+      "dependsOn": [
+        "ARV-175"
+      ]
+    },
+    {
+      "id": "ARV-246",
+      "title": "[E6] Outbox relay: no back-to-back passes that send nothing, and a host's own producer failure holds no dead-letter topic",
+      "description": "From the ARV-175 security review round 3 (2026-10-23, N1 and N2, low). (1) ExecuteAsync skips its wait when a pass claimed a full batch with no failure (Claimed >= BatchSize && Failed == 0), which a batch of rows of an event type this build does not know (and the rows of their keys behind them) also meets: they are held back without a failure, so during a rolling deploy the old leader runs back-to-back transactions, takes the advisory lock again before the new pods' 500 ms polls, and the events wait until that pod goes while the database carries a tight loop. Older than ARV-175. (2) Since ARV-175 a dead-letter row whose send fails for a reason that is not its own holds its topic for a minute on its rows, for every relay; IsBrokerUnavailable is also true for conditions that belong to one host's producer (ObjectDisposedException, Local_Destroy at a stop, a fatal client error), so a dead letter in flight at that moment holds its topic for every relay although the broker is fine. Dead letters only (up to a minute late after a pod stops); events are not affected. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "The relay loop skips its wait only when the pass sent at least one row (pass.Sent > 0) as well as claimed a full batch with no failure; a pass of rows held back without a failure waits the poll interval",
+        "A dead-letter row whose send fails on a condition of this host's producer (disposed, Local_Destroy, a fatal client error) ends the pass as for an event and holds no topic; the broker's own unavailability and the dead letters' share still hold it (ARV-175)",
+        "Integration tests: a full batch of unknown-type rows gives a pass that sends nothing and the next pass only after the poll interval; a dead letter failing with ObjectDisposedException or Local_Destroy leaves its topic's rows unheld; the ARV-165, ARV-166 and ARV-175 relay tests still pass",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (wiki 10, the relay's warning entry; overview section 5; node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 41,
+      "passes": false,
+      "notes": "Filed 2026-10-23 by ARV-175 from its round 3 security review (N1, N2). Low, so Phase 3 by the owner's rule of 2026-10-14. Size S. Until then wiki 10 states N1.",
+      "dependsOn": [
+        "ARV-175"
       ]
     }
   ]

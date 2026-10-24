@@ -1,5 +1,6 @@
 using System.Data;
 using System.Text.Json;
+using Ariva.Core.Messaging;
 using Ariva.Infra.Settings;
 using Microsoft.Extensions.Hosting;
 using Npgsql;
@@ -50,7 +51,7 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// (one leader across every pod and host; the others skip the pass), claims unsent rows in <c>seq</c> order with
 /// <c>FOR UPDATE SKIP LOCKED</c>, and produces them one by one. When a row fails, its key is held back for the rest of
 /// the pass and until the row's retry time, so later events for that key never overtake it; other keys carry on.
-/// A broker failure ends the pass. Sent rows are marked in the same transaction, so a crash between produce and commit sends those rows again
+/// A broker failure ends the pass (a dead-letter row's holds back its topic instead, ARV-175, below). Sent rows are marked in the same transaction, so a crash between produce and commit sends those rows again
 /// (at-least-once; consumers deduplicate in the inbox). The leader also removes old sent rows and inbox entries, keeping the
 /// newest row of each key on a compacted topic (ARV-126).
 /// <para>
@@ -66,6 +67,20 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// does not count against the row: no attempt, no growing backoff, the row is due again after
 /// <see cref="OutboxRelaySettings.BrokerRetrySeconds"/>. So after an outage every key resumes within that wait of the
 /// broker's return, whatever the outage's length. Any other failure counts and backs off exponentially, up to five minutes.
+/// </para>
+/// <para>
+/// ARV-175: dead letters never hold events up for long. A pass claims up to a batch of event rows and then up to a batch of
+/// dead-letter rows (<c>.dlq.v1</c> topics), each claim in <c>seq</c> order, and sends the events first, so a backlog of dead
+/// letters neither crowds events out of the batch nor goes before them (rows of different topics are independent, so no key's
+/// order changes). The dead letters get at most <see cref="DeadLetterPassBound"/> of the pass: each send is bounded by what is
+/// left of it, and when it is used the rest wait untouched for the next pass. A dead-letter row that fails for a reason that is
+/// not its own (the broker unavailable, the dead letters' share, or any failure that is not the row's) holds back its topic for
+/// <see cref="DeadLetterTopicHold"/>: the rest of the pass skips the topic's rows, and every unsent row of the topic is due no
+/// earlier than the hold's end, so no relay claims them meanwhile, whichever leads, also after a restart. The other dead-letter
+/// topics carry on. So a dead-letter topic that cannot be reached delays the events written meanwhile by at most
+/// <see cref="DeadLetterPassBound"/>, once per <see cref="DeadLetterTopicHold"/>, and once more each time a letter for it is kept
+/// meanwhile (at a host's stop; the try holds the topic again). A dead-letter send cut short by the pass's own time is not the
+/// topic's fault: the pass ends without holding it. An event row's broker failure still ends the pass.
 /// </para>
 /// <para>
 /// ARV-125a: every relay, leader or not, measures the backlog (<see cref="MeasureAsync"/>) at most every
@@ -88,6 +103,15 @@ public sealed class OutboxRelay(
     public static readonly TimeSpan MeasureEvery = TimeSpan.FromSeconds(30);
 
     private DateTimeOffset _nextMeasure = DateTimeOffset.MinValue;
+
+    /// <summary>The most of a pass spent on dead letters (ARV-175): events written meanwhile wait at most this much more.</summary>
+    public static readonly TimeSpan DeadLetterPassBound = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How long a dead-letter topic is held back after a failure that is not its row's own (ARV-175), kept on the topic's
+    /// unsent rows so that every relay honours it.
+    /// </summary>
+    public static readonly TimeSpan DeadLetterTopicHold = TimeSpan.FromMinutes(1);
 
     private const int MaxErrorLength = 2000;
     private static readonly TimeSpan HousekeepingEvery = TimeSpan.FromHours(1);
@@ -180,30 +204,47 @@ public sealed class OutboxRelay(
         }
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        var rows = await ClaimAsync(connection, transaction, now, kafka.Outbox.BatchSize, ct);
+        // ARV-175: a batch of events, then a batch of dead letters (a held topic's rows are not due); events are sent first.
+        List<OutboxEnvelope> rows =
+        [
+            .. await ClaimAsync(connection, transaction, now, kafka.Outbox.BatchSize, deadLetters: false, ct),
+            .. await ClaimAsync(connection, transaction, now, kafka.Outbox.BatchSize, deadLetters: true, ct),
+        ];
         var held = new HashSet<(string Topic, string Key)>();
+        var heldTopics = new HashSet<string>(StringComparer.Ordinal);
         var sent = new List<long>();
         int failed = 0, heldBack = 0;
+        long? deadLettersStarted = null;
 
         foreach (var row in rows)
         {
-            if (held.Contains((row.Topic, row.Key)))
+            var deadLetter = IsDeadLetterTopic(row.Topic);
+            if (held.Contains((row.Topic, row.Key)) || heldTopics.Contains(row.Topic))
             {
                 heldBack++;
                 continue;
             }
 
             var left = passTime - timeProvider.GetElapsedTime(passStarted);
+            var shareBound = false;
+            if (deadLetter)
+            {
+                deadLettersStarted ??= timeProvider.GetTimestamp();
+                var deadLettersLeft = DeadLetterPassBound - timeProvider.GetElapsedTime(deadLettersStarted.Value);
+                if (deadLettersLeft < left)
+                    (left, shareBound) = (deadLettersLeft, true);
+            }
+
             if (left <= TimeSpan.Zero)
             {
-                // The pass has used its time: the rest wait, untouched, for the next pass.
+                // The pass (or its dead letters' share) has used its time: the rest wait, untouched, for the next pass.
                 heldBack += rows.Count - rows.IndexOf(row);
                 break;
             }
 
             try
             {
-                await SendWithinAsync(row, left, ct);
+                await SendWithinAsync(row, left, shareBound ? DeadLetterBound : PassBound, ct);
                 sent.Add(row.Seq);
             }
             catch (UnknownEventTypeException e)
@@ -222,6 +263,10 @@ public sealed class OutboxRelay(
                 await MarkBrokerUnavailableAsync(connection, transaction, row.Seq, now, BrokerRetry, e, ct);
                 logger.LogWarning(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) not sent: the broker is unavailable; trying again in {Seconds} s",
                     row.Seq, row.MessageType, row.Id, row.Topic, BrokerRetry.TotalSeconds);
+                // A send cut short by the pass's own time is not its topic's fault: the pass ends, as for an event (ARV-175).
+                var passTimeUsed = e is OutboxPassTimeoutException && !shareBound;
+                if (!passTimeUsed && await HoldTopicAsync(connection, transaction, row, heldTopics, ct))
+                    continue;
                 heldBack += rows.Count - rows.IndexOf(row) - 1;
                 break;
             }
@@ -238,9 +283,11 @@ public sealed class OutboxRelay(
                 // A row that cannot be read (unknown type, bad payload) only holds back its key. Anything else is the
                 // broker or the network (a send past the pass's time included, and a transport already disposed): the rest
                 // of the batch would fail the same way after the produce timeout, so the pass ends here and the remaining
-                // rows wait untouched for the next one.
+                // rows wait untouched for the next one; a dead letter's holds back only its topic (ARV-175).
                 if (e is not (InvalidOperationException or JsonException) || e is ObjectDisposedException)
                 {
+                    if (await HoldTopicAsync(connection, transaction, row, heldTopics, ct))
+                        continue;
                     heldBack += rows.Count - rows.IndexOf(row) - 1;
                     break;
                 }
@@ -257,13 +304,51 @@ public sealed class OutboxRelay(
         return new RelayPass(true, rows.Count, sent.Count, failed, heldBack);
     }
 
+    /// <summary>A dead-letter topic (<c>.dlq.v1</c>, ARV-175).</summary>
+    internal static bool IsDeadLetterTopic(string topic) => topic is not null && topic.EndsWith(KafkaTopics.DeadLetterSuffix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// After a failure that is not the row's own: a dead-letter row holds back its topic and the pass goes on (ARV-175); an
+    /// event row's failure ends the pass. The topic is skipped for the rest of the pass, and every unsent row of it is due no
+    /// earlier than <see cref="DeadLetterTopicHold"/> from now (one constant statement, in the pass's transaction), so every
+    /// relay leaves it alone until then. Returns whether the pass goes on.
+    /// </summary>
+    private async Task<bool> HoldTopicAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, OutboxEnvelope row, HashSet<string> heldTopics,
+        CancellationToken ct)
+    {
+        if (!IsDeadLetterTopic(row.Topic))
+            return false;
+        heldTopics.Add(row.Topic);
+        await using var command = new NpgsqlCommand(
+            """
+            UPDATE outbox_message
+               SET next_attempt_on = GREATEST(COALESCE(next_attempt_on, @until), @until)
+             WHERE topic = @topic AND sent_on IS NULL
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("until", (timeProvider.GetUtcNow() + DeadLetterTopicHold).UtcDateTime);
+        command.Parameters.AddWithValue("topic", row.Topic);
+        await command.ExecuteNonQueryAsync(ct);
+        logger.LogWarning("Dead-letter topic {Topic} held back for {Seconds} s after a failure that is not its letter's own; events and the other topics carry on",
+            row.Topic, DeadLetterTopicHold.TotalSeconds);
+        return true;
+    }
+
+    /// <summary>The bound a send ran out of, for the row's error: the pass's time.</summary>
+    private string PassBound => $"what was left of the relay pass's {kafka.Outbox.PassSeconds} seconds";
+
+    /// <summary>The bound a send ran out of, for the row's error: the dead letters' share of the pass (ARV-175).</summary>
+    private static string DeadLetterBound => $"what was left of the {DeadLetterPassBound.TotalSeconds} seconds a relay pass gives dead letters";
+
     /// <summary>
     /// Sends one row, waiting at most <paramref name="left"/>: the transport gets a token that cancels then, and the wait
     /// ends on the same token even if the transport ignores it (ARV-166), as a <see cref="TimeoutException"/> that ends the
-    /// pass. One timer decides both, so the row's error always names the pass bound. The transport's own failures,
-    /// <c>KafkaProduce</c>'s 45 second bound included, pass through as they are.
+    /// pass (or, for a dead letter, holds back its topic). One timer decides both, so the row's error always names the bound,
+    /// <paramref name="bound"/>. The transport's own failures, <c>KafkaProduce</c>'s 45 second bound included, pass through as
+    /// they are.
     /// </summary>
-    private async Task SendWithinAsync(OutboxEnvelope row, TimeSpan left, CancellationToken ct)
+    private async Task SendWithinAsync(OutboxEnvelope row, TimeSpan left, string bound, CancellationToken ct)
     {
         using var within = new CancellationTokenSource(left, timeProvider);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, within.Token);
@@ -273,7 +358,7 @@ public sealed class OutboxRelay(
         }
         catch (OperationCanceledException e) when (!ct.IsCancellationRequested && within.IsCancellationRequested)
         {
-            throw new OutboxPassTimeoutException($"Outbox row {row.Seq} was not sent within what was left of the relay pass's {kafka.Outbox.PassSeconds} seconds.", e);
+            throw new OutboxPassTimeoutException($"Outbox row {row.Seq} was not sent within {bound}.", e);
         }
     }
 
@@ -290,7 +375,12 @@ public sealed class OutboxRelay(
         return (bool)(await command.ExecuteScalarAsync(ct))!;
     }
 
-    private static async Task<List<OutboxEnvelope>> ClaimAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, DateTime now, int batch, CancellationToken ct)
+    /// <summary>
+    /// Claims up to <paramref name="batch"/> due rows in <c>seq</c> order: event rows, or dead-letter rows (ARV-175). One
+    /// constant statement; the kind is a parameter.
+    /// </summary>
+    private static async Task<List<OutboxEnvelope>> ClaimAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, DateTime now, int batch,
+        bool deadLetters, CancellationToken ct)
     {
         // A row waits while an earlier row of its key is waiting for its retry time, so order per key holds across passes.
         await using var command = new NpgsqlCommand(
@@ -299,6 +389,7 @@ public sealed class OutboxRelay(
               FROM outbox_message o
              WHERE o.sent_on IS NULL
                AND (o.next_attempt_on IS NULL OR o.next_attempt_on <= @now)
+               AND (o.topic LIKE @deadLetterTopics) = @deadLetters
                AND NOT EXISTS (SELECT 1 FROM outbox_message e
                                 WHERE e.sent_on IS NULL AND e.topic = o.topic AND e.message_key = o.message_key
                                   AND e.seq < o.seq AND e.next_attempt_on > @now)
@@ -310,6 +401,8 @@ public sealed class OutboxRelay(
             transaction);
         command.Parameters.AddWithValue("now", now);
         command.Parameters.AddWithValue("batch", batch);
+        command.Parameters.AddWithValue("deadLetterTopics", "%" + KafkaTopics.DeadLetterSuffix);
+        command.Parameters.AddWithValue("deadLetters", deadLetters);
 
         var rows = new List<OutboxEnvelope>();
         await using var reader = await command.ExecuteReaderAsync(ct);
