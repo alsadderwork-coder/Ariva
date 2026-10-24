@@ -109,6 +109,8 @@ internal sealed class SvcAlertRules(
         if (problems.Count > 0)
             return Result.Error<AlertRuleViewModel>(problems);
 
+        // ARV-154: the site's row first (a site configuration import holds it while it checks that the site is empty).
+        await ShareSiteAsync(request.SiteCode, ct);
         // One writer per site gives the next code; codes of deleted rules are not reused.
         // The session hides deleted rows, so the codes are read from the table itself.
         await LockAsync(request.SiteCode, ct);

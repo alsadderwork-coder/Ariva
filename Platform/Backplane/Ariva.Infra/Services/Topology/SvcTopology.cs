@@ -119,6 +119,8 @@ internal sealed class SvcTopology(
             var access = await siteScope.GetAsync(ct);
             if (!access.Allows(request.SiteCode) || !await Query<Site>().AnyAsync(s => s.Code == request.SiteCode, ct))
                 return Result.Error<TerminalViewModel>(TopologyErrors.UnknownSite);
+            // ARV-154: a site configuration import holds the row while it checks that the site is empty.
+            await ShareSiteAsync(request.SiteCode, ct);
             var airport = await LiveAsync<Airport>(request.AirportId.GetValueOrDefault(), ct);
             if (airport is null)
                 return Result.Error<TerminalViewModel>(TopologyErrors.NotFound);
@@ -182,6 +184,7 @@ internal sealed class SvcTopology(
             if (terminal is null)
                 return Result.Error<LevelViewModel>(TopologyErrors.NotFound);
 
+            await ShareSiteAsync(terminal.SiteCode, ct);
             var level = terminal.AddLevel(request.Code, request.Name, request.FloorNumber, request.WidthMetres, request.DepthMetres);
             await SaveAsync(level, ct);
             await AuditAsync("Level", "Created", level.Id, Path(level), null, Summary(level), ct);
@@ -250,6 +253,7 @@ internal sealed class SvcTopology(
             var level = await ScopedLiveAsync<Level>(request.LevelId.GetValueOrDefault(), ct);
             if (level is null)
                 return Result.Error<CheckpointViewModel>(TopologyErrors.NotFound);
+            await ShareSiteAsync(level.SiteCode, ct);
 
             // A checkpoint code is unique across its site, not only its level (ARV-055, script 0033): desks are known by
             // site/checkpoint/desk, so a reused code would merge two desks' live data.
@@ -318,6 +322,7 @@ internal sealed class SvcTopology(
             if (checkpoint is null)
                 return Result.Error<DeskViewModel>(TopologyErrors.NotFound);
 
+            await ShareSiteAsync(checkpoint.SiteCode, ct);
             var desk = checkpoint.AddDesk(request.Code, request.Name, kind, request.LaneCategories);
             await SaveAsync(desk, ct);
             await AuditAsync("Desk", "Created", desk.Id, Path(desk), null, Summary(desk), ct);
@@ -333,6 +338,7 @@ internal sealed class SvcTopology(
             if (checkpoint is null)
                 return Result.Error<IReadOnlyList<DeskViewModel>>(TopologyErrors.NotFound);
 
+            await ShareSiteAsync(checkpoint.SiteCode, ct);
             var desks = checkpoint.AddDeskRange(request.Prefix, request.From, request.To, request.Width, kind, request.LaneCategories);
             foreach (var desk in desks)
                 await SaveAsync(desk, ct);

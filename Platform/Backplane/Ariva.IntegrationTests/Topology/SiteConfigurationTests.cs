@@ -35,6 +35,9 @@ namespace Ariva.IntegrationTests.Topology;
 /// do not work there, and no calibration or access setting travels); alert rules keep their codes and lose their
 /// escalation contacts, which the answer lists by code; displays arrive unpaired; a display code a live display holds
 /// answers the conflict and writes nothing; a rule naming a zone the imported draft lacks is refused.
+/// ARV-154: every create that adds configuration to a site holds the site's row from before its first write to its commit;
+/// a create started during an import waits and succeeds after it, and an import started during a create waits for it and
+/// finds the site not empty.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisposable
@@ -717,6 +720,200 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
         results.Where(r => r.HasErrors).Should().OnlyContain(r => r.ErrorMessages.SequenceEqual(new[] { SiteConfigurationErrors.SiteNotEmpty }));
         (await _host.ReadAsync<long>("SELECT count(*) FROM terminal WHERE site_code = @secret", secret: "XCFK")).Should().Be(1);
         (await _host.ReadAsync<long>("SELECT count(*) FROM zone_profile WHERE site_code = @secret", secret: "XCFK")).Should().Be(1);
+    }
+
+    /// <summary>Whether a session of this test's database waits for a lock (ARV-154).</summary>
+    private async Task<bool> WaitingAsync()
+    {
+        await using var probe = new Npgsql.NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
+        await probe.OpenAsync(Ct);
+        await using var command = new Npgsql.NpgsqlCommand(
+            "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND a.datname = current_database()", probe);
+        return (long)(await command.ExecuteScalarAsync(Ct))! > 0;
+    }
+
+    /// <summary>True once <paramref name="work"/> waits for a lock; false when it ends first, or after 60 seconds.</summary>
+    private async Task<bool> BlocksAsync(Task work)
+    {
+        var until = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < until && !work.IsCompleted)
+        {
+            if (await WaitingAsync())
+                return !work.IsCompleted;
+            await Task.Delay(50, Ct);
+        }
+
+        return false;
+    }
+
+    /// <summary>Whether another session holds the site's row (in any mode): it cannot be taken for update without waiting.</summary>
+    private async Task<bool> SiteRowTakenAsync(string site)
+    {
+        await using var connection = new Npgsql.NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
+        await connection.OpenAsync(Ct);
+        await using var transaction = await connection.BeginTransactionAsync(Ct);
+        await using var command = new Npgsql.NpgsqlCommand("SELECT 1 FROM site WHERE code = @code FOR UPDATE NOWAIT", connection, transaction);
+        command.Parameters.AddWithValue("code", site);
+        try
+        {
+            await command.ExecuteNonQueryAsync(Ct);
+            return false;
+        }
+        catch (Npgsql.PostgresException e) when (e.SqlState == Npgsql.PostgresErrorCodes.LockNotAvailable)
+        {
+            return true;
+        }
+        finally
+        {
+            await transaction.RollbackAsync(Ct);
+        }
+    }
+
+    /// <summary>
+    /// ARV-154: <paramref name="create"/> holds the site's row from before its first write until its commit, so an import
+    /// (which takes the row for update to check that the site is empty) cannot check between them: with the create's unit
+    /// of work still open the row cannot be taken for update, and once the create has committed it can.
+    /// </summary>
+    private async Task<T> HoldsTheSitesRowAsync<T>(Guid admin, string site, string what, Func<IServiceProvider, Task<Fluentx.Result<T>>> create)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var work = _host.AsCallerAsync(admin, async s =>
+        {
+            var result = await create(s);
+            done.SetResult();
+            await release.Task;
+            return result;
+        });
+        try
+        {
+            await Task.WhenAny(done.Task, work).WaitAsync(TimeSpan.FromSeconds(60), Ct);
+            if (work.IsCompleted)
+                await work;
+            (await SiteRowTakenAsync(site)).Should().BeTrue($"{what} holds the site's row until it commits");
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        var created = Ok(await work.WaitAsync(TimeSpan.FromSeconds(60), Ct));
+        (await SiteRowTakenAsync(site)).Should().BeFalse($"the row is free once {what} has committed");
+        return created;
+    }
+
+    /// <summary>
+    /// ARV-154: every create that adds configuration to a site takes the site's row before it writes (in share mode; a zone
+    /// profile draft and a device already took it for update) and holds it to its commit. Before, the topology, desk code
+    /// mapping, floor plan, alert rule and display creates did not: their inserts lock the row (by its foreign key) only at
+    /// their flush, so an import could find the site empty between such a create's checks and its commit.
+    /// </summary>
+    [Fact]
+    public async Task Creates_Should_HoldTheSitesRowUntilTheyCommit_When_TheyAddConfigurationToASite()
+    {
+        var admin = await AdministratorAsync("lk");
+        await SourceAsync(admin, "XCLA", "QLA");
+        var airport = await AirportAsync(admin, "QLB");
+        var arrivals = await _host.ReadAsync<Guid>("SELECT id FROM level WHERE site_code = @secret AND code = 'L0'", secret: "XCLA");
+        Task<T> Holds<T>(string what, Func<IServiceProvider, Task<Fluentx.Result<T>>> create) => HoldsTheSitesRowAsync(admin, "XCLA", what, create);
+
+        var terminal = (await Holds("a terminal", s => Topology(s).CreateTerminalAsync(new CreateTerminalRequest(airport, "T2", "Second", "XCLA"), Ct))).Id;
+        var level = (await Holds("a level", s => Topology(s).CreateLevelAsync(new CreateLevelRequest(terminal, "L5", "Upper", 5, 100, 50), Ct))).Id;
+        var checkpoint = (await Holds("a checkpoint", s => Topology(s).CreateCheckpointAsync(new CreateCheckpointRequest(level, "LCK", "Upper hall", "Immigration"), Ct))).Id;
+        var desk = (await Holds("a desk", s => Topology(s).CreateDeskAsync(new CreateDeskRequest(checkpoint, "D09", null, "Desk", ["CIT"]), Ct))).Id;
+        (await Holds("a range of desks", s => Topology(s).CreateDeskRangeAsync(new CreateDeskRangeRequest(checkpoint, "R", 1, 2, 2, "Desk", ["CIT"]), Ct))).Should().HaveCount(2);
+        await Holds("a desk code mapping", s => s.GetRequiredService<ISvcDeskCodeMappings>().CreateAsync(new CreateDeskCodeMappingRequest("Aman", "LCK-09", desk), Ct));
+        await Holds("a zone profile draft", s => s.GetRequiredService<ISvcZoneProfiles>().CreateDraftAsync(new CreateZoneProfileDraftRequest("XCLA", "Upper"), Ct));
+        var bytes = Encoding.UTF8.GetBytes(Svg);
+        await Holds("a floor plan", s => s.GetRequiredService<ISvcFloorPlans>().UploadAsync(level, new FloorPlanUpload(new MemoryStream(bytes), bytes.Length, "upper.svg", 0.05, 0, 0), Ct));
+        await Holds("a device", s => s.GetRequiredService<ISvcDevices>().RegisterAsync(
+            new RegisterDeviceRequest("S09", "StereoVision", "PC2SE", "HttpsPush", "Xovis", "Ntp", new DevicePlacement(arrivals, 22, 18, 5, 0, "Snake A")), Ct));
+        await Holds("an alert rule", s => s.GetRequiredService<ISvcAlertRules>().CreateAsync(
+            new AlertRuleRequest("XCLA", "Upper queue", ["Snake A"], "Nowcast", "GreaterThan", 25, null, null, 5, 5, "Warning", RoleCodes.BorderShiftSupervisor, 15, null, null, false), Ct));
+        await Holds("a display", s => s.GetRequiredService<ISvcDisplays>().CreateAsync(Board("XCLA", "LCKD1"), Ct));
+    }
+
+    /// <summary>
+    /// ARV-154: a create started while an import has written but not yet committed waits for the import's site row and
+    /// succeeds after the import commits, on a site that is then not empty.
+    /// </summary>
+    [Fact]
+    public async Task Create_Should_WaitForAnImportAndSucceedAfterIt_When_TheImportStartedFirst()
+    {
+        var admin = await AdministratorAsync("li");
+        await SourceAsync(admin, "XCLC", "QLC");
+        var bundle = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCLC", Ct))).Bundle;
+        await SiteAsync(admin, "XCLD");
+        var airport = await AirportAsync(admin, "QLD");
+        var written = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The import writes, then holds its unit of work open, as a request does until its commit.
+        var import = _host.AsCallerAsync(admin, async s =>
+        {
+            var result = await Configuration(s).ImportAsync("XCLD", Request(bundle), "QLD", Ct);
+            written.SetResult();
+            await release.Task;
+            return result;
+        });
+        try
+        {
+            await written.Task.WaitAsync(TimeSpan.FromSeconds(120), Ct);
+            var create = _host.AsCallerAsync(admin, s => Topology(s).CreateTerminalAsync(new CreateTerminalRequest(airport, "T9", "By hand", "XCLD"), Ct));
+
+            (await BlocksAsync(create)).Should().BeTrue("the create waits for the import's site row");
+            release.SetResult();
+            Ok(await import.WaitAsync(TimeSpan.FromSeconds(60), Ct));
+            Ok(await create.WaitAsync(TimeSpan.FromSeconds(60), Ct));
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        (await _host.ReadAsync<long>("SELECT count(*) FROM terminal WHERE site_code = @secret", secret: "XCLD")).Should().Be(2, "the imported terminal and the one made after it");
+    }
+
+    /// <summary>
+    /// ARV-154: an import started while a create has taken its share of the site row (and written nothing yet) waits for the
+    /// create's commit, then finds the site not empty and answers the conflict, writing nothing. Before, it did not wait,
+    /// found the site empty and imported beside the hand-made record.
+    /// </summary>
+    [Fact]
+    public async Task Import_Should_WaitForACreateAndRefuseTheSite_When_TheCreateStartedFirst()
+    {
+        var admin = await AdministratorAsync("lc");
+        await SourceAsync(admin, "XCLE", "QLE");
+        var bundle = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCLE", Ct))).Bundle;
+        await SiteAsync(admin, "XCLF");
+        var airport = await AirportAsync(admin, "QLF");
+        var created = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var create = _host.AsCallerAsync(admin, async s =>
+        {
+            var result = await Topology(s).CreateTerminalAsync(new CreateTerminalRequest(airport, "T9", "By hand", "XCLF"), Ct);
+            created.SetResult();
+            await release.Task;
+            return result;
+        });
+        try
+        {
+            await created.Task.WaitAsync(TimeSpan.FromSeconds(60), Ct);
+            var import = _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCLF", Request(bundle), "QLF", Ct));
+
+            (await BlocksAsync(import)).Should().BeTrue("the import waits for the create's share of the site row");
+            release.SetResult();
+            Ok(await create.WaitAsync(TimeSpan.FromSeconds(60), Ct));
+            (await import.WaitAsync(TimeSpan.FromSeconds(60), Ct)).ErrorMessages.Should().Equal(SiteConfigurationErrors.SiteNotEmpty);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        (await _host.ReadAsync<long>("SELECT count(*) FROM terminal WHERE site_code = @secret", secret: "XCLF")).Should().Be(1, "only the hand-made terminal");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM zone_profile WHERE site_code = @secret", secret: "XCLF")).Should().Be(0, "nothing of the bundle");
     }
 
     [Fact]

@@ -91,7 +91,9 @@ internal sealed class SvcFloorPlans(
             return Result.Error<FloorPlanViewModel>(e.Message.Split(" (Parameter", 2)[0]);
         }
 
-        // Row lock on the level: concurrent uploads for one level queue here instead of racing to the unique index.
+        // ARV-154: the site's row first (a site configuration import holds it while it checks that the site is empty), then
+        // the level's: concurrent uploads for one level queue here instead of racing to the unique index.
+        await ShareSiteAsync(level.SiteCode, ct);
         await ExecuteCommandAsync<LockRow>(
             """SELECT 1 AS "Value" FROM level WHERE id = :id FOR UPDATE""",
             new Dictionary<string, object> { ["id"] = levelId },

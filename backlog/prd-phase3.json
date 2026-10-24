@@ -135,7 +135,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 38,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Not a security gap today (no authorisation decision depends on emptiness; the creator already holds the permission); it makes the documented rule exact. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back).",
       "dependsOn": [
         "ARV-122b"

@@ -72,6 +72,8 @@ internal sealed class SvcDeskCodeMappings(
         var code = DeskCodeMapping.NormalizeCode(request.ExternalCode);
         if (code is null)
             return Result.Error<DeskCodeMappingViewModel>("An external code is 1 to 32 letters, digits or . _ / - characters.");
+        // ARV-154: a site configuration import holds the row while it checks that the site is empty.
+        await ShareSiteAsync(desk.SiteCode, ct);
         if (await Query<DeskCodeMapping>().AnyAsync(m => m.System == system && ((m.SiteCode == desk.SiteCode && m.ExternalCode == code) || m.Desk.Id == desk.Id), ct))
             return Result.Error<DeskCodeMappingViewModel>(TopologyErrors.Duplicate);
 

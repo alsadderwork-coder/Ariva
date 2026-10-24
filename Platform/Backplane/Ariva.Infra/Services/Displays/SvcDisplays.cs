@@ -50,6 +50,9 @@ internal sealed class SvcDisplays(
             return Result.Error<DisplayIssuedViewModel>(TopologyErrors.UnknownSite);
         if (!TopologyCodes.IsValid(request.Code))
             return Result.Error<DisplayIssuedViewModel>(DisplayErrors.InvalidCode);
+        // ARV-154: the site's row first (a site configuration import holds it while it checks that the site is empty), before
+        // the checks below, which can take the site's advertising lock.
+        await ShareSiteAsync(request.SiteCode, ct);
         var (values, problems) = await CheckAsync(request.SiteCode, request, ct);
         if (problems.Count > 0)
             return Result.Error<DisplayIssuedViewModel>(problems);

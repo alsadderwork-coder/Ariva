@@ -78,6 +78,16 @@ internal abstract class SvcDb(IUnitOfWork unitOfWork)
 
     protected Task AttachAsync<T>(T entity, CancellationToken ct = default) where T : class, IDomain => Storage.AttachAsync(entity, ct);
 
+    /// <summary>
+    /// Takes the site's row in share mode, held until the unit of work ends (ARV-154). Every create that adds configuration to
+    /// a site calls it after its own checks and before its first write or any other lock, so a site configuration import, which
+    /// takes the row for update while it checks that the site is empty and writes, waits for the creates in flight and they
+    /// wait for it; creates do not wait for each other.
+    /// </summary>
+    protected Task ShareSiteAsync(string siteCode, CancellationToken ct = default) =>
+        ExecuteCommandAsync<SiteRow>("""SELECT 1 AS "Value" FROM site WHERE code = :code FOR SHARE""",
+            new Dictionary<string, object> { ["code"] = siteCode }, ct);
+
     protected void RegisterPostCommitAction(Func<Task> action) => UnitOfWork.RegisterPostCommitAction(action);
 
     protected void RegisterPostRollbackAction(Func<Task> action) => UnitOfWork.RegisterPostRollbackAction(action);
@@ -92,5 +102,10 @@ internal abstract class SvcDb(IUnitOfWork unitOfWork)
         var result = await command(Storage);
         UnitOfWork.PromiseToCommit();
         return result;
+    }
+
+    private sealed class SiteRow
+    {
+        public int Value { get; set; }
     }
 }
