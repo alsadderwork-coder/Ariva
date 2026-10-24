@@ -53,7 +53,7 @@ public sealed class PresentTopicConsumer : IConsumer<KafkaProbe>
 /// ARV-176, on a real broker: a host consumes an Ariva topic that exists and one of AMAN's feed topics that the broker does
 /// not have (AMAN creates its own topics; a site without e-gates, or an AMAN release not yet publishing a contract, can
 /// leave one missing), as Ariva.Api.Integration consumes AMAN's four. The host starts once its wait for the topics ends
-/// (2 s here; 60 s in the hosts). A record on the topic that exists must be consumed within <see cref="ConsumeBound"/>
+/// (the hosts' 60 s, for Ariva's own topics only; AMAN's are never waited for). A record on the topic that exists must be consumed within <see cref="ConsumeBound"/>
 /// of its publish while the other topic is still missing; and once the missing topic is created, a record on it must be
 /// consumed within <see cref="LateTopicBound"/> of its creation, without a restart. The operator's signal is checked on
 /// the way: the host's <c>ariva.kafka.consumed_topic_missing</c> gauge reads 1 for the missing topic and 0 for the other,

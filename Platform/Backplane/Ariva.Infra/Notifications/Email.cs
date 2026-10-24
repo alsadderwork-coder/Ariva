@@ -105,9 +105,10 @@ public static partial class EmailAddresses
                string.IsNullOrEmpty(parsed.Name);
     }
 
+    /// <summary>Linear (NonBacktracking), so no timeout that a loaded node could fire (ARV-163).</summary>
     [GeneratedRegex(@"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\z",
-        RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
-    private static partial Regex Rule();
+        RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex Rule();
 }
 
 /// <summary>A rendered email: a subject of one line and a plain-text body.</summary>
@@ -175,8 +176,12 @@ public sealed partial class EmailTemplates
         return cleaned.Length == 0 ? "-" : cleaned;
     }
 
-    [GeneratedRegex(@"\{\{([A-Za-z]+)\}\}", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
-    private static partial Regex Placeholder();
+    /// <summary>
+    /// Linear in the template's length (NonBacktracking), so no timeout: unanchored, a backtracking matcher checked the
+    /// clock at every position (ARV-163).
+    /// </summary>
+    [GeneratedRegex(@"\{\{([A-Za-z]+)\}\}", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex Placeholder();
 }
 
 /// <summary>An email ready for the wire.</summary>
@@ -190,13 +195,13 @@ public sealed record OutgoingEmail(Guid Id, string Recipient, string Subject, st
 /// A file sent with an email. The name is the server's own (letters, digits, dot, dash, underscore), never a user's text,
 /// so it cannot inject header parameters (CWE-93).
 /// </summary>
-public sealed record EmailAttachment
+public sealed partial record EmailAttachment
 {
     public const int MaxBytes = 5 * 1024 * 1024;
 
     public EmailAttachment(string fileName, string mediaType, byte[] content)
     {
-        if (fileName is null || !System.Text.RegularExpressions.Regex.IsMatch(fileName, "^[A-Za-z0-9._-]{1,100}$", System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1)))
+        if (fileName is null || !FileNameRule().IsMatch(fileName))
             throw new ArgumentException("An attachment's name is 1 to 100 letters, digits, dots, dashes or underscores.", nameof(fileName));
         if (mediaType is not ("text/csv" or "text/plain"))
             throw new ArgumentException("Only CSV and plain text are attached.", nameof(mediaType));
@@ -211,6 +216,13 @@ public sealed record EmailAttachment
     public string FileName { get; }
     public string MediaType { get; }
     public byte[] Content { get; }
+
+    /// <summary>
+    /// Linear (NonBacktracking), so no timeout that a loaded node could fire (ARV-163); ends at <c>\z</c>, where the
+    /// interpreted call it replaces ended at <c>$</c> and so also took a name with a line feed at the end.
+    /// </summary>
+    [GeneratedRegex(@"^[A-Za-z0-9._-]{1,100}\z", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex FileNameRule();
 }
 
 /// <summary>Where emails go (an SMTP server through MailKit; a recorder in tests).</summary>

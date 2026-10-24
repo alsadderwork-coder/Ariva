@@ -293,8 +293,9 @@ public static partial class FlightRules
     [GeneratedRegex(@"^[a-z0-9][a-z0-9-]{1,31}\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex Feed();
 
-    [GeneratedRegex(@"^([A-Z0-9]{2}|[A-Z]{3})\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
-    private static partial Regex Carrier();
+    /// <summary>Linear (NonBacktracking), so no timeout that a loaded node could fire (ARV-163).</summary>
+    [GeneratedRegex(@"^([A-Z0-9]{2}|[A-Z]{3})\z", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex Carrier();
 
     [GeneratedRegex(@"^[0-9]{1,4}\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex FlightNumber();
@@ -308,8 +309,9 @@ public static partial class FlightRules
     [GeneratedRegex(@"^[A-Z0-9]{2,4}\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex AircraftType();
 
-    [GeneratedRegex(@"^([A-Z0-9]{2}|[A-Z]{3})[0-9]{1,4}[A-Z]?\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
-    private static partial Regex Codeshare();
+    /// <summary>Linear (NonBacktracking), so no timeout that a loaded node could fire (ARV-163).</summary>
+    [GeneratedRegex(@"^([A-Z0-9]{2}|[A-Z]{3})[0-9]{1,4}[A-Z]?\z", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex Codeshare();
 
     [GeneratedRegex(@"^[A-Z0-9]{2,8}\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex Handler();

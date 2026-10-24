@@ -240,7 +240,10 @@ internal static partial class CsvImportReader
     private static bool StartsLikeAFormula(string cell) =>
         FormulaPrefixes.Contains(cell[0], StringComparison.Ordinal) || (cell.TrimStart(' ') is { Length: > 0 } trimmed && FormulaPrefixes.Contains(trimmed[0], StringComparison.Ordinal));
 
-    /// <summary>Digits with an optional leading minus and an optional decimal part: nothing a spreadsheet or a parser reads otherwise.</summary>
-    [GeneratedRegex("^-?[0-9]{1,9}(\\.[0-9]{1,9})?\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
-    private static partial Regex Number();
+    /// <summary>
+    /// Digits with an optional leading minus and an optional decimal part: nothing a spreadsheet or a parser reads otherwise.
+    /// Linear (NonBacktracking), so no timeout that a loaded node could fire (ARV-163).
+    /// </summary>
+    [GeneratedRegex("^-?[0-9]{1,9}(\\.[0-9]{1,9})?\\z", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex Number();
 }

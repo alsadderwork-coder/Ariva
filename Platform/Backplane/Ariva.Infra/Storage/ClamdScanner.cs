@@ -152,9 +152,10 @@ internal sealed partial class ClamdScanner : IMalwareScanner
     }
 
     // Literal ranges only ([0-9] is ASCII under CultureInvariant; \d would take any script's digits), anchored at both ends.
+    // Linear (NonBacktracking), so no timeout that a loaded node could fire (ARV-163).
     [GeneratedRegex(@"\AClamAV (?<engine>[0-9][0-9A-Za-z.-]{0,31})/(?<database>[1-9][0-9]{0,8})/(?<weekday>Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?<month>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (?<day> [1-9]|[12][0-9]|3[01]) (?<hour>[01][0-9]|2[0-3]):(?<minute>[0-5][0-9]):(?<second>[0-5][0-9]) (?<year>[1-9][0-9]{3})\z",
-        RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture, matchTimeoutMilliseconds: 100)]
-    private static partial Regex VersionPattern();
+        RegexOptions.NonBacktracking | RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture, Timeout.Infinite)]
+    internal static partial Regex VersionPattern();
 
     #endregion
 

@@ -9,8 +9,11 @@ namespace Ariva.Core.Domain.Entities;
 /// </summary>
 public static partial class TopologyCodes
 {
+    /// <summary>The longest terminal, level, checkpoint or desk code (the columns are varchar(16), script 0008).</summary>
+    public const int MaxCodeLength = 16;
+
     /// <summary>Terminal, level, checkpoint and desk codes: 1 to 16 upper case letters, digits or inner hyphens.</summary>
-    public static bool IsValid(string code) => code is not null && Code().IsMatch(code);
+    public static bool IsValid(string code) => code is { Length: >= 1 and <= MaxCodeLength } && Code().IsMatch(code);
 
     /// <summary>An IATA airport code: three upper case letters.</summary>
     public static bool IsIata(string code) => code is not null && Iata().IsMatch(code);
@@ -58,8 +61,12 @@ public static partial class TopologyCodes
             throw new InvalidOperationException($"{what} {code} already exists here.");
     }
 
-    [GeneratedRegex("^(?=.{1,16}\\z)[A-Z0-9]+(-[A-Z0-9]+)*\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
-    private static partial Regex Code();
+    /// <summary>
+    /// The shape of script 0008's CHECK; the length is <see cref="IsValid"/>'s, not a lookahead, so the rule runs on the
+    /// linear engine (NonBacktracking has no lookarounds) without a timeout that a loaded node could fire (ARV-163).
+    /// </summary>
+    [GeneratedRegex("^[A-Z0-9]+(-[A-Z0-9]+)*\\z", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex Code();
 
     [GeneratedRegex("^[A-Z]{3}\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex Iata();

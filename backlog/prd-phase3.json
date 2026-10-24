@@ -34,10 +34,31 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
-      "passes": false,
-      "notes": "Size S. Rated low by the ARV-156 review: robustness, fails closed. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back).",
+      "passes": true,
+      "notes": "Size S. Rated low by the ARV-156 review: robustness, fails closed. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back). 2026-10-24 (ARV-163): split. ARV-163 takes the rules of Ariva.Core and Ariva.Infra: the nine named in the description, two found by the recount (an IL count of each generated matcher's calls to RegexRunner.CheckTimeout over the hosts' assemblies) and added since ARV-156 (ClamdScanner.VersionPattern, ARV-092b; LocalDiskFileStorage.KeyPattern, ARV-142a), and the email attachment's interpreted call (Email.cs:199). The Cronz dashboard rules (JobsDashboardGuard.InlineScript, ConfigScript and StaticFile, and the interpreted KeySha256 and BasePath checks of JobsDashboardSettings, JobsDashboard.cs:30 and :32) go to ARV-163a: they are the dashboard's key guard and its settings, under the owner's sign-in freeze (no sign-in or authentication changes), and ARV-087 replaces that guard with user sign-in.",
       "dependsOn": [
         "ARV-156"
+      ]
+    },
+    {
+      "id": "ARV-163a",
+      "title": "[E17] Cronz dashboard regular expressions linear, not timed",
+      "description": "Split from ARV-163 because of the owner's sign-in freeze. The Cronz jobs dashboard guard's rules (JobsDashboardGuard.InlineScript, ConfigScript, StaticFile: 1 s match timeouts on backtracking matchers) and its settings checks (JobsDashboardSettings.KeySha256 and BasePath, interpreted Regex.IsMatch calls with a 1 s timeout, JobsDashboard.cs:30 and :32) can refuse a valid page, path or setting on a loaded node, failing closed (a refused dashboard request, a failed Cronz start). CWEs to review: CWE-1333, CWE-400.",
+      "acceptanceCriteria": [
+        "The three guard rules run on RegexOptions.NonBacktracking without a timeout (the inline script rule's lazy repeat and the config script's named group work on it), or are replaced by ARV-087's sign-in; the two settings checks become [GeneratedRegex] rules on NonBacktracking ending at \\z",
+        "LinearRuleTests (ARV-163) covers each rule: its options and infinite timeout, a property against the rule it replaces, its edges; JobsDashboardTests unchanged and passing",
+        "The CWE-1333 row and ASVS V1.2.9 no longer list timed backtracking rules in production",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size XS. Split from ARV-163 on 2026-10-24 (owner sign-in freeze: no sign-in, login, password, TOTP or authentication changes for now; the dashboard guard checks an operator key and issues a ticket cookie). Start only when the owner lifts the freeze, with or after ARV-087.",
+      "dependsOn": [
+        "ARV-163"
       ]
     },
     {

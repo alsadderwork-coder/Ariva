@@ -249,14 +249,16 @@ public static partial class OutboundRules
     [GeneratedRegex(@"^/[A-Za-z0-9._~/-]{0,199}\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex PathOnly();
 
-    [GeneratedRegex(@"^/[A-Za-z0-9._~/-]{0,199}(\?[A-Za-z0-9._~=&-]{1,99})?\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
-    private static partial Regex PathAndQuery();
+    /// <summary>Linear (NonBacktracking), so no timeout that a loaded node could fire (ARV-163).</summary>
+    [GeneratedRegex(@"^/[A-Za-z0-9._~/-]{0,199}(\?[A-Za-z0-9._~=&-]{1,99})?\z", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex PathAndQuery();
 
     [GeneratedRegex(@"^[\x21-\x7E]{1,128}\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex ClientId();
 
-    [GeneratedRegex(@"^[\x21-\x7E]+( [\x21-\x7E]+)*\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
-    private static partial Regex Scope();
+    /// <summary>Linear (NonBacktracking), so no timeout that a loaded node could fire (ARV-163).</summary>
+    [GeneratedRegex(@"^[\x21-\x7E]+( [\x21-\x7E]+)*\z", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex Scope();
 
     [GeneratedRegex(@"^[A-Za-z0-9-]{1,64}\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex HeaderName();

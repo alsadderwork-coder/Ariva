@@ -47,8 +47,9 @@ public partial class Site : BaseAuditableEntity<Site>
 
     public static bool IsValidCode(string code) => code is not null && CodePattern().IsMatch(code);
 
-    [GeneratedRegex("^[A-Z0-9]{2,8}(-[A-Z0-9]{1,8})?\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
-    private static partial Regex CodePattern();
+    /// <summary>Linear in the code's length (NonBacktracking), so no timeout that a loaded node could fire (ARV-163).</summary>
+    [GeneratedRegex("^[A-Z0-9]{2,8}(-[A-Z0-9]{1,8})?\\z", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    internal static partial Regex CodePattern();
 }
 
 /// <summary>A site a user may access (ARV-012). A user with <see cref="User.AllSites"/> needs no rows.</summary>
