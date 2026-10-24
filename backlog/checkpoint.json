@@ -1,22 +1,22 @@
 {
-  "commit": "d901d7e9a0ddd17813dcd41a43f31a6ea10206f8",
-  "at": "2026-10-22",
-  "stories": 5,
+  "commit": "697fb99bc1c4a8fb3023ce7c185433552b111755",
+  "at": "2026-10-24",
+  "stories": 11,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 148
+      "seconds": 139
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 11
+      "seconds": 7
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 451
+      "seconds": 459
     },
     {
       "name": "security scanner self-test",
@@ -71,22 +71,22 @@
     {
       "name": "offline bundle verifier self-test",
       "ok": true,
-      "seconds": 9
+      "seconds": 7
     },
     {
       "name": "offline bundle builder self-test",
       "ok": true,
-      "seconds": 8
+      "seconds": 7
     },
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "seconds": 49
+      "seconds": 41
     },
     {
       "name": "nuget vulnerability audit (fails on high or critical)",
       "ok": true,
-      "seconds": 18
+      "seconds": 21
     },
     {
       "name": "npm audit (web)",
@@ -114,27 +114,27 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 14
+      "seconds": 11
     },
     {
       "name": "web lint",
       "ok": true,
-      "seconds": 10
+      "seconds": 8
     },
     {
       "name": "web build",
       "ok": true,
-      "seconds": 34
+      "seconds": 28
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 1324
+      "seconds": 1017
     },
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 235
+      "seconds": 175
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
@@ -143,16 +143,26 @@
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 1366
+      "seconds": 1195
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
       "ok": true
     },
     {
-      "name": "mutation tests (no engine change since db51124810)",
+      "name": "mutation log check self-test",
       "ok": true,
-      "skipped": true
+      "seconds": 0
+    },
+    {
+      "name": "dotnet tool restore (dotnet-stryker)",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "mutation tests (Stryker.NET in a worktree of 697fb99bc1, 2 engine files changed since d901d7e9a0; fails on safe mode or no score)",
+      "ok": true,
+      "seconds": 24628
     }
   ]
 }
