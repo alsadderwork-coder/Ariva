@@ -201,7 +201,7 @@ function docsCheck() {
     }
   };
   walk(ROOT);
-  bad.forEach(b => console.log(`DOCS ${b}`));
+  bad.forEach(b => console.log(`DOCS ${printablePath(b)}`));
   results.push({ name: 'docs text rules', ok: bad.length === 0, findings: bad.length });
   return bad.length === 0;
 }
@@ -241,7 +241,7 @@ function windowsPathsCheck() {
   }
   // The index only (what a clone checks out, staged changes included): never the working tree's untracked files.
   const problems = windowsPathProblems(git(['ls-files', '-z']).split('\0').filter(Boolean));
-  problems.forEach(p => console.log(`WINDOWS PATH ${p}`));
+  problems.forEach(p => console.log(`WINDOWS PATH ${printablePath(p)}`));
   results.push({ name, ok: problems.length === 0, findings: problems.length });
   return problems.length === 0;
 }
@@ -255,9 +255,34 @@ const WIDE = [
   /^Platform\/Backplane\/Ariva\.(Api\.Common|ServiceDefaults|Di|Api\.Stream)\//,
   /^Platform\/Backplane\/Ariva\.Core\/(Security|Messaging|Queueing)\//,
   /^Platform\/Backplane\/Ariva\.Core\/(Global|RoleCodes)\.cs$/,
-  /^Platform\/Backplane\/Ariva\.Infra\/(NHibernate|Messaging|Streaming|Security|DataProtection|Caching)\//,
+  // ARV-160: what every service and host shares rather than one feature: the entity bases (Domain/Common), the value types
+  // and the event base (Domain/Components: DisplayText, Geometry, EventBase), the contracts the interceptors, the outbox and
+  // the site scope read (Domain/Contracts: IAuditable, ISiteBound, IEvent), the shared constants (Domain/Constants:
+  // ValidationErrors, SearchCounts, AuditActions), the criteria base every search binds (BaseCriteria.cs), the service
+  // contracts under every service (Services/Core: IUnitOfWork, ICurrentUser, which the site scope reads, IStorageProvider,
+  // ISvcMessageBus) and the service bases and unit of work (Infra Services/Foundation: SvcBase, SvcDb with the paged search,
+  // UnitOfWork with the commit and outbox order), with the paged result every search returns (PageViewModel in
+  // AdministrationViewModels.cs). What every host runs at its start: the settings (Infra Settings: the database, hosting,
+  // token and session settings, every Postgres connection, the certificate downloads), the schema checks and migrations
+  // (the Timescale classes; a new script is NEW_SCRIPT below), the health metrics and the dependency outage answer
+  // (Monitoring, Resilience), and the packages of Ariva.Core and Ariva.Infra. The other entities, enums, criteria, inputs
+  // and view models are one file per feature and stay scoped.
+  /^Platform\/Backplane\/Ariva\.Core\/Domain\/(Common|Components|Contracts|Constants)\//,
+  /^Platform\/Backplane\/Ariva\.Core\/Domain\/(Criteria\/BaseCriteria|ViewModels\/AdministrationViewModels)\.cs$/,
+  /^Platform\/Backplane\/Ariva\.Core\/Services\/Core\//,
+  /^Platform\/Backplane\/Ariva\.Infra\/Services\/Foundation\//,
+  /^Platform\/Backplane\/Ariva\.Infra\/Timescale\/[^/]+\.cs$/,
+  /^Platform\/Backplane\/Ariva\.(Core|Infra)\/(Ariva\.(Core|Infra)\.csproj|packages\.lock\.json)$/,
+  /^Platform\/Backplane\/Ariva\.Infra\/(NHibernate|Messaging|Streaming|Security|DataProtection|Caching|Settings|Monitoring|Resilience)\//,
   /^Platform\/Simulation\//,
+  // The web: the shared client code and its build, and the shell every screen sits in (the root layout and error page,
+  // the (modules) layout with the sign-in gate, the shell and the step-up dialog of every signed-in screen, the (public)
+  // layout and the frame of the public screens and the error page, app.html and app.css, the layout and shared
+  // components, the theme, the navigation, the i18n loader; the message files and the page components are per feature).
   /^Platform\/Frontplane\/Ariva\.Web\/(src\/lib\/core\/|src\/hooks|package(-lock)?\.json$|svelte\.config|vite\.config)/,
+  /^Platform\/Frontplane\/Ariva\.Web\/src\/(app\.(html|css)|routes\/(\((modules|public)\)\/)?\+(layout\.(svelte|ts)|error\.svelte)|lib\/(navigation|utils)\.ts|lib\/i18n\/index\.ts)$/,
+  /^Platform\/Frontplane\/Ariva\.Web\/src\/lib\/(components\/(layout|shared)|theme)\//,
+  /^Platform\/Frontplane\/Ariva\.Web\/src\/lib\/components\/auth\/(StepUpDialog|PublicFrame)\.svelte$/,
   /^Platform\/Testing\/Ariva\.E2E\/(playwright\.config\.ts$|package(-lock)?\.json$|tests\/support\/)/,
   /^(Directory\.(Build|Packages)\.props|Ariva\.slnx|global\.json|nuget\.config)$/i
 ];
@@ -276,7 +301,8 @@ const E2E_SMOKE = [
 // ARV-128: the release smoke suite's specs (tests/smoke) too; its probes (tests/smoke/probes) run only through tests/api/smoke-guard.spec.ts.
 const SPEC = /^tests\/(api|functional|smoke)\/[a-z0-9-]+\.spec\.ts$/;
 const TEST_FILTER = /^[A-Za-z0-9_.~=!|&]{1,400}$/;
-const GIT_REF = /^[A-Za-z0-9_./^~-]{1,100}$/;
+// ARV-160: never a leading hyphen, which git would read as an option (--cached, -S<text>) rather than a revision.
+const GIT_REF = /^(?!-)[A-Za-z0-9_./^~-]{1,100}$/;
 const SHA = /^[0-9a-f]{7,40}$/;
 
 // The e2e scope's own --specs (the story gate passes its specs itself): fixed shapes of files that exist, or null after a refusal.
@@ -290,11 +316,18 @@ function scopeSpecs() {
   return specs;
 }
 
+// ARV-160: a rename counts at both its paths (--no-renames), so a file moved out of a wide folder still makes the story wide,
+// and every path comes through as written (-z), never quoted, so a path with characters outside ASCII, a quote or a
+// backslash still meets the patterns.
 function changedFiles(base) {
-  const tracked = git(['diff', '--name-only', base]).split('\n');
-  const untracked = git(['ls-files', '--others', '--exclude-standard']).split('\n');
-  return [...new Set([...tracked, ...untracked].map(f => f.trim()).filter(Boolean))];
+  const tracked = git(['diff', '--name-only', '--no-renames', '-z', base]).split('\0');
+  const untracked = git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0');
+  return [...new Set([...tracked, ...untracked].filter(Boolean))];
 }
+
+// A path as printable ASCII for the console: any other character as \u{...}, so a bidirectional override or a control
+// character in a file name cannot change what the line shows.
+const printablePath = f => f.replace(/[^\x20-\x7E]/gu, c => `\\u{${c.codePointAt(0).toString(16)}}`);
 
 function readCheckpoint() {
   if (!fs.existsSync(CHECKPOINT_FILE)) return undefined;
@@ -335,7 +368,7 @@ function storyGate() {
   const persistence = files.some(f => PERSISTENCE.test(f));
   const newScript = files.some(f => NEW_SCRIPT.test(f));
   const e2eRelevant = files.some(f => E2E_RELEVANT.test(f));
-  console.log(`story: ${files.length} changed files against ${base}; wide: ${wide.length ? wide.slice(0, 8).join(', ') : 'none'}`);
+  console.log(`story: ${files.length} changed files against ${base}; wide: ${wide.length ? wide.slice(0, 8).map(printablePath).join(', ') : 'none'}`);
 
   steps.unit();
   steps.security();
