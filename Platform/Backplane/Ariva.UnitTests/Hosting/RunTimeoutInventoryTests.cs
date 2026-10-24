@@ -145,6 +145,9 @@ public sealed class RunTimeoutInventoryTests
     /// <summary>The longest a run may take here: its timeout, the connection timeout and a margin for a busy machine.</summary>
     private static readonly TimeSpan Promptly = TimeSpan.FromSeconds(ConnectTimeoutSeconds + 6);
 
+    /// <summary>How long the silent server's accept loop has to count a connection the run made (ARV-169's story gate).</summary>
+    private static readonly TimeSpan AcceptWait = TimeSpan.FromSeconds(5);
+
     /// <summary>
     /// A host whose database and malware scanner are <paramref name="silent"/>, without its hosted services (the loops are built
     /// by the test), so it starts without touching either.
@@ -207,7 +210,12 @@ public sealed class RunTimeoutInventoryTests
 
         (await run.Should().ThrowAsync<RunTimeoutException>($"{loop} waits on a stalled dependency")).Which.Timeout.Should().Be(TestTimeout);
         watch.Elapsed.Should().BeGreaterThanOrEqualTo(TestTimeout - TimeSpan.FromMilliseconds(20)).And.BeLessThan(TestTimeout + Promptly);
-        silent.Accepted.Should().BePositive($"{loop} reached the stalled database or scanner");
+        // The server counts a connection when its accept loop runs on the thread pool, after the kernel took it: on a loaded
+        // machine that can come after the run's timeout (one failure in a story gate run right after a container restart).
+        var counted = Stopwatch.StartNew();
+        while (silent.Accepted == 0 && counted.Elapsed < AcceptWait)
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        silent.Accepted.Should().BePositive($"{loop} reached the stalled database or scanner (none counted within {AcceptWait.TotalSeconds:F0} s of the run's end: the run timed out before it connected)");
     }
 
     [Theory]
