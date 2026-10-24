@@ -98,8 +98,10 @@ public sealed class MissingTopicTests(PostgresFixture postgres, KafkaFixture kaf
             ["Kafka:Topics:ReplicationFactor"] = "1",
             ["Kafka:Topics:MinInSyncReplicas"] = "1",
             ["Kafka:Consumers:CheckpointSeconds"] = "1",
-            ["Kafka:Consumers:CheckpointMessageCount"] = "1",
-            ["Kafka:Consumers:StartWaitSeconds"] = "2"
+            ["Kafka:Consumers:CheckpointMessageCount"] = "1"
+            // No Kafka:Consumers:StartWaitSeconds: the provisioner creates the present topic beside the host's start (a
+            // BackgroundService), so the start waits for the topics Ariva owns as in production (60 s; AMAN's feed topic is
+            // never waited for). A 2 s wait lost that race on a loaded machine and the gauge read 1 for the present topic.
         });
         if (Environment.GetEnvironmentVariable("ARIVA_IT_LOG") is { Length: > 0 } log)
             builder.Logging.AddProvider(new Ariva.IntegrationTests.Streaming.FileLoggerProvider(log));
