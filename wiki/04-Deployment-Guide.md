@@ -1357,7 +1357,7 @@ Today:
 ```bash
 dotnet restore Ariva.slnx
 dotnet build Ariva.slnx
-dotnet test Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj
+node scripts/verify.mjs unit   # the unit test executable, then the count guard (ARV-164a); dotnet test's counts are not reliable
 
 cd Platform/Backplane/Ariva.Api.Main
 dotnet run                      # listens on http://localhost:51001

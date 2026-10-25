@@ -80,21 +80,41 @@
     },
     {
       "id": "ARV-164a",
-      "title": "[E17] Test determinism: E2E races and cases left out of a run",
-      "description": "Split from ARV-164 on 2026-10-24. The E2E and functional races recorded in ARV-164's notes, each to root-cause and fix without loosening what the test proves: an oversized body answered 413 or 401 that a client still writing reads as a connection reset or EPIPE (site-configuration.spec.ts, security-baseline.spec.ts, ARV-047's AIDX upload); validation-capture.spec.ts on a portrait tablet (the scroll width measured before the tab settles; the tally reset by a bin boundary between taps; a key press not counted) and the desk log's minute stored late; aman-pull.spec.ts past its 30 s. And what still runs the unit suite through dotnet test (CI's unit step, Stryker's VSTest runner): the xUnit runner's message stream on standard output there is broken by the Pact verifier's native report (PactNet's FFI writes to the process's standard output) and by display names with raw control characters (a theory argument holding \\u0007 makes its test-starting line unreadable), and probably by the in-process hosts' JSON console logs written beside it, and the VSTest adapter drops a line it cannot read without a failure (ARV-164). A dropped line can be a failure as well as a pass, so a failing test, the security tests included, could pass CI unnoticed (its test counts step fails only a suite that ran no tests): a gate integrity gap, not only determinism. CWEs to review: none (test determinism).",
+      "title": "[E17] Test counts: the unit suite's runner in CI, a guard against cases left out, and Stryker's count",
+      "description": "Split from ARV-164 on 2026-10-24, and again on 2026-10-25 (the E2E races are ARV-164b). What still runs the unit suite through `dotnet test` (CI's unit step): the xUnit runner's message stream on standard output there is broken by the Pact verifier's native report (PactNet's FFI writes to the process's standard output) and by display names with raw control characters (a theory argument holding \\u0007 makes its test-starting line unreadable), and the VSTest adapter drops a line it cannot read without a failure (ARV-164). A dropped line can be a failure as well as a pass, so a failing test, the security tests included, could pass CI unnoticed (its test counts step fails only a suite that ran no tests): a gate integrity gap. CWEs to review: none (test integrity).",
+      "acceptanceCriteria": [
+        "CI's unit step runs the test executable as the unit gate does (Microsoft Testing Platform, in process, its TRX read by the test counts step), and its failure report reads the runner's own output",
+        "A count guard (scripts/test-count-guard.mjs, with a self-test) compares the cases the executable lists with the TRX's results, method by method, and fails a run in which any listed case has fewer results than it was listed with; it runs in the unit gate and in CI's unit job",
+        "Stryker's run is checked the same way: the mutation run fails when Stryker reports fewer tests found than the unit tests list (scripts/mutation-run.mjs, with self-test cases)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": true,
+      "notes": "Size S. Split from ARV-164 on 2026-10-24; the CI half was a gate integrity gap the notes asked to take first, so on 2026-10-25 the E2E races moved to ARV-164b. Stryker already runs the tests through its MTP runner (stryker-config.json, test-runner mtp), whose results come over the platform's server protocol, not standard output.",
+      "dependsOn": [
+        "ARV-164"
+      ]
+    },
+    {
+      "id": "ARV-164b",
+      "title": "[E17] Test determinism: the E2E races, and the integration suite's runner stream",
+      "description": "Split from ARV-164a on 2026-10-25. The E2E and functional races recorded in ARV-164's notes, each to root-cause and fix without loosening what the test proves: an oversized body answered 413 or 401 that a client still writing reads as a connection reset or EPIPE (site-configuration.spec.ts, security-baseline.spec.ts, ARV-047's AIDX upload); validation-capture.spec.ts on a portrait tablet (the scroll width measured before the tab settles; the tally reset by a bin boundary between taps; a key press not counted) and the desk log's minute stored late; aman-pull.spec.ts past its 30 s. And the integration suite, which CI and the story gate still run through `dotnet test`: the hosts' JSON console logs share the runner's message stream there, so it may lose a case as the unit suite did (ARV-164). CWEs to review: none (test determinism).",
       "acceptanceCriteria": [
         "Each race named above has its cause named in backlog/progress.md and a fix that keeps the test's assertion (no retry, skip or wider timeout to hide it)",
-        "CI's unit step runs the test executable as the unit gate does (Microsoft Testing Platform, its TRX read by the test counts step), or the adapter's stream is shown clean: the Pact report and the hosts' logs kept off standard output and display names escaped; Stryker's counts checked the same way; and a count guard (MTP's --minimum-expected-tests, or the discovered cases against those reported) fails a run that lost one",
+        "The integration suite's stream is shown clean (no line the adapter cannot read, counted over a full run) or the suite runs as the unit suite does, with the ARV-164a count guard",
         "The full E2E suite passes three times in a row with no retry used (Playwright's retries reported as flaky count as failures)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
-        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
       "passes": false,
-      "notes": "Size M. Split from ARV-164 on 2026-10-24: the unit suite's determinism and the stall bound stay in ARV-164; these need the E2E environment and each its own root cause. The CI half is a gate integrity gap (a dropped failure would pass CI); consider taking it before the rest, and before the pilot.",
+      "notes": "Size M. Split from ARV-164a on 2026-10-25. Needs the E2E environment and each race its own root cause.",
       "dependsOn": [
-        "ARV-164"
+        "ARV-164a"
       ]
     },
     {
@@ -1197,6 +1217,23 @@
       "notes": "Size S. 2026-10-25, from the ARV-155 review. Consider a sliding window (SlidingWindowRateLimiter) so the stated bound holds in any interval, for ARV-155's limit too.",
       "dependsOn": [
         "ARV-155"
+      ]
+    },
+    {
+      "id": "ARV-251",
+      "title": "[E17] Test counts: every row of a theory listed once accounted for",
+      "description": "From the ARV-164a review (2026-10-25). The count guard compares a run's TRX with the test executable's listing method by method; a theory whose rows are not enumerated at discovery is listed once and runs as many rows, so one lost row of such a method, while another of its rows ran, is not caught (59 methods, 716 results on 2026-10-25). CWEs to review: none (test integrity).",
+      "acceptanceCriteria": [
+        "Every row of those methods is accounted for: their theory data made serializable so xUnit enumerates the rows at discovery (the guard then counts each), or a committed minimum row count per method that the guard checks, kept current by a test that fails when a method's rows change",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. 2026-10-25, from the ARV-164a review.",
+      "dependsOn": [
+        "ARV-164a"
       ]
     }
   ]

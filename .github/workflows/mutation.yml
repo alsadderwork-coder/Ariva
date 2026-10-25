@@ -40,12 +40,13 @@ jobs:
         working-directory: Platform/Backplane/Ariva.UnitTests
         run: dotnet tool restore
       # Through scripts/mutation-run.mjs (ARV-069a): the run also fails when a method is in Stryker's safe mode (its mutants
-      # removed as compile errors, so it is not measured) or no final score was printed.
-      - name: Mutation gate self-test (its checks fire on a safe-mode log and on a log without a score)
+      # removed as compile errors, so it is not measured) or no final score was printed, and (ARV-164a, --tests) when Stryker
+      # found fewer tests than the unit test build it made (Debug) lists.
+      - name: Mutation gate self-test (its checks fire on a safe-mode log, a log without a score and tests left out)
         run: node scripts/mutation-run.mjs --self-test
-      - name: Mutation run (fails below the break threshold, on safe mode or without a score)
+      - name: Mutation run (fails below the break threshold, on safe mode, without a score or with tests left out)
         working-directory: Platform/Backplane/Ariva.UnitTests
-        run: node "$GITHUB_WORKSPACE/scripts/mutation-run.mjs" --log "$GITHUB_WORKSPACE/.verify/mutation.log" -- dotnet-stryker --concurrency 4 --output "$GITHUB_WORKSPACE/.verify/stryker"
+        run: node "$GITHUB_WORKSPACE/scripts/mutation-run.mjs" --log "$GITHUB_WORKSPACE/.verify/mutation.log" --tests "$GITHUB_WORKSPACE/Platform/Backplane/Ariva.UnitTests/bin/Debug/net10.0/Ariva.UnitTests.dll" -- dotnet-stryker --concurrency 4 --output "$GITHUB_WORKSPACE/.verify/stryker"
       - name: Mutation report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

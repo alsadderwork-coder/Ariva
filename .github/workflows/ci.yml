@@ -140,8 +140,19 @@ jobs:
         run: dotnet restore Ariva.slnx --locked-mode 2>&1 | tee restore.log
       - name: Build (security analyzers as errors)
         run: dotnet build Ariva.slnx -c Release --no-restore 2>&1 | tee build.log
+      # ARV-164a: the test executable runs the suite itself (Microsoft Testing Platform, in process), as the unit gate does
+      # (scripts/verify.mjs). Under dotnet test the VSTest adapter reads the runner's messages from standard output, which the
+      # Pact verifier's native report and display names with control characters also reach, and drops a line it cannot read
+      # without a failure (ARV-164), so a failing test could have passed here unnoticed. The TRX goes where the test counts
+      # step reads it; --no-ansi keeps colour codes out of unit.log, whose lines the failure report reads from the start.
       - name: Unit, architecture and security tests
-        run: dotnet test Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj -c Release --no-build --logger trx --results-directory TestResults 2>&1 | tee unit.log
+        run: dotnet Platform/Backplane/Ariva.UnitTests/bin/Release/net10.0/Ariva.UnitTests.dll --no-ansi --results-directory "$GITHUB_WORKSPACE/TestResults" --report-xunit-trx --report-xunit-trx-filename unit-tests.trx 2>&1 | tee unit.log
+      # Every case the executable lists has its results in the TRX, method by method (a theory listed once runs as many rows).
+      - name: Unit test count guard (every listed case has its results)
+        if: ${{ !cancelled() }}
+        run: |
+          node scripts/test-count-guard.mjs --self-test
+          node scripts/test-count-guard.mjs --dll Platform/Backplane/Ariva.UnitTests/bin/Release/net10.0/Ariva.UnitTests.dll --trx TestResults/unit-tests.trx
       # ARV-068: the AMAN feed's message pact, written by the unit tests, for AMAN's provider verification (wiki 08).
       - name: Publish the AMAN pact
         if: always()
@@ -204,16 +215,24 @@ jobs:
             if [ -f build.log ] && grep -Eq ': error [A-Z]+[0-9]+' build.log; then
               echo '#### Build'; echo '```'; grep -E ': error [A-Z]+[0-9]+' build.log | sed 's#/home/runner/work/[^/]*/[^/]*/##' | sort -u | head -60 | cut -c1-400; echo '```'
             fi
-            for log in unit.log integration.log; do
-              if [ -f "$log" ] && grep -Eq '^\s+Failed |error TESTERROR|\[FAIL\]' "$log"; then
-                echo "#### ${log%.log} tests: failing tests"; echo '```'
-                grep -E '^\s+Failed [A-Za-z]' "$log" | sed -E 's/^\s+Failed //; s/ \[[0-9.]+ m?s\]$//' | sort -u | head -100 | cut -c1-300
-                echo '```'; echo "#### ${log%.log} tests: distinct errors"; echo '```'
-                grep -A1 'Error Message:' "$log" | grep -v -E 'Error Message:|^--$' | sed -E 's/^\s+//' | sort | uniq -c | sort -rn | head -25 | cut -c1-300
-                echo '```'; echo "#### ${log%.log} tests: first details"; echo '```'
-                grep -E -A14 '^\s+Failed [A-Za-z]' "$log" | head -80 | cut -c1-300; echo '```'
-              fi
-            done
+            # The unit tests' output is Microsoft Testing Platform's ("failed <name> (<time>)", the error on the next lines,
+            # ARV-164a); the integration tests' is dotnet test's ("  Failed <name> [<time>]", then "Error Message:").
+            if [ -f unit.log ] && grep -Eq '^failed [A-Za-z]' unit.log; then
+              echo '#### unit tests: failing tests'; echo '```'
+              grep -E '^failed [A-Za-z]' unit.log | sed -E 's/^failed //; s/ \([0-9][^)]*\)$//' | sort -u | head -100 | cut -c1-300
+              echo '```'; echo '#### unit tests: distinct errors'; echo '```'
+              grep -A1 -E '^failed [A-Za-z]' unit.log | grep -v -E '^failed |^--$' | sed -E 's/^\s+//' | sort | uniq -c | sort -rn | head -25 | cut -c1-300
+              echo '```'; echo '#### unit tests: first details'; echo '```'
+              grep -E -A14 '^failed [A-Za-z]' unit.log | head -80 | cut -c1-300; echo '```'
+            fi
+            if [ -f integration.log ] && grep -Eq '^\s+Failed |error TESTERROR|\[FAIL\]' integration.log; then
+              echo '#### integration tests: failing tests'; echo '```'
+              grep -E '^\s+Failed [A-Za-z]' integration.log | sed -E 's/^\s+Failed //; s/ \[[0-9.]+ m?s\]$//' | sort -u | head -100 | cut -c1-300
+              echo '```'; echo '#### integration tests: distinct errors'; echo '```'
+              grep -A1 'Error Message:' integration.log | grep -v -E 'Error Message:|^--$' | sed -E 's/^\s+//' | sort | uniq -c | sort -rn | head -25 | cut -c1-300
+              echo '```'; echo '#### integration tests: first details'; echo '```'
+              grep -E -A14 '^\s+Failed [A-Za-z]' integration.log | head -80 | cut -c1-300; echo '```'
+            fi
             if [ -f vulnerable.txt ] && grep -Eq '\b(High|Critical)\b' vulnerable.txt; then
               echo '#### Vulnerable packages'; echo '```'; grep -E '>|High|Critical' vulnerable.txt | head -40; echo '```'
             fi

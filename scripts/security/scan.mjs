@@ -851,4 +851,8 @@ function main() {
   process.exit(errors.length ? 1 : 0);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+// Run as a command, through a link too (ARV-164a review): the loader resolves import.meta.url through links unless
+// --preserve-symlinks-main keeps the link's path, so argv[1] counts as this module when either its own path or its real
+// path is; otherwise a linked run would exit 0 having scanned nothing. Imported (the post-edit hook), main does not run.
+const self = fileURLToPath(import.meta.url);
+if (process.argv[1] && fs.existsSync(process.argv[1]) && [path.resolve(process.argv[1]), fs.realpathSync(process.argv[1])].includes(self)) main();

@@ -456,8 +456,15 @@ const steps = {
     // case could go missing from a run (7,811 against 7,812 on one tree). The TRX names every case that ran, so a total that
     // differs between two runs can be traced to the case. PACT_DO_NOT_TRACK, which the runsettings set for dotnet test, is set
     // for every child process above.
-    run('unit tests', 'dotnet', [path.join('Platform', 'Backplane', 'Ariva.UnitTests', 'bin', 'Debug', 'net10.0', 'Ariva.UnitTests.dll'),
-      '--results-directory', path.join(ROOT, '.verify'), '--report-xunit-trx', '--report-xunit-trx-filename', 'unit-tests.trx']);
+    const unitDll = path.join('Platform', 'Backplane', 'Ariva.UnitTests', 'bin', 'Debug', 'net10.0', 'Ariva.UnitTests.dll');
+    // A run that writes no TRX must not be judged by the last run's (a step that fails does not stop the ones after it).
+    if (!PLAN) fs.rmSync(path.join(ROOT, '.verify', 'unit-tests.trx'), { force: true });
+    run('unit tests', 'dotnet', [unitDll, '--results-directory', path.join(ROOT, '.verify'), '--report-xunit-trx', '--report-xunit-trx-filename', 'unit-tests.trx']);
+    // ARV-164a: every case the executable lists has its results in the TRX, method by method (a theory listed once runs as many
+    // rows), so a case left out of the run, passing or failing, fails the gate instead of shrinking a total nobody compares.
+    run('test count guard self-test', 'node', ['scripts/test-count-guard.mjs', '--self-test']);
+    run('unit test count guard (every listed case has its results)', 'node', ['scripts/test-count-guard.mjs', '--dll', unitDll,
+      '--trx', path.join(ROOT, '.verify', 'unit-tests.trx')]);
   },
   integration: () => run('integration tests', 'dotnet', ['test', 'Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj']),
   web: () => {
@@ -603,9 +610,11 @@ const steps = {
       run('dotnet tool restore (dotnet-stryker)', 'dotnet', ['tool', 'restore'], tests);
       // At a lower CPU priority outside Windows: Stryker uses the idle machine fully but yields to a story gate running beside
       // it (2026-10-10: an integration test timed out at 5 minutes with the load at about 20 while Stryker ran at normal priority).
-      const mutationRun = [path.join(ROOT, 'scripts', 'mutation-run.mjs'), '--log', path.join(ROOT, '.verify', 'mutation.log'), '--',
+      // --tests: Stryker must have found at least the tests the worktree's unit test build lists (ARV-164a).
+      const mutationRun = [path.join(ROOT, 'scripts', 'mutation-run.mjs'), '--log', path.join(ROOT, '.verify', 'mutation.log'),
+        '--tests', path.join(tests, 'bin', 'Debug', 'net10.0', 'Ariva.UnitTests.dll'), '--',
         'dotnet-stryker', '--concurrency', sessions, '--output', path.join(ROOT, '.verify', 'stryker'), ...files.flatMap(f => ['--mutate', `**/${f}`])];
-      run(`mutation tests (Stryker.NET in a worktree of ${rev.slice(0, 10)}${since ? `, ${files.length} engine files changed since ${since.slice(0, 10)}` : ''}; fails on safe mode or no score)`,
+      run(`mutation tests (Stryker.NET in a worktree of ${rev.slice(0, 10)}${since ? `, ${files.length} engine files changed since ${since.slice(0, 10)}` : ''}; fails on safe mode, no score or tests left out)`,
         IS_WIN ? 'node' : 'nice', IS_WIN ? mutationRun : ['-n', '10', 'node', ...mutationRun], tests);
     } finally {
       if (!PLAN) removeMutationTree();
