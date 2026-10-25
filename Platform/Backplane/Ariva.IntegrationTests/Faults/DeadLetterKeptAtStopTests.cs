@@ -19,25 +19,19 @@ using Npgsql;
 
 namespace Ariva.IntegrationTests.Faults;
 
-/// <summary>
-/// Fails the poison message of the running test, takes four seconds over its slow message (so that a stop waits for it),
-/// and records every message as it starts.
-/// </summary>
+/// <summary>Fails the poison message of the running test and records every message as it starts.</summary>
 public sealed class KeptProbeConsumer : IConsumer<OutageProbe>
 {
     public static string PoisonKey { get; set; }
 
-    public static string SlowKey { get; set; }
-
     public static readonly ConcurrentQueue<(string Key, int Step)> Received = new();
 
-    public async Task Consume(ConsumeContext<OutageProbe> context)
+    public Task Consume(ConsumeContext<OutageProbe> context)
     {
         Received.Enqueue((context.Message.Key, context.Message.Step));
         if (context.Message.Key == PoisonKey)
             throw new InvalidOperationException("Poison probe (ARV-171).");
-        if (context.Message.Key == SlowKey)
-            await Task.Delay(TimeSpan.FromSeconds(4), CancellationToken.None);
+        return Task.CompletedTask;
     }
 }
 
@@ -47,11 +41,12 @@ public sealed class KeptProbeConsumer : IConsumer<OutageProbe>
 /// (the broker answers MESSAGE_TOO_LARGE at once), while the source topic, the consumer group's commits and the database
 /// stay available. Toxiproxy cuts the whole broker connection, which would refuse the commits as well, so it cannot make
 /// this case. The order of events is the one ARV-166 left open: the record fails and its dead letter is refused, a later
-/// record of another key on the same partition completes, then the endpoint stops. A third, slow record (another key) is
-/// still being handled at the stop, so the endpoint's stop waits for it, and in that time MassTransit's checkpointer
-/// commits the later record's offset, past the poison record, every time: before ARV-171 the poison record was faulted
-/// there and so skipped, neither processed nor dead-lettered. Now the letter is in the outbox before the record completes,
-/// and once the topic takes messages again the relay of the next host sends it. The unreadable-record path (the rider's
+/// record of the same partition is fetched, then the endpoint stops. Before ARV-171 the poison record was faulted at the
+/// stop and so skipped, neither processed nor dead-lettered; now the letter is in the outbox before the record completes,
+/// and once the topic takes messages again the relay of the next host sends it. Before ARV-253 the later record (another
+/// key, so another of MassTransit's lanes) completed during the poison record's dead-letter loop; with one lane per
+/// consumer it waits behind it, is never handled by the stopping host, and is not passed: the stop commits just past the
+/// poison record, and the next host consumes the later record. The unreadable-record path (the rider's
 /// dead-letter pipe, at receive level) is proven the same way, with a NUL character in the record's key and in a header value
 /// (ARV-175): PostgreSQL text refuses NUL, so before ARV-175 that letter could not be kept and the record was left
 /// unacknowledged; now each NUL is replaced with U+FFFD, the letter is flagged, and its outbox row is keyed by a digest.
@@ -78,7 +73,6 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
     public async ValueTask DisposeAsync()
     {
         KeptProbeConsumer.PoisonKey = null;
-        KeptProbeConsumer.SlowKey = null;
         await AcceptDeadLettersAsync();
     }
 
@@ -243,27 +237,29 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
     private static int Count(string key) => KeptProbeConsumer.Received.Count(r => r.Key == key);
 
     /// <summary>
-    /// The rider's lane for a key: MassTransit hashes the record's key (Murmur3) to one of <c>ConcurrentMessageLimit</c>
-    /// lanes (8, the setting's default here), each handling one message at a time, so a key in the poison record's lane
-    /// would wait behind it instead of completing during its dead-letter loop.
+    /// The lane MassTransit's rider gave a key with eight lanes (Murmur3 of the key), as before ARV-253: the later record's
+    /// key is outside the poison record's, so that with lanes it would have completed during the dead-letter loop.
     /// </summary>
     private static long LaneOf(string key) => new MassTransit.Middleware.Murmur3UnsafeHashGenerator().Hash(Encoding.UTF8.GetBytes(key)) % 8;
 
-    /// <summary>A key of the run whose lane is none of <paramref name="taken"/>.</summary>
-    private static string KeyOutside(string prefix, string run, params string[] taken)
+    /// <summary>A key of the run whose old lane is not <paramref name="taken"/>'s.</summary>
+    private static string KeyOutside(string prefix, string run, string taken)
     {
-        for (var i = 0; ; i++)
+        // Seven keys in eight fit; 10,000 tries miss with a chance of (1/8)^10000.
+        for (var i = 0; i < 10_000; i++)
         {
             var key = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{prefix}-{run}-{i}");
-            if (taken.All(t => LaneOf(t) != LaneOf(key)))
+            if (LaneOf(taken) != LaneOf(key))
                 return key;
         }
+
+        throw new InvalidOperationException($"No key for {prefix} in 10,000 tries.");
     }
 
     [Theory(Timeout = 300_000)]
     [InlineData(false)] // a message whose consumer fails: the consume pipe's dead-letter filter
     [InlineData(true)]  // a record that is not a readable message: the rider's dead-letter pipe, at receive level
-    public async Task Stop_Should_KeepTheRefusedDeadLetterAndSkipNoRecord_When_ALaterRecordOfThePartitionCompletes(bool unreadable)
+    public async Task Stop_Should_KeepTheRefusedDeadLetterAndSkipNoRecord_When_ALaterRecordWaitsBehindIt(bool unreadable)
     {
         var run = Guid.NewGuid().ToString("N")[..8];
         var poison = unreadable ? "P-" + run + "\0" : "P-" + run;
@@ -273,10 +269,8 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
             ? "sha256-" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(poison.Replace('\0', '\uFFFD'))))
             : poison;
         var later = KeyOutside("L", run, poison);
-        var slow = KeyOutside("S", run, poison, later);
         var raw = Encoding.UTF8.GetBytes("not a message (ARV-171) " + run);
         KeptProbeConsumer.PoisonKey = poison;
-        KeptProbeConsumer.SlowKey = slow;
         await AcceptDeadLettersAsync();
         var host = await StartHostAsync();
         // ARV-125a: the refused letter is counted once, as kept.
@@ -307,18 +301,20 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
 
             await WaitForAsync(() => Logged("not accepted (attempt") >= 1, "the record failed and Kafka refused its dead letter");
 
-            // A later record of another key on the same partition completes while the poison record is still pending.
+            // A later record of another key on the same partition, fetched while the poison record is still pending: it waits
+            // behind it in the consumer's one lane (ARV-253).
             await host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(new OutageProbe { Key = later, Step = 2, CorrelationId = "corr" }, Ct);
-            await WaitForAsync(() => Count(later) == 1, "a later record of another key consumed");
-            await host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(new OutageProbe { Key = slow, Step = 3, CorrelationId = "corr" }, Ct);
-            await WaitForAsync(() => Count(slow) == 1, "a slow record of a third key being handled");
+            await WaitForAsync(async () => (await OffsetsAsync()).End == poisonOffset + 2, "a later record of another key on the topic");
+            await Task.Delay(TimeSpan.FromSeconds(2), Ct);
+            Count(later).Should().Be(0, "the later record waits behind the poison record's dead-letter loop");
             (await OffsetsAsync()).Committed.Should().Be(poisonOffset, "nothing is committed past the pending poison record before the stop");
 
             await StopAsync(host);
             stopped = true;
             Done("the host stopped");
-            (await OffsetsAsync()).Committed.Should().BeGreaterThan(poisonOffset + 1,
-                "the later record was committed during the stop, past the poison record: the case that skipped it before ARV-171");
+            (await OffsetsAsync()).Committed.Should().Be(poisonOffset + 1,
+                "the poison record completed with its letter kept, and the later record, never handled, is not passed (ARV-253)");
+            Count(later).Should().Be(0, "the stopping host never handled the later record");
             Logged("left unacknowledged").Should().Be(0, "the database was there, so the record was not faulted (and so skipped)");
             Logged(Kept).Should().Be(1, "the refused dead letter was kept in the outbox at the stop");
             counts.Sum(KafkaProducerMetrics.DeadLettersName, ("topic", KafkaTopics.SlaBreachDetected), ("group", Group), ("outcome", KafkaProducerMetrics.KeptOutcome))
@@ -356,8 +352,7 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
                     Count(poison).Should().Be(1, "the poison record completed at the stop and is not delivered again");
                 }
 
-                Count(later).Should().Be(1, "the later record is processed once");
-                Count(slow).Should().BeInRange(1, 2, "the slow record completed at the stop; its own commit may not have been made before the endpoint stopped");
+                Count(later).Should().Be(1, "the next host processes the later record, once");
             }
             finally
             {
@@ -367,7 +362,6 @@ public sealed class DeadLetterKeptAtStopTests(FaultsFixture faults) : IAsyncLife
         finally
         {
             KeptProbeConsumer.PoisonKey = null;
-            KeptProbeConsumer.SlowKey = null;
             await AcceptDeadLettersAsync();
             if (!stopped)
                 _ = Task.Run(host.Dispose, CancellationToken.None);

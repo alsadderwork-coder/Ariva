@@ -1388,7 +1388,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Found in ARV-177 (2026-10-25); not a low finding, so not Phase 3: it loses valid events at a stop. Proposed for the pilot go-live gate (ARV-138 depends on it), pending the owner. The probe's test (QueuedAtStopTests: one partition, a slow key, a key of the same lane queued behind it, a later key of another lane, a stop) is described in the 2026-10-25 ARV-177 entry of backlog/progress.md.",
       "dependsOn": [
         "ARV-171"

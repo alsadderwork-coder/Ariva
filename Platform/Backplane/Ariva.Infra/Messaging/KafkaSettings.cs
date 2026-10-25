@@ -143,8 +143,33 @@ public sealed class ConsumerSettings
     public int CheckpointSeconds { get; init; } = 5;
     public ushort CheckpointMessageCount { get; init; } = 500;
 
-    /// <summary>Parallel lanes per endpoint, split by key so order holds per key.</summary>
-    public int ConcurrentMessageLimit { get; init; } = 8;
+    /// <summary>
+    /// Lanes per Kafka consumer: 1, and only 1 (ARV-253). With more, MassTransit 8.5.11 handles a consumer's records in lanes
+    /// by key, and its checkpointer, which passes a record a stop cancels (one in hand when the bus's stop wait ends, or one
+    /// waiting in a lane when the endpoint begins to stop) as it passes a faulted one, commits past it once a later record of
+    /// its partition has completed in another lane: a valid event lost without a trace. With one lane a consumer's records
+    /// complete in the order they were fetched, so the completed records of a partition are always its first ones and a stop
+    /// passes nothing. Any other value is refused at start; <see cref="ConsumersPerEndpoint"/> gives parallelism instead.
+    /// </summary>
+    public int ConcurrentMessageLimit { get; init; } = 1;
+
+    /// <summary>The most Kafka consumers per endpoint: the topics' default partition count (a consumer beyond it has none).</summary>
+    public const int MaxConsumersPerEndpoint = 6;
+
+    /// <summary>
+    /// Kafka consumers per endpoint (MassTransit's <c>ConcurrentConsumerLimit</c>, ARV-253): each joins the endpoint's group with
+    /// one lane and its own share of the topic's partitions, so the endpoint handles up to this many records at once, in order
+    /// within each partition. From 1 to <see cref="MaxConsumersPerEndpoint"/>.
+    /// </summary>
+    public int ConsumersPerEndpoint { get; init; } = 1;
+
+    /// <summary>
+    /// librdkafka's <c>queued.max.messages.kbytes</c> for an endpoint's consumers together (ARV-253): 64 MiB, librdkafka's
+    /// default for one consumer, shared out over <see cref="ConsumersPerEndpoint"/>, so more consumers queue no more ahead in
+    /// librdkafka. MassTransit's prefetch is each consumer's own (1,000 messages taken from that queue and not yet handled),
+    /// so it grows with the consumers (wiki 04).
+    /// </summary>
+    public const int FetchQueueKbytesPerEndpoint = 64 * 1024;
 
     public const int MinHandlerTimeoutSeconds = 65;
     public const int MaxHandlerTimeoutSeconds = 120;

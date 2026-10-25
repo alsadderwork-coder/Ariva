@@ -134,6 +134,14 @@ public static partial class MessagingExtensions
         var watch = settings.Consumers?.TopicWatchSeconds ?? 0;
         if (watch is < 1 or > 300)
             throw new InvalidOperationException("Kafka:Consumers:TopicWatchSeconds must be from 1 to 300.");
+        // ARV-253: one lane per consumer, or a stop can pass records it never handled (ConsumerSettings.ConcurrentMessageLimit).
+        if ((settings.Consumers?.ConcurrentMessageLimit ?? 1) != 1)
+            throw new InvalidOperationException(
+                "Kafka:Consumers:ConcurrentMessageLimit must be 1 (ARV-253: with more lanes MassTransit's checkpointer commits past records a stop leaves unhandled); set Kafka:Consumers:ConsumersPerEndpoint for parallel consumption.");
+        var consumers = settings.Consumers?.ConsumersPerEndpoint ?? 1;
+        if (consumers is < 1 or > ConsumerSettings.MaxConsumersPerEndpoint)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Consumers:ConsumersPerEndpoint must be from 1 to {ConsumerSettings.MaxConsumersPerEndpoint} (ARV-253)."));
         var handler = settings.Consumers?.HandlerTimeoutSeconds ?? 0;
         if (handler is < ConsumerSettings.MinHandlerTimeoutSeconds or > ConsumerSettings.MaxHandlerTimeoutSeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
@@ -333,7 +341,11 @@ public sealed class ArivaMessagingBuilder
             {
                 endpoint.AutoOffsetReset = AutoOffsetReset.Earliest;
                 endpoint.ConcurrentDeliveryLimit = 1;
-                endpoint.ConcurrentMessageLimit = settings.Consumers.ConcurrentMessageLimit;
+                // ARV-253: one lane per consumer, so a partition's records complete in fetch order and a stop's cancellations
+                // never leave a completed record after an unhandled one; parallel consumers instead, each its own partitions.
+                endpoint.ConcurrentMessageLimit = 1;
+                endpoint.ConcurrentConsumerLimit = (ushort)settings.Consumers.ConsumersPerEndpoint;
+                endpoint.QueuedMaxMessagesKbytes = ConsumerSettings.FetchQueueKbytesPerEndpoint / settings.Consumers.ConsumersPerEndpoint;
                 endpoint.CheckpointInterval = TimeSpan.FromSeconds(settings.Consumers.CheckpointSeconds);
                 endpoint.CheckpointMessageCount = settings.Consumers.CheckpointMessageCount;
                 endpoint.SetValueDeserializer(deserializer);

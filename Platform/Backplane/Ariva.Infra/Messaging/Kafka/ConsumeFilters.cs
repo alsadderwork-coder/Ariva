@@ -107,7 +107,7 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
 /// ARV-096e (CWE-400, ASVS 5.0 V15.2.2): each attempt of a message gets at most <c>Kafka:Consumers:HandlerTimeoutSeconds</c>. The
 /// filter runs inside the retry and the dead-letter filter and around the inbox, unit of work and consumer, which see a
 /// token that the timeout cancels as well as the message's own; so a handler stalled on the database or a partner frees its
-/// slot of the endpoint (one of <c>ConcurrentMessageLimit</c>) at the timeout. An attempt cut there fails with
+/// consumer's one lane (ARV-253) at the timeout. An attempt cut there fails with
 /// <see cref="HandlerTimeoutException"/>: it is rolled back and retried like any failure, and the last attempt goes to the
 /// dead-letter topic. The message's own cancellation (a stop) is passed on unchanged. A handler that never looks at its token
 /// cannot be cut; every Ariva consumer passes it to its reads and writes.
@@ -229,9 +229,9 @@ public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProv
 /// configured the policy failed on it and the rescue acknowledged the message (lost), with retries the exhausted policy
 /// published a fault. Carrying the message's token, the cancellation leaves the pipe, the Kafka receive marks the record
 /// faulted rather than consumed, and its offset is not committed for it, so the message is delivered again after restart.
-/// In that one case MassTransit's checkpointer can still commit past the faulted record (a later record of its partition
-/// completing and checkpointed before the endpoint stops): the database being away as well leaves nothing durable to
-/// write. The warning names the record so that it can be replayed (docs/architecture/overview.md, Producing).
+/// MassTransit's checkpointer passes a faulted record, but since ARV-253 nothing after it completes before the stop (one
+/// lane per Kafka consumer), so its offset stays uncommitted and the next host gets it again. The warning names the
+/// record (docs/architecture/overview.md, Producing).
 /// </para>
 /// <para>
 /// Each letter is counted once on <see cref="KafkaProducerMetrics.DeadLettersName"/> (ARV-125a) by how it ended: sent, kept

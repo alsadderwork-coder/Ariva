@@ -353,6 +353,38 @@ public sealed class ProducerHardeningTests
     }
 
     [Theory]
+    [InlineData("1", null, false)]
+    [InlineData("8", null, true)]
+    [InlineData("2", null, true)]
+    [InlineData("0", null, true)]
+    [InlineData(null, "1", false)]
+    [InlineData(null, "6", false)]
+    [InlineData(null, "0", true)]
+    [InlineData(null, "7", true)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_AnEndpointWouldHaveMoreThanOneLaneOrItsConsumersAreOutOfBounds(string lanes, string consumers, bool refused)
+    {
+        // ARV-253: one lane per Kafka consumer, so a stop cannot leave a completed record after one it never handled, which
+        // MassTransit's checkpointer then commits past; parallel consumers per endpoint, each with its own partitions, instead.
+        var settings = new Dictionary<string, string> { ["Kafka:Enabled"] = "true" };
+        if (lanes is not null)
+            settings["Kafka:Consumers:ConcurrentMessageLimit"] = lanes;
+        if (consumers is not null)
+            settings["Kafka:Consumers:ConsumersPerEndpoint"] = consumers;
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (!refused)
+            add.Should().NotThrow();
+        else if (lanes is not null)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Consumers:ConcurrentMessageLimit must be 1 (ARV-253*ConsumersPerEndpoint*");
+        else
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Consumers:ConsumersPerEndpoint must be from 1 to 6 (ARV-253)*");
+        new ConsumerSettings().ConcurrentMessageLimit.Should().Be(1);
+        new ConsumerSettings().ConsumersPerEndpoint.Should().Be(1);
+    }
+
+    [Theory]
     [InlineData("64", true)]
     [InlineData("65", false)]
     [InlineData("70", false)]

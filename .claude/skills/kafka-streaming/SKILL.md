@@ -25,7 +25,10 @@ Hosts declare consumers through the composition root; `AddArivaMessaging` regist
 builder.Services.RegisterArivaServices(builder.Configuration, messaging => messaging
     .Consume<QueueInterval, QueueIntervalConsumer>(KafkaTopics.FlowQueueInterval, "queue-interval"));
 // group ariva-<Kafka:ServiceName>.queue-interval; AutoOffsetReset Earliest; ConcurrentDeliveryLimit 1 (never raise: breaks
-// ordering); ConcurrentMessageLimit 8 (parallel across keys); CheckpointInterval 5 s; CheckpointMessageCount 500.
+// ordering); ConcurrentMessageLimit 1 (one lane per Kafka consumer, ARV-253: a host refuses any other value, since with
+// more lanes a stop can commit past records it never handled); ConcurrentConsumerLimit from
+// Kafka:Consumers:ConsumersPerEndpoint (1 to 6, default 1: parallel across partitions); CheckpointInterval 5 s;
+// CheckpointMessageCount 500.
 ```
 - Pipe, from the outside in (proven by `ConsumePipelineTests` with MassTransit's probe): retry (MassTransit always puts it first), `DeadLetterFilter` (acts on the final attempt only), `InboxFilter` (claim + unit of work, fresh scope per attempt), consumer.
 - `InboxFilter`: `INSERT INTO processed_event(consumer, event_id) ON CONFLICT DO NOTHING` in the consumer's transaction, then the consumer, then commit; a duplicate is acknowledged without running the consumer; a failure rolls the claim back. The consumer does not commit itself.
