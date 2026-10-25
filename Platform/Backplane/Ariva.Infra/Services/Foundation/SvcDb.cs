@@ -1,5 +1,6 @@
 using System.Data;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 
 namespace Ariva.Infra.Services.Foundation;
 
@@ -88,6 +89,34 @@ internal abstract class SvcDb(IUnitOfWork unitOfWork)
         ExecuteCommandAsync<SiteRow>("""SELECT 1 AS "Value" FROM site WHERE code = :code FOR SHARE""",
             new Dictionary<string, object> { ["code"] = siteCode }, ct);
 
+    /// <summary>
+    /// Takes the site's row for update, waiting at most <paramref name="wait"/> (ARV-155, the CSV imports): false when another
+    /// transaction held it longer (PostgreSQL's lock_not_available), after which this transaction can only be rolled back. The
+    /// wait is this transaction's own <c>lock_timeout</c>, set just before the lock and put back to the value it had just after
+    /// it, so every later wait in the transaction is as it was.
+    /// </summary>
+    protected async Task<bool> TryLockSiteAsync(string siteCode, TimeSpan wait, CancellationToken ct = default)
+    {
+        // A lock_timeout of 0 would wait for ever.
+        ArgumentOutOfRangeException.ThrowIfLessThan(wait, TimeSpan.FromMilliseconds(1));
+        var previous = (await ExecuteCommandAsync<SettingRow>("""SELECT current_setting('lock_timeout') AS "Value" """, null, ct)).Single().Value;
+        await ExecuteCommandAsync<SiteRow>("""SELECT 1 AS "Value" FROM set_config('lock_timeout', :wait, true)""",
+            new Dictionary<string, object> { ["wait"] = ((long)wait.TotalMilliseconds).ToString(CultureInfo.InvariantCulture) }, ct);
+        try
+        {
+            await ExecuteCommandAsync<SiteRow>("""SELECT 1 AS "Value" FROM site WHERE code = :code FOR UPDATE""",
+                new Dictionary<string, object> { ["code"] = siteCode }, ct);
+        }
+        catch (global::NHibernate.Exceptions.GenericADOException e) when (e.InnerException is global::Npgsql.PostgresException { SqlState: global::Npgsql.PostgresErrorCodes.LockNotAvailable })
+        {
+            return false;
+        }
+
+        await ExecuteCommandAsync<SiteRow>("""SELECT 1 AS "Value" FROM set_config('lock_timeout', :previous, true)""",
+            new Dictionary<string, object> { ["previous"] = previous }, ct);
+        return true;
+    }
+
     protected void RegisterPostCommitAction(Func<Task> action) => UnitOfWork.RegisterPostCommitAction(action);
 
     protected void RegisterPostRollbackAction(Func<Task> action) => UnitOfWork.RegisterPostRollbackAction(action);
@@ -107,5 +136,10 @@ internal abstract class SvcDb(IUnitOfWork unitOfWork)
     private sealed class SiteRow
     {
         public int Value { get; set; }
+    }
+
+    private sealed class SettingRow
+    {
+        public string Value { get; set; }
     }
 }

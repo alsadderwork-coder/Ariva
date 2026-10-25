@@ -213,6 +213,9 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, 
 			// ARV-063: the scan's documents, and a global limit high enough that the scan reaches the endpoints instead of
 			// 429 (the limiter itself is tested in RateLimitingAndCorsTests).
 			...(zap ? { OpenApi__Enabled: 'true', Security__RateLimiting__Global__PermitLimit: '100000' } : {}),
+			// ARV-155: the suite previews and commits CSV imports many times a minute with the same accounts; the per-user
+			// limit itself is tested in CsvImportLimitTests.
+			Security__RateLimiting__CsvImports__PermitLimit: '10000',
 			...emailEnvironment(),
 			...extraEnvironment
 		}

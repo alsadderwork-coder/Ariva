@@ -61,6 +61,10 @@ public sealed class CsvImportReaderTests
         table.Valid.Should().ContainSingle().Which.Numbers["footprintRadiusMetres"].Should().Be(8);
         table.Column("code").Should().Be(2);
         table.ColumnNumbers.Should().NotContainKey("mappingName");
+        // ARV-155: a refusal in an optional column the file leaves out names no column, never column 0.
+        table.ColumnOrNone("mappingName").Should().BeNull();
+        table.ColumnOrNone("footprintRadiusMetres").Should().Be(14);
+        table.ColumnOrNone(null).Should().BeNull();
     }
 
     [Fact]

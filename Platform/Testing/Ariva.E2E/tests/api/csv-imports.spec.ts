@@ -185,7 +185,7 @@ test('formula-prefixed, malformed and hostile cells are answered by row and colu
 	expect(response.headers()['content-type']).toContain('application/json');
 	expect(response.headers()['x-content-type-options']).toBe('nosniff');
 	const preview = JSON.parse(text);
-	expect(preview.previewToken, 'no token for a file with a refused row').toBeNull();
+	expect(preview.previewToken === null, 'no token for a file with a refused row').toBe(true);
 	expect(preview.devices.map((d: any) => d.code)).toEqual(['S-01']);
 	expect(preview.devices[0].model, 'a hostile value travels as data').toBe(hostileModel);
 	expect(preview.errors.map((e: any) => [e.row, e.column])).toEqual([
@@ -275,7 +275,7 @@ test('the mapping import creates every mapping of its preview, and none of a fil
 	const text = await refused.text();
 	await expectStatus(refused, 200, 'preview');
 	const answer = JSON.parse(text);
-	expect(answer.previewToken).toBeNull();
+	expect(answer.previewToken === null, 'no token (a boolean, so a failure never prints one)').toBe(true);
 	expect(answer.errors.map((e: any) => [e.row, e.column])).toEqual([
 		[2, 2],
 		[3, 4],

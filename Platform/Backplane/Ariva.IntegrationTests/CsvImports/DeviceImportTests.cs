@@ -11,6 +11,7 @@ using Ariva.Core.Services.Imports;
 using Ariva.Core.Services.Sensing;
 using Ariva.Core.Services.Topology;
 using Ariva.Infra.Security;
+using Ariva.Infra.Services.Foundation;
 using Ariva.IntegrationTests.Security;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
@@ -25,7 +26,8 @@ namespace Ariva.IntegrationTests.CsvImports;
 /// registered keeps nothing and is audited as failed once; the token is refused for another user, site, file or kind
 /// and after 15 minutes; a model cell with a tag character is refused through the registration (ARV-158); audit entries
 /// hold the file's hash and counts, never a cell or a credential. Measures a commit at the row bound in one
-/// transaction.
+/// transaction. ARV-155: an import waits at most CsvImportLimits.SiteLockWait for the site's lock and answers SiteBusy, and puts
+/// the session's lock timeout back once it holds the lock; a refusal in an optional column the file leaves out names no column.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class DeviceImportTests(PostgresFixture fixture) : IAsyncDisposable
@@ -79,6 +81,24 @@ public sealed class DeviceImportTests(PostgresFixture fixture) : IAsyncDisposabl
         Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Exit A", "Exit", level, 30, 22, 34, 22, queue), Ct)));
         var reviewed = Ok(await _host.AsCallerAsync(admin, s => profiles(s).ValidateAsync(draft, Ct)));
         Ok(await _host.AsCallerAsync(admin, s => profiles(s).PublishAsync(draft, new PublishZoneProfileRequest(reviewed.GeometryHash), Ct)));
+    }
+
+    /// <summary>The services' site lock and the session's lock_timeout, read in one unit of work.</summary>
+    private sealed class LockProbe(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
+    {
+        public Task<bool> TryLockAsync(string site, CancellationToken ct) => TryLockSiteAsync(site, CsvImportLimits.SiteLockWait, ct);
+
+        public async Task<string> LockTimeoutAsync(CancellationToken ct) =>
+            (await ExecuteSqlAsync<Setting>("""SELECT current_setting('lock_timeout') AS "Value" """, null, ct)).Single().Value;
+
+        /// <summary>Sets the lock timeout for the rest of the unit of work's transaction, which this starts.</summary>
+        public Task SetLockTimeoutAsync(string value, CancellationToken ct) =>
+            ExecuteCommandAsync<Setting>("""SELECT set_config('lock_timeout', :value, true) AS "Value" """, new Dictionary<string, object> { ["value"] = value }, ct);
+
+        private sealed class Setting
+        {
+            public string Value { get; set; }
+        }
     }
 
     private Task<long> DevicesAsync(string site) => _host.ReadAsync<long>("SELECT count(*) FROM device WHERE site_code = @secret", secret: site);
@@ -141,7 +161,7 @@ public sealed class DeviceImportTests(PostgresFixture fixture) : IAsyncDisposabl
 
         var preview = Ok(await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCIB", File(csv), Ct)));
 
-        preview.PreviewToken.Should().BeNull("a file with a refused row cannot be committed");
+        (preview.PreviewToken is null).Should().BeTrue("a file with a refused row cannot be committed");
         preview.Devices.Select(d => d.Code).Should().Equal("S-01");
         preview.Errors.Select(e => (e.Row, e.Column, e.Reason)).Should().BeEquivalentTo(new[]
         {
@@ -169,7 +189,7 @@ public sealed class DeviceImportTests(PostgresFixture fixture) : IAsyncDisposabl
 
         var preview = Ok(await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCII", File(csv), Ct)));
 
-        preview.PreviewToken.Should().BeNull("a file with a refused row cannot be committed");
+        (preview.PreviewToken is null).Should().BeTrue("a file with a refused row cannot be committed");
         preview.Devices.Select(d => d.Code).Should().Equal("S-02");
         preview.Errors.Select(e => (e.Row, e.Column, e.Reason)).Should().BeEquivalentTo(new[] { (2, (int?)null, CsvImportErrors.RegistrationRefused) });
         (await DevicesAsync("XCII")).Should().Be(0, "a preview is a dry run");
@@ -247,7 +267,7 @@ public sealed class DeviceImportTests(PostgresFixture fixture) : IAsyncDisposabl
                 .Should().Equal([CsvImportErrors.NotThePreview], what);
         }
 
-        mappingToken.Should().BeNull("a mapping file whose desk does not exist gets no token");
+        (mappingToken is null).Should().BeTrue("a mapping file whose desk does not exist gets no token");
         _host.Clock.Advance(CsvImportLimits.PreviewLifetime + TimeSpan.FromSeconds(1));
         (await _host.AsCallerAsync(admin, s => Imports(s).CommitAsync("XCIE", File(csv), token, Ct))).ErrorMessages
             .Should().Equal([CsvImportErrors.NotThePreview], "older than 15 minutes");
@@ -265,6 +285,72 @@ public sealed class DeviceImportTests(PostgresFixture fixture) : IAsyncDisposabl
         (await _host.AsCallerAsync(scoped, s => Imports(s).PreviewAsync("XCIG", File(Csv(Row("S-01"))), Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
         (await _host.AsCallerAsync(scoped, s => Imports(s).CommitAsync("XCIG", File(Csv(Row("S-01"))), "token", Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
         (await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("NOPE", File(Csv(Row("S-01"))), Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
+    }
+
+    [Fact]
+    public async Task PreviewAndCommit_Should_AnswerSiteBusyAfterTheWait_When_AnotherTransactionHoldsTheSiteLonger()
+    {
+        var admin = await AdministratorAsync("lk");
+        await SiteAsync(admin, "XCIL");
+        var csv = Csv(Row("S-01"));
+        var token = Ok(await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCIL", File(csv), Ct))).PreviewToken;
+        (token is null).Should().BeFalse("the file passes");
+
+        TimeSpan waited;
+        Fluentx.Result<DeviceImportPreviewViewModel> preview;
+        Fluentx.Result<DeviceImportCommitViewModel> commit;
+        await using (await SiteHolder.HoldAsync(fixture.ConnectionString(await _host.DatabaseAsync()), "XCIL"))
+        {
+            var clock = Stopwatch.StartNew();
+            preview = await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCIL", File(csv), Ct));
+            waited = clock.Elapsed;
+            commit = await _host.AsCallerAsync(admin, s => Imports(s).CommitAsync("XCIL", File(csv), token, Ct));
+        }
+
+        preview.ErrorMessages.Should().Equal(CsvImportErrors.SiteBusy);
+        commit.ErrorMessages.Should().Equal(CsvImportErrors.SiteBusy);
+        waited.Should().BeGreaterThanOrEqualTo(CsvImportLimits.SiteLockWait - TimeSpan.FromMilliseconds(100), "it waits for the lock first")
+            .And.BeLessThan(CsvImportLimits.SiteLockWait + TimeSpan.FromSeconds(10), "and no longer than its wait and the dry run");
+        (await DevicesAsync("XCIL")).Should().Be(0);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'DeviceImport.Refused' AND target_name = 'XCIL'")).Should().Be(1, "the busy commit is audited as refused");
+        Ok(await _host.AsCallerAsync(admin, s => Imports(s).CommitAsync("XCIL", File(csv), token, Ct))).Credentials.Count.Should().Be(1, "once the lock is free the same token commits");
+    }
+
+    [Fact]
+    public async Task TryLockSiteAsync_Should_PutTheSessionsLockTimeoutBack_When_ItTookTheLock()
+    {
+        var admin = await AdministratorAsync("lt");
+        await SiteAsync(admin, "XCIM");
+
+        var (before, locked, after) = await _host.AsCallerAsync(admin, async s =>
+        {
+            var probe = new LockProbe(s.GetRequiredService<IUnitOfWork>());
+            // A value set earlier in the transaction, which RESET (pg_settings.reset_val) would not give back.
+            await probe.SetLockTimeoutAsync("7s", Ct);
+            var before = await probe.LockTimeoutAsync(Ct);
+            var locked = await probe.TryLockAsync("XCIM", Ct);
+            return (before, locked, await probe.LockTimeoutAsync(Ct));
+        });
+
+        before.Should().Be("7s");
+        locked.Should().BeTrue();
+        after.Should().Be("7s", "a later wait in the transaction (a registration's own) is as it was, a value set before the lock included");
+    }
+
+    [Fact]
+    public async Task Preview_Should_NameNoColumn_When_TheRefusalIsInAnOptionalColumnTheFileLeavesOut()
+    {
+        // The declarative dialect needs a mapping name: in a file without the optional mappingName column the refusal has no
+        // column of the file to name (never column 0); with the column it names it.
+        var admin = await AdministratorAsync("oc");
+        await SiteAsync(admin, "XCIN");
+        var declarative = Row("S-01").Replace(",Xovis,", ",Declarative,", StringComparison.Ordinal);
+
+        var without = Ok(await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCIN", File(Csv(declarative)), Ct)));
+        var with = Ok(await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCIN", File(Header + ",mappingName\r\n" + declarative + ",nope\r\n"), Ct)));
+
+        without.Errors.Select(e => (e.Row, e.Column, e.Reason)).Should().Equal((2, (int?)null, DeviceErrors.UnknownMapping));
+        with.Errors.Select(e => (e.Row, e.Column, e.Reason)).Should().Equal((2, (int?)14, DeviceErrors.UnknownMapping));
     }
 
     [Fact]

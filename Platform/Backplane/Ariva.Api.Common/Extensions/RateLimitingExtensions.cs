@@ -120,7 +120,7 @@ public static class RateLimitingExtensions
             .Bind(configuration.GetSection(RateLimitingSettings.SectionName))
             .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.DisplayPlays.IsValid && settings.IntegrationAuth.IsValid &&
                                 settings.IntegrationBatch.IsValid && settings.IntegrationAidx.IsValid && settings.IntegrationClient.IsValid &&
-                                settings.ValidationResults.IsValid && settings.Reports.IsValid,
+                                settings.ValidationResults.IsValid && settings.Reports.IsValid && settings.CsvImports.IsValid,
                 $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds and a QueueLimit of zero or more.")
             .ValidateOnStart();
 

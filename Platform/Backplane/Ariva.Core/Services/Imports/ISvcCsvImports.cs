@@ -61,6 +61,12 @@ public static class CsvImportLimits
 
     /// <summary>The longest token a commit takes (a Data Protection payload in base64url).</summary>
     public const int MaxTokenLength = 2048;
+
+    /// <summary>
+    /// How long a preview or commit waits for the site's row lock (ARV-155): an import never queues behind another import or
+    /// change at the site for longer; it answers <see cref="CsvImportErrors.SiteBusy"/> (409) instead.
+    /// </summary>
+    public static readonly TimeSpan SiteLockWait = TimeSpan.FromSeconds(5);
 }
 
 /// <summary>
@@ -84,6 +90,8 @@ public static class CsvImportErrors
     public const string PreviewTokenNotValid = "previewToken is the token the preview gave.";
     public const string NotThePreview = "The file, the site or the user is not the preview's, or the preview is older than 15 minutes: preview the file again.";
     public const string RowsRefused = "The file no longer passes its checks: preview it again to see the refused rows.";
+    public const string SiteBusy = "Another import or change at this site is in progress: try again in a moment.";
+    public const string TooManyImports = "Too many import previews or commits for now: try again after the time Retry-After gives.";
 
     // A cell or a row.
     public const string WrongCellCount = "The row does not have one cell for each column of the header.";

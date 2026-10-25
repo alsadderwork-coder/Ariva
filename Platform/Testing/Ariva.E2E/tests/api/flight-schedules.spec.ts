@@ -86,7 +86,7 @@ test('a file is previewed, then exactly that file is imported as the ssim feed',
 	expect(summary.sample.length).toBeGreaterThan(0);
 	expect(await query(`SELECT 1 FROM flight_leg WHERE flight_key LIKE $1`, [`QR${number}-%`]), 'a preview changes nothing').toHaveLength(0);
 
-	expect(summary.previewToken).toMatch(/^[A-Za-z0-9_-]{20,2048}$/);
+	expect(/^[A-Za-z0-9_-]{20,2048}$/.test(summary.previewToken), 'a token of the shape Data Protection gives (a boolean, so a failure never prints it)').toBe(true);
 	const token = { previewToken: summary.previewToken };
 	await expectProblemDetails(await upload('import', content.replace('T1', 'T2'), { horizonDays: '7', ...token }), 409);
 	await expectProblemDetails(await upload('import', content, { horizonDays: '200', ...token }), 409);

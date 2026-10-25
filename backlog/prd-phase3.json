@@ -184,12 +184,11 @@
     {
       "id": "ARV-155",
       "title": "[E15] CSV imports: lock and upload contention, tokens kept out of test messages, absent optional columns",
-      "description": "Follow-ups from the ARV-123a security review (N1, N4, N5). A preview holds the site row lock for its dry run (about 3 s at 500 devices, 12 s at 10,000 mappings) and the host's single upload permit, so a holder of CreateDevice or CreateDeskCodeMapping looping previews delays single registrations, calibrations, publications and configuration imports at the site and makes other uploads answer 429. CWEs to review: CWE-400, CWE-532. Also the owner's decision of 2026-10-13: the bulk mapping import's commit asks for step-up.",
+      "description": "Follow-ups from the ARV-123a security review (N1, N4, N5). A preview holds the site row lock for its dry run (about 3 s at 500 devices, 12 s at 10,000 mappings) and the host's single upload permit, so a holder of CreateDevice or CreateDeskCodeMapping looping previews delays single registrations, calibrations, publications and configuration imports at the site and makes other uploads answer 429. CWEs to review: CWE-400, CWE-532. The owner's decision of 2026-10-13 that the bulk mapping import's commit asks for step-up is ARV-155a.",
       "acceptanceCriteria": [
         "A per-user limit on import previews (or a partitioned upload policy) and a lock timeout on the imports' site lock, answering 429 or 409 with fixed texts; the contention and its bound recorded in docs/security",
         "Tests assert a preview token's absence as a boolean (E2E `previewToken === null`, integration `(token is null).Should().BeTrue()`), so a failure never prints a token",
         "A refusal in an optional column the file does not carry answers no column (null), never column 0",
-        "Owner decision 2026-10-13: the desk code mapping CSV import's commit asks for step-up ([RequiresRecentMfa], a critical-actions.json entry, the CriticalActionsTests rule satisfied without making single mapping changes critical); the preview stays without step-up; the ARV-123b dialog's existing step-up path covers the screen (functional test); decisions.md records the decision",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
         "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
@@ -198,10 +197,29 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
-      "passes": false,
-      "notes": "Size S. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back).",
+      "passes": true,
+      "notes": "Size S. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back). 2026-10-25: the step-up criterion split to ARV-155a, since step-up is under the owner's sign-in freeze (no sign-in, password, TOTP, session or step-up changes until it ends).",
       "dependsOn": [
         "ARV-123a"
+      ]
+    },
+    {
+      "id": "ARV-155a",
+      "title": "[E15] The desk code mapping CSV import's commit asks for step-up",
+      "description": "Split from ARV-155 on 2026-10-25. The owner's decision of 2026-10-13 (decisions.md, point 5): the bulk mapping import's commit asks for a recent second factor; single mapping changes and the preview do not. Under the owner's sign-in freeze, so built with or after its end. CWEs to review: CWE-306, CWE-287.",
+      "acceptanceCriteria": [
+        "Owner decision 2026-10-13: the desk code mapping CSV import's commit asks for step-up ([RequiresRecentMfa], a critical-actions.json entry, the CriticalActionsTests rule satisfied without making single mapping changes critical); the preview stays without step-up; the ARV-123b dialog's existing step-up path covers the screen (functional test); decisions.md records the decision",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size XS. Split from ARV-155 on 2026-10-25 under the owner's sign-in freeze; take it with the frozen stories (ARV-087 and the others) once the owner lifts the freeze.",
+      "dependsOn": [
+        "ARV-155"
       ]
     },
     {
@@ -1139,6 +1157,46 @@
       "notes": "Size S. 2026-10-24, from the ARV-169 review (rated Medium by the reviewer, pre-existing, not blocking ARV-169). Waits for the owner's decision on variation selectors.",
       "dependsOn": [
         "ARV-169"
+      ]
+    },
+    {
+      "id": "ARV-249",
+      "title": "[E17] Secret values asserted as booleans in every test, with a check that finds the rest",
+      "description": "From the ARV-155 review (2026-10-25, Low). A failing FluentAssertions or Playwright matcher prints the value it got: `Should().BeNull()`, `Should().HaveCount()` and `BeEquivalentTo` on a collection of credentials, `toBeNull`, `toMatch`. ARV-155 asserts the CSV imports' preview tokens and credentials as booleans or counts; older tests still assert secrets directly (SessionTests.cs:88 and 118, IntegrationClientTests.cs:108, TotpTests.cs:123, DisplayTests.cs:143, and others), and `expect-messages.mjs` checks expect messages, not what a matcher prints, and nothing checks C#. CWEs to review: CWE-532.",
+      "acceptanceCriteria": [
+        "Every unit, integration and E2E assertion on a token, credential, secret, TOTP seed or code, recovery code or password asserts a boolean, a count or a shape test, never the value (a failing assertion prints true or false, a number, or nothing of the secret)",
+        "A check (in `scripts/security/` or `expect-messages.mjs`) fails on a matcher that would print a secret-named value in C# or TypeScript tests, with a self-test, run in the security step of verify.mjs and CI",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. 2026-10-25, from the ARV-155 review. Some of the tests are the sign-in's (SessionTests, TotpTests): changing their assertions changes no sign-in code, but take them with the owner's freeze in mind.",
+      "dependsOn": [
+        "ARV-155"
+      ]
+    },
+    {
+      "id": "ARV-250",
+      "title": "[E17] Uploads: a per-user limit on every upload, and the site configuration import's lock waited for a bounded time",
+      "description": "From the ARV-155 review (2026-10-25, Low). The `upload` policy lets a host take one upload at a time; ARV-155 bounds one user's CSV imports, but a floor plan or SSIM upload (20 MB, up to about 11 minutes at the 32 KB a second floor) and the site configuration import have no per-user limit, so one user can still hold the host's one upload permit for long stretches. The site configuration import takes the site's row lock with no timeout (`SvcSiteConfiguration`), so it waits behind a CSV import (at most about 14 s) while it holds the upload permit. CWEs to review: CWE-400, CWE-770.",
+      "acceptanceCriteria": [
+        "Every endpoint under the `upload` policy carries a per-user limit counted after authorization and before the body is read (the ARV-155 filter generalised, or one per kind), with its settings, 429 with Retry-After and a fixed text, and in-process tests per endpoint",
+        "The site configuration import waits at most a bounded time for the site's lock (`SvcDb.TryLockSiteAsync`) and answers 409 with a fixed text past it, with an integration test",
+        "The bound recorded in docs/security/costly-operations.md section 7 and wiki 04",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. 2026-10-25, from the ARV-155 review. Consider a sliding window (SlidingWindowRateLimiter) so the stated bound holds in any interval, for ARV-155's limit too.",
+      "dependsOn": [
+        "ARV-155"
       ]
     }
   ]

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using Ariva.Core;
 using Ariva.Core.Domain.InputModels;
+using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Services.Administration;
 using Ariva.Core.Services.Imports;
 using Ariva.Core.Services.Topology;
@@ -101,7 +102,7 @@ public sealed class DeskCodeMappingImportTests(PostgresFixture fixture) : IAsync
 
         var preview = Ok(await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCMB", File(csv), Ct)));
 
-        preview.PreviewToken.Should().BeNull();
+        (preview.PreviewToken is null).Should().BeTrue("a file with a refused row gets no token (asserted as a boolean, so a failure never prints one)");
         preview.Mappings.Select(m => m.Row).Should().Equal(2);
         preview.Errors.Select(e => (e.Row, e.Column, e.Reason)).Should().BeEquivalentTo(new[]
         {
@@ -129,7 +130,7 @@ public sealed class DeskCodeMappingImportTests(PostgresFixture fixture) : IAsync
 
         var deviceCsv = "code,family,model,transport,dialect,clockSource,terminal,level,x,y,mountingHeightMetres,orientationDegrees,queueZone\nS-01,StereoVision,PC2SE,HttpsPush,Xovis,Ntp,T1,L0,20,16,5,0,Snake A\n";
         var deviceToken = (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcDeviceImports>().PreviewAsync("XCMC", File(deviceCsv), Ct))).Data?.PreviewToken;
-        deviceToken.Should().BeNull("the site has no queue zone, so the device row is refused");
+        (deviceToken is null).Should().BeTrue("the site has no queue zone, so the device row is refused");
         var other = Csv("Aman,IMM-05,IMM,D01");
         var otherToken = Ok(await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCMC", File(other), Ct))).PreviewToken;
         (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcDeviceImports>().CommitAsync("XCMC", File(other), otherToken, Ct))).ErrorMessages
@@ -138,6 +139,37 @@ public sealed class DeskCodeMappingImportTests(PostgresFixture fixture) : IAsync
         (await _host.AsCallerAsync(someoneElse, s => Imports(s).CommitAsync("XCMC", File(other), otherToken, Ct))).ErrorMessages
             .Should().Equal([CsvImportErrors.NotThePreview], "another user");
         (await MappingsAsync("XCMC")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task PreviewAndCommit_Should_AnswerSiteBusyAfterTheWait_When_AnotherTransactionHoldsTheSiteLonger()
+    {
+        // ARV-155: the mapping import waits at most CsvImportLimits.SiteLockWait for the site's lock, preview and commit alike.
+        var admin = await AdministratorAsync("lk");
+        await SiteAsync(admin, "XCML");
+        var csv = Csv("Aman,IMM-01,IMM,D01");
+        var token = Ok(await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCML", File(csv), Ct))).PreviewToken;
+        (token is null).Should().BeFalse("the file passes");
+
+        TimeSpan waited;
+        Fluentx.Result<DeskCodeMappingImportPreviewViewModel> preview;
+        Fluentx.Result<DeskCodeMappingImportCommitViewModel> commit;
+        await using (await SiteHolder.HoldAsync(fixture.ConnectionString(await _host.DatabaseAsync()), "XCML"))
+        {
+            var clock = Stopwatch.StartNew();
+            preview = await _host.AsCallerAsync(admin, s => Imports(s).PreviewAsync("XCML", File(csv), Ct));
+            waited = clock.Elapsed;
+            commit = await _host.AsCallerAsync(admin, s => Imports(s).CommitAsync("XCML", File(csv), token, Ct));
+        }
+
+        preview.ErrorMessages.Should().Equal(CsvImportErrors.SiteBusy);
+        commit.ErrorMessages.Should().Equal(CsvImportErrors.SiteBusy);
+        waited.Should().BeGreaterThanOrEqualTo(CsvImportLimits.SiteLockWait - TimeSpan.FromMilliseconds(100), "it waits for the lock first")
+            .And.BeLessThan(CsvImportLimits.SiteLockWait + TimeSpan.FromSeconds(10), "and no longer than its wait and the dry run");
+        (await MappingsAsync("XCML")).Should().Be(0);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'DeskCodeMappingImport.Refused' AND target_name = 'XCML'"))
+            .Should().Be(1, "the busy commit is audited as refused");
+        Ok(await _host.AsCallerAsync(admin, s => Imports(s).CommitAsync("XCML", File(csv), token, Ct))).Mappings.Should().Be(1, "once the lock is free the same token commits");
     }
 
     [Fact]

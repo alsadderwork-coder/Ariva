@@ -45,6 +45,12 @@ internal sealed record CsvTable(int Rows, IReadOnlyList<CsvRow> Valid, CsvErrors
 {
     /// <summary>The column number of a schema column (1 for the first header cell).</summary>
     public int Column(string name) => ColumnNumbers[name];
+
+    /// <summary>
+    /// The column number of a refusal's column, or null when it names none or a column the file does not carry (an optional
+    /// one left out of the header, ARV-155): never 0, which is no column of the file.
+    /// </summary>
+    public int? ColumnOrNone(string name) => name is not null && ColumnNumbers.TryGetValue(name, out var number) ? number : null;
 }
 
 /// <summary>

@@ -183,6 +183,10 @@ export function commitMappings(
 	return send<MappingCommit>('mappings', siteCode, 'commit', file, previewToken);
 }
 
+/** The text of a 429 for a user's own import allowance (ARV-155), unlike the host's one upload at a time. */
+const tooManyImports =
+	'Too many import previews or commits for now: try again after the time Retry-After gives.';
+
 /**
  * The server's fixed texts (Ariva.Core CsvImportErrors, the DeviceErrors and TopologyErrors a refusal may carry) and
  * their keys under csvImport.reasons. A text the screen has no words for is shown as the server wrote it, as text, and
@@ -207,6 +211,8 @@ const reasons: Readonly<Record<string, string>> = {
 	"The file, the site or the user is not the preview's, or the preview is older than 15 minutes: preview the file again.":
 		'notThePreview',
 	'The file no longer passes its checks: preview it again to see the refused rows.': 'rowsRefused',
+	'Another import or change at this site is in progress: try again in a moment.': 'siteBusy',
+	[tooManyImports]: 'tooManyImports',
 	'The row does not have one cell for each column of the header.': 'wrongCellCount',
 	'The row is not valid CSV: a quote inside a cell that is not quoted, or text after a closing quote.':
 		'badQuotes',
@@ -274,8 +280,8 @@ export type Failure =
 	  }
 	| { kind: 'reason'; reason: string; row?: number };
 
-// The titles CsvImportAnswers gives its problems; Api.ts joins title and detail with ': '.
-const titles = /^(?:Not valid|Too large|Conflict|Not found): /;
+// The titles CsvImportAnswers and CsvImportLimitAttribute give their problems; Api.ts joins title and detail with ': '.
+const titles = /^(?:Not valid|Too large|Conflict|Not found|Too many requests): /;
 const atRow = /^Row (\d{1,7}): (.+)$/s;
 
 export function failureOf(result: Result<unknown>): Failure {
@@ -293,10 +299,13 @@ export function failureOf(result: Result<unknown>): Failure {
 			return { kind: 'status', key: 'notFound' };
 		case 413:
 			return { kind: 'reason', reason: 'A CSV import file is at most 1 MB.' };
-		case 429:
-			return { kind: 'status', key: 'busy' };
 	}
 	const detail = (result.errorMessages[0] ?? '').replace(titles, '');
+	// A 429 is the host's one upload at a time, unless it names the user's own allowance (ARV-155).
+	if (result.status === 429)
+		return detail === tooManyImports
+			? { kind: 'reason', reason: detail }
+			: { kind: 'status', key: 'busy' };
 	const row = atRow.exec(detail);
 	return row
 		? { kind: 'reason', row: Number(row[1]), reason: row[2] }

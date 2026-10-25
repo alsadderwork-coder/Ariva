@@ -19,7 +19,9 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Imports;
 /// upload at a time per host (the upload policy), with the transfer request timeout, arriving steadily or ended (408 when too
 /// slow: <see cref="SteadyUploadAttribute"/>, ARV-096); never cached.
 /// The file is scanned for malware at preview and again at commit (ARV-092b): 400 for a detection, 503 with Retry-After
-/// while no scanner answers.
+/// while no scanner answers. A user's previews, and apart from them their commits, are counted before the file is read
+/// (<see cref="CsvImportLimitAttribute"/>, ARV-155: 429 with Retry-After), and an import waits at most 5 s for the site's lock
+/// (409 when another import or change holds it longer).
 /// </summary>
 [ApiController]
 [Route("api/v1/admin/sites/{siteCode}/device-imports")]
@@ -30,6 +32,7 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Imports;
 public sealed class DeviceImportsController(ISvcDeviceImports imports) : ControllerBase
 {
     [HttpPost("preview")]
+    [CsvImportLimit(CsvImportLimitAttribute.Preview)]
     [Permission(nameof(Global.Defaults.Permissions.CreateDevice))]
     [RequiresRecentMfa]
     [RequestSizeLimit(CsvImportAnswers.MaxRequestBytes)]
@@ -39,6 +42,7 @@ public sealed class DeviceImportsController(ISvcDeviceImports imports) : Control
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Preview(string siteCode, IFormFile file, CancellationToken ct)
     {
@@ -52,6 +56,7 @@ public sealed class DeviceImportsController(ISvcDeviceImports imports) : Control
     }
 
     [HttpPost("commit")]
+    [CsvImportLimit(CsvImportLimitAttribute.Commit)]
     [Permission(nameof(Global.Defaults.Permissions.CreateDevice))]
     [RequiresRecentMfa]
     [RequestSizeLimit(CsvImportAnswers.MaxRequestBytes)]
@@ -62,6 +67,7 @@ public sealed class DeviceImportsController(ISvcDeviceImports imports) : Control
     [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> Commit(string siteCode, IFormFile file, [FromForm] string previewToken, CancellationToken ct)
     {

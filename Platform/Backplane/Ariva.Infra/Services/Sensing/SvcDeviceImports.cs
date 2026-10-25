@@ -73,7 +73,8 @@ internal sealed class SvcDeviceImports(
 
             // A dry run of the registration itself, under the site lock, rolled back below: the preview shows exactly what
             // the commit would refuse. Its credentials are dropped here and never leave the service.
-            await LockSiteAsync(siteCode, ct);
+            if (!await TryLockSiteAsync(siteCode, CsvImportLimits.SiteLockWait, ct))
+                return await RefusePreviewAsync(siteCode, sha, CsvImportErrors.SiteBusy);
             var passing = new List<DeviceImportRowViewModel>();
             foreach (var (row, request) in planned)
             {
@@ -81,7 +82,7 @@ internal sealed class SvcDeviceImports(
                 if (registered.HasErrors)
                 {
                     var (column, reason) = Refusal(registered.ErrorMessages.First());
-                    table.Errors.Add(row.Row, column is null ? null : table.ColumnNumbers.GetValueOrDefault(column), reason);
+                    table.Errors.Add(row.Row, table.ColumnOrNone(column), reason);
                     continue;
                 }
 
@@ -144,7 +145,8 @@ internal sealed class SvcDeviceImports(
             if (table.Errors.Count > 0)
                 return await RefuseCommitAsync(siteCode, sha, CsvImportErrors.RowsRefused);
 
-            await LockSiteAsync(siteCode, ct);
+            if (!await TryLockSiteAsync(siteCode, CsvImportLimits.SiteLockWait, ct))
+                return await RefuseCommitAsync(siteCode, sha, CsvImportErrors.SiteBusy);
             var credentials = new List<ImportedDeviceCredentialViewModel>();
             foreach (var (row, request) in planned)
             {
@@ -271,9 +273,6 @@ internal sealed class SvcDeviceImports(
         _ => (null, CsvImportErrors.RegistrationRefused)
     };
 
-    private Task LockSiteAsync(string siteCode, CancellationToken ct) =>
-        ExecuteCommandAsync<LockRow>("""SELECT 1 AS "Value" FROM site WHERE code = :code FOR UPDATE""", new Dictionary<string, object> { ["code"] = siteCode }, ct);
-
     private Task WriteOwnAuditAsync(string verb, string siteCode, string summary) =>
         ImportAudit.WriteOwnAsync(scopes, CurrentUser, TimeProvider, $"{Target}.{verb}", siteCode, summary);
 
@@ -288,11 +287,6 @@ internal sealed class SvcDeviceImports(
         {
             logger.LogError(e, "The audit entry of a device import at {Site} could not be written", siteCode);
         }
-    }
-
-    private sealed class LockRow
-    {
-        public int Value { get; set; }
     }
 
     #endregion

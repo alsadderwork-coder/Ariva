@@ -723,6 +723,8 @@
 			"previewTokenNotValid": "The check of the file is missing: check the file again.",
 			"notThePreview": "The file, the site or the user is not the check's, or the check is older than 15 minutes: check the file again.",
 			"rowsRefused": "The file no longer passes its checks: check it again to see the refused rows.",
+			"siteBusy": "Another import or change at this site is in progress: try again in a moment.",
+			"tooManyImports": "You have checked or imported many files in the last few minutes: wait a few minutes and try again.",
 			"wrongCellCount": "The row does not have one cell for each column of the header.",
 			"badQuotes": "The row is not valid CSV: a quote inside a cell that is not quoted, or text after a closing quote.",
 			"required": "This cell is required.",

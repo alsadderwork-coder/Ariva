@@ -64,7 +64,8 @@ internal sealed class SvcDeskCodeMappingImports(
                 return await RefusePreviewAsync(siteCode, sha, error);
 
             // A dry run of the mapping service itself, rolled back below.
-            await LockSiteAsync(siteCode, ct);
+            if (!await TryLockSiteAsync(siteCode, CsvImportLimits.SiteLockWait, ct))
+                return await RefusePreviewAsync(siteCode, sha, CsvImportErrors.SiteBusy);
             var passing = new List<DeskCodeMappingImportRowViewModel>();
             foreach (var (row, request) in planned)
             {
@@ -72,7 +73,7 @@ internal sealed class SvcDeskCodeMappingImports(
                 if (created.HasErrors)
                 {
                     var (column, reason) = Refusal(created.ErrorMessages.First());
-                    table.Errors.Add(row.Row, table.Column(column), reason);
+                    table.Errors.Add(row.Row, table.ColumnOrNone(column), reason);
                     continue;
                 }
 
@@ -134,7 +135,8 @@ internal sealed class SvcDeskCodeMappingImports(
             if (table.Errors.Count > 0)
                 return await RefuseCommitAsync(siteCode, sha, CsvImportErrors.RowsRefused);
 
-            await LockSiteAsync(siteCode, ct);
+            if (!await TryLockSiteAsync(siteCode, CsvImportLimits.SiteLockWait, ct))
+                return await RefuseCommitAsync(siteCode, sha, CsvImportErrors.SiteBusy);
             foreach (var (row, request) in planned)
             {
                 var created = await mappings.CreateAsync(request, ct);
@@ -240,9 +242,6 @@ internal sealed class SvcDeskCodeMappingImports(
         _ => ("desk", CsvImportErrors.MappingRefused)
     };
 
-    private Task LockSiteAsync(string siteCode, CancellationToken ct) =>
-        ExecuteCommandAsync<LockRow>("""SELECT 1 AS "Value" FROM site WHERE code = :code FOR UPDATE""", new Dictionary<string, object> { ["code"] = siteCode }, ct);
-
     private Task WriteOwnAuditAsync(string verb, string siteCode, string summary) =>
         ImportAudit.WriteOwnAsync(scopes, CurrentUser, TimeProvider, $"{Target}.{verb}", siteCode, summary);
 
@@ -256,11 +255,6 @@ internal sealed class SvcDeskCodeMappingImports(
         {
             logger.LogError(e, "The audit entry of a desk code mapping import at {Site} could not be written", siteCode);
         }
-    }
-
-    private sealed class LockRow
-    {
-        public int Value { get; set; }
     }
 
     #endregion

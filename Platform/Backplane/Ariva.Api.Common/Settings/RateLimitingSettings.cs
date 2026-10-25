@@ -65,6 +65,16 @@ public sealed class RateLimitingSettings
     /// Default 2 at once and 4 waiting.
     /// </summary>
     public ConcurrencySettings Reports { get; set; } = new() { PermitLimit = 2, QueueLimit = 4 };
+
+    /// <summary>
+    /// The CSV imports' previews and, counted apart, their commits per user (ARV-155): each holds the site's row lock and the
+    /// host's one upload permit while it runs (a preview's dry run about 3 s at 500 devices, 12 s at 10,000 mappings), so one
+    /// user looping them would delay every registration, calibration and publication at the site and turn other uploads away
+    /// (429). A fixed window per user and step in this host process, counted after authorization and before the file is read;
+    /// with N replicas a user may reach N times the limit, and across a window's end twice it. Default 6 previews and 6 commits in
+    /// each 10-minute window. QueueLimit is not used: a refused import is answered at once.
+    /// </summary>
+    public FixedWindowSettings CsvImports { get; set; } = new() { PermitLimit = 6, WindowSeconds = 600 };
 }
 
 /// <summary>A concurrency limiter: <see cref="PermitLimit"/> requests at once and <see cref="QueueLimit"/> waiting.</summary>

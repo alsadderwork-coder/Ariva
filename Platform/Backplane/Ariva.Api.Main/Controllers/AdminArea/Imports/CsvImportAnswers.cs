@@ -7,7 +7,7 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Imports;
 
 /// <summary>
 /// The answers of the CSV import endpoints (ARV-123a): 404 without a detail, 413 for a file over 1 MB, 409 for a commit
-/// that is not its preview's, the malware scan's refusals (<see cref="UploadScanAnswers"/>, ARV-092b: 400, or 503 with
+/// that is not its preview's and for an import that waited out the site lock (ARV-155), the malware scan's refusals (<see cref="UploadScanAnswers"/>, ARV-092b: 400, or 503 with
 /// Retry-After), 400 with the service's fixed text otherwise; nothing from the request is echoed.
 /// </summary>
 internal static class CsvImportAnswers
@@ -43,7 +43,7 @@ internal static class CsvImportAnswers
             return scan;
         var (status, title) = first switch
         {
-            CsvImportErrors.NotThePreview => (StatusCodes.Status409Conflict, "Conflict"),
+            CsvImportErrors.NotThePreview or CsvImportErrors.SiteBusy => (StatusCodes.Status409Conflict, "Conflict"),
             CsvImportErrors.FileTooLarge => (StatusCodes.Status413PayloadTooLarge, "Too large"),
             _ => (StatusCodes.Status400BadRequest, "Not valid")
         };

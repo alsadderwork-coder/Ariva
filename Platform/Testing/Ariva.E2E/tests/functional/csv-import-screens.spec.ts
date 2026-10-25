@@ -393,6 +393,34 @@ test('an administrator imports desk code mappings from the desk mappings panel, 
 	await guards.expectClean();
 });
 
+test('a user past their import allowance, or a busy site, is told so in words of its own', async ({ page }) => {
+	// ARV-155: the server's 429 for the user's own allowance (not the host's one upload at a time) and its 409 for a site
+	// whose lock another import or change holds; the answers are stubbed, since the suite raises the allowance for its runs.
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webAdmin);
+	const answers = [
+		{ status: 429, title: 'Too many requests', detail: 'Too many import previews or commits for now: try again after the time Retry-After gives.' },
+		{ status: 409, title: 'Conflict', detail: 'Another import or change at this site is in progress: try again in a moment.' }
+	];
+	await page.route('**/desk-code-mapping-imports/preview', (route) => {
+		const answer = answers.shift();
+		return answer
+			? route.fulfill({ status: answer.status, contentType: 'application/problem+json', headers: { 'Retry-After': '60' }, body: JSON.stringify(answer) })
+			: route.continue();
+	});
+	const dialog = await openMappingImport(page);
+	await dialog.getByLabel('CSV file').setInputFiles(csvFile('mappings.csv', csv(mappingHeader, `Aman,${tail}-L1,IMM,D01`)));
+
+	await dialog.getByRole('button', { name: 'Check the file' }).click();
+	await expect(dialog.getByTestId('import-failure')).toHaveText('You have checked or imported many files in the last few minutes: wait a few minutes and try again.');
+	await dialog.getByRole('button', { name: 'Check the file' }).click();
+	await expect(dialog.getByTestId('import-failure')).toHaveText('Another import or change at this site is in progress: try again in a moment.');
+	await expect(dialog.getByTestId('import-commit')).toBeDisabled();
+	await dialog.getByTestId('import-close').click();
+	allowStatuses(guards, 429, 409);
+	await guards.expectClean();
+});
+
 test('in Arabic the import dialog is translated, its reasons too, and mirrors', async ({ page }) => {
 	const guards = await guardPage(page);
 	await signInThroughUi(page, accounts().webAdmin);
