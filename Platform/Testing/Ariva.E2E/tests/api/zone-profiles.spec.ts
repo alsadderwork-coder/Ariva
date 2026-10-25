@@ -58,6 +58,10 @@ test('a draft is edited, validated and published as version 1 only with a recent
 	queueId = (await zone.json()).id;
 	const crossing = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name: 'Bow', kind: 'Queue', levelId, polygon: '0 0,10 10,10 0,0 10' } });
 	expect(crossing.status(), 'self-crossing polygon').toBe(400);
+	// ARV-170: a triangle 10 m long and 1 mm wide is refused, with the fixed text that names the minimum width.
+	const sliver = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name: 'Sliver', kind: 'Queue', levelId, polygon: '40 10,50 10,45 10.001' } });
+	expect(sliver.status(), 'a sliver').toBe(400);
+	expect((await sliver.json()).detail, 'the refusal names the minimum width').toContain('at least 1 cm wide');
 	// ARV-057: a lane is 2 to 4 capitals; markup or a long string never becomes one.
 	for (const laneCategory of ['<img src=x onerror=alert(1)>', 'cit', 'CITIZENS']) {
 		const lane = await call('POST', `${api}/${firstId}/zones`, {

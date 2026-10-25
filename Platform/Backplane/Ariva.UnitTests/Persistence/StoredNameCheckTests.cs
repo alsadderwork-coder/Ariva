@@ -67,6 +67,7 @@ public sealed class StoredNameCheckTests
         { StoredNameCheck.OutlineRule, "10 10,34 10,34 22,10 22", "Snake A", [] },
         { StoredNameCheck.OutlineRule, "0 0,10 10,10 0,0 10", "Bow", ["Bow"] },
         { StoredNameCheck.OutlineRule, "0 0,10 0,10 10,5 0.004,0 10", "Notch", ["Notch"] },
+        { StoredNameCheck.OutlineRule, "0 0,10 0,5 0.001", "Sliver", ["Sliver"] },
         { StoredNameCheck.FileRule, "arrivals.svg", null, [] },
         { StoredNameCheck.FileRule, "plan\U000E0041.svg", null, ["plan\\U000E0041.svg"] },
         { StoredNameCheck.FileRule, "../etc/plan.svg", null, ["../etc/plan.svg"] },

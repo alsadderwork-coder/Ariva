@@ -102,7 +102,7 @@ Zones are polygons in floor coordinates, each with one role:
 | Count | Counts flow only; used between processes and for validation |
 | Overflow entry | Entry line of the overflow band |
 
-Validation rules for geometry (from the prototype): a polygon has at least three points and does not intersect or touch itself (a vertex on, or within 1 cm of, an edge that is not its own is refused); it lies inside the level; entry and exit lines lie on the polygon edge; names are unique. Each line records which side is inside, so a crossing from outside to inside is `In`.
+Validation rules for geometry (from the prototype): a polygon has at least three points and does not intersect or touch itself (a vertex on, or within 1 cm of, an edge that is not its own is refused), and it has a minimum width: every vertex is at least 1 cm from each edge it is not part of, so a zone drawn as a sliver, for example a triangle 10 m long and 1 mm wide, is refused (one stored before this rule blocks publication, named, until it is moved; a taper towards a sharp corner is not refused); it lies inside the level; entry and exit lines lie on the polygon edge; names are unique. Each line records which side is inside, so a crossing from outside to inside is `In`.
 
 Also define in the profile:
 

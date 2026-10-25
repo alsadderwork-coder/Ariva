@@ -567,7 +567,7 @@ public class Zone : EntityBase<Zone>
         if (points.Any(p => !p.IsFinite || !level.Contains(p.X, p.Y)))
             throw new ArgumentException($"Every point lies inside level {level.Code} (0 to {level.WidthMetres} by 0 to {level.DepthMetres} m).", nameof(polygon));
         if (!Geometry.IsSimplePolygon(points))
-            throw new ArgumentException("A zone is a simple polygon: no repeated points and no crossing or touching edges.", nameof(polygon));
+            throw new ArgumentException("A zone is a simple polygon at least 1 cm wide: no repeated points, no crossing or touching edges, and every vertex at least 1 cm from each edge it is not part of.", nameof(polygon));
         return points;
     }
 }

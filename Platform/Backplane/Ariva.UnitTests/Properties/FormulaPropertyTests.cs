@@ -200,6 +200,55 @@ public sealed class FormulaPropertyTests
         }, iter: Iter);
     }
 
+    /// <summary>
+    /// ARV-170: a thin triangle on a millimetre grid, up to 3 m long and 25 mm high, so the minimum width decides it as often
+    /// as not (the grids above cannot make a triangle the rule refuses).
+    /// </summary>
+    private static readonly Gen<(int X, int Y)[]> ThinTriangle = Gen.Select(Gen.Int[0, 3000], Gen.Int[0, 25]).Array[3];
+
+    [Fact]
+    public void F4_IsSimplePolygon_Should_AgreeWithIntegerArithmetic_When_ATriangleIsThin()
+    {
+        var (accepted, refusedByWidth) = (0, 0);
+        Gen.Select(ThinTriangle, Gen.Int[0, 2]).Sample((mm, shift) =>
+        {
+            // Exact in square millimetres; a case within 0.1 % of a 1 cm or 1 cm2 bound is left to the table tests.
+            static bool Near(long value, long bound) => Math.Abs(value - bound) * 1000 <= bound;
+            static long Square(long dx, long dy) => (dx * dx) + (dy * dy);
+            var (a, b, c) = (mm[0], mm[1], mm[2]);
+            long twiceArea = Math.Abs(((long)(b.X - a.X) * (c.Y - a.Y)) - ((long)(b.Y - a.Y) * (c.X - a.X)));
+            long[] apart = [Square(b.X - a.X, b.Y - a.Y), Square(c.X - b.X, c.Y - b.Y), Square(a.X - c.X, a.Y - c.Y)];
+            // Each vertex's distance to the opposite side, squared and times that side's length squared (100 is 1 cm squared).
+            (long Value, long Bound)[] widths = [.. new[] { (a, b, c), (b, c, a), (c, a, b) }.Select(t =>
+            {
+                var (p, e1, e2) = t;
+                long ex = e2.X - e1.X, ey = e2.Y - e1.Y, px = p.X - e1.X, py = p.Y - e1.Y, length = Square(ex, ey), along = (px * ex) + (py * ey);
+                if (along <= 0)
+                    return (Square(px, py), 100L);
+                if (along >= length)
+                    return (Square(p.X - e2.X, p.Y - e2.Y), 100L);
+                var cross = (ex * py) - (ey * px);
+                return (cross * cross, 100 * length);
+            })];
+            if (Near(twiceArea, 200) || apart.Any(d => Near(d, 100)) || widths.Any(w => Near(w.Value, w.Bound)))
+                return;
+            var wide = widths.All(w => w.Value >= w.Bound);
+            var expected = twiceArea >= 200 && apart.All(d => d >= 100) && wide;
+            FloorPoint[] ring = [.. mm.Select(p => new FloorPoint(p.X / 1000.0, p.Y / 1000.0))];
+            FloorPoint[] rotated = [.. ring.Skip(shift), .. ring.Take(shift)];
+            Geometry.IsSimplePolygon(ring).Should().Be(expected, "integer arithmetic says so for {0} (mm)", string.Join(" ", mm));
+            Geometry.IsSimplePolygon(rotated).Should().Be(expected);
+            Geometry.IsSimplePolygon(ring.Reverse().ToArray()).Should().Be(expected);
+            if (expected)
+                Interlocked.Increment(ref accepted);
+            else if (twiceArea >= 200 && apart.All(d => d >= 100))
+                Interlocked.Increment(ref refusedByWidth);
+        }, iter: SegmentIter);
+
+        accepted.Should().BePositive("the generator makes triangles the rule accepts");
+        refusedByWidth.Should().BePositive("and triangles only the minimum width refuses");
+    }
+
     /// <summary>A convex ring: points on a circle at increasing angles at least 0.05 rad apart (no corner twice).</summary>
     private static readonly Gen<FloorPoint[]> Convex = Gen.Select(Gen.Double[0.5, 20], Gen.Int[0, 120].Array[3, 12], Point).Select((radius, steps, centre) =>
         steps.Distinct().Order().Select(k => k * 0.05).Select(a => new FloorPoint(centre.X + radius * Math.Cos(a), centre.Y + radius * Math.Sin(a))).ToArray())

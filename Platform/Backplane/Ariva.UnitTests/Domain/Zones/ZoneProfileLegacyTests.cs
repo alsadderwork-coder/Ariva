@@ -109,6 +109,26 @@ public sealed class ZoneProfileLegacyTests
     }
 
     [Fact]
+    public void Validate_Should_RefuseASliverUntilItIsMoved_When_ItWasStoredBeforeTheMinimumWidth()
+    {
+        // ARV-170: a triangle 10 m long and 1 mm wide, simple by every rule before the minimum width of 1 cm.
+        var (profile, level, queue, _, _) = Draft();
+        Store(queue, nameof(Zone.Polygon), "10.000 10.000,20.000 10.000,15.000 10.001");
+
+        var problems = profile.Validate(Levels(level));
+
+        problems.Should().Equal("Zone Snake A: " + ZoneProfile.OutlineNotSimple);
+        profile.Publish(1, Levels(level), "admin", Now).Should().Equal(problems);
+        var add = () => profile.AddZone("Sliver", ZoneKind.Queue, level, [new(10, 30), new(20, 30), new(15, 30.001)]);
+        add.Should().Throw<ArgumentException>("a new zone is refused the same way").WithMessage("*at least 1 cm wide*");
+        var moveIntoASliver = () => profile.MoveZone(queue, level, [new(10, 20), new(20, 20), new(15, 20.009)]);
+        moveIntoASliver.Should().Throw<ArgumentException>("a move into a sliver is refused too").WithMessage("*at least 1 cm wide*");
+
+        profile.MoveZone(queue, level, Rect(10, 10, 24, 12));
+        profile.Validate(Levels(level)).Should().BeEmpty();
+    }
+
+    [Fact]
     public void CreateDraft_Should_CopyLegacyNamesAndOutlinesAsStored_When_AnOlderVersionHoldsThem()
     {
         var (published, level, queue, entry, _) = Draft();

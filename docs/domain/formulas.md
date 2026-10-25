@@ -143,6 +143,19 @@ A cross product is a length squared, so it is compared with the tolerance times 
 
 Tests: `GeometryTests`, each case in all eight orders or every rotation and direction of the rings: the seed's segments sharing an end at the origin (3.5e-14 m apart), true; an end 9 mm from the other segment true, 11 mm false; collinear segments 9 mm apart true, 11 mm false; an end on the other segment in decimals binary cannot hold, true, also a kilometre from the origin; an end 9 mm from the other's line beyond its end with the segments crossing, true; segments of no length; a ring with a vertex on another edge, 5 mm from it or a spike folding back 1 mm beside an earlier edge, not simple, 2 cm from it, simple; a footprint 5 mm from its zone overlapping, 2 cm from it not. Properties below.
 
+### Minimum width of a zone outline (ARV-170)
+
+Owner decision 2026-10-13: a zone outline has a minimum width of 1 cm. Two edges that share no vertex come closest at a vertex of one of them, so the rule is that every vertex is at least 1 cm from each edge it is not part of; `IsSimplePolygon` checks it after the area check and before the edge pairs:
+
+```
+width     for every vertex v and every edge (a, b) with v not a or b: DistanceToSegment(v, a, b) >= Tolerance (1 cm)
+          the edge's ends put in order first (by x, then y), so a rotated or reversed ring computes the same distances
+```
+
+For a triangle this is its smallest height (the height onto its longest side, whose foot always lies on that side). A taper towards a sharp corner is not refused: every acute corner narrows to nothing, so no outline with one is 1 cm wide everywhere, and a triangle 10 m long and 11 mm high at its wide end passes. With four or more vertices the edge pair checks already imply the rule (an edge a vertex is not part of is not a neighbour of at least one of that vertex's two edges, and the pair check refuses an end of one edge within 1 cm of the other); a triangle has only neighbouring edges, so before ARV-170 a triangle 10 m long and 1 mm wide (area 5e-3 m2, above the 1e-4 m2 minimum) passed as simple; it is refused now. The check runs for every ring, not only triangles, so the rule does not rest on that argument alone. A ring with a vertex that is not finite is refused too (every comparison with NaN is false; `ParseRing` and `Zone.RequirePolygon` refuse such a vertex first). The rule holds wherever `IsSimplePolygon` does: zone add and move (a rename moves the zone too), the site configuration import, `ZoneProfile.Validate` at publication, the site configuration export (409 `ProfileNotImportable` while the published version holds a sliver, until a corrected version is published) and `--check-stored-names`' outline rule. So a sliver stored before ARV-170 blocks publication, named, until it is moved. No stored data is changed.
+
+Tests: `GeometryTests`, every case in every rotation and direction: a triangle 10 m by 1 mm refused; apexes 9 mm from the base refused, 11 mm and exactly 1 cm accepted; a triangle 9 mm high near one end of its base, and one whose apex lies almost over a base end, refused; a taper 11 mm at its widest accepted; slanted strips (corners more than 2 cm apart, so only the width decides) 11 mm accepted, 9 mm refused; notches reaching 11 mm from the far edge accepted, 9 mm refused; a 3 by 2 m zone and an L shape accepted; rings with a NaN or infinite vertex refused. `ZoneProfileLegacyTests`: a stored sliver refuses validation and publication, a new one cannot be added, a zone cannot be moved into one, and moving it to a rectangle validates. `SiteConfigurationTransferTests`: the export refuses a published sliver, the import refuses a bundle with one. `StoredNameCheckTests`: the outline rule reports a stored sliver. `zone-profiles.spec.ts`: a sliver added through the API answers 400 with the fixed text. Property `F4_IsSimplePolygon_Should_AgreeWithIntegerArithmetic_When_ATriangleIsThin`: thin triangles on a millimetre grid (up to 3 m by 25 mm) agree with the rule computed in integers, each as given, in a random rotation and reversed, and both answers occur (it fails when triangles skip the check). The seed profiles (NBJ BC1, the demo topology, AUH Terminal A) still validate.
+
 ## F5. Realised wait
 
 Source: D4.
@@ -1050,7 +1063,7 @@ About 9 GB a day uncompressed, 1 to 2 GB a day compressed, 80 to 160 GB for a 90
 
 ARV-016. A zone profile version is publishable when:
 
-- every zone is a simple polygon of 3 to 200 vertices with non-zero area, every vertex inside its level (0 to width, 0 to depth metres), no two vertices closer than 1 cm, and no edge touching another that is not its neighbour, where a vertex on or closer than 1 cm to an edge that is not its own touches it (F4, segment intersection, ARV-161);
+- every zone is a simple polygon of 3 to 200 vertices with non-zero area, every vertex inside its level (0 to width, 0 to depth metres), no two vertices closer than 1 cm, and no edge touching another that is not its neighbour, where a vertex on or closer than 1 cm to an edge that is not its own touches it (F4, segment intersection, ARV-161), and a minimum width: every vertex at least 1 cm from each edge it is not part of (ARV-170);
 - zone names are unique in the profile, ignoring case; line names likewise;
 - every queue zone has at least one entry line and exactly one exit line, each lying on one edge of that zone (both ends within 1 cm of the same edge);
 - every overflow zone has an overflow entry line on one of its edges; service, staff and overflow zones hang off a queue zone on the same level; only service and staff zones name a desk;

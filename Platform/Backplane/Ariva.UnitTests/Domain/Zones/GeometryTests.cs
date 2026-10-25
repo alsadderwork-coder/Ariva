@@ -26,6 +26,18 @@ public sealed class GeometryTests
     }
 
     [Theory]
+    [InlineData(double.NaN, double.NaN)]
+    [InlineData(double.NaN, 5)]
+    [InlineData(5, double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity, 5)]
+    public void IsSimplePolygon_Should_Refuse_When_AVertexIsNotFinite(double x, double y)
+    {
+        // ParseRing refuses such a vertex already; the predicate refuses it too (every comparison with NaN is false).
+        Geometry.IsSimplePolygon([new FloorPoint(0, 0), new FloorPoint(10, 0), new FloorPoint(x, y)]).Should().BeFalse();
+        Geometry.IsSimplePolygon([new FloorPoint(0, 0), new FloorPoint(10, 0), new FloorPoint(10, 10), new FloorPoint(x, y)]).Should().BeFalse();
+    }
+
+    [Theory]
     [InlineData("0 0,10 0,10 10,0 10", 100)]
     [InlineData("0 0,0 10,10 10,10 0", -100)]
     [InlineData("0 0,4 0,4 4,8 4,8 0,12 0,12 8,0 8", 80)]
@@ -143,6 +155,21 @@ public sealed class GeometryTests
     [InlineData("0 0,10 0,10 10,5 0.005,0 10", false, "vertex 5 mm from another edge: within a centimetre, it touches")]
     [InlineData("0 0,10 0,10 10,5 0.02,0 10", true, "vertex 2 cm from another edge")]
     [InlineData("0 0,10 0,10 10,10.001 5,10 15,0 10", false, "a spike folding back 1 mm beside an earlier edge")]
+    // ARV-170, the minimum width: every vertex at least 1 cm from each edge it is not part of.
+    [InlineData("0 0,10 0,5 0.001", false, "a triangle 10 m long and 1 mm wide (the owner's sliver)")]
+    [InlineData("0 0,10 0,5 0.009", false, "a triangle 9 mm wide")]
+    [InlineData("0 0,10 0,5 0.011", true, "a triangle 11 mm wide")]
+    [InlineData("0 0,10 0,5 0.01", true, "a triangle exactly 1 cm wide")]
+    [InlineData("0 0,10 0,0.5 0.009", false, "a triangle 9 mm wide near one end")]
+    [InlineData("0 0,10 0,9.995 0.009", false, "a triangle 9 mm wide, its apex almost over a base end")]
+    [InlineData("0 0,10 0,10 0.011,0 0.011", true, "a strip 11 mm wide")]
+    [InlineData("0 0,10 0,10.02 0.009,0.02 0.009", false, "a slanted strip 9 mm wide, its corners 2.2 cm apart")]
+    [InlineData("0 0,10 0,10.02 0.011,0.02 0.011", true, "a slanted strip 11 mm wide, its corners 2.3 cm apart")]
+    [InlineData("0 0,10 0,10 0.011", true, "a taper to a sharp corner, 11 mm at its widest: no vertex within 1 cm of an edge it is not part of")]
+    [InlineData("0 0,10 0,10 10,5 0.009,0 10", false, "a notch reaching 9 mm from the far edge")]
+    [InlineData("0 0,10 0,10 10,5 0.011,0 10", true, "a notch reaching 11 mm from the far edge")]
+    [InlineData("10 10,13 10,13 12,10 12", true, "a real zone, 3 m by 2 m")]
+    [InlineData("10 10,16 10,16 11,11 11,11 14,10 14", true, "a real L-shaped snake")]
     public void IsSimplePolygon_Should_GiveOneAnswer_When_TheRingStartsElsewhereOrRunsBackwards(string ring, bool simple, string because)
     {
         foreach (var turned in EveryStart(Ring(ring)))

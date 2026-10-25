@@ -133,14 +133,16 @@ public static class Geometry
     }
 
     /// <summary>
-    /// A simple polygon: at least three distinct vertices, no repeated vertex, non-zero area, and no two edges touching
+    /// A simple polygon: at least three finite, distinct vertices, no repeated vertex, non-zero area, a minimum width (every
+    /// vertex at least <see cref="Tolerance"/> from each edge it is not part of, ARV-170), and no two edges touching
     /// except neighbours at their shared vertex. Edges that are not neighbours touch as <see cref="SegmentsIntersect"/>
     /// says, so a vertex on, or closer than <see cref="Tolerance"/> to, an edge that is not its own is refused, in any vertex
     /// order (ARV-161).
     /// </summary>
     public static bool IsSimplePolygon(IReadOnlyList<FloorPoint> ring)
     {
-        if (ring is null || ring.Count < 3)
+        // Every comparison with NaN is false, so a non-finite vertex would pass each check below (ARV-170 review).
+        if (ring is null || ring.Count < 3 || ring.Any(p => !p.IsFinite))
             return false;
         for (var i = 0; i < ring.Count; i++)
         {
@@ -155,6 +157,26 @@ public static class Geometry
             return false;
 
         var n = ring.Count;
+        // ARV-170 (owner decision 2026-10-13), the minimum width: two edges that share no vertex come closest at a vertex of
+        // one of them, so every vertex is at least Tolerance from each edge it is not part of (for a triangle, its smallest
+        // height). A taper towards a sharp corner is not refused: every acute corner narrows to nothing. The edge's ends are
+        // put in order first, so a rotated or reversed ring computes the same distances. With four or more vertices the edge
+        // pair checks below already imply this (an edge a vertex is not part of is not a neighbour of one of that vertex's two
+        // edges); a triangle has only neighbouring edges, so before this a triangle 10 m long and 1 mm wide passed. The loop
+        // runs for every ring, not only triangles, so the rule does not rest on that argument alone.
+        for (var i = 0; i < n; i++)
+        {
+            for (var j = 0; j < n; j++)
+            {
+                var k = (j + 1) % n;
+                if (j == i || k == i)
+                    continue;
+                var (e1, e2) = Ordered(ring[j], ring[k]);
+                if (DistanceToSegment(ring[i], e1, e2) < Tolerance)
+                    return false;
+            }
+        }
+
         for (var i = 0; i < n; i++)
         {
             var a1 = ring[i];

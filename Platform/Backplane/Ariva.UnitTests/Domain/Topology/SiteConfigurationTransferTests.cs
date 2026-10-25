@@ -447,6 +447,12 @@ public sealed class SiteConfigurationTransferTests
         SiteConfigurationTransfer.Plan("DST", counterAtImmigration, Target(), "ZZZ").ErrorMessages.Should().Equal(SiteConfigurationErrors.InvalidTopology);
         SiteConfigurationTransfer.Plan("DST", amanCounter, Target(), "ZZZ").ErrorMessages.Should().Equal(SiteConfigurationErrors.InvalidDeskCodeMappings);
         SiteConfigurationTransfer.Plan("DST", outside, Target(), "ZZZ").ErrorMessages.Should().Equal(SiteConfigurationErrors.InvalidZoneProfile);
+        // ARV-170: a sliver, 10 m long and 1 mm wide, inside the level.
+        var sliver = content with
+        {
+            ZoneProfiles = [content.ZoneProfile with { Zones = [.. content.ZoneProfile.Zones.Select(z => z.Name == "Service A" ? z with { Polygon = "10 10,20 10,15 10.001" } : z)] }]
+        };
+        SiteConfigurationTransfer.Plan("DST", sliver, Target(), "ZZZ").ErrorMessages.Should().Equal(SiteConfigurationErrors.InvalidZoneProfile);
     }
 
     [Fact]
@@ -703,6 +709,7 @@ public sealed class SiteConfigurationTransferTests
         { "a line name with a bell", SiteConfigurationErrors.ProfileNotImportable },
         { "the profile's name with a right-to-left override", SiteConfigurationErrors.ProfileNotImportable },
         { "a zone outline that touches itself", SiteConfigurationErrors.ProfileNotImportable },
+        { "a zone outline that is a sliver", SiteConfigurationErrors.ProfileNotImportable },
         { "a device model with a right-to-left override", SiteConfigurationErrors.TextsNotImportable },
         { "an alert rule name with a tag character", SiteConfigurationErrors.TextsNotImportable },
         { "a display label with a right-to-left override", SiteConfigurationErrors.TextsNotImportable },
@@ -732,6 +739,10 @@ public sealed class SiteConfigurationTransferTests
             case "the profile's name with a right-to-left override": Store(profile, nameof(ZoneProfile.Name), "Arr\x202Eivals"); break;
             case "a zone outline that touches itself":
                 Store(profile.Zones.Single(z => z.Name == "Overflow A"), nameof(Zone.Polygon), "10.000 24.000,34.000 24.000,34.000 28.000,22.000 24.005,10.000 28.000");
+                break;
+            case "a zone outline that is a sliver":
+                // ARV-170: a triangle 24 m long and 1 mm wide, simple by every rule before the minimum width.
+                Store(profile.Zones.Single(z => z.Name == "Overflow A"), nameof(Zone.Polygon), "10.000 24.000,34.000 24.000,22.000 24.001");
                 break;
             case "a device model with a right-to-left override": Store(source.Devices[0], nameof(Device.Model), "Ouster\x202E"); break;
             case "an alert rule name with a tag character": Store(source.AlertRules[0], nameof(AlertRule.Name), "Overflow in use\U000E0041"); break;

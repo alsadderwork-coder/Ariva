@@ -133,7 +133,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
-      "passes": false,
+      "passes": true,
       "notes": "Size XS. Owner decision 2026-10-13. 2026-10-14: moved from Phase 1 to Phase 3 by the owner's decision (low-severity follow-ups wait until after the pilot go-live; the owner can pull one back).",
       "dependsOn": []
     },
