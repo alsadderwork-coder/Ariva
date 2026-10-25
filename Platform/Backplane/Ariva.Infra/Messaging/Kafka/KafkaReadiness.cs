@@ -4,8 +4,9 @@ namespace Ariva.Infra.Messaging.Kafka;
 
 /// <summary>
 /// Readiness of the Kafka cluster as this host's producer sees it (ARV-165), registered as <c>kafka</c>, tagged
-/// <c>ready</c>, failure status Degraded: a broker answers a metadata request through the producer's own handle within
-/// <see cref="ProbeTimeout"/>, and the producer is started and not in the gap after a fatal client error.
+/// <c>ready</c>, failure status Degraded: a broker describes the cluster through the producer's own handle within
+/// <see cref="ProbeTimeout"/> (a request that names no topic, ARV-177), and the producer is started and not in the gap
+/// after a fatal client error.
 /// <para>
 /// MassTransit's bus check cannot be relied on for this: its consumer stays Ready while an offset commit is in flight,
 /// and MassTransit 8.5.11 commits with the synchronous <c>Commit</c>, which waits for a coordinator a broker that is away
@@ -21,7 +22,7 @@ namespace Ariva.Infra.Messaging.Kafka;
 /// </summary>
 public sealed class KafkaReadiness(KafkaProduce produce) : IHealthCheck
 {
-    /// <summary>How long a broker has to answer the metadata request.</summary>
+    /// <summary>How long a broker has to answer the probe.</summary>
     public static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(3);
 
     public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)

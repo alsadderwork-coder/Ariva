@@ -1372,6 +1372,29 @@
       ]
     },
     {
+      "id": "ARV-253",
+      "title": "[E6] A stop never passes a record: MassTransit's checkpointer commits past records in hand or queued at a stop",
+      "description": "Found by ARV-177's integration tests on 2026-10-25 (backlog/progress.md; ADR-0018 note of 2026-10-25). MassTransit 8.5.11's Kafka consumer passes records at a stop in two ways no Ariva filter can prevent while an endpoint has more than one lane (ConcurrentMessageLimit 8): (1) when the bus's stop wait ends with a record still in hand, ConsumerAgent.ActiveAndActualAgentsCompleted cancels it (CancelPendingConsumers) and BatchCheckpointer, which treats a cancelled confirmation as a faulted one, commits the next completed record of the partition, past it; (2) a record waiting in its lane behind one in hand when the endpoint begins to stop is never handled (KafkaMessageConsumer.Handle returns at once for a stopping consumer), and its confirmation is cancelled when the consumer closes and passed the same way. Measured: on a clean stop, a valid record queued behind a 4 s record was consumed by neither host and the group's committed offset was past it; a record in hand at an 11 s stop wait was committed past at the wait's end. Every MassTransit topic endpoint is affected (the domain event consumers and Ariva.Api.Integration's AMAN feed consumers); Ariva.Api.Stream's own consumer is not. A rolling deploy while a consumer has a backlog in a lane can lose valid events without a trace. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "No record of a MassTransit topic endpoint is committed past unless it was processed, skipped by the inbox as a duplicate, or dead-lettered (sent or kept): at a stop, a record in hand when the bus's stop wait ends and a record queued in a lane behind one in hand are delivered again after the restart",
+        "The fix is chosen with its throughput measured and recorded in an ADR-0018 note: one lane per endpoint (ConcurrentMessageLimit 1, so records complete in fetch order and the checkpointer never meets a completed record after an unresolved one), or Ariva's own consume loop on the Confluent client with an ordered checkpoint, as Ariva.Api.Stream has; a setting that would reopen the skip is refused at start or documented with its risk",
+        "Integration tests on a real broker, each asserting the group's committed offset: a record queued in its lane behind one in hand at a clean stop is consumed after the restart (ARV-177's probe, which fails today); a record whose attempt outlasts the bus's stop wait, with a later record of the partition completed meanwhile, is not committed past and is consumed after the restart",
+        "The endpoints keep up with the pilot profile's rates (ARV-124a: the AMAN feed and the domain events) with margin, measured before and after the change",
+        "Wiki 10 section 4.5a, the overview's Producing section and ADR-0018 no longer list the two limits as open",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M. Found in ARV-177 (2026-10-25); not a low finding, so not Phase 3: it loses valid events at a stop. Proposed for the pilot go-live gate (ARV-138 depends on it), pending the owner. The probe's test (QueuedAtStopTests: one partition, a slow key, a key of the same lane queued behind it, a later key of another lane, a stop) is described in the 2026-10-25 ARV-177 entry of backlog/progress.md.",
+      "dependsOn": [
+        "ARV-171"
+      ]
+    },
+    {
       "id": "ARV-124b",
       "title": "[E17] 24-hour soak and catch-up after a stream outage",
       "description": "Work package 12 of the roadmap, second part: a long run that proves bounded memory, on the pilot hall profile, locally (no cluster). Needs a machine doing nothing else for a day, with disk for a day of Kafka and TimescaleDB growth at the soak's rate (Estimate from ARV-124a's bytes per push). Epic: Operations and deployment. CWEs to review: CWE-120, CWE-400.",
@@ -2033,7 +2056,8 @@
         "ARV-104i",
         "ARV-230",
         "ARV-231",
-        "ARV-232"
+        "ARV-232",
+        "ARV-253"
       ]
     },
     {

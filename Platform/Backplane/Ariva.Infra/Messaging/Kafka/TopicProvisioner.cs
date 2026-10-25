@@ -75,10 +75,20 @@ internal sealed class TopicProvisioner(KafkaSettings settings, ILogger<TopicProv
     }
 }
 
-/// <summary>Client settings shared by Ariva's producer, the admin client and the raw stream consumer.</summary>
+/// <summary>
+/// Client settings shared by Ariva's producer, the admin client and the raw stream consumer; the probe's admin client runs
+/// on the producer's handle, so it has the producer's settings.
+/// </summary>
 public static class KafkaClientConfig
 {
     public static AdminClientConfig Admin(KafkaSettings settings) => Apply(new AdminClientConfig(), settings);
+
+    /// <summary>
+    /// The base of MassTransit's rider clients (ARV-177): every topic endpoint's consumer and any admin client the rider builds
+    /// take it, merged with their own settings, in place of MassTransit's empty default. It carries only what no Ariva client
+    /// may lack, no implicit topic creation; the brokers, TLS and SASL are set on the rider's host (Ariva.Di).
+    /// </summary>
+    public static ClientConfig Rider() => new() { AllowAutoCreateTopics = false };
 
     /// <summary>librdkafka's <c>message.timeout.ms</c> for Ariva's producer: 30 seconds.</summary>
     public const int MessageTimeoutMilliseconds = 30_000;
@@ -98,6 +108,18 @@ public static class KafkaClientConfig
     /// </summary>
     public const int QueueMaxMessages = 10_000;
 
+    /// <summary>
+    /// librdkafka's <c>topic.metadata.propagation.max.ms</c> for Ariva's producer (ARV-177): 5 seconds (default 30). How long
+    /// the client takes a topic the brokers do not know for one still being created before it fails what it holds for the
+    /// topic (the broker's <c>UnknownTopicOrPart</c>, 5.5 s measured), and every later send for it at once
+    /// (<c>Local_UnknownTopic</c>); a send once the topic exists asks the brokers again and goes. At the default it equals
+    /// the message timeout, so a send for a missing topic failed as a message timeout, which reads as the broker being away:
+    /// the relay then ended every pass at that row. A topic the topics job created has reached every broker long before a
+    /// host sends to it (propagation takes milliseconds); one being created meanwhile only fails a send, which its sender
+    /// sends again.
+    /// </summary>
+    public const int TopicPropagationMilliseconds = 5_000;
+
     public static ProducerConfig Producer(KafkaSettings settings) => Apply(new ProducerConfig
     {
         // ADR-0018: every write acknowledged by all in-sync replicas, no duplicates from producer retries, 1 MB cap.
@@ -116,7 +138,9 @@ public static class KafkaClientConfig
         CompressionType = CompressionType.Lz4,
         // ARV-167: the queue is bounded to fit the pods' memory limits, and a full queue refuses at once.
         QueueBufferingMaxKbytes = QueueMaxKbytes,
-        QueueBufferingMaxMessages = QueueMaxMessages
+        QueueBufferingMaxMessages = QueueMaxMessages,
+        // ARV-177: a send for a missing topic fails as its own failure after about 5 s (UnknownTopicOrPart), not as a timeout.
+        TopicMetadataPropagationMaxMs = TopicPropagationMilliseconds
     }, settings);
 
     public static ConsumerConfig Consumer(KafkaSettings settings, string groupId) => Apply(new ConsumerConfig
@@ -135,6 +159,13 @@ public static class KafkaClientConfig
         ArgumentNullException.ThrowIfNull(settings);
         config.BootstrapServers = settings.BootstrapServers;
         config.ClientId = $"ariva-{settings.ServiceName}";
+        // ARV-177: no Ariva client creates a topic implicitly, whatever the cluster's auto.create.topics.enable. librdkafka
+        // lets a producer-type client (the admin client is one) ask for that by default, so a send or a metadata request for a
+        // missing topic created it with the broker's defaults; topics come from the provisioner or the topics job only. A
+        // send for a missing topic fails as that send's own failure (UnknownTopicOrPart within TopicPropagationMilliseconds,
+        // then Local_UnknownTopic at once), which the relay backs off per row, holding the topic until that backoff ends, and Ingest
+        // answers with 503.
+        config.AllowAutoCreateTopics = false;
         config.SecurityProtocol = Enum.Parse<SecurityProtocol>(settings.SecurityProtocol, ignoreCase: true);
         if (!string.IsNullOrEmpty(settings.SslCaLocation))
             config.SslCaLocation = settings.SslCaLocation;

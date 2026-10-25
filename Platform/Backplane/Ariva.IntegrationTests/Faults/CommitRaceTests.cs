@@ -123,10 +123,11 @@ public sealed class CommitRaceTests(FaultsFixture faults) : IAsyncLifetime
 
     /// <summary>
     /// librdkafka's debug contexts for the stray test's hosts: the consumer group (coordinator, offset commits, rebalances)
-    /// and the consumer. Set through a <c>ClientConfig</c> in the host's container, which MassTransit's rider takes as its base
-    /// when <c>UsingKafka</c> is given none (MassTransit.Kafka 8.5.11, <c>KafkaRegistrationRiderFactory.CreateRider</c>), so no
-    /// Ariva setting changes and only the rider's consumers get it (Ariva's producer has its own configuration). The rider logs
-    /// librdkafka's lines as <c>MassTransit.ReceiveTransport</c> at Debug.
+    /// and the consumer. Set through a <c>ClientConfig</c> in the host's container: since ARV-177 the rider is given Ariva's own
+    /// base (<c>KafkaClientConfig.Rider</c>), so MassTransit no longer takes the container's, and Ariva.Di copies its
+    /// <c>Debug</c> onto the rider (MessagingExtensions), so no Ariva setting changes and only the rider's consumers get it
+    /// (Ariva's producer has its own configuration). The rider logs librdkafka's lines as <c>MassTransit.ReceiveTransport</c>
+    /// at Debug.
     /// </summary>
     private const string LibrdkafkaDebug = "cgrp,consumer";
 

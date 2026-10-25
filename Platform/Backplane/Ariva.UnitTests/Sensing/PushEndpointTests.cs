@@ -45,6 +45,7 @@ public sealed class PushEndpointTests
     {
         public static bool Fail { get; set; }
         public static bool TimedOut { get; set; }
+        public static bool UnknownTopic { get; set; }
 
         /// <summary>When set, the push goes through this sink instead (ARV-167: the hosts' sink over Ariva's producer).</summary>
         public static ISensingSink Through { get; set; }
@@ -57,6 +58,9 @@ public sealed class PushEndpointTests
                 return through.PublishAsync(events, ct);
             if (Fail && TimedOut)
                 throw new Ariva.Infra.Messaging.Kafka.KafkaProduceTimeoutException("ariva.device.interval-count.v1", Ariva.Infra.Messaging.Kafka.KafkaProduce.SendTimeout);
+            // ARV-177: Ariva's producer creates no topic, so a send for a missing one fails as the client knows it (at once).
+            if (Fail && UnknownTopic)
+                throw new Confluent.Kafka.ProduceException<string, byte[]>(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_UnknownTopic), null);
             if (Fail)
                 throw new InvalidOperationException("broker down");
             lock (Published)
@@ -132,14 +136,16 @@ public sealed class PushEndpointTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)] // ARV-166: a produce that reached its bound fails as a timeout, not a cancellation
-    public async Task Push_Should_Answer503WithRetryAfter_When_TheEventsCannotBeStored(bool timedOut)
+    [InlineData(false, false)]
+    [InlineData(true, false)] // ARV-166: a produce that reached its bound fails as a timeout, not a cancellation
+    [InlineData(false, true)] // ARV-177: a topic missing at deploy (the topics job not run) is the push's own failure: 503, sent again
+    public async Task Push_Should_Answer503WithRetryAfter_When_TheEventsCannotBeStored(bool timedOut, bool unknownTopic)
     {
         await using var host = Ingest();
         using var client = host.CreateClient();
         Sink.Fail = true;
         Sink.TimedOut = timedOut;
+        Sink.UnknownTopic = unknownTopic;
         try
         {
             var result = await PostAsync(client, "/api/v1/ingest/zones/Snake%20A/events", Canonical.Credential, JsonBody(Push.Replace("\"packageId\": 1", "\"packageId\": 2", StringComparison.Ordinal)));
@@ -148,11 +154,13 @@ public sealed class PushEndpointTests
             result.RetryAfter.Should().Be("5", "the device sends the push again after five seconds");
             result.Body.Should().NotContain("broker down", "the cause is logged, not returned");
             result.Body.Should().NotContain("acknowledged", "the cause is logged, not returned");
+            result.Body.Should().NotContain("Unknown topic", "the cause is logged, not returned");
         }
         finally
         {
             Sink.Fail = false;
             Sink.TimedOut = false;
+            Sink.UnknownTopic = false;
         }
     }
 

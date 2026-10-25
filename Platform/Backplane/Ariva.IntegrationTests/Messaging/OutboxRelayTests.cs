@@ -26,6 +26,16 @@ public sealed class OutboxProbe : EventBase
     public override string GetPartitionKey() => AlertId;
 }
 
+/// <summary>An event of another topic than <see cref="OutboxProbe"/>'s (ARV-177: one topic missing, the other present).</summary>
+[KafkaTopic(KafkaTopics.FlowNowcast)]
+public sealed class OutboxOtherProbe : EventBase
+{
+    public string ZoneId { get; set; }
+    public int Step { get; set; }
+
+    public override string GetPartitionKey() => ZoneId;
+}
+
 /// <summary>
 /// ARV-020 against PostgreSQL with script 0011: the outbox writes in the caller's transaction, the relay produces in
 /// order per key and holds a failed key back until its retry time while other keys carry on, only one relay leads at a
@@ -48,7 +58,7 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         await _host.ReadAsync<object>("DELETE FROM processed_event");
     }
 
-    private Task WriteAsync(bool commit, params OutboxProbe[] events) =>
+    private Task WriteAsync(bool commit, params Ariva.Core.Domain.Contracts.IEvent[] events) =>
         _host.AsCallerAsync<bool>(null, async services =>
         {
             var unitOfWork = services.GetRequiredService<IUnitOfWork>();
@@ -70,6 +80,8 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         NullLogger<OutboxRelay>.Instance);
 
     private static OutboxProbe Probe(string alert, int step) => new() { AlertId = alert, Step = step, CorrelationId = "corr-" + alert };
+
+    private static OutboxOtherProbe Other(string zone, int step) => new() { ZoneId = zone, Step = step, CorrelationId = "corr-" + zone };
 
     [Fact]
     public async Task Outbox_Should_WriteInTheCallersTransaction_When_EventsAreRaised()
@@ -363,6 +375,69 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
     }
 
     /// <summary>
+    /// ARV-177: an event whose topic is missing (Ariva's producer creates no topic, so the send fails as the client's
+    /// <c>Local_UnknownTopic</c>, classified as the Kafka transport classifies it) fails as its own failure: an attempt counted,
+    /// the row's backoff and its last error. Its topic is held until that backoff ends, on its other rows too (its other key
+    /// is not tried, and waits as long), and the other topic's events are sent in the same pass, in order per key. Before, the
+    /// failure ended the pass at the row, and every later row of any topic waited for the next pass.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_SkipOnlyTheMissingTopicAndSendTheOthers_When_AnEventsTopicIsMissing()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("M", 1), Other("O", 1), Probe("N", 1), Other("O", 2), Other("P", 1));
+        var transport = new RecordingTransport { UnknownTopicFor = KafkaTopics.AlertStateChanged };
+
+        var pass = await Relay(transport).RunOnceAsync(Ct);
+
+        pass.Should().Be(new RelayPass(true, 5, 3, 1, 1), "the missing topic's first row failed, its other key was skipped, the other topic's three rows sent");
+        transport.Sent.Select(Describe).Should().Equal("O1", "O2", "P1");
+        transport.Sent.Should().OnlyContain(m => m.Topic == KafkaTopics.FlowNowcast);
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE message_key = 'M'")).Should().Be(1, "the row's own failure counts");
+        (await _host.ReadAsync<DateTime>("SELECT next_attempt_on FROM outbox_message WHERE message_key = 'M'"))
+            .Should().Be((_host.Clock.GetUtcNow() + OutboxRelay.Backoff(1)).UtcDateTime, "it backs off as its own failure");
+        (await _host.ReadAsync<string>("SELECT last_error FROM outbox_message WHERE message_key = 'M'")).Should().Contain("Unknown topic");
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE message_key = 'N'")).Should().Be(0, "the topic's other key was not tried");
+        (await _host.ReadAsync<string>("SELECT last_error FROM outbox_message WHERE message_key = 'N'")).Should().BeNull();
+        (await _host.ReadAsync<DateTime>("SELECT next_attempt_on FROM outbox_message WHERE message_key = 'N'"))
+            .Should().Be((_host.Clock.GetUtcNow() + OutboxRelay.Backoff(1)).UtcDateTime, "the topic is held as long as its failed row");
+
+        // The topics job creates the topic: the topic's rows go once the hold has ended, in order.
+        transport.UnknownTopicFor = null;
+        (await Relay(transport).RunOnceAsync(Ct)).Claimed.Should().Be(0, "every row of the topic waits for the hold");
+        _host.Clock.Advance(OutboxRelay.Backoff(1) + TimeSpan.FromSeconds(1));
+        (await Relay(transport).RunOnceAsync(Ct)).Sent.Should().Be(2);
+        transport.Sent.Select(Describe).Should().Equal("O1", "O2", "P1", "M1", "N1");
+    }
+
+    /// <summary>
+    /// ARV-177, from the security review: a missing topic with more due rows than a pass claims (a batch of 2 here, 100 in a
+    /// host) cannot take every pass's batch. The first pass claims only the topic's rows and tries one; the topic is then held
+    /// on its rows, so the next pass, without any time passing, claims the other topic's rows and sends them. While the topic
+    /// stays missing only its oldest row tries it again, at the end of each hold, and the hold grows with that row's backoff.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_ClaimTheOtherTopics_When_AMissingTopicHasMoreDueRowsThanABatch()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("M", 1), Probe("N", 1), Probe("Q", 1), Other("O", 1), Other("P", 1));
+        var transport = new RecordingTransport { UnknownTopicFor = KafkaTopics.AlertStateChanged };
+
+        (await Relay(transport, batchSize: 2).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 2, 0, 1, 1), "the batch held only the missing topic's rows");
+        (await Relay(transport, batchSize: 2).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 2, 2, 0, 0), "the held topic is not claimed: the other topic's rows are");
+        transport.Sent.Select(Describe).Should().Equal("O1", "P1");
+        (await ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE topic = @topic AND attempts = 0 AND last_error IS NULL", KafkaTopics.AlertStateChanged))
+            .Should().Be(2, "only the oldest row tried the topic");
+
+        // Still missing when the hold ends: the oldest row tries again and the hold grows with its backoff.
+        _host.Clock.Advance(OutboxRelay.Backoff(1) + TimeSpan.FromSeconds(1));
+        (await Relay(transport, batchSize: 2).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 2, 0, 1, 1));
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE message_key = 'M'")).Should().Be(2);
+        (await ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE topic = @topic AND next_attempt_on = @at", KafkaTopics.AlertStateChanged,
+            (_host.Clock.GetUtcNow() + OutboxRelay.Backoff(2)).UtcDateTime)).Should().Be(3, "every row of the topic is held as long as the oldest one's backoff");
+    }
+
+    /// <summary>
     /// ARV-175: a dead-letter topic whose broker is away holds back only itself. The pass sends its events first (though they
     /// were written after the letters), then the dead letters; the failing letter's topic is held, its second letter waits
     /// untouched, and the other dead-letter topic is sent. The hold outlives the pass and the relay: it is kept on the topic's
@@ -443,11 +518,13 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE sent_on IS NULL AND last_error IS NULL")).Should().Be(1,
             "the topic's second letter was not tried");
 
-        // The control: the same failure on an event ends the pass before any letter.
+        // The control: a refusal that is not a topic's (the cluster's authorization) ends the pass at the first event, before
+        // any letter. A refusal of the event's own topic skips only that topic since ARV-177
+        // (Relay_Should_SkipOnlyTheMissingTopicAndSendTheOthers_When_AnEventsTopicIsMissing).
         await ResetAsync();
         await store.KeepAsync(Letter(KafkaTopics.AlertStateChanged, 4), Ct);
         await WriteAsync(true, Probe("E", 1), Probe("F", 1));
-        var refused = new RecordingTransport { RefusedFor = KafkaTopics.AlertStateChanged };
+        var refused = new RecordingTransport { ClusterRefused = true };
 
         (await Relay(refused).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 3, 0, 1, 2), "the first event's failure ends the pass");
         refused.Sent.Should().BeEmpty();
@@ -660,6 +737,12 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         /// <summary>A topic the broker refuses (ARV-175): a failure that is neither the broker's absence nor the row's own.</summary>
         public string RefusedFor { get; set; }
 
+        /// <summary>A topic the broker does not have (ARV-177): its sends fail as Ariva's producer fails them, at once.</summary>
+        public string UnknownTopicFor { get; set; }
+
+        /// <summary>Every send refused by the cluster's authorization: a failure of no topic in particular.</summary>
+        public bool ClusterRefused { get; set; }
+
         /// <summary>A topic whose sends never end and ignore their token (ARV-175: its partition leader is away).</summary>
         public string HangFor { get; set; }
 
@@ -667,7 +750,10 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         public Action<OutboxEnvelope> OnSend { get; set; }
 
         /// <summary>The broker's absence, as the Kafka transport classifies it (ARV-165).</summary>
-        public bool IsBrokerUnavailable(Exception error) => error is TimeoutException { Message: "Local: Message timed out" };
+        public bool IsBrokerUnavailable(Exception error) => error is TimeoutException { Message: "Local: Message timed out" } || KafkaProduce.IsBrokerUnavailable(error);
+
+        /// <summary>A topic missing or refused, as the Kafka transport classifies it (ARV-177).</summary>
+        public bool IsTopicRefused(Exception error) => KafkaProduce.IsTopicRefused(error);
 
         public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
         {
@@ -678,6 +764,10 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
                 throw new TimeoutException("Local: Message timed out");
             if (string.Equals(message.Topic, RefusedFor, StringComparison.Ordinal))
                 throw new Confluent.Kafka.KafkaException(Confluent.Kafka.ErrorCode.TopicAuthorizationFailed);
+            if (string.Equals(message.Topic, UnknownTopicFor, StringComparison.Ordinal))
+                throw new Confluent.Kafka.ProduceException<string, byte[]>(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_UnknownTopic), null);
+            if (ClusterRefused)
+                throw new Confluent.Kafka.KafkaException(Confluent.Kafka.ErrorCode.ClusterAuthorizationFailed);
             if (Catalog is not null && !Catalog.TryResolve(message.MessageType, out _))
                 throw new UnknownEventTypeException(message.MessageType);
             using var payload = JsonDocument.Parse(message.Payload);

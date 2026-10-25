@@ -235,6 +235,15 @@ public sealed class KafkaProduce : IDisposable
         _ => false
     };
 
+    /// <summary>
+    /// Whether a send's failure says its topic is missing or refused to this principal (ARV-177): the broker's unknown topic,
+    /// the client's (once it knows the topic is missing, every later send for it fails so at once), or the topic's
+    /// authorization. The row's own failure, but one every row of the topic meets, so the relay holds the topic until that
+    /// row's backoff ends.
+    /// </summary>
+    public static bool IsTopicRefused(Exception error) =>
+        error is KafkaException { Error.Code: ErrorCode.UnknownTopicOrPart or ErrorCode.Local_UnknownTopic or ErrorCode.TopicAuthorizationFailed };
+
     /// <summary>Whether Ariva may produce to <paramref name="topic"/>.</summary>
     public static bool IsProducible(string topic) => topic is not null && Producible.Contains(topic);
 
@@ -514,11 +523,13 @@ public sealed class KafkaProduce : IDisposable
     }
 
     /// <summary>
-    /// Whether a broker answers a metadata request through the current client within <paramref name="timeout"/> (ARV-165):
-    /// a dependent admin client on the producer's handle, so the probe opens no connection of its own and sees what the
-    /// producer sees. At most one probe runs at a time, and a result is reused for a second, so a burst of readiness
-    /// requests asks the broker once. Never throws: a broker that does not answer, a client in its fatal gap or a disposed
-    /// producer is false.
+    /// Whether a broker describes the cluster through the current client within <paramref name="timeout"/> (ARV-165): a
+    /// dependent admin client on the producer's handle, so the probe opens no connection of its own and sees what the
+    /// producer sees. The request names no topic (ARV-177): DescribeCluster asks for the brokers and the controller only,
+    /// so its answer does not grow with the cluster's topics (a metadata request for every topic did), and nothing in it can
+    /// create a topic (a metadata request naming one could, on a broker with <c>auto.create.topics.enable</c>). At most one
+    /// probe runs at a time, and a result is reused for a second, so a burst of readiness requests asks the broker once.
+    /// Never throws: a broker that does not answer, a client in its fatal gap or a disposed producer is false.
     /// </summary>
     public Task<bool> BrokersAnswerAsync(TimeSpan timeout)
     {
@@ -530,7 +541,7 @@ public sealed class KafkaProduce : IDisposable
                 return running;
             var client = Volatile.Read(ref _current).Client;
             _probeStarted = _time.GetTimestamp();
-            _probe = Task.Run(() => Probe(client, timeout));
+            _probe = Task.Run(() => ProbeAsync(client, timeout));
             return _probe;
         }
     }
@@ -538,16 +549,17 @@ public sealed class KafkaProduce : IDisposable
     /// <summary>How long a probe's result is reused.</summary>
     private static readonly TimeSpan ProbeReuse = TimeSpan.FromSeconds(1);
 
-    private bool Probe(IProducer<string, byte[]> client, TimeSpan timeout)
+    private async Task<bool> ProbeAsync(IProducer<string, byte[]> client, TimeSpan timeout)
     {
         try
         {
             using var admin = new DependentAdminClientBuilder(client.Handle).Build();
-            return admin.GetMetadata(timeout).Brokers.Count > 0;
+            var cluster = await admin.DescribeClusterAsync(new Confluent.Kafka.Admin.DescribeClusterOptions { RequestTimeout = timeout }).ConfigureAwait(false);
+            return cluster.Nodes.Count > 0;
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
-            _logger.LogDebug("Kafka brokers did not answer a metadata request within {Seconds:F0} s ({Error})", timeout.TotalSeconds, e.GetType().Name);
+            _logger.LogDebug("Kafka brokers did not describe the cluster within {Seconds:F0} s ({Error})", timeout.TotalSeconds, e.GetType().Name);
             return false;
         }
     }
@@ -696,6 +708,8 @@ internal sealed class KafkaOutboxTransport(KafkaProduce produce, EventCatalog ca
     public bool IsReady => produce.IsReady;
 
     public bool IsBrokerUnavailable(Exception error) => KafkaProduce.IsBrokerUnavailable(error);
+
+    public bool IsTopicRefused(Exception error) => KafkaProduce.IsTopicRefused(error);
 
     public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
     {

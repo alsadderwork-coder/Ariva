@@ -167,6 +167,42 @@ public sealed class ProducerHardeningTests
         KafkaProduce.IsBrokerUnavailable(new ProduceException<string, byte[]>(new Error(code), null)).Should().Be(unavailable);
     }
 
+    [Theory]
+    [InlineData(ErrorCode.UnknownTopicOrPart, true)]
+    [InlineData(ErrorCode.Local_UnknownTopic, true)]
+    [InlineData(ErrorCode.TopicAuthorizationFailed, true)]
+    [InlineData(ErrorCode.ClusterAuthorizationFailed, false)]
+    [InlineData(ErrorCode.MsgSizeTooLarge, false)]
+    [InlineData(ErrorCode.Local_MsgTimedOut, false)]
+    [InlineData(ErrorCode.Local_AllBrokersDown, false)]
+    public void IsTopicRefused_Should_NameTheFailuresOfATopicAlone(ErrorCode code, bool refused)
+    {
+        // ARV-177: a missing topic, or one this principal may not write to, fails every row of that topic the same way, so the
+        // relay skips the topic for the rest of its pass; a failure of the cluster or of the row itself is not the topic's.
+        KafkaProduce.IsTopicRefused(new KafkaException(new Error(code))).Should().Be(refused);
+        KafkaProduce.IsTopicRefused(new ProduceException<string, byte[]>(new Error(code), null)).Should().Be(refused);
+        KafkaProduce.IsTopicRefused(new InvalidOperationException("Outbox row 1 has an empty payload.")).Should().BeFalse();
+        KafkaProduce.IsTopicRefused(new ObjectDisposedException(nameof(KafkaProduce))).Should().BeFalse();
+    }
+
+    [Fact]
+    public void KafkaClientConfig_Should_LetNoClientCreateATopicAndFailAMissingTopicBeforeTheMessageTimeout()
+    {
+        // ARV-177: no Ariva client asks a broker to create a topic it names (librdkafka's default for a producer-type client,
+        // the admin client included, is to ask), and a send for a missing topic fails as the send's own failure
+        // (UnknownTopicOrPart, then Local_UnknownTopic) well before the message timeout, which reads as the broker being away.
+        // Proven on a broker that creates topics on request: Ariva.IntegrationTests, ImplicitTopicTests.
+        var settings = new KafkaSettings { Enabled = true, BootstrapServers = "localhost:9092", ServiceName = "unit" };
+        var producer = KafkaClientConfig.Producer(settings);
+
+        producer.AllowAutoCreateTopics.Should().BeFalse();
+        KafkaClientConfig.Admin(settings).AllowAutoCreateTopics.Should().BeFalse("the readiness probe's and the provisioner's admin clients");
+        KafkaClientConfig.Consumer(settings, "ariva-unit.probe").AllowAutoCreateTopics.Should().BeFalse("the stream engine's consumer");
+        KafkaClientConfig.Rider().AllowAutoCreateTopics.Should().BeFalse("MassTransit's topic endpoints");
+        producer.TopicMetadataPropagationMaxMs.Should().Be(KafkaClientConfig.TopicPropagationMilliseconds);
+        KafkaClientConfig.TopicPropagationMilliseconds.Should().BeLessThan(KafkaClientConfig.MessageTimeoutMilliseconds);
+    }
+
     [Fact]
     public void IsBrokerUnavailable_Should_CountTheProducersOwnStatesAsUnavailable()
     {
@@ -188,8 +224,8 @@ public sealed class ProducerHardeningTests
         var notStarted = await check.CheckHealthAsync(context, Ct);
         notStarted.Status.Should().Be(HealthStatus.Degraded, "a producer the host has not started cannot send");
 
-        // Started, but the client gives no handle a metadata request could use (as a client whose brokers are all away gives
-        // no answer): the probe ends false within its bound, never with an exception.
+        // Started, but the client gives no handle the probe's DescribeCluster request could use (as a client whose brokers are
+        // all away gives no answer): the probe ends false within its bound, never with an exception.
         produce.Started();
         var clock = Stopwatch.StartNew();
         var noBroker = await check.CheckHealthAsync(context, Ct);

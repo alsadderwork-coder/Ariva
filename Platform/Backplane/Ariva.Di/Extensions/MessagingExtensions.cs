@@ -222,8 +222,13 @@ public static partial class MessagingExtensions
                 foreach (var consumer in builder.Consumers)
                     consumer.Register(rider);
 
-                rider.UsingKafka((context, kafka) =>
+                // ARV-177: the rider's clients on Ariva's base, so none of them asks a broker to create a topic either.
+                rider.UsingKafka(KafkaClientConfig.Rider(), (context, kafka) =>
                 {
+                    // A ClientConfig in the container, which MassTransit takes as the base only when UsingKafka is given none,
+                    // still gives the rider its librdkafka debug contexts (CommitRaceTests' diagnostics); nothing else of it.
+                    if (context.GetService<ClientConfig>()?.Debug is { Length: > 0 } debug)
+                        kafka.Debug = debug;
                     kafka.Host(settings.BootstrapServers, host =>
                     {
                         if (!string.IsNullOrEmpty(settings.SslCaLocation))

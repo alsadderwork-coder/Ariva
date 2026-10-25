@@ -33,6 +33,13 @@ public interface IOutboxTransport
     /// is wrong (ARV-165): such a failure does not count against the row (no attempt, no growing backoff).
     /// </summary>
     bool IsBrokerUnavailable(Exception error) => false;
+
+    /// <summary>
+    /// Whether <paramref name="error"/> from <see cref="SendAsync"/> says the row's topic is missing or refused to this
+    /// principal (ARV-177): the row's own failure, which every row of that topic would meet in the same way, so the relay
+    /// holds the topic until the row's backoff ends and the other topics carry on.
+    /// </summary>
+    bool IsTopicRefused(Exception error) => false;
 }
 
 /// <summary>A send that did not end within what was left of the relay pass's time (ARV-166): the broker is slow or away.</summary>
@@ -67,6 +74,9 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// does not count against the row: no attempt, no growing backoff, the row is due again after
 /// <see cref="OutboxRelaySettings.BrokerRetrySeconds"/>. So after an outage every key resumes within that wait of the
 /// broker's return, whatever the outage's length. Any other failure counts and backs off exponentially, up to five minutes.
+/// An event row whose topic is missing or refused to this principal (<see cref="IOutboxTransport.IsTopicRefused"/>, ARV-177)
+/// counts as well, and its topic is held until that row's backoff ends (kept on the topic's unsent rows, as a dead-letter
+/// topic's hold is), so the topic's rows cannot fill a pass's batch meanwhile and the other topics carry on.
 /// </para>
 /// <para>
 /// ARV-175: dead letters never hold events up for long. A pass claims up to a batch of event rows and then up to a batch of
@@ -285,6 +295,19 @@ public sealed class OutboxRelay(
                 else
                     logger.LogWarning(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) not sent; key held back", row.Seq, row.MessageType, row.Id, row.Topic);
 
+                // ARV-177: an event's topic missing or refused to this principal fails every row of it the same way (at once
+                // after the first). The topic is held until this row's backoff ends, on its unsent rows as well, so no claim
+                // fills its batch with them meanwhile and the other topics carry on; this row alone tries the topic again, as
+                // its attempts and backoff grow (at most five minutes). A dead letter's keeps ARV-175's topic hold below.
+                if (!deadLetter && transport.IsTopicRefused(e))
+                {
+                    var until = now + Backoff(row.Attempts + 1);
+                    await HoldTopicUntilAsync(connection, transaction, row.Topic, until, heldTopics, ct);
+                    logger.LogWarning("Topic {Topic} is missing or refused to this principal; its rows wait until {Until:O} (the failed row's backoff) while the other topics carry on",
+                        row.Topic, until);
+                    continue;
+                }
+
                 // A row that cannot be read (unknown type, bad payload) only holds back its key. Anything else is the
                 // broker or the network (a send past the pass's time included, and a transport already disposed): the rest
                 // of the batch would fail the same way after the produce timeout, so the pass ends here and the remaining
@@ -323,7 +346,20 @@ public sealed class OutboxRelay(
     {
         if (!IsDeadLetterTopic(row.Topic))
             return false;
-        heldTopics.Add(row.Topic);
+        await HoldTopicUntilAsync(connection, transaction, row.Topic, (timeProvider.GetUtcNow() + DeadLetterTopicHold).UtcDateTime, heldTopics, ct);
+        logger.LogWarning("Dead-letter topic {Topic} held back for {Seconds} s after a failure that is not its letter's own; events and the other topics carry on",
+            row.Topic, DeadLetterTopicHold.TotalSeconds);
+        return true;
+    }
+
+    /// <summary>
+    /// Skips <paramref name="topic"/> for the rest of the pass and keeps every unsent row of it due no earlier than
+    /// <paramref name="until"/> (one constant statement, in the pass's transaction), so every relay leaves it alone until then.
+    /// </summary>
+    private static async Task HoldTopicUntilAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string topic, DateTime until,
+        HashSet<string> heldTopics, CancellationToken ct)
+    {
+        heldTopics.Add(topic);
         await using var command = new NpgsqlCommand(
             """
             UPDATE outbox_message
@@ -332,12 +368,9 @@ public sealed class OutboxRelay(
             """,
             connection,
             transaction);
-        command.Parameters.AddWithValue("until", (timeProvider.GetUtcNow() + DeadLetterTopicHold).UtcDateTime);
-        command.Parameters.AddWithValue("topic", row.Topic);
+        command.Parameters.AddWithValue("until", until);
+        command.Parameters.AddWithValue("topic", topic);
         await command.ExecuteNonQueryAsync(ct);
-        logger.LogWarning("Dead-letter topic {Topic} held back for {Seconds} s after a failure that is not its letter's own; events and the other topics carry on",
-            row.Topic, DeadLetterTopicHold.TotalSeconds);
-        return true;
     }
 
     /// <summary>The bound a send ran out of, for the row's error: the pass's time.</summary>
