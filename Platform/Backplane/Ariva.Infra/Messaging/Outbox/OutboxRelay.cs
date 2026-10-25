@@ -73,7 +73,7 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// dead-letter rows (<c>.dlq.v1</c> topics), each claim in <c>seq</c> order, and sends the events first, so a backlog of dead
 /// letters neither crowds events out of the batch nor goes before them (rows of different topics are independent, so no key's
 /// order changes). The dead letters get at most <see cref="DeadLetterPassBound"/> of the pass: each send is bounded by what is
-/// left of it, and when it is used the rest wait untouched for the next pass. A dead-letter row that fails for a reason that is
+/// left of it, and when it is used (or a send was cut at the share's end, ARV-164b) the rest wait untouched for the next pass. A dead-letter row that fails for a reason that is
 /// not its own (the broker unavailable, the dead letters' share, or any failure that is not the row's) holds back its topic for
 /// <see cref="DeadLetterTopicHold"/>: the rest of the pass skips the topic's rows, and every unsent row of the topic is due no
 /// earlier than the hold's end, so no relay claims them meanwhile, whichever leads, also after a restart. The other dead-letter
@@ -215,6 +215,10 @@ public sealed class OutboxRelay(
         var sent = new List<long>();
         int failed = 0, heldBack = 0;
         long? deadLettersStarted = null;
+        // Set once a dead letter's send has run to the end of the dead letters' share (ARV-164b): the share is spent then,
+        // whatever the time stamps read a moment later. The send's bound is a timer, which can fire a few milliseconds before
+        // the time stamps show the share's end, and the next letter would be sent with those milliseconds.
+        var deadLettersSpent = false;
 
         foreach (var row in rows)
         {
@@ -230,7 +234,7 @@ public sealed class OutboxRelay(
             if (deadLetter)
             {
                 deadLettersStarted ??= timeProvider.GetTimestamp();
-                var deadLettersLeft = DeadLetterPassBound - timeProvider.GetElapsedTime(deadLettersStarted.Value);
+                var deadLettersLeft = deadLettersSpent ? TimeSpan.Zero : DeadLetterPassBound - timeProvider.GetElapsedTime(deadLettersStarted.Value);
                 if (deadLettersLeft < left)
                     (left, shareBound) = (deadLettersLeft, true);
             }
@@ -265,6 +269,7 @@ public sealed class OutboxRelay(
                     row.Seq, row.MessageType, row.Id, row.Topic, BrokerRetry.TotalSeconds);
                 // A send cut short by the pass's own time is not its topic's fault: the pass ends, as for an event (ARV-175).
                 var passTimeUsed = e is OutboxPassTimeoutException && !shareBound;
+                deadLettersSpent |= e is OutboxPassTimeoutException && shareBound;
                 if (!passTimeUsed && await HoldTopicAsync(connection, transaction, row, heldTopics, ct))
                     continue;
                 heldBack += rows.Count - rows.IndexOf(row) - 1;

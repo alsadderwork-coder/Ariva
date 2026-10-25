@@ -5,6 +5,7 @@ import { accounts, call, databaseAvailable, integrationSeedsFile, login, totpCod
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
+import { announced } from '../support/raw-http';
 
 // ARV-044: AIDX 22.1 inbound. An AODB client with flights:write for DMO pushes IATA_AIDX_FlightLegNotifRQ messages
 // (the role the ARV-029 emulator will play); legs arriving at or leaving DMO are applied as the client's own feed and
@@ -184,17 +185,16 @@ test('XXE, entity expansion, external DTDs, profile breaks, deep nesting, oversi
 		expectNoLeak(text, why);
 		for (const echoed of ['passwd', '169.254', "OR '1'='1", '<script>', 'meta-data']) expect(text, why).not.toContain(echoed);
 	}
-	// Over the size limit the host answers 413 from the Content-Length and stops reading, so the client may instead see
-	// the connection closed while it is still sending (as in flight-schedules.spec.ts). Either way nothing is read.
-	const oversized = await push(message(good + '<!--' + 'x'.repeat(5_300_000) + '-->')).then(
-		async (r) => {
-			expect(r.headers()['content-type'], 'more than 5 MB').toContain('application/problem+json');
-			expectNoLeak(await r.text(), 'more than 5 MB');
-			return r.status();
-		},
-		(e: Error) => `closed: ${e.message}`
-	);
-	expect([413, 'closed: fetch failed'], 'more than 5 MB').toContain(oversized);
+	// Over the size limit the host answers 413 from the Content-Length and stops reading. The request announces 5.3 MB and
+	// sends none of it (ARV-164b, tests/support/raw-http.ts): the answer proves nothing was read, where a client streaming the
+	// body could see the connection closed instead.
+	const oversized = await announced('POST', url(), {
+		length: 5_300_000,
+		headers: { 'Content-Type': 'application/xml', Authorization: `Bearer ${aodb.token}`, 'X-Forwarded-For': inside() }
+	});
+	await expectStatus(oversized, 413, 'more than 5 MB');
+	expect(oversized.headers()['content-type'], 'more than 5 MB').toContain('application/problem+json');
+	expectNoLeak(await oversized.text(), 'more than 5 MB');
 	const rows = await query(`SELECT 1 FROM flight_leg WHERE flight_key = $1`, [`RJ${run + 10}-${day}-A`]);
 	expect(rows, 'nothing of a refused message was applied').toHaveLength(0);
 });

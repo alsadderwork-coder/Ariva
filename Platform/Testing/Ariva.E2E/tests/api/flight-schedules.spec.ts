@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
 import pg from 'pg';
-import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
+import { accounts, call, clientAddress, databaseAvailable, signIn } from '../support/accounts';
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
+import { announced } from '../support/raw-http';
 
 // ARV-046: SSIM schedule files. An administrator previews what a file holds for DMO (legs arriving at or leaving its
 // airport, expanded per operating date within the horizon, with the lines Ariva could not read), then imports exactly
@@ -131,13 +132,15 @@ test('malformed lines are reported by number without echoing them; hostile and o
 		expectNoLeak(await refused.text(), why);
 	}
 
-	// Past the request limit Kestrel answers 413 from the Content-Length and stops reading, so the client may instead see
-	// the connection closed while it is still sending (behind the ingress, its 21m limit answers 413 first). Never read.
-	const oversized = await upload('preview', 'x'.repeat(21 * 1024 * 1024)).then(
-		(r) => r.status(),
-		(e: Error) => `closed: ${e.message}`
-	);
-	expect([413, 'closed: fetch failed'], 'over the request limit').toContain(oversized);
+	// Past the request limit Kestrel answers 413 from the Content-Length and stops reading (behind the ingress, its 21m limit
+	// answers 413 first). The request announces a 21 MB form and sends none of it (ARV-164b, tests/support/raw-http.ts): the
+	// answer proves nothing was read, where a client streaming the body could see the connection closed instead.
+	const oversized = await announced('POST', `${api()}/preview`, {
+		length: 21 * 1024 * 1024,
+		headers: { 'Content-Type': 'multipart/form-data; boundary=ariva-e2e-oversized', Authorization: `Bearer ${admin}`, 'X-Forwarded-For': clientAddress() }
+	});
+	await expectStatus(oversized, 413, 'over the request limit');
+	expectNoLeak(await oversized.text(), 'over the request limit');
 
 	expect((await upload('preview', file(leg(number, 'DOH', 'DMO')), { horizonDays: '500' })).status(), 'horizon 1 to 200').toBe(400);
 	expect((await upload('import', file(leg(number, 'DOH', 'DMO')), { previewToken: 'not a token!' })).status()).toBe(400);

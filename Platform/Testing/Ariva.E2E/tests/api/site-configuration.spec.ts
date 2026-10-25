@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import pg from 'pg';
-import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode, type Account } from '../support/accounts';
+import { accounts, call, clientAddress, databaseAvailable, login, signIn, unusedTotpCode, type Account } from '../support/accounts';
 import { createAirport } from '../support/airports';
 import { hosts } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
+import { announced } from '../support/raw-http';
 
 // ARV-122a: a site's configuration exported as one bundle and imported into an empty site, through the API. Export and
 // import are critical actions (SiteConfiguration.Transfer, system administrators, a second factor in the last 15
@@ -430,19 +431,15 @@ test('a tampered bundle is refused with a fixed text and writes nothing', async 
 
 test('an oversized body answers 413 and a deeply nested one 400', async () => {
 	const headers = { 'Content-Type': 'application/json' };
-	const oversized = `{"formatVersion":1,"sourceSite":"${source}","parts":{"topology":"${'A'.repeat(21 * 1024 * 1024)}"}}`;
 	// Past the endpoint's limit the host answers 413 from the Content-Length without reading, and closes the connection
-	// (Connection: close, ARV-233), so the client may instead see it closed while still sending (as in flight-schedules.spec.ts
-	// and aidx.spec.ts; seen once in ARV-233's story gate). Either way nothing is read.
-	const tooLarge = await call('POST', configuration(spare), { token: stepped, raw: oversized, headers }).then(
-		async (r) => {
-			await expectStatus(r, 413, 'body over 20 MB');
-			expect(r.headers()['connection'], 'an unread body closes its connection').toBe('close');
-			return r.status();
-		},
-		(e: Error) => `closed: ${e.message}`
-	);
-	expect([413, 'closed: fetch failed'], 'body over 20 MB').toContain(tooLarge);
+	// (Connection: close, ARV-233). The request announces 21 MB and sends none of it (ARV-164b, tests/support/raw-http.ts):
+	// the answer proves nothing was read, where a client streaming the body could see the connection closed instead.
+	const tooLarge = await announced('POST', configuration(spare), {
+		length: 21 * 1024 * 1024,
+		headers: { ...headers, Authorization: `Bearer ${stepped}`, 'X-Forwarded-For': clientAddress() }
+	});
+	await expectStatus(tooLarge, 413, 'body over 20 MB');
+	expect(tooLarge.headers()['connection'], 'an unread body closes its connection').toBe('close');
 
 	const bigPart = rehashed(exported.bundle, 'deskCodeMappings', Buffer.alloc(9 * 1024 * 1024, 0x20));
 	const partTooLarge = await call('POST', configuration(spare), { token: stepped, data: bigPart });

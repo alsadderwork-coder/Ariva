@@ -40,7 +40,13 @@ async function query<T = Record<string, unknown>>(sql: string, values: unknown[]
 	}
 }
 
-async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, seconds = 90): Promise<T> {
+// The Integration host's poller claims due AMAN pulls every 15 s (AmanPoller.Tick), a new endpoint at the first tick after
+// it is saved, and the pull itself takes a few seconds here: 25 s for what a pull writes. A pull of an empty feed would leave
+// the position at 0 until the next poll (poll_seconds, 30 s, later), so the test plays the minute before it registers the
+// endpoints (ARV-164b: registered first, a tick in between pulled an empty feed and the test ran past its 30 s).
+const pulledWithin = 25;
+
+async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, seconds = pulledWithin): Promise<T> {
 	const end = Date.now() + seconds * 1000;
 	let value = await read();
 	while (!done(value) && Date.now() < end) {
@@ -94,16 +100,18 @@ test('an AMAN pull is registered only with TOTP client credentials below a feed 
 });
 
 test('the Integration host pulls every contract from the mock AMAN with a token and a TOTP code per call', async () => {
+	// The waits below (pulledWithin) and the calls around them.
+	test.setTimeout(45_000);
+	// The AMAN emulator fills the mock's feed when it plays a minute: before the endpoints exist, so their first pull finds it.
+	const played = await call('POST', `${feeds}/play`, { headers: operator, data: { minute: 1110 } });
+	await expectStatus(played, 200);
+
 	const created = await call('POST', endpoints, { token: admin, data: endpoint(`ap-${run}`, secret) });
 	await expectStatus(created, 201);
 	const id = (await created.json()).id as string;
 	expect(await created.text()).not.toContain(secret);
 	const wrong = await call('POST', endpoints, { token: admin, data: endpoint(`ap-${run}-w`, 'not-the-secret-of-this-client') });
 	await expectStatus(wrong, 201);
-
-	// The AMAN emulator fills the mock's feed when it plays a minute.
-	const played = await call('POST', `${feeds}/play`, { headers: operator, data: { minute: 1110 } });
-	await expectStatus(played, 200);
 
 	const pulled = await until(
 		() =>
@@ -113,7 +121,7 @@ test('the Integration host pulls every contract from the mock AMAN with a token 
 			),
 		(rows) => rows.some((r) => r.contract === 'desk-interval-stats' && Number(r.after) > 0)
 	);
-	expect(pulled.map((r) => r.contract)).toContain('desk-interval-stats');
+	expect(Number(pulled.find((r) => r.contract === 'desk-interval-stats')?.after ?? 0), 'desk-interval-stats pulled past position 0').toBeGreaterThan(0);
 	const status = await until(
 		() => query<{ last_status: string; consecutive_failures: number }>(`SELECT last_status, consecutive_failures FROM outbound_endpoint WHERE id = $1`, [id]),
 		(rows) => rows[0]?.last_status?.startsWith('Pulled') === true

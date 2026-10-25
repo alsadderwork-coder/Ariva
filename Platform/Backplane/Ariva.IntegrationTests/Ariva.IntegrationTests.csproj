@@ -4,6 +4,10 @@
         <OutputType>Exe</OutputType>
         <IsPackable>false</IsPackable>
         <IsTestProject>true</IsTestProject>
+        <!-- Microsoft Testing Platform in the test executable (ARV-164b): the integration gate and CI run it as the unit suite
+             runs (scripts/verify.mjs), since under dotnet test the hosts' console logs share the xUnit runner's message
+             stream, which the VSTest adapter reads and from which it drops a line it cannot read (ARV-164). -->
+        <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     </PropertyGroup>
 
     <!-- ARV-139c: the development-only NBJ-BC1 seed and its tests exist in Debug builds only (Ariva.Infra.csproj). -->

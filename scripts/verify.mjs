@@ -38,7 +38,8 @@
 //   all          everything except integration (add --with-integration)
 //   story        the per-story gate (test cadence, docs/harness/test-cadence.md): backend and docs always; web when the
 //                web app changed; integration and E2E scoped to the story, or in full when the change is wide.
-//                --specs <file,...> the story's E2E specs (tests/api/x.spec.ts); --integration "<dotnet test filter>";
+//                --specs <file,...> the story's E2E specs (tests/api/x.spec.ts); --integration "FullyQualifiedName~A|..."
+//                (methods whose fully qualified name holds A, or another term; ARV-164b: only this shape, run as --filter-method);
 //                --base <ref> compare with this commit (default HEAD: the uncommitted story)
 //   checkpoint   the full suite on a committed tree every few stories and at each phase end: backend, docs, web, integration,
 //                visual, e2e and mutation on the engine code changed since the last checkpoint; records backlog/checkpoint.json
@@ -54,6 +55,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkArtifacts, derivedVariables } from '../Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs';
+import { methodFilter } from './test-counts.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = path.join(ROOT, 'Platform', 'Frontplane', 'Ariva.Web');
@@ -64,6 +66,8 @@ const VALUE_FLAGS = new Set(['--specs', '--integration', '--base', '--mutation-b
 const scope = args.find((a, i) => !a.startsWith('--') && !VALUE_FLAGS.has(args[i - 1])) || 'backend';
 const PLAN = args.includes('--plan');
 const results = [];
+// Set by the solution build: the integration step builds its own project only when no solution build ran before it.
+let solutionBuilt = false;
 
 // Telemetry off for every child process (2026-10-09): the Microsoft Testing Platform reports usage from every test host it
 // starts, the network proxy refuses it, and Stryker, which starts hosts all the time, took 80 minutes for its initial test
@@ -300,7 +304,6 @@ const E2E_SMOKE = [
 // Values from the command line reach git, dotnet and (on Windows, through the npx shim) a shell: fixed shapes only.
 // ARV-128: the release smoke suite's specs (tests/smoke) too; its probes (tests/smoke/probes) run only through tests/api/smoke-guard.spec.ts.
 const SPEC = /^tests\/(api|functional|smoke)\/[a-z0-9-]+\.spec\.ts$/;
-const TEST_FILTER = /^[A-Za-z0-9_.~=!|&]{1,400}$/;
 // ARV-160: never a leading hyphen, which git would read as an option (--cached, -S<text>) rather than a revision.
 const GIT_REF = /^(?!-)[A-Za-z0-9_./^~-]{1,100}$/;
 const SHA = /^[0-9a-f]{7,40}$/;
@@ -357,10 +360,10 @@ function storyGate() {
   const refused = [
     ...(GIT_REF.test(base) ? [] : ['--base']),
     ...specs.filter(s => !SPEC.test(s) || !fs.existsSync(path.join(E2E, s))).map(s => `--specs ${s.slice(0, 80)}`),
-    ...(filter === undefined || TEST_FILTER.test(filter) ? [] : ['--integration'])
+    ...(filter === undefined || methodFilter(filter) ? [] : ['--integration'])
   ];
   if (refused.length) {
-    results.push({ name: `story arguments refused (${refused.join('; ')}); specs are tests/api|functional|smoke/<name>.spec.ts files that exist`, ok: false });
+    results.push({ name: `story arguments refused (${refused.join('; ')}); specs are tests/api|functional|smoke/<name>.spec.ts files that exist, the integration filter FullyQualifiedName~<name> terms joined by |`, ok: false });
     return;
   }
   const files = changedFiles(base);
@@ -376,7 +379,7 @@ function storyGate() {
   if (files.some(f => WEB_CHANGED.test(f))) steps.web();
 
   if (wide.length || newScript || (persistence && filter === undefined)) steps.integration();
-  else if (persistence) run('integration tests (story filter)', 'dotnet', ['test', 'Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj', '--filter', filter]);
+  else if (persistence) steps.integration(filter);
   else results.push({ name: 'integration tests (no persistence change)', ok: true, skipped: true });
 
   if (wide.length) steps.e2e();
@@ -445,7 +448,7 @@ function checkpointGate() {
 
 const steps = {
   quick: () => { run('security scan (changed files)', 'node', ['scripts/security/scan.mjs', '--changed']); run('root search guard self-test', 'node', ['.claude/hooks/root-search.test.mjs']); docsCheck(); windowsPathsCheck(); },
-  build: () => run('dotnet build', 'dotnet', ['build', 'Ariva.slnx', '-c', 'Debug', ...(args.includes('--no-restore') ? ['--no-restore'] : [])]),
+  build: () => (solutionBuilt = run('dotnet build', 'dotnet', ['build', 'Ariva.slnx', '-c', 'Debug', ...(args.includes('--no-restore') ? ['--no-restore'] : [])])),
   unit: () => {
     steps.build();
     // The scenario engine's golden fingerprints must come from the current sim.js (ARV-027); the unit tests check the port against them.
@@ -466,7 +469,26 @@ const steps = {
     run('unit test count guard (every listed case has its results)', 'node', ['scripts/test-count-guard.mjs', '--dll', unitDll,
       '--trx', path.join(ROOT, '.verify', 'unit-tests.trx')]);
   },
-  integration: () => run('integration tests', 'dotnet', ['test', 'Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj']),
+  // ARV-164b: as the unit suite, the test executable runs the integration suite itself (Microsoft Testing Platform, in process),
+  // not dotnet test, whose VSTest adapter reads the runner's messages from standard output, which the hosts' console logs share,
+  // and drops a line it cannot read; then the count guard, over the same filter. With a story filter (methodFilter, checked by
+  // storyGate), only the methods it names.
+  integration: (filter) => {
+    const dll = path.join('Platform', 'Backplane', 'Ariva.IntegrationTests', 'bin', 'Debug', 'net10.0', 'Ariva.IntegrationTests.dll');
+    const trx = path.join(ROOT, '.verify', 'integration-tests.trx');
+    const options = filter === undefined ? [] : methodFilter(filter) ?? [];
+    if (filter !== undefined && options.length === 0) {
+      results.push({ name: 'integration tests (the filter is not FullyQualifiedName~<name> terms joined by |)', ok: false });
+      return;
+    }
+    if (!solutionBuilt) run('dotnet build (integration tests)', 'dotnet', ['build', 'Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj', '-c', 'Debug']);
+    // A run that writes no TRX must not be judged by the last run's.
+    if (!PLAN) fs.rmSync(trx, { force: true });
+    run(filter === undefined ? 'integration tests' : 'integration tests (story filter)', 'dotnet',
+      [dll, '--results-directory', path.join(ROOT, '.verify'), '--report-xunit-trx', '--report-xunit-trx-filename', 'integration-tests.trx', ...options]);
+    run('integration test count guard (every listed case has its results)', 'node',
+      ['scripts/test-count-guard.mjs', '--dll', dll, '--trx', trx, ...(options.length ? ['--', ...options] : [])]);
+  },
   web: () => {
     if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);
     run('web svelte-check', 'npm', ['run', 'check'], WEB);
@@ -553,6 +575,8 @@ const steps = {
     run('E2E expect message check self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs', '--self-test']);
     run('E2E expect messages hold no answer body', 'node', ['Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs']);
     run('E2E artifact secret check self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs', '--self-test']);
+    // ARV-164b: the client four security specs send their oversized requests with, refusing what is not a whole answer.
+    run('E2E raw HTTP client self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/raw-http.mjs', '--self-test']);
     // ARV-126: the backup and restore tooling. The wrapper's validation and argument arrays; the database script's syntax
     // (its behaviour is proven by BackupRestoreTests in the integration suite). Without bash on the machine the second is skipped.
     run('ops tooling self-test (backup and restore wrapper)', 'node', ['scripts/ops/ariva-ops.mjs', '--self-test']);

@@ -17,8 +17,8 @@ The gate compares the working tree with `--base` (default `HEAD`, the uncommitte
 | Security: scanner self-test, full scan, base images, chart security, dependency audits, the E2E expect message check and the artifact check's self-test (ARV-152) | Always |
 | Docs text rules | Always |
 | Web: svelte-check, lint, build | When `Platform/Frontplane/Ariva.Web` changed |
-| Integration, filtered by `--integration` | When `Ariva.Infra` or `Ariva.IntegrationTests` changed |
-| Integration, full | When the change is wide, adds a Timescale script, or touches persistence without a filter |
+| Integration, filtered by `--integration` (`FullyQualifiedName~A\|FullyQualifiedName~B`: methods whose fully qualified name holds A or B, run as the test executable's `--filter-method *A*`; ARV-164b), then the count guard over the same filter | When `Ariva.Infra` or `Ariva.IntegrationTests` changed |
+| Integration, full, then the count guard (the test executable, not dotnet test, as the unit suite; ARV-164b) | When the change is wide, adds a Timescale script, or touches persistence without a filter |
 | E2E: the story's `--specs`, the spec files it changed, and the smoke set | When backend, web, simulator or E2E code changed |
 | E2E, full | When the change is wide |
 | No secret in the E2E report, output and traces (ARV-152) | After every Playwright run |

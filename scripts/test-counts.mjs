@@ -75,12 +75,45 @@ export function guardProblems(listing, trx) {
 /** The number of distinct methods in a listing. */
 export const listedMethods = text => countBy(listedCases(text)).size;
 
+const FILTER_OPTION = /^--filter-(not-)?(method|class|namespace)$/;
+const FILTER_VALUE = /^\*?[A-Za-z0-9_.]{1,200}\*?$/;
+
+/** Why the given test filter options are refused (pairs of a --filter-method, -class or -namespace option and a name), or null. */
+export function filterProblem(options) {
+  if (!Array.isArray(options) || options.length % 2 !== 0 || options.length > 80) return 'filter options come in pairs, at most 40';
+  const bad = options.find((a, i) => !(i % 2 ? FILTER_VALUE : FILTER_OPTION).test(String(a)));
+  return bad === undefined ? null : `not a filter option or name: ${String(bad).slice(0, 80)}`;
+}
+
+/**
+ * The story gate's integration filter in dotnet test's syntax (`FullyQualifiedName~A|FullyQualifiedName~B`, ARV-164b) as the
+ * test executable's options: `--filter-method *A*` for each term, which matches a method whose fully qualified name holds A,
+ * as `~` does. Null for any other shape (a filter the translation would change).
+ */
+export function methodFilter(expression) {
+  const terms = String(expression ?? '').split('|');
+  if (terms.length > 40) return null;
+  const options = [];
+  for (const term of terms) {
+    const m = /^FullyQualifiedName~([A-Za-z0-9_.]{1,120})$/.exec(term);
+    if (!m) return null;
+    options.push('--filter-method', `*${m[1]}*`);
+  }
+  return options;
+}
+
 /**
  * A test dll's own listing, or null when it cannot be had: dotnet only, with an argument array and no shell (the path comes
- * from verify.mjs, mutation-run.mjs or CI), without colour codes, and bounded in time.
+ * from verify.mjs, mutation-run.mjs or CI), without colour codes, and bounded in time. With filter options (those of the run,
+ * checked by filterProblem), the cases the run selected.
  */
-export function listing(dll) {
-  const r = spawnSync('dotnet', [dll, '--list-tests', '--no-ansi'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 5 * 60 * 1000 });
+export function listing(dll, filter = []) {
+  const problem = filterProblem(filter);
+  if (problem) {
+    console.error(`test-counts: ${problem}`);
+    return null;
+  }
+  const r = spawnSync('dotnet', [dll, '--list-tests', '--no-ansi', ...filter], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 5 * 60 * 1000 });
   if (r.status !== 0) {
     console.error(`test-counts: dotnet ${dll} --list-tests exited ${r.status ?? r.signal ?? r.error?.code}`);
     process.stderr.write(`${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-4000));

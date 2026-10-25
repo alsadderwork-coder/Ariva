@@ -53,7 +53,7 @@
       ],
       "priority": 3,
       "passes": false,
-      "notes": "Size M.",
+      "notes": "Size M. 2026-10-25 (ARV-164a, ARV-164b): ci.yml runs both test suites as their executables (Microsoft Testing Platform) and then scripts/test-count-guard.mjs on each TRX; Analyze-solution's DotNetCoreCLI test task still runs them through dotnet test (VSTest), whose adapter can drop a case, a failing one included, without failing the run. Run the executables and the guard as ci.yml does.",
       "dependsOn": [
         "ARV-216"
       ]

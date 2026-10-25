@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Proves a test run left out no case it can check (ARV-164a): every case the test executable lists has its results in the
 // run's TRX, method by method, and the TRX is a whole run's. The comparison and its limits: scripts/test-counts.mjs.
-//   node scripts/test-count-guard.mjs --dll <test dll> --trx <file>    list the dll's cases (dotnet <dll> --list-tests), compare
+//   node scripts/test-count-guard.mjs --dll <test dll> --trx <file> [-- <filter options>]
+//                                                                      list the dll's cases (dotnet <dll> --list-tests, with the
+//                                                                      run's own --filter-method, -class or -namespace options), compare
 //   node scripts/test-count-guard.mjs --list <file> --trx <file>       compare a saved listing
 //   node scripts/test-count-guard.mjs --self-test                      prove the comparison accepts and refuses what it should
 // A command line only: nothing here runs on import, and there is no condition that could skip it (a main check that compares
@@ -9,7 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { guardProblems, listedCases, listedMethods, listing, resultNames, trxProblems } from './test-counts.mjs';
+import { filterProblem, guardProblems, listedCases, listedMethods, listing, methodFilter, resultNames, trxProblems } from './test-counts.mjs';
 
 function report(text, trx) {
   const problems = guardProblems(text, trx);
@@ -62,7 +64,14 @@ function selfTest() {
   const checks = [
     ['character references decoded', resultNames('<UnitTestResult testName="M(s: &quot;&lt;&amp;&#x41;&#66;&quot;)" />')[0], 'M(s: "<&AB")'],
     ['an unknown entity or code point left as it is', resultNames('<UnitTestResult testName="M(&constructor;&#x110000;)" />')[0], 'M(&constructor;&#x110000;)'],
-    ['a whole TRX has no problem', trxProblems(whole).length, 0]
+    ['a whole TRX has no problem', trxProblems(whole).length, 0],
+    ['the story filter as method filters', JSON.stringify(methodFilter('FullyQualifiedName~CsvImports|FullyQualifiedName~A.B_c')),
+      JSON.stringify(['--filter-method', '*CsvImports*', '--filter-method', '*A.B_c*'])],
+    ...['FullyQualifiedName!~X', 'Category=Slow', 'FullyQualifiedName~X&FullyQualifiedName~Y', 'FullyQualifiedName~', 'FullyQualifiedName~a b', '']
+      .map(f => [`a filter of another shape refused: ${f || '(empty)'}`, methodFilter(f), null]),
+    ['method filters accepted', filterProblem(['--filter-method', '*X*', '--filter-not-class', 'A.B']), null],
+    ...[['--filter-method'], ['--filter-query', '/a'], ['--filter-method', '*X* --y'], ['--filter-method', 'A*B'], ['--results-directory', 'x']]
+      .map(f => [`filter options refused: ${f.join(' ')}`, filterProblem(f) === null, false])
   ];
   for (const [name, got, expected] of checks) {
     const ok = got === expected;
@@ -80,14 +89,17 @@ function read(file) {
   return fs.readFileSync(file, 'utf8');
 }
 
-const argv = process.argv.slice(2);
+const all = process.argv.slice(2);
+const cut = all.indexOf('--');
+const argv = cut >= 0 ? all.slice(0, cut) : all;
+const filter = cut >= 0 ? all.slice(cut + 1) : [];
 const option = name => (argv.indexOf(name) >= 0 ? argv[argv.indexOf(name) + 1] : undefined);
-if (argv[0] === '--self-test' && argv.length === 1) process.exit(selfTest());
-else if (argv.length === 4 && option('--trx') && (option('--dll') || option('--list'))) {
-  const text = option('--dll') ? listing(path.resolve(option('--dll'))) : read(path.resolve(option('--list')));
+if (argv[0] === '--self-test' && argv.length === 1 && cut < 0) process.exit(selfTest());
+else if (argv.length === 4 && option('--trx') && (option('--dll') || (option('--list') && cut < 0)) && filterProblem(filter) === null) {
+  const text = option('--dll') ? listing(path.resolve(option('--dll')), filter) : read(path.resolve(option('--list')));
   const trx = read(path.resolve(option('--trx')));
   process.exit(text === null || trx === null ? 1 : report(text, trx));
 } else {
-  console.error('Usage: test-count-guard.mjs --dll <test dll> --trx <file> | --list <file> --trx <file> | --self-test');
+  console.error('Usage: test-count-guard.mjs --dll <test dll> --trx <file> [-- <filter options>] | --list <file> --trx <file> | --self-test');
   process.exit(2);
 }

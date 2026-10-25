@@ -4,6 +4,7 @@ import pg from 'pg';
 import { createClient } from 'redis';
 import { accounts, call, signIn } from '../support/accounts';
 import { guardPage } from '../support/browser-guards';
+import { roomInThePeriod } from '../support/clock-room';
 import { hosts } from '../support/hosts';
 import { allowStatuses, databaseAvailable, signInThroughUi } from '../support/web-auth';
 
@@ -83,7 +84,7 @@ test.afterAll(async () => {
 	}
 });
 
-test('a border shift supervisor sees each lane, the desks and the e-gates of the arrival hall', async ({ page }) => {
+test('a border shift supervisor sees each lane, the desks and the e-gates of the arrival hall', async ({ page }, testInfo) => {
 	test.skip(!redisUrl, 'the lane waits come from the live hub (ARIVA_E2E_REDIS_URL)');
 	const guards = await guardPage(page);
 	const redis = createClient({ url: redisUrl });
@@ -91,13 +92,17 @@ test('a border shift supervisor sees each lane, the desks and the e-gates of the
 	try {
 		// The simulator keeps adding e-gate attempts and the screen loads its figures once a minute, so a count on the screen
 		// lies between a read taken before the page loaded and one taken after it was checked (an exact match raced: 39 on
-		// the screen, 40 a moment later from the API).
+		// the screen, 40 a moment later from the API), as long as all three are in one minute: the figures are those of the
+		// last 15 whole minutes, so at each minute's start an interval leaves them and a later read can be lower (ARV-164b:
+		// 33 on the screen against 46 read before it, across a minute). So the reads start with room in the minute.
 		const token = (await signIn(accounts().webBorder)).accessToken;
+		await roomInThePeriod(testInfo, 60_000, 50_000);
 		const arrivalsNow = async () => {
 			const view = await (await call('GET', api(), { token })).json();
 			return { view, hall: view.halls.find((h: { kind: string }) => h.kind === 'Immigration') };
 		};
-		const before = (await arrivalsNow()).hall.eGates;
+		const first = await arrivalsNow();
+		const before = first.hall.eGates;
 		await signInThroughUi(page, accounts().webBorder);
 		await page.getByTestId('app-sidebar').getByRole('link', { name: 'Immigration' }).click();
 		await expect(page.getByRole('heading', { level: 1 })).toHaveText('Immigration');
@@ -135,6 +140,8 @@ test('a border shift supervisor sees each lane, the desks and the e-gates of the
 		const shownAttempts = Number(await page.getByTestId('egate-attempts').textContent());
 		const shownReads = Number(await page.locator('[data-testid="rejects"] [data-reject="documentRead"] span').last().textContent());
 		const { view, hall: arrivals } = await arrivalsNow();
+		const minuteOf = (asOf: string) => Math.floor(Date.parse(asOf) / 60_000);
+		expect(minuteOf(view.asOfUtc), 'both reads, and the page loaded between them, in one minute of the view\'s window').toBe(minuteOf(first.view.asOfUtc));
 		expect(view.desksIncluded).toBe(true);
 		expect(arrivals.desks.find((d: { desk: string }) => d.desk === 'AR-02')).toMatchObject({ lane: 'CIT' });
 		expect(arrivals.desks.find((d: { desk: string }) => d.desk === 'AR-02').transactions).toBeGreaterThanOrEqual(4);

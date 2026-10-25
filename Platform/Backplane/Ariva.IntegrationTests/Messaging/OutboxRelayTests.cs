@@ -492,6 +492,28 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
     }
 
     /// <summary>
+    /// ARV-164b: a dead-letter send cut at the end of the dead letters' share spends the share, even when the time stamps read
+    /// less: the send's bound is a timer, which can fire a few milliseconds before the time stamps show the share's end (a full
+    /// integration run once sent the next topic's letter with those milliseconds). Here the relay's time stamps stand still while
+    /// its timers run, so the stuck send is cut with the whole share left on the time stamps, and the other topic's letter still
+    /// waits (the old relay sent it, whatever the catch path took).
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_SpendTheDeadLettersShare_When_ASendIsCutAtItsEndAndTheTimeStampsReadLess()
+    {
+        await ResetAsync();
+        var store = new OutboxDeadLetterStore(_host.Provider.GetRequiredService<DatabaseSettings>(), _host.Clock);
+        await store.KeepAsync(Letter(KafkaTopics.SlaDisputeChanged, 1), Ct);
+        await store.KeepAsync(Letter(KafkaTopics.AlertStateChanged, 2), Ct);
+        var transport = new RecordingTransport { HangFor = KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged) };
+
+        var pass = await Relay(transport, clock: new SteppedClock(_host.Clock)).RunOnceAsync(Ct).WaitAsync(TimeSpan.FromSeconds(50), Ct);
+
+        pass.Should().Be(new RelayPass(true, 2, 0, 1, 1), "the stuck letter was cut at the share's end, which spends it; the other topic's letter waits");
+        transport.Sent.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// ARV-175: a backlog of dead letters cannot crowd events out of a pass. With a batch of two, three letters kept before two
     /// events: the pass claims a batch of each, so both events are claimed and sent first (one claim of two rows in order of
     /// writing would have taken two letters and no event).

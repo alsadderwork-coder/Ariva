@@ -1358,6 +1358,7 @@ Today:
 dotnet restore Ariva.slnx
 dotnet build Ariva.slnx
 node scripts/verify.mjs unit   # the unit test executable, then the count guard (ARV-164a); dotnet test's counts are not reliable
+node scripts/verify.mjs integration   # the same for the integration suite (Docker; ARV-164b)
 
 cd Platform/Backplane/Ariva.Api.Main
 dotnet run                      # listens on http://localhost:51001

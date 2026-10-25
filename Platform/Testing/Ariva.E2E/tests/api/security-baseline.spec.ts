@@ -3,6 +3,7 @@ import { call } from '../support/accounts';
 import { expectApiSecurityHeaders, expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { apiHosts, foreignOrigin, hosts, probes, systemInfoPath, webOrigin } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
+import { announced } from '../support/raw-http';
 
 // Security baseline of every API host (docs/security/cwe-controls.md). These cases send no valid token (signed-in
 // callers are in auth.spec.ts and permission-matrix.spec.ts), so every request that is not a health probe or the
@@ -129,13 +130,12 @@ test.describe('CORS', () => {
 });
 
 test.describe('request limits (CWE-120)', () => {
-	test('a 2 MB body is refused with 401 before the server reads it', async ({ request }) => {
+	test('a 2 MB body is refused with 401 before the server reads it', async () => {
 		// Authorization runs before model binding, so the protected route answers 401 and Kestrel never buffers
-		// the body; Kestrel's 1 MB MaxRequestBodySize (413) applies once an endpoint reads a body.
-		const response = await request.post(systemInfo, {
-			headers: { 'Content-Type': 'application/json' },
-			data: Buffer.alloc(2 * 1024 * 1024, 'a')
-		});
+		// the body; Kestrel's 1 MB MaxRequestBodySize (413) applies once an endpoint reads a body. The request announces
+		// 2 MB and sends none of it (ARV-164b, tests/support/raw-http.ts): the answer proves the server did not wait for the
+		// body, where a client streaming it could lose the answer to EPIPE once the server had closed the connection.
+		const response = await announced('POST', systemInfo, { length: 2 * 1024 * 1024, headers: { 'Content-Type': 'application/json' } });
 
 		await expectProblemDetails(response, 401);
 	});

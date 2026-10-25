@@ -3,6 +3,7 @@ import { expect, test, type Page, type Request, type Route, type TestInfo } from
 import { accounts, call, claimsOf, login, signIn, unusedTotpCode } from '../support/accounts';
 import { createAirport } from '../support/airports';
 import { guardPage, type PageGuards } from '../support/browser-guards';
+import { roomInThePeriod } from '../support/clock-room';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
 import { homeHeading } from '../support/shell';
@@ -1462,6 +1463,12 @@ test("the desk log never places a minute without Ariva's clock: a tablet more th
 	page.on('request', (request: Request) => {
 		if (request.method() === 'POST' && deskPost.test(request.url())) posts.push(request.postDataJSON());
 	});
+	// The answers to those posts: a post is counted when the page sends it, which is before the test's own route
+	// (serveDates) has passed it on to Ariva, so what Ariva stored is read only once the post has its answer (ARV-164b).
+	const answered: number[] = [];
+	page.on('response', (response) => {
+		if (response.request().method() === 'POST' && deskPost.test(response.url())) answered.push(response.status());
+	});
 	await openCampaign(page, name);
 	await page.getByTestId('capture-tab-desks').click();
 	await expect(page.getByTestId('ariva-clock-held')).toHaveText(clockImplausibleText);
@@ -1528,6 +1535,7 @@ test("the desk log never places a minute without Ariva's clock: a tablet more th
 	await expect(page.getByTestId('desk-target')).toHaveText(`Tap the state each desk shows in minute ${dubaiClock(current)} to ${dubaiClock(current + minute)}.`);
 	await tapState(page, 'OD01', 'Idle');
 	expect(await strip()).toEqual(Array.from({ length: 15 }, (_, m) => (m === index ? 'Idle' : '')));
+	await expect.poll(() => answered, { message: 'the bin was answered before what Ariva stored is read' }).toEqual([201]);
 	const stored = ((await (await call('GET', `${captureUrl}/${campaign}/desk-observations?pageSize=100`, { token: observer })).json()).data as any[]).map(
 		(o) => `${o.deskCode} ${o.minuteUtc} ${o.state}`
 	);
@@ -1772,6 +1780,36 @@ test("without a readable Date header the line tally follows the tablet's clock a
 	await guards.expectClean();
 });
 
+/**
+ * Nothing wider than the screen: the page does not scroll sideways. A failure names what sticks out of the viewport (a box
+ * that starts before its start or ends past its width), so a rare overflow names its own cause (ARV-164c: the portrait desk
+ * log's one failure here, 2026-10-18, was not reproduced).
+ */
+async function expectNoSideScroll(page: Page, where: string): Promise<void> {
+	const seen = await page.evaluate(() => {
+		const width = window.innerWidth;
+		const scroll = document.documentElement.scrollWidth;
+		const outside = (e: Element) => {
+			const r = e.getBoundingClientRect();
+			return r.width > 0 && (r.right > width + 0.5 || r.left < -0.5);
+		};
+		// The outermost boxes out of the viewport: their descendants stick out with them.
+		const out =
+			scroll <= width
+				? []
+				: Array.from(document.querySelectorAll('body *'))
+						.filter((e) => outside(e) && !(e.parentElement && e.parentElement !== document.body && outside(e.parentElement)))
+						.slice(0, 8)
+						.map((e) => {
+							const r = e.getBoundingClientRect();
+							const id = e.getAttribute('data-testid');
+							return `${e.tagName.toLowerCase()}${id ? `[${id}]` : ''} ${Math.round(r.left)} to ${Math.round(r.right)}`;
+						});
+		return { width, scroll, out };
+	});
+	expect(seen.scroll, `${where}: the page is ${seen.scroll} px wide on a ${seen.width} px screen; out of it: ${seen.out.join('; ') || 'none'}`).toBeLessThanOrEqual(seen.width);
+}
+
 for (const viewport of [
 	{ width: 1280, height: 800, name: 'landscape' },
 	{ width: 800, height: 1280, name: 'portrait' }
@@ -1793,6 +1831,10 @@ for (const viewport of [
 			await page.getByTestId('go-capture').click();
 			await expect(page.getByRole('heading', { level: 1 })).toHaveText('Validation capture');
 			await page.getByTestId('campaign-option').filter({ hasText: name }).tap();
+			// The line tally's bins are Ariva's UTC quarter hours, and the tally closes its bin and starts both counts again once
+			// the quarter hour has passed (Tally.tick, before every tap), so a test that counts across one reads 0 + n (ARV-164b:
+			// 2 where 3 was expected, twice). From the first tap to the last count read below, in one bin.
+			await roomInThePeriod(testInfo, quarter, 60_000);
 			await page.getByTestId('line-option').filter({ hasText: 'Exit A' }).tap();
 			await page.getByTestId('tally-in').tap();
 			await page.getByTestId('tally-out').tap();
@@ -1808,7 +1850,7 @@ for (const viewport of [
 			}
 			const undo = (await page.getByTestId('undo-in').boundingBox())!;
 			expect(undo.height).toBeGreaterThanOrEqual(44);
-			expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+			await expectNoSideScroll(page, 'the tally in English');
 			await expectInsideViewport(page);
 			await expectAxeClean(page);
 			await page.getByTestId('theme-toggle').click();
@@ -1835,7 +1877,7 @@ for (const viewport of [
 			await expect(page.getByRole('heading', { level: 1 })).toHaveText('التقاط بيانات التحقق');
 			await expect(page.getByTestId('capture-tab-tracers')).toHaveText('المتتبعون');
 			await expect(page.getByText('متتبع ينضم إلى الطابور')).toBeVisible();
-			expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+			await expectNoSideScroll(page, 'the tracers in Arabic');
 			await expectInsideViewport(page);
 			await expectAxeClean(page);
 			await testInfo.attach(`tracers-${viewport.name}-ar`, { path: await shot(`tracers-${viewport.name}-ar`) });
@@ -1891,7 +1933,7 @@ for (const viewport of [
 				expect(box.height, 'minute button height').toBeGreaterThanOrEqual(44);
 				expect(box.width, 'minute button width').toBeGreaterThanOrEqual(32);
 			}
-			expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+			await expectNoSideScroll(page, 'the desk log in English');
 			await expectInsideViewport(page);
 			await expectAxeClean(page);
 			await page.getByTestId('theme-toggle').click();
@@ -1929,7 +1971,7 @@ for (const viewport of [
 			await page.keyboard.press('ArrowLeft');
 			await expect(page.getByTestId('capture-tab-tally')).toBeFocused();
 			await page.getByTestId('capture-tab-desks').tap();
-			expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+			await expectNoSideScroll(page, 'the desk log in Arabic after the tabs');
 			await expectInsideViewport(page);
 			await expectAxeClean(page);
 			await testInfo.attach(`desks-${viewport.name}-ar`, { path: await shot(`desks-${viewport.name}-ar`) });

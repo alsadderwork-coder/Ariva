@@ -101,7 +101,7 @@
     {
       "id": "ARV-164b",
       "title": "[E17] Test determinism: the E2E races, and the integration suite's runner stream",
-      "description": "Split from ARV-164a on 2026-10-25. The E2E and functional races recorded in ARV-164's notes, each to root-cause and fix without loosening what the test proves: an oversized body answered 413 or 401 that a client still writing reads as a connection reset or EPIPE (site-configuration.spec.ts, security-baseline.spec.ts, ARV-047's AIDX upload); validation-capture.spec.ts on a portrait tablet (the scroll width measured before the tab settles; the tally reset by a bin boundary between taps; a key press not counted) and the desk log's minute stored late; aman-pull.spec.ts past its 30 s. And the integration suite, which CI and the story gate still run through `dotnet test`: the hosts' JSON console logs share the runner's message stream there, so it may lose a case as the unit suite did (ARV-164). CWEs to review: none (test determinism).",
+      "description": "Split from ARV-164a on 2026-10-25. The E2E and functional races recorded in ARV-164's notes, each to root-cause and fix without loosening what the test proves: an oversized body answered 413 or 401 that a client still writing reads as a connection reset or EPIPE (site-configuration.spec.ts, security-baseline.spec.ts, ARV-047's AIDX upload); validation-capture.spec.ts on a tablet (the tally reset by a bin boundary between taps; a key press not counted) and the desk log's minute stored late; aman-pull.spec.ts past its 30 s. And the integration suite, which CI and the story gate still run through `dotnet test`: the hosts' JSON console logs share the runner's message stream there, so it may lose a case as the unit suite did (ARV-164). CWEs to review: none (test determinism).",
       "acceptanceCriteria": [
         "Each race named above has its cause named in backlog/progress.md and a fix that keeps the test's assertion (no retry, skip or wider timeout to hide it)",
         "The integration suite's stream is shown clean (no line the adapter cannot read, counted over a full run) or the suite runs as the unit suite does, with the ARV-164a count guard",
@@ -111,10 +111,45 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 39,
-      "passes": false,
-      "notes": "Size M. Split from ARV-164a on 2026-10-25. Needs the E2E environment and each race its own root cause.",
+      "passes": true,
+      "notes": "Size M. Split from ARV-164a on 2026-10-25. Needs the E2E environment and each race its own root cause. 2026-10-25: the portrait desk log's scroll width (2026-10-18) moved to ARV-164c: not reproduced (19 runs under load with the width sampled for a second after the tap, a run across a real quarter hour, runs with every web font refused), so no cause can be named yet; the check now names what sticks out when it fails.",
       "dependsOn": [
         "ARV-164a"
+      ]
+    },
+    {
+      "id": "ARV-164c",
+      "title": "[E17] The portrait desk log's sideways scroll, seen once (2026-10-18)",
+      "description": "Split from ARV-164b on 2026-10-25. validation-capture.spec.ts 'the desk log works on touch in English and Arabic (800x1280)' failed once (ARV-082a's story gate, full E2E, 2026-10-18) at its check that the page does not scroll sideways, right after the desks tab was tapped in Arabic, and passed on the retry. Not reproduced in ARV-164b: 19 runs under four CPU hogs with the width sampled 0 to 1,000 ms after the tap (never wider than the screen), a run whose bin closed during the test (a real quarter hour), and runs in both viewports with every web font refused (the fallback fonts). The app's main area clips what overflows it (overflow-x-clip), so a cause would lie outside it (the header, or a box positioned at the start side in a right-to-left page). ARV-164b made the check name the elements that stick out of the viewport when it fails. CWEs to review: none (test determinism).",
+      "acceptanceCriteria": [
+        "When the check fails again, its message names the element; the layout (or the test, if the page is right) is fixed without loosening the bound, and the cause is recorded in backlog/progress.md",
+        "Or, after 20 full E2E runs without the failure, the diagnostic check stays and the story is closed with that record",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 60,
+      "passes": false,
+      "notes": "Size XS. Phase 3. Waits for a recurrence or for the count of clean runs.",
+      "dependsOn": [
+        "ARV-164b"
+      ]
+    },
+    {
+      "id": "ARV-252",
+      "title": "[E17] CI's unit and integration logs: the in-process hosts' console output checked before it is public",
+      "description": "From the ARV-164b security review (Info). Since ARV-164a (unit) and ARV-164b (integration), CI runs the test executables, whose console output carries the in-process hosts' JSON logs (the Serilog console sink); it goes to the job log of a public repository, and the last lines of unit.log and integration.log go into the pull request's test summary comment. dotnet test showed a test's output only when the test failed. The hosts redact secrets in their logs (ARV-091) and the tests' credentials are throwaway values, but nothing checks these logs as scripts/artifact-secrets.mjs checks the E2E report and output (ARV-152). CWEs to review: CWE-532.",
+      "acceptanceCriteria": [
+        "Either the test hosts write their logs to a file that CI checks with scripts/artifact-secrets.mjs (and keeps as an artifact only when clean), or the unit and integration logs are checked by it before the job ends, failing the job on a finding",
+        "The test summary comment quotes no log line that the check has not passed",
+        "A test plants a credential shape in a host's log line and the check fails on it",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 45,
+      "passes": false,
+      "notes": "Size S. Phase 3.",
+      "dependsOn": [
+        "ARV-164b"
       ]
     },
     {
