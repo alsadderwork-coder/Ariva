@@ -33,6 +33,7 @@ public sealed class UploadScreeningTests
     private readonly Mock<IMalwareScanner> _scanner = new(MockBehavior.Strict);
     private readonly CapturedLogger _log = new();
     private readonly AuditUnits _audit = new();
+    private int _cut;
 
     #endregion
 
@@ -238,17 +239,28 @@ public sealed class UploadScreeningTests
 
     #region One deadline for the parts of an upload
 
-    /// <summary>A scanner that takes <paramref name="each"/> per part (honouring the token) and finds the test file.</summary>
+    /// <summary>
+    /// A scanner that takes <paramref name="each"/> per part (honouring the token) and finds the test file; a scan the token
+    /// cuts is counted in <see cref="_cut"/>.
+    /// </summary>
     private void Slow(TimeSpan each, List<int> calls) =>
         _scanner.Setup(s => s.ScanAsync(It.IsAny<Stream>(), It.IsAny<CancellationToken>()))
             .Returns(async (Stream content, CancellationToken ct) =>
             {
                 lock (calls)
                     calls.Add(calls.Count + 1);
-                using var copy = new MemoryStream();
-                await content.CopyToAsync(copy, ct);
-                await Task.Delay(each, ct);
-                return Eicar.IsIn(copy.ToArray()) ? MalwareScan.Infected(Eicar.Signature) : MalwareScan.Clean;
+                try
+                {
+                    using var copy = new MemoryStream();
+                    await content.CopyToAsync(copy, ct);
+                    await Task.Delay(each, ct);
+                    return Eicar.IsIn(copy.ToArray()) ? MalwareScan.Infected(Eicar.Signature) : MalwareScan.Clean;
+                }
+                catch (OperationCanceledException)
+                {
+                    Interlocked.Increment(ref _cut);
+                    throw;
+                }
             });
 
     private static List<byte[]> Parts(int count) => [.. Enumerable.Range(0, count).Select(i => new[] { (byte)i })];
@@ -257,14 +269,15 @@ public sealed class UploadScreeningTests
     public async Task ScreenAllAsync_Should_RefuseAsNoVerdictAtTheBundlesDeadline_When_ThePartsTogetherTakeLonger()
     {
         // Ten parts of 200 ms: each within any budget of its own, two seconds together. One deadline of 500 ms for them all.
+        // What the deadline does is asserted, not how long the call took: in a full unit run the thread pool ran the deadline's
+        // continuations late enough that the call returned after 2.07 s (against a bound of 1.5 s) with the deadline met.
         var calls = new List<int>();
         Slow(TimeSpan.FromMilliseconds(200), calls);
-        var watch = System.Diagnostics.Stopwatch.StartNew();
 
         var result = await Screening().ScreenAllAsync(UploadKind.SiteConfiguration, Parts(10), TimeSpan.FromMilliseconds(500), Ct);
 
         result.ErrorMessages.Should().Equal(UploadScanErrors.ScannerUnavailable);
-        watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1.5), "the deadline is the bundle's, not each part's");
+        _cut.Should().Be(1, "the deadline is the bundle's: it cuts the scan in progress, which a deadline of 500 ms per part never would (each takes 200 ms)");
         calls.Count.Should().BeLessThan(5, "no part is scanned after the deadline");
         var line = _log.Lines.Should().ContainSingle().Subject;
         line.EventId.Id.Should().Be(9132);
