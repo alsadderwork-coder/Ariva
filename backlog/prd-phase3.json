@@ -1325,7 +1325,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. 2026-10-25, from the ARV-164a review.",
       "dependsOn": [
         "ARV-164a"

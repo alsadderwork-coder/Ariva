@@ -87,6 +87,10 @@
             <Link>appsettings.base.k8s-prd.json</Link>
             <CopyToOutputDirectory>Always</CopyToOutputDirectory>
         </Content>
+        <!-- ARV-251: each theory xUnit lists once with its rows, beside the executable for the count guard and TheoryRowsTests. -->
+        <None Update="theory-rows.json">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
         <!-- ARV-142b: the advertisement video fixtures (Platform/Testing/Media/README.md says how they were made). -->
         <Content Include="..\..\Testing\Media\*.mp4;..\..\Testing\Media\*.webm">
             <Link>Media\%(Filename)%(Extension)</Link>

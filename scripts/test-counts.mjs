@@ -5,9 +5,15 @@
 // plausible. The listing is Microsoft Testing Platform's own (`--list-tests`, one case per line, two spaces in). A theory whose
 // rows are not enumerated at discovery is listed once and runs as many rows, so the two totals differ; method by method, though,
 // a run has at least as many results as the listing has cases, unless it lost one. A method is the name before its first
-// parenthesis, since the listing and the TRX format the arguments differently. Not caught: a lost row of a theory listed once
-// while another of its rows ran (ARV-251), and a loss hidden by another method's extra rows when two custom display names share
-// the text before their parenthesis (the unit tests set none today). No dependencies; the command is always dotnet.
+// parenthesis, since the listing and the TRX format the arguments differently. A theory listed once is held to its rows by the
+// test project's row file (ARV-251, theory-rows.json beside the test executable: each such theory with its number of rows,
+// kept current from the theories' own data by the project's TheoryRowsTests), so a lost row of it, while another ran, is
+// caught too, and so is any method that ran more rows than it was listed with and is not in the file (a theory with a single
+// row needs no entry: losing it leaves its method without a result); on a whole run an entry for a method not listed (renamed
+// or removed) is reported as well. The method is the name before the first parenthesis, so a test under a display name of
+// its own could be counted with another; TheoryRowsTests refuses such names, so none is set. Not caught: a theory listed once
+// and left out of the file whose every run, from its first, lost all but one of its rows. No dependencies; the command is
+// always dotnet.
 
 import { spawnSync } from 'node:child_process';
 
@@ -55,10 +61,17 @@ export function trxProblems(trx) {
 
 /**
  * Why a run does not account for every listed case: an incomplete TRX, nothing listed, no results, a method with fewer
- * results than cases, or results for a method the listing does not name.
+ * results than cases, results for a method the listing does not name, and against the row file (`rows`, from parseRows): a
+ * theory listed once whose results are not its rows, a method that ran more rows than it was listed with and is not in the
+ * file, an entry for a method listed by its rows (enumerated at discovery) and, when the listing is the whole executable's
+ * (`complete`), an entry for a method it does not name. A filtered run's listing names only what it selected, so there those
+ * entries are not looked at.
  */
-export function guardProblems(listing, trx) {
-  const listed = countBy(listedCases(listing));
+export function guardProblems(listing, trx, rows, { complete = false } = {}) {
+  if (!(rows instanceof Map)) throw new TypeError('guardProblems needs the row file\'s rows');
+  const cases = listedCases(listing);
+  const listed = countBy(cases);
+  const bare = new Set(cases.filter(name => !name.includes('(')));
   const ran = countBy(resultNames(trx));
   const problems = trxProblems(trx);
   if (listed.size === 0) problems.push('the listing names no case');
@@ -69,7 +82,47 @@ export function guardProblems(listing, trx) {
   }
   for (const method of ran.keys())
     if (!listed.has(method)) problems.push(`${method}: results but not listed (the listing is not this build's)`);
+  for (const [method, cases] of listed) {
+    const once = cases === 1 && bare.has(method);
+    const results = ran.get(method) ?? 0;
+    if (rows.has(method) && !once) problems.push(`${method}: in the row file but listed by its rows (enumerated at discovery): remove it from the file`);
+    else if (rows.has(method) && results < rows.get(method)) problems.push(`${method}: a theory listed once with ${rows.get(method)} rows in the row file, ${results} result(s)`);
+    else if (rows.has(method) && results > rows.get(method)) problems.push(`${method}: ${results} results, ${rows.get(method)} rows in the row file (update the file)`);
+    else if (!rows.has(method) && results > cases) problems.push(`${method}: ran ${results} rows, listed with ${cases} case(s), and is not in the row file`);
+  }
+  if (complete)
+    for (const method of rows.keys())
+      if (!listed.has(method)) problems.push(`${method}: in the row file but not listed (renamed or removed): remove it from the file`);
   return problems;
+}
+
+const ROW_METHOD = /^[A-Za-z_][A-Za-z0-9_.]{0,400}$/;
+// A JSON object's member names, read again to find one named twice (JSON.parse keeps the last).
+const ROW_KEY = /"((?:[^"\\]|\\.)*)"\s*:/g;
+
+/**
+ * A row file (ARV-251): a JSON object naming each theory listed once with its number of rows, at least 2 and at most 100,000.
+ * The rows as a Map, or the problem with the file.
+ */
+export function parseRows(text) {
+  let value;
+  try {
+    value = JSON.parse(String(text ?? ''));
+  } catch {
+    return { rows: null, problem: 'the row file is not JSON' };
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return { rows: null, problem: 'the row file is not a JSON object' };
+  const names = [...String(text).matchAll(ROW_KEY)].map(m => m[1]);
+  const twice = names.find((name, i) => names.indexOf(name) !== i);
+  if (twice !== undefined) return { rows: null, problem: `the row file names a method twice: ${JSON.stringify(twice.slice(0, 80))}` };
+  if (names.length !== Object.keys(value).length) return { rows: null, problem: 'the row file holds members it does not name plainly (a nested object or an escaped name)' };
+  const rows = new Map();
+  for (const [method, count] of Object.entries(value)) {
+    if (!ROW_METHOD.test(method)) return { rows: null, problem: `the row file names no method: ${JSON.stringify(method.slice(0, 80))}` };
+    if (!Number.isInteger(count) || count < 2 || count > 100_000) return { rows: null, problem: `${method}: the row file's count is not a whole number from 2 to 100,000` };
+    rows.set(method, count);
+  }
+  return { rows, problem: null };
 }
 
 /** The number of distinct methods in a listing. */

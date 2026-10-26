@@ -48,9 +48,15 @@
 
     <ItemGroup>
         <Compile Include="..\..\..\GlobalSuppressions.cs" Link="GlobalSuppressions.cs" />
+        <!-- ARV-251: the row file check, one source with Ariva.UnitTests, where its own tests are. -->
+        <Compile Include="..\Ariva.UnitTests\Setup\TheoryRows.cs" Link="Setup\TheoryRows.cs" />
     </ItemGroup>
 
     <ItemGroup>
+        <!-- ARV-251: each theory xUnit lists once with its rows, beside the executable for the count guard and TheoryRowsTests. -->
+        <None Update="theory-rows.json">
+            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </None>
         <!-- ARV-142b: the advertisement video fixtures (Platform/Testing/Media/README.md says how they were made). -->
         <Content Include="..\..\Testing\Media\*.mp4;..\..\Testing\Media\*.webm">
             <Link>Media\%(Filename)%(Extension)</Link>

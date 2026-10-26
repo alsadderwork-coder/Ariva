@@ -13,7 +13,7 @@ The gate compares the working tree with `--base` (default `HEAD`, the uncommitte
 
 | Step | When |
 |---|---|
-| Build, reference golden check, all unit tests (architecture, security, domain, golden replays), and the count guard that every listed case has its results (ARV-164a) | Always |
+| Build, reference golden check, all unit tests (architecture, security, domain, golden replays), and the count guard that every listed case has its results (ARV-164a) and every theory listed once its rows from the project's `theory-rows.json` (ARV-251) | Always |
 | Security: scanner self-test, full scan, base images, chart security, dependency audits, the E2E expect message check and the artifact check's self-test (ARV-152) | Always |
 | Docs text rules | Always |
 | Web: svelte-check, lint, build | When `Platform/Frontplane/Ariva.Web` changed |

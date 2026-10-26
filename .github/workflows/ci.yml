@@ -156,7 +156,8 @@ jobs:
       # step reads it; --no-ansi keeps colour codes out of unit.log, whose lines the failure report reads from the start.
       - name: Unit, architecture and security tests
         run: dotnet Platform/Backplane/Ariva.UnitTests/bin/Release/net10.0/Ariva.UnitTests.dll --no-ansi --results-directory "$GITHUB_WORKSPACE/TestResults" --report-xunit-trx --report-xunit-trx-filename unit-tests.trx 2>&1 | tee unit.log
-      # Every case the executable lists has its results in the TRX, method by method (a theory listed once runs as many rows).
+      # Every case the executable lists has its results in the TRX, method by method, and a theory listed once its rows from the
+      # project's theory-rows.json, copied beside the executable (ARV-251).
       - name: Unit test count guard (every listed case has its results)
         if: ${{ !cancelled() }}
         run: |
