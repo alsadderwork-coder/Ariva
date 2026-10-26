@@ -27,7 +27,8 @@
   "criterionRules": [
     "hostDown", "readinessFailing", "busDegraded", "kafkaUnavailable", "databaseUnavailable", "streamConsumerLag", "outboxBacklog",
     "deadLetters", "disk", "certificateExpiry", "ingressCertificateExpiry", "amanFeedStale", "devicesOffline", "kafkaProducerFatal",
-    "consumedTopicMissing", "consumerUnconnected", "scannerSignaturesStale", "scannerNotAnswering", "queueRefused"
+    "consumedTopicMissing", "consumerUnconnected", "scannerSignaturesStale", "scannerNotAnswering", "queueRefused",
+    "outboxBrokerStreak"
   ],
   "severities": ["warning", "critical"],
   "runbook": "wiki/10-Operations-Runbook.md#"

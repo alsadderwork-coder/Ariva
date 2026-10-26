@@ -40,17 +40,26 @@ public interface IOutboxTransport
     /// holds the topic until the row's backoff ends and the other topics carry on.
     /// </summary>
     bool IsTopicRefused(Exception error) => false;
+
+    /// <summary>
+    /// Whether the brokers answer now (ARV-245): the producer's cached probe (<c>KafkaProduce.BrokersAnswerAsync</c>), which
+    /// asks the cluster at most once a second and never throws. After a pass met the broker's absence the relay asks this
+    /// before each pass and skips the pass while it is false.
+    /// </summary>
+    Task<bool> BrokersAnswerAsync(CancellationToken ct) => Task.FromResult(true);
 }
 
 /// <summary>A send that did not end within what was left of the relay pass's time (ARV-166): the broker is slow or away.</summary>
 public sealed class OutboxPassTimeoutException(string message, Exception inner) : TimeoutException(message, inner);
 
-/// <summary>What one relay pass did.</summary>
-public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, int HeldBack)
+/// <summary>What one relay pass did; <paramref name="BrokersAway"/> when it was skipped because the brokers did not answer (ARV-245).</summary>
+public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, int HeldBack, bool BrokersAway = false)
 {
     public static readonly RelayPass NotLeader = new(false, 0, 0, 0, 0);
 
     public static readonly RelayPass NotReady = new(false, 0, 0, 0, 0);
+
+    public static readonly RelayPass WaitingForBrokers = new(false, 0, 0, 0, 0, BrokersAway: true);
 }
 
 /// <summary>
@@ -91,6 +100,15 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// <see cref="DeadLetterPassBound"/>, once per <see cref="DeadLetterTopicHold"/>, and once more each time a letter for it is kept
 /// meanwhile (at a host's stop; the try holds the topic again). A dead-letter send cut short by the pass's own time is not the
 /// topic's fault: the pass ends without holding it. An event row's broker failure still ends the pass.
+/// </para>
+/// <para>
+/// ARV-245: a row the broker keeps refusing for <see cref="OutboxRelaySettings.BrokerStreakMinutes"/> without a break (a
+/// partition with no leader while the brokers answer) is logged once as an Error and counted (<see cref="OutboxBrokerStreaks"/>,
+/// <see cref="OutboxMetrics.BrokerStreaksName"/>). And once a pass has met the broker's absence the relay asks the producer's
+/// cached probe (<see cref="IOutboxTransport.BrokersAnswerAsync"/>) before each pass, and skips the pass while the brokers do
+/// not answer: no connection, no lock, no claim, so a full outage no longer holds a pass for its produce bound at each poll.
+/// The backlog is still measured. Once the probe answers, passes resume, and every row is due within the broker retry. While
+/// passes are skipped no streak grows; a row still refused once they resume is reported then if its streak has passed.
 /// </para>
 /// <para>
 /// ARV-125a: every relay, leader or not, measures the backlog (<see cref="MeasureAsync"/>) every <see cref="MeasureEvery"/>
@@ -136,6 +154,16 @@ public sealed class OutboxRelay(
     private const int MaxErrorLength = 2000;
     private static readonly TimeSpan HousekeepingEvery = TimeSpan.FromHours(1);
     private DateTimeOffset _lastHousekeeping = DateTimeOffset.MinValue;
+    private readonly OutboxBrokerStreaks _streaks = new(TimeSpan.FromMinutes(kafka.Outbox.BrokerStreakMinutes));
+
+    /// <summary>Set when a pass met the broker's absence (ARV-245): the next pass asks the brokers first.</summary>
+    private bool _brokersAway;
+
+    /// <summary>Set while passes are skipped for the brokers, so the wait and the resumption are each logged once.</summary>
+    private bool _waitingForBrokers;
+
+    /// <summary>The rows whose broker-unavailable streak the relay follows now (ARV-245; for the tests).</summary>
+    internal int BrokerStreaksFollowed => _streaks.Count;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -245,6 +273,8 @@ public sealed class OutboxRelay(
     {
         if (!transport.IsReady)
             return RelayPass.NotReady;
+        if (_brokersAway && !await BrokersAnswerAsync(ct))
+            return RelayPass.WaitingForBrokers;
 
         var passTime = TimeSpan.FromSeconds(Math.Max(1, kafka.Outbox.PassSeconds));
         var passStarted = timeProvider.GetTimestamp();
@@ -305,6 +335,7 @@ public sealed class OutboxRelay(
             {
                 await SendWithinAsync(row, left, shareBound ? DeadLetterBound : PassBound, ct);
                 sent.Add(row.Seq);
+                _streaks.Ended(row.Seq);
             }
             catch (UnknownEventTypeException e)
             {
@@ -319,9 +350,21 @@ public sealed class OutboxRelay(
                 // short fixed wait, so once the broker is back every key resumes within that wait, however long the outage.
                 failed++;
                 held.Add((row.Topic, row.Key));
+                _brokersAway = true;
                 await MarkBrokerUnavailableAsync(connection, transaction, row.Seq, now, BrokerRetry, e, ct);
-                logger.LogWarning(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) not sent: the broker is unavailable; trying again in {Seconds} s",
-                    row.Seq, row.MessageType, row.Id, row.Topic, BrokerRetry.TotalSeconds);
+                if (_streaks.BrokerUnavailable(row.Seq, now) is { } streak)
+                {
+                    // ARV-245: no attempt counts against such a row, so this, once per row, is what raises a partition
+                    // that stays without a leader while the brokers answer.
+                    logger.LogError(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) has failed with the broker unavailable for {Minutes:F0} minutes without a break (Kafka:Outbox:BrokerStreakMinutes {StreakMinutes}); the topic's partition may have no leader. Trying again every {Seconds} s",
+                        row.Seq, row.MessageType, row.Id, row.Topic, streak.TotalMinutes, kafka.Outbox.BrokerStreakMinutes, BrokerRetry.TotalSeconds);
+                    metrics?.BrokerStreak(row.Topic);
+                }
+                else
+                {
+                    logger.LogWarning(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) not sent: the broker is unavailable; trying again in {Seconds} s",
+                        row.Seq, row.MessageType, row.Id, row.Topic, BrokerRetry.TotalSeconds);
+                }
                 // A send cut short by the pass's own time is not its topic's fault: the pass ends, as for an event (ARV-175).
                 var passTimeUsed = e is OutboxPassTimeoutException && !shareBound;
                 deadLettersSpent |= e is OutboxPassTimeoutException && shareBound;
@@ -334,6 +377,8 @@ public sealed class OutboxRelay(
             {
                 failed++;
                 held.Add((row.Topic, row.Key));
+                // The broker answered this row, so a streak of its absence ends (ARV-245).
+                _streaks.Ended(row.Seq);
                 await MarkFailedAsync(connection, transaction, row.Seq, now, e, ct);
                 if (row.Attempts + 1 >= kafka.Outbox.StuckAfterAttempts)
                     logger.LogError(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) stuck after {Attempts} attempts; key held back", row.Seq, row.MessageType, row.Id, row.Topic, row.Attempts + 1);
@@ -375,6 +420,38 @@ public sealed class OutboxRelay(
         if (rows.Count > 0)
             logger.LogDebug("Outbox relay pass: {Claimed} claimed, {Sent} sent, {Failed} failed, {HeldBack} held back", rows.Count, sent.Count, failed, heldBack);
         return new RelayPass(true, rows.Count, sent.Count, failed, heldBack);
+    }
+
+    /// <summary>
+    /// Whether the brokers answer (ARV-245), after a pass met their absence: the transport's cached probe. Logs the wait once
+    /// when it starts and once when the brokers answer again; a probe that fails or does not answer reads as false.
+    /// </summary>
+    private async Task<bool> BrokersAnswerAsync(CancellationToken ct)
+    {
+        bool answered;
+        try
+        {
+            answered = await transport.BrokersAnswerAsync(ct);
+        }
+        catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            logger.LogDebug(e, "Kafka broker probe failed");
+            answered = false;
+        }
+
+        if (!answered)
+        {
+            if (!_waitingForBrokers)
+                logger.LogWarning("Kafka brokers do not answer: the outbox relay skips its passes until they do (the backlog is still measured)");
+            _waitingForBrokers = true;
+            return false;
+        }
+
+        if (_waitingForBrokers)
+            logger.LogInformation("Kafka brokers answer again: the outbox relay resumes its passes");
+        _waitingForBrokers = false;
+        _brokersAway = false;
+        return true;
     }
 
     /// <summary>A dead-letter topic (<c>.dlq.v1</c>, ARV-175).</summary>

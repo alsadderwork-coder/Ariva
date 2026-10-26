@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data;
 using System.Text.Json;
 using Ariva.Core.Domain.Components;
@@ -12,6 +13,7 @@ using Ariva.IntegrationTests.Security;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
@@ -78,6 +80,15 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         transport,
         clock ?? _host.Clock,
         NullLogger<OutboxRelay>.Instance);
+
+    /// <summary>A relay that keeps its state across passes (ARV-245), with a one-minute broker streak, a log and metrics.</summary>
+    private OutboxRelay StreakRelay(IOutboxTransport transport, RelayLog log, OutboxMetrics metrics) => new(
+        _host.Provider.GetRequiredService<DatabaseSettings>(),
+        new KafkaSettings { Outbox = new OutboxRelaySettings { BatchSize = 50, BrokerStreakMinutes = 1 } },
+        transport,
+        _host.Clock,
+        log,
+        metrics);
 
     private static OutboxProbe Probe(string alert, int step) => new() { AlertId = alert, Step = step, CorrelationId = "corr-" + alert };
 
@@ -697,6 +708,184 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         "it-consumer", new InvalidOperationException("boom"), _host.Clock.GetUtcNow().UtcDateTime);
 
     /// <summary>
+    /// ARV-245: a row the broker keeps refusing (a partition without a leader while the brokers answer: no attempt counts, so
+    /// the "stuck after N attempts" Error never fires) warns at each try until its streak reaches
+    /// <c>Kafka:Outbox:BrokerStreakMinutes</c> (one minute here), is then logged once as an Error naming its topic and the
+    /// streak's length and counted by topic, and is not reported again while it keeps failing. Once sent, the relay no longer
+    /// follows it.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_ReportARowOnceAsAnErrorAndCountItsTopic_When_TheBrokerRefusesItForTheStreak()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("S", 1));
+        var transport = new RecordingTransport { BrokerDown = true };
+        var log = new RelayLog();
+        using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        var relay = StreakRelay(transport, log, metrics);
+
+        // Every broker retry for the 55 seconds before the streak: a warning each time, no Error, nothing counted.
+        for (var pass = 0; pass < 12; pass++)
+        {
+            (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+            _host.Clock.Advance(BrokerRetry);
+        }
+
+        log.Errors.Should().BeEmpty("the row has failed for 55 seconds, short of the one-minute streak");
+        log.Warnings.Should().HaveCount(12);
+        reader.Sum(OutboxMetrics.BrokerStreaksName).Should().Be(0);
+
+        // At one minute: one Error, one count for the row's topic.
+        (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+        log.Errors.Should().ContainSingle().Which.Should().Contain(KafkaTopics.AlertStateChanged)
+            .And.Contain("for 1 minutes without a break").And.Contain("Kafka:Outbox:BrokerStreakMinutes 1");
+        reader.Sum(OutboxMetrics.BrokerStreaksName, ("topic", KafkaTopics.AlertStateChanged)).Should().Be(1);
+
+        // It keeps failing: warnings again, never a second Error or count for the same row.
+        for (var pass = 0; pass < 3; pass++)
+        {
+            _host.Clock.Advance(BrokerRetry);
+            (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+        }
+
+        log.Errors.Should().ContainSingle("a row is reported once");
+        reader.Sum(OutboxMetrics.BrokerStreaksName).Should().Be(1);
+        relay.BrokerStreaksFollowed.Should().Be(1);
+
+        // Sent: its streak ends.
+        transport.BrokerDown = false;
+        _host.Clock.Advance(BrokerRetry);
+        (await relay.RunOnceAsync(Ct)).Sent.Should().Be(1);
+        relay.BrokerStreaksFollowed.Should().Be(0, "the streak ends when the row is sent");
+    }
+
+    /// <summary>
+    /// ARV-245: a failure of the row's own (the broker answered it) ends its streak, so the minute starts again at its next
+    /// broker failure: 50 seconds refused, its own failure, then 55 seconds refused report nothing; the minute's end does.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_StartTheStreakAgain_When_TheRowFailsForAReasonOfItsOwn()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("T", 1));
+        var transport = new RecordingTransport { BrokerDown = true };
+        var log = new RelayLog();
+        using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        var relay = StreakRelay(transport, log, metrics);
+
+        for (var pass = 0; pass < 11; pass++)
+        {
+            (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+            _host.Clock.Advance(BrokerRetry);
+        }
+
+        transport.BrokerDown = false;
+        transport.FailOnce = ("T", 1);
+        (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1, "the row's own failure");
+        relay.BrokerStreaksFollowed.Should().Be(0, "the broker answered the row");
+        _host.Clock.Advance(OutboxRelay.Backoff(1) + TimeSpan.FromSeconds(1));
+
+        transport.BrokerDown = true;
+        for (var pass = 0; pass < 12; pass++)
+        {
+            (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+            _host.Clock.Advance(BrokerRetry);
+        }
+
+        log.Errors.Should().BeEmpty("the new streak is 55 seconds long, though the row was first refused almost two minutes ago");
+        (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+        log.Errors.Should().ContainSingle();
+        reader.Sum(OutboxMetrics.BrokerStreaksName, ("topic", KafkaTopics.AlertStateChanged)).Should().Be(1);
+    }
+
+    /// <summary>
+    /// ARV-245: once a pass met the broker's absence, the relay asks the producer's probe before each pass and skips the pass
+    /// while the brokers do not answer: nothing is claimed, sent or marked, the wait is logged once, and the backlog is still
+    /// measured. When the probe answers again the next pass runs and sends every row
+    /// (they are due within the broker retry), the resumption is logged once, and later passes ask no probe.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_SkipItsPassesAndStillMeasure_When_TheBrokersDoNotAnswer()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("W", 1), Probe("W", 2), Other("Z", 1));
+        var transport = new RecordingTransport { BrokerDown = true, BrokersAnswer = false };
+        var log = new RelayLog();
+        using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        using var relay = StreakRelay(transport, log, metrics);
+
+        (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1, "the first pass meets the broker's absence");
+        transport.Probes.Should().Be(0, "the probe is asked only after a pass met the broker's absence");
+        var marked = await _host.ReadAsync<string>("SELECT string_agg(coalesce(next_attempt_on::text, '-') || '/' || coalesce(last_error, '-'), ',' ORDER BY seq) FROM outbox_message");
+
+        _host.Clock.Advance(BrokerRetry);
+        for (var pass = 0; pass < 3; pass++)
+        {
+            var skipped = await relay.RunOnceAsync(Ct);
+            skipped.Should().Be(RelayPass.WaitingForBrokers);
+            skipped.BrokersAway.Should().BeTrue();
+        }
+
+        transport.Probes.Should().Be(3);
+        transport.Attempts.Should().Be(1, "no pass ran while the brokers did not answer");
+        (await _host.ReadAsync<string>("SELECT string_agg(coalesce(next_attempt_on::text, '-') || '/' || coalesce(last_error, '-'), ',' ORDER BY seq) FROM outbox_message"))
+            .Should().Be(marked, "a skipped pass claims and marks nothing");
+        log.Warnings.Count(w => w.Contains("do not answer", StringComparison.Ordinal)).Should().Be(1, "the wait is logged once");
+
+        // The backlog is measured meanwhile, by the relay's own loop beside its passes.
+        await relay.StartAsync(Ct);
+        try
+        {
+            var until = DateTime.UtcNow.AddSeconds(30);
+            while (reader.Observe(OutboxMetrics.UnsentName).Count == 0 && DateTime.UtcNow < until)
+                await Task.Delay(100, Ct);
+        }
+        finally
+        {
+            await relay.StopAsync(Ct);
+        }
+
+        reader.Observe(OutboxMetrics.UnsentName).Should().ContainSingle().Which.Value.Should().Be(3);
+        transport.Attempts.Should().Be(1, "the running relay skipped its passes too");
+
+        transport.BrokersAnswer = true;
+        transport.BrokerDown = false;
+        var resumed = await relay.RunOnceAsync(Ct);
+        resumed.Sent.Should().Be(3, "every row is due within the broker retry of the brokers' return");
+        transport.Sent.Select(Describe).Should().Equal("W" + "1", "W" + "2", "Z" + "1");
+        log.Infos.Count(i => i.Contains("answer again", StringComparison.Ordinal)).Should().Be(1);
+
+        // Once the brokers answered, passes no longer ask the probe until one meets their absence again.
+        var probes = transport.Probes;
+        await WriteAsync(true, Probe("W", 3));
+        (await relay.RunOnceAsync(Ct)).Sent.Should().Be(1);
+        transport.Probes.Should().Be(probes, "a pass after the brokers answered asks no probe");
+    }
+
+    /// <summary>The relay's log by level (ARV-245).</summary>
+    private sealed class RelayLog : ILogger<OutboxRelay>
+    {
+        private readonly ConcurrentQueue<(LogLevel Level, string Message)> _entries = new();
+
+        public IReadOnlyList<string> Errors => [.. _entries.Where(e => e.Level == LogLevel.Error).Select(e => e.Message)];
+        public IReadOnlyList<string> Warnings => [.. _entries.Where(e => e.Level == LogLevel.Warning).Select(e => e.Message)];
+        public IReadOnlyList<string> Infos => [.. _entries.Where(e => e.Level == LogLevel.Information).Select(e => e.Message)];
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        {
+            if (IsEnabled(logLevel))
+                _entries.Enqueue((logLevel, formatter(state, exception)));
+        }
+    }
+
+    /// <summary>
     /// The host's clock for dates, and a time stamp that moves only when a test steps it (ARV-175): the relay measures its pass's
     /// time on it. Timers still run in real time, so a send's bound ends after what was left of the stepped time.
     /// </summary>
@@ -749,6 +938,20 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         /// <summary>Called as each send starts (ARV-175: to move a test clock).</summary>
         public Action<OutboxEnvelope> OnSend { get; set; }
 
+        /// <summary>What the producer's probe answers (ARV-245), and how often it was asked.</summary>
+        public bool BrokersAnswer { get; set; } = true;
+
+        public int Probes { get; private set; }
+
+        /// <summary>Every send tried, sent or not.</summary>
+        public int Attempts { get; private set; }
+
+        public Task<bool> BrokersAnswerAsync(CancellationToken ct)
+        {
+            Probes++;
+            return Task.FromResult(BrokersAnswer);
+        }
+
         /// <summary>The broker's absence, as the Kafka transport classifies it (ARV-165).</summary>
         public bool IsBrokerUnavailable(Exception error) => error is TimeoutException { Message: "Local: Message timed out" } || KafkaProduce.IsBrokerUnavailable(error);
 
@@ -757,6 +960,7 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
 
         public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
         {
+            Attempts++;
             OnSend?.Invoke(message);
             if (Hang || string.Equals(message.Topic, HangFor, StringComparison.Ordinal))
                 return new TaskCompletionSource().Task;

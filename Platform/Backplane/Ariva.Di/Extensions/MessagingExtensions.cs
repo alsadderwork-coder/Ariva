@@ -123,7 +123,7 @@ public static partial class MessagingExtensions
 
     /// <summary>
     /// ARV-167 and ARV-165: the producer's recreation interval and the relay's retry after a broker failure are bounded, or
-    /// the host does not start.
+    /// the host does not start; since ARV-245 so is the streak after which a row the broker keeps refusing is reported.
     /// </summary>
     internal static void EnsureProducerSettings(KafkaSettings settings)
     {
@@ -131,6 +131,11 @@ public static partial class MessagingExtensions
         if (retry is < OutboxRelaySettings.MinBrokerRetrySeconds or > OutboxRelaySettings.MaxBrokerRetrySeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
                 $"Kafka:Outbox:BrokerRetrySeconds must be from {OutboxRelaySettings.MinBrokerRetrySeconds} to {OutboxRelaySettings.MaxBrokerRetrySeconds}."));
+        // ARV-245: the streak after which a row the broker keeps refusing is reported.
+        var streak = settings.Outbox?.BrokerStreakMinutes ?? 0;
+        if (streak is < OutboxRelaySettings.MinBrokerStreakMinutes or > OutboxRelaySettings.MaxBrokerStreakMinutes)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Outbox:BrokerStreakMinutes must be from {OutboxRelaySettings.MinBrokerStreakMinutes} to {OutboxRelaySettings.MaxBrokerStreakMinutes}."));
         var watch = settings.Consumers?.TopicWatchSeconds ?? 0;
         if (watch is < 1 or > 300)
             throw new InvalidOperationException("Kafka:Consumers:TopicWatchSeconds must be from 1 to 300.");

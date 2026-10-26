@@ -484,6 +484,9 @@ monitoring:
     streamConsumerLag: { enabled: true, minutes: 5, records: 1000, severity: critical }
     # The oldest unsent outbox row older than minutes.
     outboxBacklog: { enabled: true, minutes: 5, severity: critical }
+    # An outbox row whose sends failed with the broker unavailable for Kafka:Outbox:BrokerStreakMinutes without a break
+    # (ARV-245), in the window: a partition of its topic may have no leader while the brokers answer.
+    outboxBrokerStreak: { enabled: true, minutes: 15, severity: warning }
     # Any dead letter (sent, kept or failed) in the window.
     deadLetters: { enabled: true, minutes: 15, severity: warning }
     # Any event a zone's queue engine refused for a full buffer, or a device's full share of it, in the window (ARV-231):

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Ariva.Core.Messaging;
 using Ariva.Infra.Messaging;
 using Ariva.Infra.Messaging.Kafka;
+using Ariva.Infra.Messaging.Outbox;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using FluentAssertions;
@@ -140,6 +141,9 @@ public sealed class ImplicitTopicTests(KafkaFixture kafka) : IClassFixture<Kafka
         var clock = Stopwatch.StartNew();
         (await produce.BrokersAnswerAsync(KafkaReadiness.ProbeTimeout)).Should().BeTrue("the broker answers DescribeCluster through the producer's handle");
         Note($"probe answered in {clock.Elapsed.TotalMilliseconds:F0} ms");
+        // ARV-245: the outbox relay's gate reads the same probe through its transport.
+        IOutboxTransport transport = new KafkaOutboxTransport(produce, new EventCatalog([]));
+        (await transport.BrokersAnswerAsync(TestContext.Current.CancellationToken)).Should().BeTrue("the relay sees the brokers answer");
         Topics().Should().BeEquivalentTo(before, "the probe creates nothing");
 
         // No broker at the address: false within the probe's bound, never an exception.
@@ -150,5 +154,7 @@ public sealed class ImplicitTopicTests(KafkaFixture kafka) : IClassFixture<Kafka
         (await nowhere.BrokersAnswerAsync(KafkaReadiness.ProbeTimeout)).Should().BeFalse();
         Note($"probe without a broker ended in {clock.Elapsed.TotalMilliseconds:F0} ms");
         clock.Elapsed.Should().BeLessThan(KafkaReadiness.ProbeTimeout + TimeSpan.FromSeconds(1), "the probe keeps to its bound");
+        IOutboxTransport waiting = new KafkaOutboxTransport(nowhere, new EventCatalog([]));
+        (await waiting.BrokersAnswerAsync(TestContext.Current.CancellationToken)).Should().BeFalse("the relay waits for the brokers");
     }
 }

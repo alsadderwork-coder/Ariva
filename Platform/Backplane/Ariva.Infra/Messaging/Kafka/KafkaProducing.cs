@@ -549,19 +549,38 @@ public sealed class KafkaProduce : IDisposable
     /// <summary>How long a probe's result is reused.</summary>
     private static readonly TimeSpan ProbeReuse = TimeSpan.FromSeconds(1);
 
+    /// <summary>How much longer than its request timeout a probe may take before it ends as false (ARV-245).</summary>
+    internal static readonly TimeSpan ProbeSlack = TimeSpan.FromSeconds(1);
+
+    /// <summary>The cluster description a probe asks for (unit tests give their own); null: the client's DescribeCluster.</summary>
+    internal Func<IProducer<string, byte[]>, TimeSpan, Task<bool>> DescribeCluster { get; init; }
+
+    /// <summary>
+    /// One probe. Bounded here as well as by the request's timeout (ARV-245): the probe's task is shared and kept, and since
+    /// ARV-245 the outbox relay waits on it before each pass after a broker failure, so a request the client never ends (its
+    /// client retired under it after a fatal error, say) must not keep that task from ending. It ends as false
+    /// <see cref="ProbeSlack"/> after the timeout, and the next probe asks the current client afresh.
+    /// </summary>
     private async Task<bool> ProbeAsync(IProducer<string, byte[]> client, TimeSpan timeout)
     {
         try
         {
-            using var admin = new DependentAdminClientBuilder(client.Handle).Build();
-            var cluster = await admin.DescribeClusterAsync(new Confluent.Kafka.Admin.DescribeClusterOptions { RequestTimeout = timeout }).ConfigureAwait(false);
-            return cluster.Nodes.Count > 0;
+            // One bound for the client's description and a test's alike, so the tests hold the bound the hosts run with.
+            using var admin = DescribeCluster is null ? new DependentAdminClientBuilder(client.Handle).Build() : null;
+            var describing = DescribeCluster?.Invoke(client, timeout) ?? DescribeAsync(admin, timeout);
+            return await describing.WaitAsync(timeout + ProbeSlack, _time).ConfigureAwait(false);
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
             _logger.LogDebug("Kafka brokers did not describe the cluster within {Seconds:F0} s ({Error})", timeout.TotalSeconds, e.GetType().Name);
             return false;
         }
+    }
+
+    private static async Task<bool> DescribeAsync(IAdminClient admin, TimeSpan timeout)
+    {
+        var cluster = await admin.DescribeClusterAsync(new Confluent.Kafka.Admin.DescribeClusterOptions { RequestTimeout = timeout }).ConfigureAwait(false);
+        return cluster.Nodes.Count > 0;
     }
 
     private Generation NewGeneration()
@@ -710,6 +729,22 @@ internal sealed class KafkaOutboxTransport(KafkaProduce produce, EventCatalog ca
     public bool IsBrokerUnavailable(Exception error) => KafkaProduce.IsBrokerUnavailable(error);
 
     public bool IsTopicRefused(Exception error) => KafkaProduce.IsTopicRefused(error);
+
+    /// <summary>
+    /// The producer's cached probe, as the readiness check asks it (ARV-245): within <see cref="KafkaReadiness.ProbeTimeout"/>
+    /// and a second more in case the client does not keep to it; a probe that does not end then reads as false.
+    /// </summary>
+    public async Task<bool> BrokersAnswerAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await produce.BrokersAnswerAsync(KafkaReadiness.ProbeTimeout).WaitAsync(KafkaReadiness.ProbeTimeout + TimeSpan.FromSeconds(1), ct);
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
+    }
 
     public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
     {

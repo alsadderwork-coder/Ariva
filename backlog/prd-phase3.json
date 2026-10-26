@@ -1203,7 +1203,7 @@
         "docs and wiki pages affected by the change are updated (wiki 10 section 4.5a, the monitoring rules; node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-23 by ARV-175 from its notes (the ARV-165 review's F1). Low, so Phase 3 by the owner's rule of 2026-10-14. Size S.",
       "dependsOn": [
         "ARV-175"
@@ -1536,6 +1536,26 @@
       "notes": "Size M. Phase 3 (the owner's rule of 2026-10-14). Defence in depth behind the signed manifest, which stays the gate; a job row needs a forged dump that passes the signature, or the superuser.",
       "dependsOn": [
         "ARV-189"
+      ]
+    },
+    {
+      "id": "ARV-264",
+      "title": "[E6] Outbox relay: an event topic without a partition leader holds only its topic, not the whole outbox",
+      "description": "From the ARV-245 security review (2026-10-26, finding 3; the head-of-line residual the CWE-400 row named under ARV-245, which ARV-245's criteria did not cover). An event row whose send times out with the broker unavailable (Local_MsgTimedOut: one partition of its topic without a leader while the brokers answer) ends each relay pass at that row, and the row is due again by the time its send has timed out (its next attempt is the pass's start plus the broker retry), so as the oldest unsent row it starts and ends every pass: one leaderless partition stalls every key and topic of the outbox. Since ARV-245 the row is reported after Kafka:Outbox:BrokerStreakMinutes, but nothing else moves meanwhile. Proposal: when such a failure happens while the producer's probe says the brokers answer, hold only the row's topic (as ARV-177 holds a missing topic and ARV-175 a dead-letter topic), on its unsent rows for a short, bounded hold, and let the pass carry on with the other topics; when the probe says no broker answers, end the pass as today (ARV-245 then skips passes). Count and log the hold. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "An event row whose send fails with the broker unavailable while the brokers answer holds only its topic (its unsent rows not due until a bounded hold ends) and the pass sends the other topics' rows, in order per key; when the brokers do not answer the pass ends as before",
+        "Integration tests in OutboxRelayTests: one topic's sends time out while the probe answers true, the other topic's rows are sent in the same pass and later ones, the held topic's rows wait and resume after the hold; the existing ARV-165, ARV-175, ARV-177 and ARV-245 relay tests still pass",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (wiki 10 section 4.5a, docs/security/cwe-controls.md CWE-400 row; node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14). Filed 2026-10-26 by ARV-245 from its security review.",
+      "dependsOn": [
+        "ARV-245"
       ]
     }
   ]

@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+using Ariva.Core.Messaging;
 
 namespace Ariva.Infra.Messaging.Outbox;
 
@@ -14,16 +15,28 @@ public sealed record OutboxBacklog(long Unsent, DateTime? OldestUtc);
 /// pass and its leader lock) and they all report the same figures: a dashboard takes the largest, never the sum. A
 /// measurement is reported for three intervals; a relay that cannot measure (the database away) reports nothing, which
 /// the database readiness check already raises. No tags.
+/// <para>
+/// ARV-245: <see cref="BrokerStreaksName"/>, a counter of the rows whose sends have failed with the broker unavailable for
+/// <c>Kafka:Outbox:BrokerStreakMinutes</c> without a break (each counted once by the relay that leads through its streak),
+/// tagged with the row's <c>topic</c>: a <c>KafkaTopics</c> constant or the dead-letter topic of one, else
+/// <see cref="UnknownTopic"/> (<see cref="TopicTag"/>), never another value from the row. Any increase is the signal: a
+/// partition with no leader, which the brokers' readiness does not show.
+/// </para>
 /// </summary>
 public sealed class OutboxMetrics : IDisposable
 {
     public const string MeterName = "Ariva.Outbox";
     public const string UnsentName = "ariva.outbox.unsent";
     public const string OldestUnsentAgeName = "ariva.outbox.oldest_unsent_age";
+    public const string BrokerStreaksName = "ariva.outbox.broker_streaks";
+
+    /// <summary>The tag value of a topic that is not one of Ariva's.</summary>
+    public const string UnknownTopic = "unknown";
 
     #region Fields
 
     private readonly Meter _meter;
+    private readonly Counter<long> _brokerStreaks;
     private readonly TimeProvider _time;
     private volatile Snapshot _last;
 
@@ -41,6 +54,8 @@ public sealed class OutboxMetrics : IDisposable
             unit: "{row}", description: "Outbox rows not yet sent to Kafka (events and kept dead letters)");
         _meter.CreateObservableGauge(OldestUnsentAgeName, () => Fresh() is { } last ? [new Measurement<double>(last.OldestAgeSeconds)] : Array.Empty<Measurement<double>>(),
             unit: "s", description: "Age of the oldest outbox row not yet sent when measured, 0 when there is none");
+        _brokerStreaks = _meter.CreateCounter<long>(BrokerStreaksName, unit: "{row}",
+            description: "Outbox rows whose sends have failed with the broker unavailable for Kafka:Outbox:BrokerStreakMinutes without a break, by topic");
     }
 
     #endregion
@@ -62,6 +77,15 @@ public sealed class OutboxMetrics : IDisposable
         var age = backlog.OldestUtc is { } oldest ? Math.Max(0, (now.UtcDateTime - DateTime.SpecifyKind(oldest, DateTimeKind.Utc)).TotalSeconds) : 0;
         _last = new Snapshot(Math.Max(0, backlog.Unsent), age, now, freshFor);
     }
+
+    /// <summary>A row on <paramref name="topic"/> whose broker-unavailable streak passed the configured length (ARV-245).</summary>
+    public void BrokerStreak(string topic) => _brokerStreaks.Add(1, new KeyValuePair<string, object>("topic", TopicTag(topic)));
+
+    /// <summary>A topic as a tag value: a <c>KafkaTopics</c> constant or the dead-letter topic of one, else <see cref="UnknownTopic"/>.</summary>
+    public static string TopicTag(string topic) =>
+        KafkaTopics.IsKnown(topic) || (topic is not null && KafkaTopics.All.Any(known => string.Equals(KafkaTopics.DeadLetter(known), topic, StringComparison.Ordinal)))
+            ? topic
+            : UnknownTopic;
 
     private Snapshot Fresh()
     {

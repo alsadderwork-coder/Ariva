@@ -1,0 +1,93 @@
+{
+  "alert": "Ariva outbox row refused by the broker for a streak (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "An outbox row's sends failed with the broker unavailable for Kafka:Outbox:BrokerStreakMinutes without a break, while the brokers answer: a partition of its topic may have no leader (ARV-245).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.outbox.broker_streaks",
+                "timeAggregation": "increase",
+                "spaceAggregation": "sum"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "service.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "topic",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{service.name}} {{topic}}"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${outboxBrokerStreak.severity}",
+          "op": "above",
+          "matchType": "in_total",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${outboxBrokerStreak.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "service.name",
+      "topic"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "outboxBrokerStreak",
+    "environment": "${environment}",
+    "severity": "${outboxBrokerStreak.severity}"
+  },
+  "annotations": {
+    "summary": "Outbox of {{$service.name}}: rows for {{$topic}} refused by the broker for a streak",
+    "description": "The outbox relay of {{$service.name}} reported {{$value}} rows for {{$topic}} whose sends failed with the broker unavailable for Kafka:Outbox:BrokerStreakMinutes without a break, in the last ${outboxBrokerStreak.minutes} minutes.",
+    "runbook": "wiki/10-Operations-Runbook.md#45a-outbox-backlog-and-dead-letters-arv-020"
+  },
+  "disabled": false
+}

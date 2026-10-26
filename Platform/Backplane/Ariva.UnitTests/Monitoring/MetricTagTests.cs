@@ -99,7 +99,13 @@ public sealed partial class MetricTagTests
             certificates.Track(CertificateMetrics.DataProtection, DateTime.UtcNow.AddDays(90));
             certificates.Track(CertificateMetrics.MqttServer, DateTime.UtcNow.AddDays(30));
         },
-        [typeof(OutboxMetrics)] = m => ((OutboxMetrics)m).Report(new OutboxBacklog(3, DateTime.UtcNow.AddMinutes(-1)), TimeSpan.FromMinutes(1)),
+        [typeof(OutboxMetrics)] = m =>
+        {
+            var outbox = (OutboxMetrics)m;
+            outbox.Report(new OutboxBacklog(3, DateTime.UtcNow.AddMinutes(-1)), TimeSpan.FromMinutes(1));
+            outbox.BrokerStreak(KafkaTopics.DeviceZoneOccupancy);
+            outbox.BrokerStreak(KafkaTopics.DeadLetter(KafkaTopics.AmanEgateIntervalStats));
+        },
         [typeof(StreamMetrics)] = m =>
         {
             ((StreamMetrics)m).Report("ariva-stream.queue-engine", new Dictionary<string, long> { [KafkaTopics.DeviceZoneOccupancy] = 5 }, TimeSpan.FromMinutes(1));
@@ -190,6 +196,17 @@ public sealed partial class MetricTagTests
     [InlineData(null, KafkaProducerMetrics.Unknown)]
     public void TopicTag_Should_BeATopicConstantOrUnknown_When_ALetterNamesItsTopic(string topic, string tag) =>
         KafkaProducerMetrics.TopicTag(topic).Should().Be(tag);
+
+    [Theory]
+    [InlineData(KafkaTopics.DeviceZoneOccupancy, KafkaTopics.DeviceZoneOccupancy)]
+    [InlineData(KafkaTopics.DeviceZoneOccupancy + KafkaTopics.DeadLetterSuffix, KafkaTopics.DeviceZoneOccupancy + KafkaTopics.DeadLetterSuffix)]
+    [InlineData("ariva." + KafkaTopics.AmanEgateIntervalStats + KafkaTopics.DeadLetterSuffix, "ariva." + KafkaTopics.AmanEgateIntervalStats + KafkaTopics.DeadLetterSuffix)]
+    [InlineData(KafkaTopics.AmanEgateIntervalStats + KafkaTopics.DeadLetterSuffix, OutboxMetrics.UnknownTopic)]
+    [InlineData("ariva.flow.other.v1" + KafkaTopics.DeadLetterSuffix, OutboxMetrics.UnknownTopic)]
+    [InlineData("passport 123", OutboxMetrics.UnknownTopic)]
+    [InlineData(null, OutboxMetrics.UnknownTopic)]
+    public void OutboxTopicTag_Should_BeATopicConstantItsDeadLetterTopicOrUnknown_When_ARowNamesItsTopic(string topic, string tag) =>
+        OutboxMetrics.TopicTag(topic).Should().Be(tag);
 
     [Theory]
     [InlineData("ariva-stream.queue-engine", "ariva-stream.queue-engine")]

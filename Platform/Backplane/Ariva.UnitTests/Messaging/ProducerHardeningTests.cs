@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using Ariva.Infra.Messaging;
 using Ariva.Infra.Messaging.Kafka;
+using Ariva.Infra.Messaging.Outbox;
 using Confluent.Kafka;
 using FluentAssertions;
 using MassTransit;
@@ -249,6 +250,75 @@ public sealed class ProducerHardeningTests
         second.Should().BeSameAs(first);
     }
 
+    [Fact]
+    public async Task BrokersAnswer_Should_EndAsFalseWithinItsBoundAndAskAfresh_When_TheDescriptionNeverEnds()
+    {
+        // ARV-245: the probe's task is shared and kept, and the outbox relay waits on it before each pass after a broker
+        // failure, so a description the client never ends (its client retired under it) must not keep that task from ending:
+        // it ends as false ProbeSlack after its timeout, and a probe after the reuse time asks again.
+        var calls = 0;
+        var client = new FakeClient();
+        using var produce = new KafkaProduce(client.Mock.Object, TimeProvider.System, NullLogger.Instance)
+        {
+            DescribeCluster = (_, _) =>
+            {
+                Interlocked.Increment(ref calls);
+                return new TaskCompletionSource<bool>().Task;
+            }
+        };
+        produce.Started();
+        var timeout = TimeSpan.FromMilliseconds(200);
+        var clock = Stopwatch.StartNew();
+
+        (await produce.BrokersAnswerAsync(timeout).WaitAsync(TimeSpan.FromSeconds(10), Ct)).Should().BeFalse("a description that never ends is no answer");
+        clock.Elapsed.Should().BeLessThan(timeout + KafkaProduce.ProbeSlack + TimeSpan.FromSeconds(2), "the probe keeps to its own bound");
+
+        (await produce.BrokersAnswerAsync(timeout).WaitAsync(TimeSpan.FromSeconds(10), Ct)).Should().BeFalse();
+        calls.Should().Be(2, "past the reuse time the next probe asks afresh instead of the stranded one");
+    }
+
+    [Fact]
+    public async Task OutboxTransport_Should_AnswerWithTheProducersProbe_When_TheRelayAsksForTheBrokers()
+    {
+        // ARV-245: the relay's gate through the real transport: false while the producer has not started, then the probe's
+        // answer (true, and false once the brokers do not answer, after the probe's reuse time), and false within the
+        // readiness probe's bound for a client with no handle to describe the cluster through.
+        var answers = true;
+        var client = new FakeClient();
+        using var produce = new KafkaProduce(client.Mock.Object, TimeProvider.System, NullLogger.Instance) { DescribeCluster = (_, _) => Task.FromResult(answers) };
+        IOutboxTransport transport = new KafkaOutboxTransport(produce, new EventCatalog([]));
+
+        (await transport.BrokersAnswerAsync(Ct)).Should().BeFalse("the producer has not started");
+        produce.Started();
+        (await transport.BrokersAnswerAsync(Ct)).Should().BeTrue();
+        answers = false;
+        await Task.Delay(TimeSpan.FromSeconds(1.2), Ct);
+        (await transport.BrokersAnswerAsync(Ct)).Should().BeFalse("the brokers do not answer now");
+
+        using var handleless = new KafkaProduce(new FakeClient().Mock.Object, TimeProvider.System, NullLogger.Instance);
+        handleless.Started();
+        IOutboxTransport noHandle = new KafkaOutboxTransport(handleless, new EventCatalog([]));
+        var clock = Stopwatch.StartNew();
+        (await noHandle.BrokersAnswerAsync(Ct)).Should().BeFalse("a client without a handle describes nothing");
+        clock.Elapsed.Should().BeLessThan(KafkaReadiness.ProbeTimeout + TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task OutboxTransport_Should_StopWaiting_When_TheRelaysTokenIsCancelled()
+    {
+        // ARV-245: the relay's stop ends its wait for a probe in flight at once, as a cancellation.
+        var client = new FakeClient();
+        using var produce = new KafkaProduce(client.Mock.Object, TimeProvider.System, NullLogger.Instance)
+        {
+            DescribeCluster = (_, _) => new TaskCompletionSource<bool>().Task
+        };
+        produce.Started();
+        IOutboxTransport transport = new KafkaOutboxTransport(produce, new EventCatalog([]));
+        using var stop = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        await FluentActions.Awaiting(() => transport.BrokersAnswerAsync(stop.Token)).Should().ThrowAsync<OperationCanceledException>();
+    }
+
     private static ServiceProvider Messaging(Dictionary<string, string> settings)
     {
         settings["Kafka:Enabled"] = "true";
@@ -325,6 +395,30 @@ public sealed class ProducerHardeningTests
 
         if (refused)
             add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Outbox:BrokerRetrySeconds*");
+        else
+            add.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("0", true)]
+    [InlineData("1", false)]
+    [InlineData("15", false)]
+    [InlineData("1440", false)]
+    [InlineData("1441", true)]
+    [InlineData("-5", true)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_TheRelaysBrokerStreakIsOutOfBounds(string minutes, bool refused)
+    {
+        // ARV-245: the streak after which a row the broker keeps refusing is reported is bounded, or the host does not start.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Kafka:Enabled"] = "true",
+            ["Kafka:Outbox:BrokerStreakMinutes"] = minutes
+        }).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (refused)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Outbox:BrokerStreakMinutes*");
         else
             add.Should().NotThrow();
     }

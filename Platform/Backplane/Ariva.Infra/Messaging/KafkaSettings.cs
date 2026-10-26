@@ -118,6 +118,17 @@ public sealed class OutboxRelaySettings
     /// start. Any other failure keeps the exponential backoff.
     /// </summary>
     public int BrokerRetrySeconds { get; init; } = 5;
+
+    public const int MinBrokerStreakMinutes = 1;
+    public const int MaxBrokerStreakMinutes = 1440;
+
+    /// <summary>
+    /// A row whose sends have failed with the broker unavailable for this many minutes without a break is logged once as an
+    /// Error and counted (<c>ariva.outbox.broker_streaks</c>, ARV-245): such failures count no attempt, so the "stuck after N
+    /// attempts" Error never fires for them, and a partition without a leader would otherwise only warn for ever. From
+    /// <see cref="MinBrokerStreakMinutes"/> to <see cref="MaxBrokerStreakMinutes"/>; a host with another value does not start.
+    /// </summary>
+    public int BrokerStreakMinutes { get; init; } = 15;
 }
 
 /// <summary>The host's own producer (ARV-167).</summary>
