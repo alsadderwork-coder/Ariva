@@ -1454,6 +1454,28 @@
       ]
     },
     {
+      "id": "ARV-261",
+      "title": "[E17] Third-party image bumps for the third-party-images scan: ClamAV's rebuilt digest, then one line jump at a time",
+      "description": "From the first run of the third-party-images workflow (ARV-227) on PR #113 (2026-10-26, run 40274759710): 11 of 13 scans fail on HIGH vulnerabilities with a fixed version, all in upstream images, none in Ariva's code; the owner chose to merge with the check red and track the bumps here. Pins that fail: toxiproxy 2.12.0, clamav 1.4.6, smtp4dev 3.15.0, semgrep 1.178.0, playwright v1.63.0-noble, confluent-local 8.2.4, timescaledb-ha pg17-ts2.31, zaproxy stable, apache/kafka 4.1.2, cp-kafka 7.6.14 (both redis pins pass). `node scripts/base-images.mjs --patches` (2026-10-26): ClamAV 1.4.6 has a rebuilt digest under the same tag (sha256:982e28f9...), the only fix on a current line; Kafka 4.1, cp-kafka 7.6, confluent-local 8.2, Semgrep 1.178 and toxiproxy 2.12 are the newest patches of their lines and the fixed packages ship only in newer lines (4.4, 7.9, 8.3, 1.182, 2.13), each a change in what the tests or CI run on; timescaledb-ha pg17-ts2.31, smtp4dev 3.15.0, ZAP stable and Playwright v1.63.0-noble have no newer image yet. Production images among them: timescaledb-ha (the chart's database) and clamav (the chart's scanner). Remediation time frames per wiki 13 section 9 (high: 30 days from the first fix date). CWEs to review: CWE-1104 (unmaintained third-party components), CWE-937.",
+      "acceptanceCriteria": [
+        "ClamAV is pinned to its rebuilt 1.4.6 digest everywhere `base-images.mjs --resolve` moves it, and its scan passes",
+        "Each line jump (apache/kafka 4.4, cp-kafka 7.9, confluent-local 8.3, Semgrep 1.182, toxiproxy 2.13) is its own commit with the suites that run on that image passing, or is recorded as not taken with the reason",
+        "The pins without a fix (timescaledb-ha, smtp4dev, ZAP, Playwright) are watched by the patch watch and bumped when upstream rebuilds; until then their findings are listed with the first fix date in wiki 13 section 9",
+        "The third-party-images workflow passes, or each remaining failure is a listed pin without an upstream fix",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 39,
+      "passes": false,
+      "notes": "Size M. Phase 3 (the owner merged PR #113 with this check red on 2026-10-26). Time bound: high findings within 30 days of their first fix date (wiki 13 section 9).",
+      "dependsOn": [
+        "ARV-227"
+      ]
+    },
+    {
       "id": "ARV-262",
       "title": "[E17] Post-restore check residuals: TimescaleDB's members, settings outside postgresql.auto.conf, and a schema compared with a fresh migration",
       "description": "From the ARV-183 security review (2026-10-26, M3, M4 and L6, recorded as residuals in the CWE-269 row). `ariva-db.sh check` skips extension members, so an object a forged dump (run as the superuser) adds to timescaledb or timescaledb_toolkit with ALTER EXTENSION ... ADD is never looked at (plpgsql's members are pinned since ARV-183; TimescaleDB's set changes with its version). It reads ALTER SYSTEM settings from postgresql.auto.conf only, not from a file postgresql.conf includes (include_dir) or one written with COPY TO. It compares the system functions with template1's, which a forged dump could change as well through an extension it drops again. And triggers, constraints and grants a forged dump leaves out (the immutability triggers, the runtime role's revokes) are integrity, not privilege, and no check compares them. Proposal: after the restore and the migration job, compare the restored schema (pg_dump --schema-only of Ariva's objects, normalised) with that of an empty database migrated by the same release's scripts, so a missing or changed trigger, constraint, grant or function is a FAIL; pin TimescaleDB's member objects per shipped version from the image (a test reads them from the pinned image); read pg_file_settings for every source file but the image's own postgresql.conf. CWEs to review: CWE-269, CWE-345.",
