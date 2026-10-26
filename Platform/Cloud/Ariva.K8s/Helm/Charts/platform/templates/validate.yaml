@@ -639,6 +639,10 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if and (eq $field "records") (or (not $number) (lt (float64 $value) 0.0) (ne (float64 $value) (float64 (int $value)))) }}
 {{- fail (printf "monitoring.alerts.%s.records must be a whole number, 0 or more" $key) }}
 {{- end }}
+{{- /* ARV-254: the consumer hold rule's limit, in whole seconds, a minute to a day. */}}
+{{- if and (eq $field "holdLimit") (or (not $number) (lt (float64 $value) 60.0) (gt (float64 $value) 86400.0) (ne (float64 $value) (float64 (int $value)))) }}
+{{- fail (printf "monitoring.alerts.%s.holdLimit must be a whole number of seconds from 60 to 86400 (ARV-254)" $key) }}
+{{- end }}
 {{- if and (eq $field "usedPercent") (or (not $number) (lt (float64 $value) 1.0) (gt (float64 $value) 99.0)) }}
 {{- fail (printf "monitoring.alerts.%s.usedPercent must be from 1 to 99" $key) }}
 {{- end }}

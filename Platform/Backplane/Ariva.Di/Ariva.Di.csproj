@@ -18,6 +18,11 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- ARV-254: the unit tests connect a registered consumer's endpoint on a mocked rider to check its settings. -->
+        <InternalsVisibleTo Include="Ariva.UnitTests" />
+    </ItemGroup>
+
+    <ItemGroup>
         <ProjectReference Include="..\Ariva.Core\Ariva.Core.csproj" />
         <ProjectReference Include="..\Ariva.Infra\Ariva.Infra.csproj" />
     </ItemGroup>

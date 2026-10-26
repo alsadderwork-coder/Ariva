@@ -54,6 +54,7 @@ public sealed partial class MetricTagTests
             kafka.Recreated();
             kafka.ObserveConsumedTopics(() => [(KafkaTopics.AmanEgateIntervalStats, Group, true)]);
             kafka.ObserveUnconnectedConsumers(() => [(KafkaTopics.AmanEgateIntervalStats, Group, false)]);
+            kafka.ObserveConsumerHolds(() => [(KafkaTopics.AmanEgateIntervalStats, Group, 12.5)]);
             kafka.DeadLetter(Letter(), KafkaProducerMetrics.SentOutcome);
             kafka.DeadLetter(Letter(), KafkaProducerMetrics.KeptOutcome);
             kafka.DeadLetter(Letter(), KafkaProducerMetrics.FailedOutcome);

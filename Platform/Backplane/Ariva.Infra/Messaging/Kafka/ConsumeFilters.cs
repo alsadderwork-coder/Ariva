@@ -57,8 +57,9 @@ public sealed class InboxFilter<T>(IInbox inbox, IUnitOfWork unitOfWork, ILogger
 /// being disposed), or an <see cref="ObjectDisposedException"/> while the endpoint stops. Such a record is not committed
 /// (one lane per consumer, ARV-253: nothing after it completes) and the next host gets it again, so a dead letter would
 /// only be a second copy of a valid message: it is left unacknowledged instead, as the message's own cancellation. A dead
-/// letter the broker refuses is retried until accepted or until the endpoint stops (<paramref name="stopping"/>, ARV-166),
-/// so nothing is lost silently and nothing keeps a stopping host alive.
+/// letter the broker refuses is retried for a one minute window and then kept in the outbox (ARV-254), or kept at once when
+/// the endpoint stops (<paramref name="stopping"/>, ARV-166, ARV-171), so nothing is lost silently, a refused letter holds
+/// its consumer for a bounded time, and nothing keeps a stopping host alive.
 /// <para>
 /// MassTransit always places <c>UseMessageRetry</c> first in the message pipe, whatever the configuration order
 /// (proven by the pipe probe in ConsumePipelineTests), so this filter cannot wrap the retry. It runs inside it and
@@ -100,11 +101,12 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
 
     /// <summary>
     /// The v8 rider discards a message whose fault escapes the pipe, so a dead letter that the broker refuses is tried
-    /// again (2, 4 ... 30 seconds; each attempt ends within the produce bound, ARV-166) and holds the partition until it is
-    /// accepted. Shutdown ends the wait: the message's own token, or the endpoint beginning to stop, since MassTransit does
-    /// not cancel the message's token when its endpoint stops (ARV-166). The letter is then kept in the outbox and the
-    /// message completes (ARV-171); only when that fails too is the message left unacknowledged
-    /// (<see cref="DeadLetterRetry"/> says why).
+    /// again (2, 4 ... 30 seconds; each attempt ends within the produce bound, ARV-166), holding every partition its consumer
+    /// reads, for a one minute window (<see cref="DeadLetterRetry.SendWindow"/>, ARV-254), after which the letter is kept in
+    /// the outbox and the message completes. Shutdown ends the wait sooner: the message's own token, or the endpoint beginning
+    /// to stop, since MassTransit does not cancel the message's token when its endpoint stops (ARV-166); the letter is then
+    /// kept the same way (ARV-171). Only when the outbox cannot take it is the message left unacknowledged at a stop, or the
+    /// broker tried for another window otherwise (<see cref="DeadLetterRetry"/> says why).
     /// </summary>
     private Task SendUntilAcceptedAsync(DeadLetter letter, CancellationToken messageToken) =>
         DeadLetterRetry.SendUntilAcceptedAsync(sink, letter, timeProvider, logger, messageToken, stopping?.Token ?? CancellationToken.None, store, metrics);
@@ -291,6 +293,14 @@ public sealed class UnreadableFilter(IDeadLetterSink sink, TimeProvider timeProv
 /// record (docs/architecture/overview.md, Producing).
 /// </para>
 /// <para>
+/// ARV-254: the broker refusing a letter no longer holds its record without end. Once the letter has been refused for
+/// <see cref="SendWindow"/> (its last attempt starting by the window's end, the wait before it cut to what is left of the
+/// window), it is kept in the outbox in the same way (the relay sends it when the broker takes it) and the
+/// record completes, so its consumer, which handles one record at a time (ARV-253), and every partition it reads are held
+/// for a bounded time (<see cref="ConsumerSettings.LongestHold"/>), within the poll interval the rider's consumers are given.
+/// A letter the outbox cannot take either is tried again, for another window, and so on, until one of the two takes it.
+/// </para>
+/// <para>
 /// Each letter is counted once on <see cref="KafkaProducerMetrics.DeadLettersName"/> (ARV-125a) by how it ended: sent, kept
 /// in the outbox or failed (left unacknowledged); a refused attempt that is retried is not counted.
 /// </para>
@@ -300,12 +310,16 @@ internal static class DeadLetterRetry
     /// <summary>The longest the outbox write of a dead letter may hold an endpoint's stop (ARV-171).</summary>
     public static readonly TimeSpan KeepTimeout = TimeSpan.FromSeconds(10);
 
+    /// <summary>How long a letter the broker refuses is sent again before it is kept in the outbox (ARV-254): one minute.</summary>
+    public static readonly TimeSpan SendWindow = TimeSpan.FromMinutes(1);
+
     public static async Task SendUntilAcceptedAsync(IDeadLetterSink sink, DeadLetter letter, TimeProvider timeProvider, ILogger logger,
         CancellationToken messageToken, CancellationToken stopping, IDeadLetterStore store = null, KafkaProducerMetrics metrics = null)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(messageToken, stopping);
         var ct = linked.Token;
         Exception ended;
+        var window = timeProvider.GetTimestamp();
         for (var attempt = 1; ; attempt++)
         {
             TimeSpan wait;
@@ -328,6 +342,29 @@ internal static class DeadLetterRetry
                 break;
             }
 
+            // ARV-254: refused for the whole window, the letter is kept in the outbox and the record completes; if the outbox
+            // cannot take it either, the broker is tried for another window. The clock is read once, so what is left of the
+            // window is never negative when the wait is cut to it.
+            if (store is not null)
+            {
+                var left = SendWindow - timeProvider.GetElapsedTime(window);
+                if (left <= TimeSpan.Zero)
+                {
+                    if (await KeepAsync(store, letter, timeProvider, logger, "refused for its whole send window"))
+                    {
+                        metrics?.DeadLetter(letter, KafkaProducerMetrics.KeptOutcome);
+                        return;
+                    }
+
+                    window = timeProvider.GetTimestamp();
+                    left = SendWindow;
+                }
+
+                // A window's last attempt starts by its end at the latest, so the hold stays within ConsumerSettings.LongestHold.
+                if (left < wait)
+                    wait = left;
+            }
+
             try
             {
                 await Task.Delay(wait, timeProvider, ct);
@@ -339,7 +376,7 @@ internal static class DeadLetterRetry
             }
         }
 
-        if (store is not null && await KeepAsync(store, letter, timeProvider, logger))
+        if (store is not null && await KeepAsync(store, letter, timeProvider, logger, "not sent before messaging stopped"))
         {
             metrics?.DeadLetter(letter, KafkaProducerMetrics.KeptOutcome);
             return;
@@ -349,8 +386,8 @@ internal static class DeadLetterRetry
         throw Stopping(logger, letter, ended, messageToken);
     }
 
-    /// <summary>Writes the letter to the outbox within <see cref="KeepTimeout"/>; false when it could not.</summary>
-    private static async Task<bool> KeepAsync(IDeadLetterStore store, DeadLetter letter, TimeProvider timeProvider, ILogger logger)
+    /// <summary>Writes the letter to the outbox within <see cref="KeepTimeout"/>; false when it could not. <paramref name="why"/> is a fixed text.</summary>
+    private static async Task<bool> KeepAsync(IDeadLetterStore store, DeadLetter letter, TimeProvider timeProvider, ILogger logger, string why)
     {
         try
         {
@@ -367,8 +404,8 @@ internal static class DeadLetterRetry
                 throw;
             }
 
-            logger.LogWarning("Dead letter for {Topic} partition {Partition} offset {Offset} not sent before messaging stopped; kept in the outbox, which sends it later",
-                letter.Topic, letter.Partition, letter.Offset);
+            logger.LogWarning("Dead letter for {Topic} partition {Partition} offset {Offset} {Why}; kept in the outbox, which sends it later",
+                letter.Topic, letter.Partition, letter.Offset, why);
             return true;
         }
         catch (Exception e)

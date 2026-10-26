@@ -1,0 +1,99 @@
+{
+  "alert": "Ariva consumer held by one record (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "A rider endpoint held by the record in hand longer than the longest hold its settings allow, so every partition its consumer reads waits (ARV-254).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.kafka.consumer_hold_seconds",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "topic",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "group",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "service.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{topic}} ({{group}})"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${consumerHeld.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": "${consumerHeld.holdLimit}",
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${consumerHeld.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "topic",
+      "group",
+      "service.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "consumerHeld",
+    "environment": "${environment}",
+    "severity": "${consumerHeld.severity}"
+  },
+  "annotations": {
+    "summary": "Ariva consumer held by one record: {{$topic}}",
+    "description": "The endpoint of {{$group}} on {{$service.name}} has been held by one record for more than ${consumerHeld.holdLimit} seconds, throughout ${consumerHeld.minutes} minutes.",
+    "runbook": "wiki/10-Operations-Runbook.md#424-a-consumer-held-by-one-record-arv-254"
+  },
+  "disabled": false
+}

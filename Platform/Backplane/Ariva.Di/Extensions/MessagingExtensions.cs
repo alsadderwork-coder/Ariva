@@ -147,10 +147,19 @@ public static partial class MessagingExtensions
         if (consumers is < 1 or > ConsumerSettings.MaxConsumersPerEndpoint)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
                 $"Kafka:Consumers:ConsumersPerEndpoint must be from 1 to {ConsumerSettings.MaxConsumersPerEndpoint} (ARV-253)."));
+        // ARV-254: the retries bound how long one message holds its consumer, and so its poll interval.
+        var retries = settings.Consumers?.RetryCount ?? 0;
+        if (retries is < 0 or > ConsumerSettings.MaxRetryCount)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Consumers:RetryCount must be from 0 to {ConsumerSettings.MaxRetryCount} (ARV-254)."));
         var handler = settings.Consumers?.HandlerTimeoutSeconds ?? 0;
         if (handler is < ConsumerSettings.MinHandlerTimeoutSeconds or > ConsumerSettings.MaxHandlerTimeoutSeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
                 $"Kafka:Consumers:HandlerTimeoutSeconds must be from {ConsumerSettings.MinHandlerTimeoutSeconds} to {ConsumerSettings.MaxHandlerTimeoutSeconds} (ARV-096e)."));
+        // ARV-254: the rider consumers' poll interval is the longest hold and a minute, and librdkafka takes at most a day.
+        if (settings.Consumers is { } held && held.MaxPollInterval > ConsumerSettings.MaxPollIntervalLimit)
+            throw new InvalidOperationException(
+                "Kafka:Consumers: the longest hold that RetryCount, HandlerTimeoutSeconds and RetryMaxMilliseconds allow, with a minute added, must be at most a day, librdkafka's largest max.poll.interval.ms (ARV-254).");
         var seconds = settings.Producer?.RecreateSeconds ?? 0;
         if (seconds is < ProducerSettings.MinRecreateSeconds or > ProducerSettings.MaxRecreateSeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
@@ -192,6 +201,8 @@ public static partial class MessagingExtensions
         // ARV-167: the host's one producer, built when the host starts. Its lifetime is the first messaging hosted service, so
         // it starts before the relay and the bus and stops (with its bounded flush) after them.
         services.TryAddSingleton<KafkaProducerMetrics>();
+        // ARV-254: each rider endpoint's hold by the record in hand, on the Kafka meter.
+        services.TryAddSingleton(provider => new KafkaConsumerHolds(provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<KafkaProducerMetrics>()));
         services.AddSingleton(provider => new KafkaProduce(settings, provider.GetRequiredService<TimeProvider>(),
             provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<KafkaProduce>>(), provider.GetRequiredService<KafkaProducerMetrics>()));
         services.AddHostedService<KafkaProducerLifetime>();
@@ -344,6 +355,9 @@ public sealed class ArivaMessagingBuilder
             rider => rider.AddConsumer<TConsumer>(),
             (kafkaRider, settings) => kafkaRider.ConnectTopicEndpoint<string, TMessage>(topic, $"ariva-{settings.ServiceName}.{purpose}", (context, endpoint) =>
             {
+                // ARV-254: the endpoint's hold by the record in hand, from its receive's start to its end (retries and dead letter included).
+                if (context.GetService<KafkaConsumerHolds>()?.For(topic, $"ariva-{settings.ServiceName}.{purpose}") is { } hold)
+                    endpoint.ConfigureReceive(receive => receive.UseFilter(hold));
                 endpoint.AutoOffsetReset = AutoOffsetReset.Earliest;
                 endpoint.ConcurrentDeliveryLimit = 1;
                 // ARV-253: one lane per consumer, so a partition's records complete in fetch order and a stop's cancellations
@@ -351,6 +365,8 @@ public sealed class ArivaMessagingBuilder
                 endpoint.ConcurrentMessageLimit = 1;
                 endpoint.ConcurrentConsumerLimit = (ushort)settings.Consumers.ConsumersPerEndpoint;
                 endpoint.QueuedMaxMessagesKbytes = ConsumerSettings.FetchQueueKbytesPerEndpoint / settings.Consumers.ConsumersPerEndpoint;
+                // ARV-254: above the longest hold, since MassTransit stops polling while a held record's followers fill its prefetch.
+                endpoint.MaxPollInterval = settings.Consumers.MaxPollInterval;
                 endpoint.CheckpointInterval = TimeSpan.FromSeconds(settings.Consumers.CheckpointSeconds);
                 endpoint.CheckpointMessageCount = settings.Consumers.CheckpointMessageCount;
                 endpoint.SetValueDeserializer(deserializer);

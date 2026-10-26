@@ -21,6 +21,12 @@ namespace Ariva.Infra.Messaging.Kafka;
 /// restart). The topic is a <c>KafkaTopics</c> constant and the group an Ariva group name, or <c>unknown</c>; never a
 /// value from the record.
 /// </para>
+/// <para>
+/// ARV-254: <see cref="ConsumerHoldName"/>, a gauge of the seconds each rider endpoint has been held by its oldest record in
+/// hand (0 when it holds none; <see cref="KafkaConsumerHolds"/>), with the same <c>topic</c> and <c>group</c> tags. A record
+/// that retries, stalls or waits for a refused dead letter holds every partition its consumer reads; a hold longer than the
+/// longest the consumer settings allow (<see cref="ConsumerSettings.LongestHold"/>) is the signal to alert on.
+/// </para>
 /// </summary>
 public sealed partial class KafkaProducerMetrics : IDisposable
 {
@@ -32,6 +38,8 @@ public sealed partial class KafkaProducerMetrics : IDisposable
     public const string ConsumerUnconnectedName = "ariva.kafka.consumer_unconnected";
 
     public const string DeadLettersName = "ariva.kafka.dead_letters";
+
+    public const string ConsumerHoldName = "ariva.kafka.consumer_hold_seconds";
 
     public const string FatalErrorKind = "fatal_error";
     public const string RecreatedKind = "recreated";
@@ -103,6 +111,21 @@ public sealed partial class KafkaProducerMetrics : IDisposable
             () => consumers().Select(c => new Measurement<int>(c.Unconnected ? 1 : 0,
                 new KeyValuePair<string, object>("topic", c.Topic), new KeyValuePair<string, object>("group", c.Group))),
             description: "1 for a consumer whose topic exists but whose endpoint could not be connected (tried again at each check), 0 otherwise");
+    }
+
+    /// <summary>
+    /// Observes the rider endpoints' holds (ARV-254): <paramref name="holds"/> gives each endpoint's topic and group and the
+    /// seconds its oldest record in hand has been held, read when the gauge is collected. Called once, by
+    /// <see cref="KafkaConsumerHolds"/>.
+    /// </summary>
+    public void ObserveConsumerHolds(Func<IEnumerable<(string Topic, string Group, double Seconds)>> holds)
+    {
+        ArgumentNullException.ThrowIfNull(holds);
+        _meter.CreateObservableGauge(ConsumerHoldName,
+            () => holds().Select(h => new Measurement<double>(h.Seconds,
+                new KeyValuePair<string, object>("topic", h.Topic), new KeyValuePair<string, object>("group", h.Group))),
+            unit: "s",
+            description: "Seconds the oldest record a rider endpoint is handling has held it (every attempt, the retry waits and its dead letter), 0 when it holds none");
     }
 
     /// <summary>Counts one dead letter of <paramref name="letter"/>'s source topic and consumer with the given outcome.</summary>

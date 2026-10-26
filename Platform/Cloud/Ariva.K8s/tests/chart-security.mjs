@@ -1560,6 +1560,10 @@ for (const [label, file, sets, message, annotation] of [
 	['a signature age limit in part hours', 'values-k8s-dev.yaml', ['monitoring.alerts.scannerSignaturesStale.maxAgeHours=48.5'], 'must be a whole number of hours from 6 to 168'],
 	['the scanner rule without its values', 'values-k8s-dev.yaml', ['monitoring.alerts.scannerNotAnswering=null'], 'monitoring.alerts.scannerNotAnswering is missing'],
 	['a devices offline share above 1', 'values-k8s-dev.yaml', ['monitoring.alerts.devicesOffline.share=2']],
+	// ARV-254: the consumer hold rule's limit is whole seconds from a minute to a day.
+	['a consumer hold limit under a minute', 'values-k8s-dev.yaml', ['monitoring.alerts.consumerHeld.holdLimit=59'], 'monitoring.alerts.consumerHeld.holdLimit must be a whole number of seconds from 60 to 86400'],
+	['a consumer hold limit over a day', 'values-k8s-dev.yaml', ['monitoring.alerts.consumerHeld.holdLimit=86401'], 'must be a whole number of seconds from 60 to 86400'],
+	['a consumer hold limit in part seconds', 'values-k8s-dev.yaml', ['monitoring.alerts.consumerHeld.holdLimit=420.5'], 'must be a whole number of seconds from 60 to 86400'],
 	['a rule window of 0 minutes', 'values-k8s-dev.yaml', ['monitoring.alerts.hostDown.minutes=0']],
 	['a rule window that is not a whole number', 'values-k8s-dev.yaml', ['monitoring.alerts.streamConsumerLag.minutes=2.5']],
 	['a severity that is not warning or critical', 'values-k8s-dev.yaml', ['monitoring.alerts.busDegraded.severity=page']],

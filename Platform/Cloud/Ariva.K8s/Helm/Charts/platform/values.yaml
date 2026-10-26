@@ -513,6 +513,11 @@ monitoring:
     consumedTopicMissing: { enabled: true, minutes: 5, severity: warning }
     # A consumer whose topic exists but whose connect keeps failing, for the whole window.
     consumerUnconnected: { enabled: true, minutes: 5, severity: warning }
+    # A rider endpoint held by the record in hand above holdLimit seconds for the whole window (ARV-254): every partition its
+    # consumer reads waits. Keep holdLimit above the longest hold the hosts' Kafka:Consumers settings allow
+    # (ConsumerSettings.LongestHold: 410 s at the defaults; each more retry adds HandlerTimeoutSeconds and RetryMaxMilliseconds),
+    # so only a record that outlasts them, such as a dead letter neither the broker nor the outbox takes, raises it.
+    consumerHeld: { enabled: true, minutes: 2, holdLimit: 420, severity: warning }
     # The malware scanner beside api-main (ARV-092c): the oldest signatures of its pods built more than maxAgeHours ago for the
     # whole window (ariva.uploads.scanner.signature_age; keep maxAgeHours equal to the hosts' MalwareScan:MaxSignatureAgeHours,
     # 48 by default, whose security event 9133 marks the same), and a scanner that has not answered its signature check (every

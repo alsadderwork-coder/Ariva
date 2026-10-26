@@ -148,6 +148,13 @@ public sealed class ProducerSettings
 /// <summary>Endpoint defaults (ADR-0018).</summary>
 public sealed class ConsumerSettings
 {
+    /// <summary>
+    /// The most retries of a message (ARV-254): each attempt may take <see cref="HandlerTimeoutSeconds"/>, and one consumer
+    /// handles one record at a time (ARV-253), so the retries set how long one message can hold every partition its consumer
+    /// reads. <see cref="RetryCount"/> from 0 to this, or the host does not start.
+    /// </summary>
+    public const int MaxRetryCount = 10;
+
     public int RetryCount { get; init; } = 3;
     public int RetryMinMilliseconds { get; init; } = 200;
     public int RetryMaxMilliseconds { get; init; } = 5_000;
@@ -193,6 +200,37 @@ public sealed class ConsumerSettings
     /// or the host does not start.
     /// </summary>
     public int HandlerTimeoutSeconds { get; init; } = 70;
+
+    /// <summary>
+    /// The longest one record can hold its consumer (ARV-254): every attempt at its handler timeout, the retry waits at their
+    /// longest, then its dead letter: refused sends for <see cref="Kafka.DeadLetterRetry.SendWindow"/> and one more send that
+    /// started by its end (<see cref="Kafka.KafkaProduce.SendTimeout"/>), then the outbox write
+    /// (<see cref="Kafka.DeadLetterRetry.KeepTimeout"/>). About 6 minutes 50 seconds at the defaults. Longer in three cases: the
+    /// broker refuses the dead letter and the database the outbox write too (the letter is tried again until one takes it); a
+    /// handler ignores its cancellation (every Ariva consumer passes its token on; ARV-096e); and the inbox's rollback after
+    /// an attempt is cut, which runs without the attempt's token and is bounded by the database client's own timeouts (the
+    /// minute <see cref="MaxPollInterval"/> adds takes it at the defaults).
+    /// </summary>
+    public TimeSpan LongestHold =>
+        TimeSpan.FromSeconds((double)(Math.Max(0, RetryCount) + 1) * HandlerTimeoutSeconds)
+        + TimeSpan.FromMilliseconds((double)Math.Max(0, RetryCount) * Math.Max(0, RetryMaxMilliseconds))
+        + Kafka.DeadLetterRetry.SendWindow + Kafka.KafkaProduce.SendTimeout + Kafka.DeadLetterRetry.KeepTimeout;
+
+    /// <summary>
+    /// librdkafka's <c>max.poll.interval.ms</c> for every rider consumer (ARV-254): <see cref="LongestHold"/> and a minute.
+    /// MassTransit 8.5.11's consume loop (<c>KafkaMessageConsumer.Consume</c>) takes a slot of its prefetch (1,000 records)
+    /// before it polls again, so once the records fetched behind a held one fill it, the loop stops polling until the hold
+    /// ends; with librdkafka's default of 300 seconds a hold longer than that took the consumer out of its group, and after
+    /// the rebalance the records it had not committed were handled again (duplicates the inbox drops). Above the longest
+    /// hold, a consumer leaves its group only when it is truly stuck. The cost: librdkafka also sends it as the group's rebalance
+    /// timeout, so in a rebalance (a rolling update, a scale out, a pod lost) a member held with its prefetch full delays the
+    /// whole group for up to this long (470 seconds at the defaults, 300 before). At most <see cref="MaxPollIntervalLimit"/>,
+    /// or the host does not start.
+    /// </summary>
+    public TimeSpan MaxPollInterval => LongestHold + TimeSpan.FromMinutes(1);
+
+    /// <summary>The largest <c>max.poll.interval.ms</c> librdkafka takes: a day (ARV-254).</summary>
+    public static readonly TimeSpan MaxPollIntervalLimit = TimeSpan.FromMilliseconds(86_400_000);
 
     /// <summary>
     /// How long a host waits at start for the Ariva topics it consumes to exist before it connects the consumers whose

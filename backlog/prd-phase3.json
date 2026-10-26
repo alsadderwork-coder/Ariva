@@ -1346,7 +1346,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Lows of the ARV-253 review (backlog/progress.md, 2026-10-25); 1 and 2 first.",
       "dependsOn": [
         "ARV-253"
@@ -1576,6 +1576,25 @@
       "notes": "Size S to M. Phase 3 (the owner's rule of 2026-10-14). Filed 2026-10-26 by ARV-250 from its security review. No sign-in code: the share is taken after authentication, which stays as it is.",
       "dependsOn": [
         "ARV-250"
+      ]
+    },
+    {
+      "id": "ARV-266",
+      "title": "[E17] Kafka consumer retry intervals refused at start when negative or out of range",
+      "description": "From the ARV-254 security review (2026-10-26, round 2, informational). Kafka:Consumers:RetryMinMilliseconds and RetryMaxMilliseconds have no range of their own: ConsumerSettings.LongestHold clamps a negative value to 0, but MassTransit's exponential retry is given the raw values, and the only check on them is the stop budget (RetryCount times RetryMaxMilliseconds within the bus's stop share), which a negative value passes. A negative or inverted pair (minimum above maximum) is a misconfiguration the host should refuse at start rather than leave to MassTransit, as the other consumer settings are (RetryCount 0 to 10, HandlerTimeoutSeconds 65 to 120, ConsumersPerEndpoint 1 to 6). CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "Kafka:Consumers:RetryMinMilliseconds and RetryMaxMilliseconds are refused at start outside a stated range (for example 0 to 60,000) and when the minimum is above the maximum, with a unit test at each bound",
+        "wiki 04's Kafka:Consumers row states the range",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size XS. Phase 3. Filed 2026-10-26 by ARV-254 from its security review (round 2, informational; it predates ARV-254). No sign-in code.",
+      "dependsOn": [
+        "ARV-254"
       ]
     }
   ]
