@@ -358,7 +358,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14).",
       "dependsOn": [
         "ARV-174"
@@ -1331,6 +1331,26 @@
       "notes": "Size S. Phase 3. Lows of the ARV-177a review (backlog/progress.md, 2026-10-25).",
       "dependsOn": [
         "ARV-177a"
+      ]
+    },
+    {
+      "id": "ARV-256",
+      "title": "[E4] Declarative filters and directions read without a copy per item",
+      "description": "From the ARV-178 security review (2026-10-26, Low 1). ARV-178 bounded the names and ids a declarative mapping reads before copying them, but DeclarativeMapper.Scalar, used for the where filters and the crossing direction, still calls GetString() or GetRawText() for every item on a value read from the group (^) or the payload ($): a 250 KB string in a 256 KB body, compared against every one of up to four times the event limit of items (8,000 by default), costs about 4 GB of short-lived large-object allocation per push (CPU and garbage collection, not memory held). Latent: mappings are embedded in the assembly and no shipped mapping filters on a group- or payload-level value. The same root cause, CPU only: Number, Integer and ToTime parse a group- or payload-level number again per item, and the per-group cache is cleared for every group, so payload-level values are read again for each. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "A filter or direction value longer than the longest value a mapping may name (MaxFilterValueLength, 64) is taken as matching none without being copied (its written length checked first, or JsonElement.ValueEquals used), with a test like ARV-178's allocation test",
+        "Values read from the group or the payload are decoded once per group (payload-level ones once per message), with a test",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3. Low 1 of the ARV-178 review (backlog/progress.md, 2026-10-26).",
+      "dependsOn": [
+        "ARV-178"
       ]
     }
   ]

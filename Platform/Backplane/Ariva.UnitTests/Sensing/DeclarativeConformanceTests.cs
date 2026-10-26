@@ -192,6 +192,111 @@ public sealed class DeclarativeConformanceTests
         act.Should().Throw<PushFormatException>().Which.Message.Should().NotContain("script").And.NotContain("alert");
     }
 
+    /// <summary>A mapping that reads each sample's zone name from its group (^), and each crossing's line from the payload ($).</summary>
+    private static readonly DeclarativeMapping Shared = DeclarativeMapping.Parse(Encoding.UTF8.GetBytes("""
+        { "name": "shared-v1", "title": "Names shared by the items",
+          "occupancy": { "groups": "$.zones[*]", "items": "^.samples[*]", "zone": "^.name", "count": "@.n", "time": { "path": "@.s", "unit": "s" } },
+          "crossings": { "items": "$.events[*]", "line": "$.line", "direction": { "path": "@.d", "in": ["in"], "out": ["out"] },
+                         "trackId": "@.id", "time": { "path": "@.s", "unit": "s" } } }
+        """), "shared-v1");
+
+    private static string SharedPayload(string zone, string line, string trackId = "t1", int samples = 1, int events = 1) =>
+        "{ \"line\": " + JsonSerializer.Serialize(line) + ", \"zones\": [ { \"name\": " + JsonSerializer.Serialize(zone) + ", \"samples\": [" +
+        string.Join(',', Enumerable.Repeat("{ \"n\": 4, \"s\": 1790949899 }", samples)) + "] } ], \"events\": [" +
+        string.Join(',', Enumerable.Repeat("{ \"d\": \"in\", \"id\": " + JsonSerializer.Serialize(trackId) + ", \"s\": 1790949899 }", events)) + "] }";
+
+    /// <summary>
+    /// ARV-178 (CWE-400, CWE-120): a name or id is at most the canonical length, measured as decoded (an escaped character
+    /// counts once), and a longer one refuses the message as a format error, before the canonical checks downstream.
+    /// </summary>
+    [Theory]
+    [InlineData(200, 1, 64, null)]
+    [InlineData(201, 1, 64, "occupancy[0].zone is longer than 200 characters (^.name).")]
+    [InlineData(200, 201, 64, "crossings[0].line is longer than 200 characters ($.line).")]
+    [InlineData(200, 1, 65, "crossings[0].trackId is longer than 64 characters (@.id).")]
+    public void Map_Should_RefuseANameOrIdLongerThanTheCanonicalMaximum_When_AMappingReadsOne(int zone, int line, int trackId, string refusal)
+    {
+        var payload = SharedPayload(new string('z', zone), new string('l', line), new string('t', trackId));
+
+        var act = () => DeclarativeMapper.Map(Parse(payload), Shared, new DevicePose(0, 0, 0), 2_000, Received);
+
+        if (refusal is null)
+            act.Should().NotThrow().Which.Occupancy.Should().ContainSingle().Which.ZoneName.Should().HaveLength(zone);
+        else
+            act.Should().Throw<PushFormatException>().Which.Message.Should().Be(refusal);
+    }
+
+    [Theory]
+    [InlineData(200, true)]
+    [InlineData(201, false)]
+    public void Map_Should_CountAnEscapedCharacterOnce_When_ItMeasuresAName(int length, bool accepted)
+    {
+        // Every character written as a six-byte escape: the most a character can take as written.
+        var escaped = string.Concat(Enumerable.Repeat("\\u00e9", length));
+        var payload = SharedPayload("zone", "line").Replace("\"name\": \"zone\"", "\"name\": \"" + escaped + "\"", StringComparison.Ordinal);
+
+        var act = () => DeclarativeMapper.Map(Parse(payload), Shared, new DevicePose(0, 0, 0), 2_000, Received);
+
+        if (accepted)
+            act.Should().NotThrow().Which.Occupancy.Single().ZoneName.Should().Be(new string('\u00e9', length));
+        else
+            act.Should().Throw<PushFormatException>().WithMessage("occupancy[0].zone is longer than 200 characters*");
+    }
+
+    [Theory]
+    [InlineData(100, true)]
+    [InlineData(101, false)]
+    public void Map_Should_CountASurrogatePairAsTwo_When_ItMeasuresAName(int pairs, bool accepted)
+    {
+        // A character outside the BMP is two UTF-16 code units, as CanonicalEventRules counts it; escaped, each pair takes 12 bytes.
+        var escaped = string.Concat(Enumerable.Repeat("\\uD83D\\uDE00", pairs));
+        var payload = SharedPayload("zone", "line").Replace("\"name\": \"zone\"", "\"name\": \"" + escaped + "\"", StringComparison.Ordinal);
+
+        var act = () => DeclarativeMapper.Map(Parse(payload), Shared, new DevicePose(0, 0, 0), 2_000, Received);
+
+        if (accepted)
+            act.Should().NotThrow().Which.Occupancy.Single().ZoneName.Should().Be(string.Concat(Enumerable.Repeat("\uD83D\uDE00", pairs)));
+        else
+            act.Should().Throw<PushFormatException>().WithMessage("occupancy[0].zone is longer than 200 characters*");
+    }
+
+    /// <summary>
+    /// ARV-178, the ARV-174 review's recommendation 1: a group-level (^) or payload-level ($) name is read for every item, so
+    /// before the bound a 500 KB name under 2,000 items was copied 2,000 times (about 2 GB). Now the first item refuses the
+    /// message, and it is never copied whole.
+    /// </summary>
+    [Theory]
+    [InlineData("zone")]
+    [InlineData("line")]
+    public void Map_Should_NotCopyAHugeSharedNamePerItem_When_TheMappingReadsItFromTheGroupOrThePayload(string which)
+    {
+        var huge = new string('x', 500_000);
+        // 2,000 items in the section that reads the huge name, one in the other (crossings are mapped before occupancy).
+        var payload = which == "zone" ? SharedPayload(huge, "line", samples: 2_000) : SharedPayload("zone", huge, events: 2_000);
+        var root = Parse(payload);
+        string Refusal()
+        {
+            try
+            {
+                DeclarativeMapper.Map(root, Shared, new DevicePose(0, 0, 0), 2_000, Received);
+                return null;
+            }
+            catch (PushFormatException e)
+            {
+                return e.Message;
+            }
+        }
+
+        Refusal().Should().Contain(" is longer than 200 characters");
+        // Measured on a second call, so that loading and compiling the code on the way are not counted.
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var refusal = Refusal();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        refusal.Should().Contain(" is longer than 200 characters");
+        allocated.Should().BeLessThan(500_000, "the name (1 MB as a string) is measured as written and refused before any copy of it");
+    }
+
     [Fact]
     public void Map_Should_HoldTheEventAndWorkLimits()
     {

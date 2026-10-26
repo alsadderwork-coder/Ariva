@@ -176,6 +176,40 @@ public sealed class ResentPushTests
         zone.Counters.RepeatedBatches.Should().Be(repeated, "{0}: every batch with an id seen before is dropped, and only those", because);
     }
 
+    /// <summary>
+    /// ARV-178, the residual (formulas F5, sensor-adapters.md): a receipt-timed push with a package resent after the zone's
+    /// window (a lateness past the first's events, 90 s by default) gets the first's id, which the archive drops (its id window
+    /// is three days), but the zone has forgotten the batch and its events carry the new receipt time, so the live minutes
+    /// count it again while a replay from the archive counts it once. Within the window the zone drops it (the theory above).
+    /// </summary>
+    [Fact]
+    public async Task Zone_Should_ApplyAReceiptTimedResendAgain_When_ItComesAfterTheZonesWindow()
+    {
+        var device = Device("Declarative", "seq-crossings-v1");
+        var sink = new Sink();
+        var clocks = new DeviceClockStore();
+        var first = await IngestAsync(device, DeviceDialect.Declarative, Body("d"), Received, sink, clocks);
+        var late = await IngestAsync(device, DeviceDialect.Declarative, Body("d"), Received.AddMinutes(5), sink, clocks);
+
+        late.OfType<VendorLineCrossingBatch>().Single().Id.Should().Be(first.OfType<VendorLineCrossingBatch>().Single().Id,
+            "the same package gets the same id, so the archive keeps the crossings once");
+        late.OfType<VendorLineCrossingBatch>().Single().Crossings.Should().OnlyContain(c => c.Event.TimeUtc == Received.AddMinutes(5),
+            "a receipt-timed resend carries its own receipt time");
+
+        var zone = new ZoneProcessor("DMO/Snake A", new QueueZoneGeometry("Snake A", new HashSet<string> { "Entry A" }, new HashSet<string> { "Exit A" }, new HashSet<string>(),
+            new HashSet<string> { "Overflow A" }), 12);
+        foreach (var batch in first)
+            zone.Offer(batch, DateTime.MaxValue);
+        zone.Tick(Received.AddMinutes(4));
+        zone.RememberedBatches.Should().Be(0, "the window of the first push is over");
+        foreach (var batch in late)
+            zone.Offer(batch, DateTime.MaxValue);
+        zone.Tick(Received.AddHours(3));
+
+        zone.Drain().Lines.Where(l => l.LineName == "Entry A").Sum(l => l.In).Should().Be(4, "live, the late resend is counted again (the residual)");
+        zone.Counters.RepeatedBatches.Should().Be(0);
+    }
+
     [Fact]
     public async Task Ingest_Should_KeepAKindsIdWhateverTheOtherKindsCarry()
     {

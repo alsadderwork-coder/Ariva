@@ -10,7 +10,10 @@ namespace Ariva.Infra.Sensing.Declarative;
 /// positions, integers for counts, times in the mapping's unit), and a required value that is missing or of the wrong
 /// type refuses the whole message, as in the coded dialects. Items that fail a filter, or whose direction the mapping
 /// does not name, are ignored on purpose and counted. Work is bounded: at most four times the event limit of items are
-/// looked at, and at most the event limit become events.
+/// looked at, and at most the event limit become events. Names and ids are at most the canonical lengths
+/// (<see cref="CanonicalEventRules.MaxNameLength"/>, <see cref="CanonicalEventRules.MaxTrackIdLength"/>), measured before they
+/// are copied (ARV-178): a mapping that reads one from the group (^) or the payload ($) reads it for every item, so an
+/// unbounded value would be copied as many times.
 /// </summary>
 public static class DeclarativeMapper
 {
@@ -242,13 +245,13 @@ public static class DeclarativeMapper
         private JsonElement Need(RestrictedPath path, JsonElement group, JsonElement item, string what) =>
             Value(path, group, item) ?? throw new PushFormatException($"{what} is missing ({path}).");
 
-        /// <summary>An id: a string, or an integer written as a number.</summary>
+        /// <summary>An id: a string of at most <see cref="CanonicalEventRules.MaxTrackIdLength"/> characters, or an integer written as a number.</summary>
         public string Id(RestrictedPath path, JsonElement group, JsonElement item, string what)
         {
             var value = Need(path, group, item, what);
             return value.ValueKind switch
             {
-                JsonValueKind.String => value.GetString(),
+                JsonValueKind.String => Bounded(value, CanonicalEventRules.MaxTrackIdLength, path, what),
                 JsonValueKind.Number when value.TryGetInt64(out var number) => number.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 _ => throw new PushFormatException($"{what} is not a string or an integer ({path}).")
             };
@@ -257,11 +260,31 @@ public static class DeclarativeMapper
         public string OptionalId(RestrictedPath path, JsonElement group, JsonElement item, string what) =>
             Value(path, group, item) is null ? null : Id(path, group, item, what);
 
-        /// <summary>A line or zone name: a string (names are checked against the published geometry later).</summary>
+        /// <summary>
+        /// A line or zone name: a string of at most <see cref="CanonicalEventRules.MaxNameLength"/> characters (names are checked
+        /// against the published geometry later).
+        /// </summary>
         public string Name(RestrictedPath path, JsonElement group, JsonElement item, string what)
         {
             var value = Need(path, group, item, what);
-            return value.ValueKind == JsonValueKind.String ? value.GetString() : throw new PushFormatException($"{what} is not a string ({path}).");
+            return value.ValueKind == JsonValueKind.String
+                ? Bounded(value, CanonicalEventRules.MaxNameLength, path, what)
+                : throw new PushFormatException($"{what} is not a string ({path}).");
+        }
+
+        /// <summary>
+        /// A string of at most <paramref name="max"/> characters, refused as a format error past it (ARV-178). Its raw
+        /// length is looked at before it is copied: a character takes 1 to 6 bytes as written (6 for an escape such as
+        /// \u00e9), so a value of more than six bytes a character of the limit is refused without a copy, and any other is
+        /// copied at its own, bounded, size and measured.
+        /// </summary>
+        private static string Bounded(JsonElement value, int max, RestrictedPath path, string what)
+        {
+            var written = System.Runtime.InteropServices.JsonMarshal.GetRawUtf8Value(value).Length - 2;
+            var text = written <= 6 * max ? value.GetString() : null;
+            return text is { } kept && kept.Length <= max
+                ? kept
+                : throw new PushFormatException($"{what} is longer than {max} characters ({path}).");
         }
 
         public int Integer(RestrictedPath path, JsonElement group, JsonElement item, string what)
