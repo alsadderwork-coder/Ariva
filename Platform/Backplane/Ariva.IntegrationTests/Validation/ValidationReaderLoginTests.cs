@@ -184,7 +184,8 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
 
         // The review's L1 (CWE-532): the server holds a SCRAM-SHA-256 verifier the migration job computed, never the password.
         var stored = (await RunAsync(admin, "SELECT rolpassword FROM pg_authid WHERE rolname = 'it_vr_reader'")).Should().ContainSingle().Subject;
-        stored.Should().StartWith("SCRAM-SHA-256$4096:").And.NotContain(readerPassword);
+        stored.Contains(readerPassword, StringComparison.Ordinal).Should().BeFalse("the server holds a verifier, never the password");
+        stored.Should().StartWith("SCRAM-SHA-256$4096:");
 
         // Its attributes, memberships and database privileges: a login of its own, a member of the reader role only.
         (await RunAsync(admin, """
@@ -281,7 +282,9 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
                  })
         {
             var act = () => EnsureReaderAsync(admin, login, secret);
-            (await act.Should().ThrowAsync<PostgresException>()).Which.MessageText.Should().Contain(message, login).And.NotContain(secret);
+            var refusal = (await act.Should().ThrowAsync<PostgresException>()).Which.MessageText;
+            refusal.Contains(secret, StringComparison.Ordinal).Should().BeFalse(login);
+            refusal.Should().Contain(message, login);
         }
 
         // The review's L1: the function takes a SCRAM-SHA-256 verifier of at least 4096 iterations and nothing else, so a plain
@@ -294,7 +297,9 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
                  })
         {
             var act = () => EnsureWithVerifierAsync(admin, "it_vr_plain", verifier);
-            (await act.Should().ThrowAsync<PostgresException>()).Which.MessageText.Should().Contain("SCRAM-SHA-256 verifier").And.NotContain(password);
+            var refusal = (await act.Should().ThrowAsync<PostgresException>()).Which.MessageText;
+            refusal.Contains(password, StringComparison.Ordinal).Should().BeFalse("the refusal never quotes the password");
+            refusal.Should().Contain("SCRAM-SHA-256 verifier");
         }
 
         // The re-check's Low (CWE-269): another database of the cluster counts too, since the reader's password would open it. A
@@ -414,7 +419,9 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
             try
             {
                 var start = () => StartAsync(hosted);
-                (await start.Should().ThrowAsync<InvalidOperationException>(what)).Which.Message.Should().Contain("can read the shadow nowcast", what).And.NotContain(runtimePassword);
+                var refusal = (await start.Should().ThrowAsync<InvalidOperationException>(what)).Which.Message;
+                refusal.Contains(runtimePassword, StringComparison.Ordinal).Should().BeFalse(what);
+                refusal.Should().Contain("can read the shadow nowcast", what);
                 (await DatabaseMigration.RunAsync(migration, Ct)).Should().Be(1, what);
             }
             finally

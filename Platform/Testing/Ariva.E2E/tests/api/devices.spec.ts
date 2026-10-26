@@ -77,14 +77,14 @@ test('registering needs a recent second factor and returns the credential once',
 	const json = await registered.json();
 	deviceId = json.device.id;
 	credential = json.credential;
-	expect(credential).toMatch(/^ardk_[A-Za-z0-9_-]{43}$/);
+	expect(/^ardk_[A-Za-z0-9_-]{43}$/.test(credential), 'a device credential').toBe(true);
 	expect(json.device.state).toBe('Commissioning');
 	expect(json.device.footprint.text).toBe('10 x 10 m');
 	expect(json.device.footprint.note).toContain('Assumed');
 
 	const read = await (await call('GET', `${api}/${deviceId}`, { token: passwordOnly })).text();
-	expect(read).toContain(credential.slice(0, 13));
-	expect(read, 'a read never shows the credential').not.toContain(credential.slice(13));
+	expect(read.includes(credential.slice(0, 13)), 'a read shows the prefix').toBe(true);
+	expect(read.includes(credential.slice(13)), 'a read never shows the credential').toBe(false);
 	expect(createHash('sha256').update(credential).digest('hex')).toMatch(/^[0-9a-f]{64}$/);
 });
 
@@ -121,7 +121,7 @@ test('rotation replaces the credential, other sites see nothing, and retiring re
 	expect((await call('POST', `${api}/${deviceId}/credential`, { token: passwordOnly })).status(), 'rotation without a second factor').toBe(401);
 	const rotated = await call('POST', `${api}/${deviceId}/credential`, { token: withSecondFactor });
 	expect(rotated.status()).toBe(200);
-	expect((await rotated.json()).credential).not.toBe(credential);
+	expect((await rotated.json()).credential === credential, 'a rotation issues a new credential').toBe(false);
 
 	const otherSite = (await signIn(accounts().siteUser)).accessToken;
 	expect((await call('GET', `${api}/${deviceId}`, { token: otherSite })).status(), 'another site').toBe(404);

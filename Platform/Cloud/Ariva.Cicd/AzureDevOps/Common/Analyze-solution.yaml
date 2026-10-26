@@ -51,6 +51,13 @@ jobs:
           node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --self-test
         displayName: 'Security: E2E expect messages and artifact secret check self-test'
 
+      # ARV-249 (CWE-532): a failing assertion prints the value it got and the one it expected, so the C# tests assert secrets
+      # as booleans, counts or shapes (expect-messages.mjs above holds the E2E specs to the same rule).
+      - script: |
+          node scripts/security/secret-assertions.mjs --self-test
+          node scripts/security/secret-assertions.mjs
+        displayName: 'Security: C# tests assert no secret by value'
+
       # The check every host image build runs on its publish output (ARV-184): proven here before the images trust it.
       - script: node scripts/published-runtime.mjs --self-test
         displayName: 'Security: published runtime check self-test'

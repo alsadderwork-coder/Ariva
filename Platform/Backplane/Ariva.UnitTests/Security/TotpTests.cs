@@ -22,7 +22,7 @@ public sealed class TotpTests
     [InlineData(20000000000L, "353130")]
     public void Code_Should_MatchTheRfc6238Vectors_When_TruncatedToSixDigits(long unixSeconds, string expected)
     {
-        Totp.Code(RfcSecret, Totp.StepAt(DateTimeOffset.FromUnixTimeSeconds(unixSeconds))).Should().Be(expected);
+        (Totp.Code(RfcSecret, Totp.StepAt(DateTimeOffset.FromUnixTimeSeconds(unixSeconds))) == expected).Should().BeTrue($"the RFC 6238 vector at {unixSeconds}");
     }
 
     [Fact]
@@ -77,8 +77,8 @@ public sealed class TotpTests
         var first = Totp.NewSecret();
         var second = Totp.NewSecret();
 
-        first.Should().HaveCount(20);
-        second.Should().NotEqual(first);
+        first.Length.Should().Be(20, "160 random bits");
+        first.SequenceEqual(second).Should().BeFalse("every secret is random");
     }
 
     [Theory]
@@ -109,9 +109,9 @@ public sealed class TotpTests
     {
         var codes = Enumerable.Range(0, 200).Select(_ => RecoveryCodes.New()).ToList();
 
-        codes.Should().OnlyContain(code => code.Length == 11 && code[5] == '-');
-        codes.Should().OnlyContain(code => code.Replace("-", string.Empty).All(c => "0123456789ABCDEFGHJKMNPQRSTVWXYZ".Contains(c)));
-        codes.Distinct().Should().HaveCount(200, "50 random bits per code");
+        codes.All(code => code.Length == 11 && code[5] == '-').Should().BeTrue("two groups of five");
+        codes.All(code => code.Replace("-", string.Empty).All(c => "0123456789ABCDEFGHJKMNPQRSTVWXYZ".Contains(c))).Should().BeTrue("Crockford characters only");
+        codes.Distinct(StringComparer.Ordinal).Count().Should().Be(200, "50 random bits per code");
     }
 
     [Theory]

@@ -329,7 +329,8 @@ public sealed class SecurityEventLogTests : IDisposable
         limited.GetProperty("Partition").GetString().Should().Be(SecurityEvents.DeviceCredentialPartition);
         limited.GetProperty(RequestLogContext.CallerAddressProperty).GetString().Should().Be(Client);
         var text = File.ReadAllText(log);
-        text.Should().NotContain(Canary).And.NotContain(OneDeviceGateway.Device.Credential).And.NotContain(OneDeviceGateway.Device.Hash);
+        text.Contains(OneDeviceGateway.Device.Credential, StringComparison.Ordinal).Should().BeFalse("the log never holds the device credential");
+        text.Should().NotContain(Canary).And.NotContain(OneDeviceGateway.Device.Hash);
     }
 
     #endregion
@@ -369,7 +370,9 @@ public sealed class SecurityEventLogTests : IDisposable
         refused.GetProperty("Reason").GetString().Should().Be(SecurityEvents.LimitReached);
         refused.GetProperty(RequestLogContext.CallerClientIdProperty).GetString().Should().Be(IntegrationClientId, "the checked client, taken when the request ends");
         refused.GetProperty("Endpoint").GetString().Should().Be("api/v1/integration/sites/{siteCode}/flights/check");
-        File.ReadAllText(log).Should().NotContain(Canary).And.NotContain(token);
+        var logged = File.ReadAllText(log);
+        logged.Contains(token, StringComparison.Ordinal).Should().BeFalse("the log never holds the bearer token");
+        logged.Should().NotContain(Canary);
     }
 
     #endregion

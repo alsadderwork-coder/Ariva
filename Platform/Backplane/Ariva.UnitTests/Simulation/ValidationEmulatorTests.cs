@@ -345,8 +345,9 @@ public sealed class ValidationEmulatorTests
         (await replaced.SignInAsync(TestContext.Current.CancellationToken)).Should().Be(ObserverSignIn.SignedIn);
 
         var key = Ariva.Simulation.Api.Emulators.Integration.Totp.FromBase32(seed);
-        ariva.Bodies.Select(b => b.GetProperty("code").GetString()).Should().Equal(
-            Ariva.Simulation.Api.Emulators.Integration.Totp.Code(key, step), Ariva.Simulation.Api.Emulators.Integration.Totp.Code(key, step + 1));
+        ariva.Bodies.Select(b => b.GetProperty("code").GetString()).SequenceEqual(
+            [Ariva.Simulation.Api.Emulators.Integration.Totp.Code(key, step), Ariva.Simulation.Api.Emulators.Integration.Totp.Code(key, step + 1)])
+            .Should().BeTrue("each sign-in sends the code of its own step");
         ariva.Bodies.Select(b => b.GetProperty("userName").GetString()).Should().Equal("sim.observer1", "SIM.Observer1");
         steps.Keys.Should().Equal("sim.observer1");
         steps["sim.observer1"].Should().Be(step + 1);

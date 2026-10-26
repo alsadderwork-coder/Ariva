@@ -36,13 +36,10 @@ test.describe('refresh cookie', () => {
 
 		expect(response.status()).toBe(200);
 		expect(setCookie.startsWith(`${refreshCookieName}=`)).toBe(true);
-		expect(attributes).toContain('httponly');
-		expect(attributes).toContain('secure');
-		expect(attributes).toContain('samesite=strict');
-		expect(attributes).toContain('path=/api/auth');
-		expect(attributes).toContain('max-age=43200');
-		expect(attributes).not.toContain('domain=');
-		expect(body).not.toContain(response.refreshCookie()!);
+		// The header carries the token: its attributes are asserted as booleans, so a failure never prints it (ARV-249).
+		for (const attribute of ['httponly', 'secure', 'samesite=strict', 'path=/api/auth', 'max-age=43200']) expect(attributes.includes(attribute), attribute).toBe(true);
+		expect(attributes.includes('domain='), 'no domain').toBe(false);
+		expect(body.includes(response.refreshCookie()!), 'the body never holds the refresh token').toBe(false);
 		expect(JSON.parse(body)).not.toHaveProperty('refreshToken');
 	});
 
@@ -67,7 +64,7 @@ test.describe('refresh cookie', () => {
 
 		expect(response.status()).toBe(200);
 		expect(response.refreshCookie()).toBeTruthy();
-		expect(response.refreshCookie()).not.toBe(first.refreshToken);
+		expect(response.refreshCookie() === first.refreshToken, 'a refresh rotates the token').toBe(false);
 		expect(claimsOf(body.accessToken).sid).toBe(claimsOf(first.accessToken).sid);
 		expect((await refresh(response.refreshCookie()!)).status(), 'the successor is current').toBe(200);
 	});
@@ -81,10 +78,10 @@ test.describe('refresh cookie', () => {
 
 		expect(rotated.status()).toBe(200);
 		expect(sameAgain.status()).toBe(200);
-		expect(sameAgain.refreshCookie()).toBe(rotated.refreshCookie());
+		expect(sameAgain.refreshCookie() === rotated.refreshCookie(), 'a second tab at the same moment gets the same successor').toBe(true);
 		await expectProblemDetails(theft, 401);
 		expect((await theft.json()).error).toBe('session_expired');
-		expect(theft.refreshCookie(), 'a refused refresh clears the cookie').toBe('');
+		expect(theft.refreshCookie() === '', 'a refused refresh clears the cookie').toBe(true);
 		expect((await refresh(rotated.refreshCookie()!)).status(), 'the successor dies with its family').toBe(401);
 		expect(await refusedWithin(first.accessToken, protectedUrls[0])).toBeGreaterThanOrEqual(0);
 	});
@@ -107,7 +104,7 @@ test.describe('refresh cookie', () => {
 
 		expect(a.status()).toBe(200);
 		expect(b.status()).toBe(200);
-		expect(a.refreshCookie()).toBe(b.refreshCookie());
+		expect(a.refreshCookie() === b.refreshCookie(), 'both tabs get the same successor').toBe(true);
 	});
 });
 
@@ -131,7 +128,7 @@ test.describe('session lifecycle', () => {
 		const logout = await call('POST', logoutUrl, { token: session.accessToken, cookie: session.refreshToken });
 
 		expect(logout.status()).toBe(204);
-		expect(logout.refreshCookie(), 'logout clears the cookie').toBe('');
+		expect(logout.refreshCookie() === '', 'logout clears the cookie').toBe(true);
 		for (const url of protectedUrls) {
 			const elapsed = await refusedWithin(session.accessToken, url);
 			expect(elapsed, `${url} refuses the token`).toBeGreaterThanOrEqual(0);

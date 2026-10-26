@@ -172,7 +172,7 @@ public sealed class BackupRestoreTests : IAsyncLifetime
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().EndAsync(Ct);
             exchange.HasErrors.Should().BeFalse("the client's restored TOTP seed decrypts: " + string.Join("; ", exchange.ErrorMessages));
             var stored = await ScalarAsync<string>(_target.ConnectionString(RuntimeLogin, RestoredRuntimePassword), Query.OutboundSecret);
-            integration.Services.GetRequiredService<OutboundSecrets>().Read(stored).ApiKey.Should().Be(OutboundApiKey);
+            string.Equals(integration.Services.GetRequiredService<OutboundSecrets>().Read(stored).ApiKey, OutboundApiKey, StringComparison.Ordinal).Should().BeTrue("the restored outbound secret decrypts to its API key");
         }
 
         // The key ring: every unexpired key is wrapped under the certificate the operator keeps; another one is not enough.
@@ -305,7 +305,7 @@ public sealed class BackupRestoreTests : IAsyncLifetime
                      ("the Data Protection private key", keyBody)
                  })
         {
-            text.Should().NotContain(secret, $"{what} must not hold {name}");
+            text.Contains(secret, StringComparison.Ordinal).Should().BeFalse($"{what} must not hold {name}");
         }
     }
 

@@ -47,7 +47,7 @@ public sealed class SecretReprotectionTests(PostgresFixture fixture)
 
         first.Reprotected.Should().Be(1);
         rewritten.Should().NotBe(underOldKey);
-        protector.Unprotect(rewritten).Should().Be(Seed, "the secret is the same, only its key changed");
+        (protector.Unprotect(rewritten) == Seed).Should().BeTrue("the secret is the same, only its key changed");
         Unprotected(protector, rewritten).RequiresMigration.Should().BeFalse("it is now under the default key");
         (await SeedAsync(connection, userId)).Should().Be(rewritten, "a value under the current key is not rewritten");
         second.Reprotected.Should().Be(0);
@@ -129,11 +129,11 @@ public sealed class SecretReprotectionTests(PostgresFixture fixture)
         var newSeed = await ScalarAsync(connection, "SELECT totp_secret_protected FROM integration_client WHERE id = @id", clientId);
         var newSecret = await ScalarAsync(connection, "SELECT secret_protected FROM outbound_endpoint WHERE id = @id", endpointId);
         run.Reprotected.Should().BeGreaterThanOrEqualTo(2);
-        newSeed.Should().NotBe(seed);
-        seeds.Unprotect(newSeed).Should().Be(Seed);
+        (newSeed != seed).Should().BeTrue("the seed is protected again under the new key");
+        (seeds.Unprotect(newSeed) == Seed).Should().BeTrue("the seed reads back unchanged");
         Unprotected(seeds, newSeed).RequiresMigration.Should().BeFalse();
-        newSecret.Should().NotBe(secret);
-        outbound.Unprotect(newSecret).Should().Be(Secret);
+        string.Equals(newSecret, secret, StringComparison.Ordinal).Should().BeFalse("the secret is protected again under the new key");
+        (outbound.Unprotect(newSecret) == Secret).Should().BeTrue("the secret reads back unchanged");
     }
 
     [Fact]

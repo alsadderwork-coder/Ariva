@@ -102,7 +102,7 @@ public sealed class FeedEmulatorEndpointTests
 
         good.StatusCode.Should().Be(HttpStatusCode.OK);
         var text = await good.Content.ReadAsStringAsync(Ct);
-        text.Should().NotContain("ics_").And.NotContain(AmanSeed);
+        (text.Contains("ics_", StringComparison.Ordinal) || text.Contains(AmanSeed, StringComparison.Ordinal)).Should().BeFalse("the answer shows neither a client secret nor the seed");
         JsonDocument.Parse(text).RootElement.GetProperty("aman").GetProperty("transports")[0].GetProperty("configured").GetBoolean().Should().BeTrue();
         bad.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await bad.Content.ReadAsStringAsync(Ct)).Should().NotContain("leaked").And.NotContain("ic_short");
@@ -273,9 +273,9 @@ public sealed class FeedEmulatorEndpointTests
         second.Succeeded.Should().BeTrue();
         ariva.Calls.Select(c => c.RequestUri!.AbsolutePath).Should().Equal("/api/v1/auth", "/api/v1/integration/sites/DMO/immigration/desk-sessions",
             "/api/v1/integration/sites/DMO/immigration/desk-sessions");
-        JsonDocument.Parse(ariva.Bodies[0]).RootElement.GetProperty("totpCode").GetString().Should().Be(Totp.Code(Totp.FromBase32(AmanSeed), clock.Now));
-        ariva.Calls[1].Headers.Authorization!.Parameter.Should().Be("tok-1");
-        ariva.Calls[1].Headers.GetValues("X-TOTP-Code").Single().Should().MatchRegex("^[0-9]{6}$");
+        (JsonDocument.Parse(ariva.Bodies[0]).RootElement.GetProperty("totpCode").GetString() == Totp.Code(Totp.FromBase32(AmanSeed), clock.Now)).Should().BeTrue("the exchange sends the current code");
+        (ariva.Calls[1].Headers.Authorization!.Parameter == "tok-1").Should().BeTrue("the call carries the exchanged token");
+        (ariva.Calls[1].Headers.GetValues("X-TOTP-Code").Single() is { Length: 6 } totp && totp.All(char.IsAsciiDigit)).Should().BeTrue("a six-digit code");
         ariva.Calls[2].Headers.GetValues("Idempotency-Key").Single().Should().Be("key-2");
 
         // A refused call drops the token; a new exchange waits for a newer TOTP step, as Ariva's replay guard requires.
@@ -330,10 +330,10 @@ public sealed class FeedEmulatorEndpointTests
     {
         var seed = Ariva.Infra.Security.Totp.NewSecret();
         var base32 = Ariva.Infra.Security.Base32.Encode(seed);
-        Totp.FromBase32(base32).Should().Equal(seed);
-        Totp.FromBase32(base32.ToLowerInvariant()).Should().Equal(seed);
+        Totp.FromBase32(base32).SequenceEqual(seed).Should().BeTrue("the seed reads back from Base32");
+        Totp.FromBase32(base32.ToLowerInvariant()).SequenceEqual(seed).Should().BeTrue("in lower case too");
         for (var step = 59_000_000L; step < 59_000_010L; step++)
-            Totp.Code(seed, step).Should().Be(Ariva.Infra.Security.Totp.Code(seed, step));
+            (Totp.Code(seed, step) == Ariva.Infra.Security.Totp.Code(seed, step)).Should().BeTrue($"step {step} gives Ariva's code");
         Totp.Verify(seed, Ariva.Infra.Security.Totp.Code(seed, Totp.Step(DateTimeOffset.UtcNow) - 1), DateTimeOffset.UtcNow, out _).Should().BeTrue("one step either side");
         Totp.Verify(seed, Ariva.Infra.Security.Totp.Code(seed, Totp.Step(DateTimeOffset.UtcNow) - 3), DateTimeOffset.UtcNow, out _).Should().BeFalse();
         Totp.FromBase32("too-short!").Should().BeNull();
@@ -430,7 +430,7 @@ public sealed class FeedEmulatorEndpointTests
         capture.Lines.Should().NotBeEmpty();
         var everything = string.Join("\n", capture.Lines);
         foreach (var secret in new[] { ClientSecret, AmanSeed, AmanSecret, token, AcrisKey, ControlKey, Code() })
-            everything.Should().NotContain(secret);
+            everything.Contains(secret, StringComparison.Ordinal).Should().BeFalse("the log holds none of the simulator's secrets");
     }
 
     private sealed class RefuseExchange : HttpMessageHandler

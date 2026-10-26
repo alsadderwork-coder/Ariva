@@ -142,8 +142,8 @@ public sealed partial class LogShippingTests : IDisposable
 
         var request = await loki.FirstRequest.WaitAsync(TimeSpan.FromSeconds(30), Ct);
         request.RequestLine.Should().StartWith("POST /loki/api/v1/push ");
-        request.Headers.Should().ContainKey("Authorization")
-            .WhoseValue.Should().Be("Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes($"{Sender}:{Canary}")), "HTTP basic authentication with the configured pair");
+        request.Headers.Should().ContainKey("Authorization");
+        (request.Headers["Authorization"] == "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes($"{Sender}:{Canary}"))).Should().BeTrue("HTTP basic authentication with the configured pair");
     }
 
     [Fact]
@@ -174,8 +174,9 @@ public sealed partial class LogShippingTests : IDisposable
 
         var configure = () => Build(configuration, environment);
 
-        configure.Should().Throw<InvalidOperationException>().WithMessage(message)
-            .Which.Message.Should().NotContain(Canary, "the message names the settings, never a value").And.NotContain(Sender);
+        var refusal = configure.Should().Throw<InvalidOperationException>().Which.Message;
+        refusal.Contains(Canary, StringComparison.Ordinal).Should().BeFalse("the message names the settings, never a value");
+        refusal.Should().MatchEquivalentOf(message).And.NotContain(Sender);
     }
 
     [Theory]
@@ -207,8 +208,9 @@ public sealed partial class LogShippingTests : IDisposable
         var local = () => Build(FromFile(ArivaEnvironment.VmLocal), ArivaEnvironment.VmLocal);
         var overridden = () => Build(FromFile(Production, $"{ArivaLogging.LokiUsernameSetting}={Sender}", $"{ArivaLogging.LokiPasswordSetting}={Canary}"), Production);
 
-        production.Should().Throw<InvalidOperationException>().WithMessage("*come from a configuration file*")
-            .Which.Message.Should().NotContain(Canary);
+        var refused = production.Should().Throw<InvalidOperationException>().Which.Message;
+        refused.Contains(Canary, StringComparison.Ordinal).Should().BeFalse("the message never quotes the password");
+        refused.Should().Match("*come from a configuration file*");
         local.Should().NotThrow("a developer machine may keep them in a file");
         overridden.Should().NotThrow("the values the environment gives win, and they are not a file's");
     }
@@ -231,7 +233,8 @@ public sealed partial class LogShippingTests : IDisposable
 
         var request = await collector.FirstRequest.WaitAsync(TimeSpan.FromSeconds(30), Ct);
         request.RequestLine.Should().StartWith("POST /v1/logs ");
-        request.Headers.Should().ContainKey("x-collector-key").WhoseValue.Should().Be(Canary, "OTEL_EXPORTER_OTLP_HEADERS carries a collector's sender credential");
+        request.Headers.Should().ContainKey("x-collector-key");
+        (request.Headers["x-collector-key"] == Canary).Should().BeTrue("OTEL_EXPORTER_OTLP_HEADERS carries a collector's sender credential");
     }
 
     #endregion

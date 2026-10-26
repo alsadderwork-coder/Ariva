@@ -178,7 +178,7 @@ test('the smoke suite names the variables it misses, never their values', async 
 	const outcome = run('playwright.smoke.config.ts', { ...nonLocal, ARIVA_SMOKE_PASSWORD: secret }, ['--list']);
 	expect(outcome.status, outcome.output).not.toBe(0);
 	expect(outcome.output).toContain('the smoke suite needs ARIVA_SMOKE_USERNAME, ARIVA_SMOKE_SITE, ARIVA_SMOKE_DEVICE_KEY, ARIVA_SMOKE_DISPLAY_CODE, ARIVA_SMOKE_DISPLAY_KEY');
-	expect(outcome.output).not.toContain(secret);
+	expect(outcome.output.includes(secret), 'the output never holds the value').toBe(false);
 });
 
 test('the E2E suites refuse to load against a non-local target, naming the target and never its address', async () => {
@@ -196,7 +196,7 @@ test('the E2E suites refuse to load against a non-local target, naming the targe
 		const outcome = run('playwright.config.ts', extra, ['--list']);
 		expect(outcome.status, outcome.output).not.toBe(0);
 		expect(outcome.output).toContain(`they run only against this machine; refused for ${name}`);
-		expect(outcome.output).not.toContain(password);
+		expect(outcome.output.includes(password), 'the output never holds the password').toBe(false);
 	}
 });
 

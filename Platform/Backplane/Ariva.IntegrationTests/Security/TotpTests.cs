@@ -47,14 +47,15 @@ public sealed class TotpTests(PostgresFixture fixture) : IAsyncDisposable
         var wrong = await _host.ConfirmAsync(userId, sessionId, "000000");
         var confirmed = await _host.ConfirmAsync(userId, sessionId, CodeNow(secret));
 
-        secret.Should().HaveCount(20, "160-bit secret");
-        enrolment.OtpAuthUri.Should().StartWith("otpauth://totp/Ariva:it.t.enrol?secret=" + enrolment.Secret);
+        secret.Length.Should().Be(20, "160-bit secret");
+        enrolment.OtpAuthUri.StartsWith("otpauth://totp/Ariva:it.t.enrol?secret=" + enrolment.Secret, StringComparison.Ordinal).Should().BeTrue("the enrolment address names the account and carries its seed");
         wrong.ErrorMessages.Should().Equal(ISvcAuthenticator.InvalidCode);
         confirmed.HasErrors.Should().BeFalse();
         confirmed.Data.Token.Scope.Should().BeNull("a confirmed enrolment lifts the pending scope");
         new JsonWebToken(confirmed.Data.Token.AccessToken).Claims.Where(c => c.Type == "amr").Select(c => c.Value).Should().Equal("pwd", "otp");
-        confirmed.Data.RecoveryCodes.Should().HaveCount(10).And.OnlyHaveUniqueItems();
-        (await _host.ReadAsync<string>("SELECT totp_secret_protected FROM \"user\" WHERE id = @id", userId)).Should().NotContain(enrolment.Secret, "the secret is stored encrypted");
+        confirmed.Data.RecoveryCodes.Count.Should().Be(10);
+        confirmed.Data.RecoveryCodes.Distinct(StringComparer.Ordinal).Count().Should().Be(10, "every recovery code is its own");
+        (await _host.ReadAsync<string>("SELECT totp_secret_protected FROM \"user\" WHERE id = @id", userId)).Contains(enrolment.Secret, StringComparison.Ordinal).Should().BeFalse("the secret is stored encrypted");
         (await _host.ReadAsync<long>("SELECT count(*) FROM recovery_code WHERE user_id = @id AND length(code_hash) = 64", userId)).Should().Be(10);
         (await _host.EnrolAsync(userId, sessionId)).ErrorMessages.Should().Equal(new[] { ISvcAuthenticator.AlreadyEnrolled }, "the secret is never handed out again");
     }
@@ -94,7 +95,7 @@ public sealed class TotpTests(PostgresFixture fixture) : IAsyncDisposable
 
         _host.Clock.Advance(TimeSpan.FromSeconds(Totp.StepSeconds));
         var regenerated = await _host.RegenerateAsync(userId, sessionId, CodeNow(secret));
-        regenerated.Data.RecoveryCodes.Should().HaveCount(10);
+        regenerated.Data.RecoveryCodes.Count.Should().Be(10);
         (await _host.LoginAsync("it.t.recovery", Password, recoveryCode: codes[1])).HasErrors.Should().BeTrue("regeneration retires the old codes");
         (await _host.LoginAsync("it.t.recovery", Password, recoveryCode: regenerated.Data.RecoveryCodes[0])).HasErrors.Should().BeFalse();
     }
@@ -119,8 +120,8 @@ public sealed class TotpTests(PostgresFixture fixture) : IAsyncDisposable
         var create = () => _host.IssueBreakGlassAsync(rotate: false);
 
         await create.Should().ThrowAsync<InvalidOperationException>("one break-glass account per deployment");
-        credential.Password.Should().HaveLength(32);
-        credential.RecoveryCodes.Should().HaveCount(10);
+        credential.Password.Length.Should().Be(32);
+        credential.RecoveryCodes.Count.Should().Be(10);
 
         (await _host.LoginAsync(credential.UserName, credential.Password)).ErrorMessages.Should().Equal(ISvcAuthenticator.MfaRequired);
         for (var attempt = 0; attempt < 15; attempt++)

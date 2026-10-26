@@ -105,13 +105,15 @@ public sealed class IntegrationClientTests(PostgresFixture fixture) : IAsyncDisp
         created.HasErrors.Should().BeFalse(string.Join(", ", created.ErrorMessages ?? []));
         var view = created.Data;
         view.Client.Should().Match<IntegrationClientViewModel>(c => c.Kind == "Aodb" && c.Status == "Active" && !c.RequireTotpPerRequest && c.SiteCodes.Single() == "DMO");
-        view.ClientSecret.Should().StartWith("ics_");
-        view.TotpUri.Should().StartWith("otpauth://totp/").And.Contain(view.Client.ClientId).And.Contain("secret=" + view.TotpSecret);
+        view.ClientSecret.StartsWith("ics_", StringComparison.Ordinal).Should().BeTrue("a client secret starts with its kind");
+        (view.TotpUri.StartsWith("otpauth://totp/", StringComparison.Ordinal) && view.TotpUri.Contains(view.Client.ClientId, StringComparison.Ordinal) &&
+         view.TotpUri.Contains("secret=" + view.TotpSecret, StringComparison.Ordinal)).Should().BeTrue("the enrolment address names the client and carries its seed");
         (await _host.ReadAsync<int>("SELECT secret_iterations FROM integration_client WHERE id = @id", view.Client.Id)).Should().Be(600_000);
         var stored = await _host.ReadAsync<string>("SELECT totp_secret_protected || '|' || secret_hash FROM integration_client WHERE id = @id", view.Client.Id);
-        stored.Should().NotContain(view.TotpSecret).And.NotContain(view.ClientSecret);
-        (await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE target_id = @id AND action = 'IntegrationClient.Created'", view.Client.Id))
-            .Should().Contain("flights:write").And.NotContain(view.ClientSecret).And.NotContain(view.TotpSecret);
+        (stored.Contains(view.TotpSecret, StringComparison.Ordinal) || stored.Contains(view.ClientSecret, StringComparison.Ordinal)).Should().BeFalse("the seed is stored protected and the secret as a hash");
+        var audited = await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE target_id = @id AND action = 'IntegrationClient.Created'", view.Client.Id);
+        (audited.Contains(view.ClientSecret, StringComparison.Ordinal) || audited.Contains(view.TotpSecret, StringComparison.Ordinal)).Should().BeFalse("the audit trail holds neither credential");
+        audited.Should().Contain("flights:write");
 
         var get = await _host.AsCallerAsync(p.All, s => s.GetRequiredService<ISvcIntegrationClients>().GetAsync(view.Client.Id, Ct));
         get.Data.Should().BeEquivalentTo(view.Client with { Locked = false });

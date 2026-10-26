@@ -55,8 +55,9 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
         var signIn = await _host.LoginAsync("it.adm.new", created.Data.TemporaryPassword);
         signIn.Data.Token.Scope.Should().Be("pending", "a temporary password must be changed first");
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE target_id = @id AND action = 'User.Created' AND actor_id IS NOT NULL", created.Data.User.Id)).Should().Be(1);
-        (await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE target_id = @id", created.Data.User.Id))
-            .Should().Contain("roles=BorderShiftSupervisor").And.NotContain(created.Data.TemporaryPassword);
+        var summary = await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE target_id = @id", created.Data.User.Id);
+        summary.Contains(created.Data.TemporaryPassword, StringComparison.Ordinal).Should().BeFalse("the audit trail never holds the temporary password");
+        summary.Should().Contain("roles=BorderShiftSupervisor");
         (await _host.ReadAsync<Guid?>("SELECT granted_by_id FROM user_role WHERE user_id = @id", created.Data.User.Id)).Should().Be(admin);
     }
 

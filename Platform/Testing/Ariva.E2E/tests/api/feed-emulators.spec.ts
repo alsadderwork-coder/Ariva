@@ -82,7 +82,7 @@ test('the emulated AODB pushes the demo schedule to Ariva as AIDX with its own c
 		data: { aodb: { clientId: credentials.client.clientId, clientSecret: credentials.clientSecret, totpSecret: credentials.totpSecret, perRequestTotp: false } }
 	});
 	await expectStatus(loaded, 200);
-	expect(await loaded.text()).not.toContain(credentials.clientSecret);
+	expect((await loaded.text()).includes(credentials.clientSecret), 'the answer never holds the secret').toBe(false);
 
 	const played = await call('POST', `${feeds}/play`, { headers: operator, data: { minute: 1110 } });
 	await expectStatus(played, 200);
@@ -126,7 +126,7 @@ test('the AUH-TA AODB pushes the AUH-TA arrivals to Ariva as AIDX with its own c
 
 	const loaded = await call('PUT', `${feeds}/clients`, { headers: operator, data: { aodbSites: { 'AUH-TA': client } } });
 	await expectStatus(loaded, 200);
-	expect(await loaded.text()).not.toContain(credentials.clientSecret);
+	expect((await loaded.text()).includes(credentials.clientSecret), 'the answer never holds the secret').toBe(false);
 
 	const played = await call('POST', `${feeds}/play`, { headers: operator, data: { minute: 1110 } });
 	await expectStatus(played, 200);

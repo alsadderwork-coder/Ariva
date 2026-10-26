@@ -82,10 +82,12 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
         created.HasErrors.Should().BeFalse(string.Join(", ", created.ErrorMessages ?? []));
         var credential = created.Data.Credential;
         var prefix = credential[..13];
-        credential.Should().StartWith("ardp_");
+        credential.StartsWith("ardp_", StringComparison.Ordinal).Should().BeTrue("a display credential starts with its kind");
         created.Data.Display.Should().Match<DisplayViewModel>(d => d.Code == "ARR-A" && d.SiteCode == "DMO" && d.CredentialPrefix == prefix &&
                                                                   d.Languages.SequenceEqual(new[] { "ar", "en" }) && d.Entries.Single().Labels["ar"] == "المواطنون");
-        (await _host.ReadAsync<string>("SELECT credential_hash FROM display WHERE code = 'ARR-A' AND deleted_on IS NULL")).Should().HaveLength(64).And.NotContain(credential);
+        var storedHash = await _host.ReadAsync<string>("SELECT credential_hash FROM display WHERE code = 'ARR-A' AND deleted_on IS NULL");
+        storedHash.Contains(credential, StringComparison.Ordinal).Should().BeFalse("only a hash of the credential is stored");
+        storedHash.Length.Should().Be(64, "a SHA-256 hash in hex");
         (await _host.AsCallerAsync(manager, s => Displays(s).CreateAsync(Request("ARR-A"), Ct))).ErrorMessages.Should().Equal(DisplayErrors.DuplicateCode);
 
         var id = created.Data.Display.Id;
@@ -95,7 +97,8 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
         (await _host.AsCallerAsync(manager, s => Displays(s).UpdateAsync(id, Request("ARR-A", site: "ALX"), Ct))).ErrorMessages.Should().Equal(DisplayErrors.StaysInSite);
 
         var audit = await _host.ReadAsync<string>("SELECT string_agg(coalesce(before_summary, '') || coalesce(after_summary, ''), ' ') FROM audit_entry WHERE target_id = @id", id);
-        audit.Should().Contain("ARR-A").And.Contain(prefix).And.NotContain(credential);
+        audit.Contains(credential, StringComparison.Ordinal).Should().BeFalse("the audit trail holds the prefix, never the credential");
+        audit.Should().Contain("ARR-A").And.Contain(prefix);
 
         (await _host.AsCallerAsync(manager, s => Displays(s).DeleteAsync(id, Ct))).Data.Should().BeTrue();
         (await _host.AsCallerAsync(manager, s => Displays(s).GetAsync(id, Ct))).ErrorMessages.Should().Equal(TopologyErrors.NotFound);
@@ -178,7 +181,7 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
 
         // A new credential replaces the old one at once.
         var renewed = (await _host.AsCallerAsync(manager, s => Displays(s).NewCredentialAsync(created.Display.Id, Ct))).Data;
-        renewed.Credential.Should().NotBe(credential);
+        (renewed.Credential != credential).Should().BeTrue("a new credential replaces the old one");
         (await _host.AsCallerAsync(null, s => Board(s).GetAsync(player.Id, player.CredentialPrefix, Ct))).HasErrors.Should()
             .BeTrue("a request authenticated with the old credential gets no board once it is replaced");
         (await _host.AsCallerAsync(null, s => Board(s).FindAsync("PL-1", credential, Ct))).Should().BeNull("the old credential is gone");

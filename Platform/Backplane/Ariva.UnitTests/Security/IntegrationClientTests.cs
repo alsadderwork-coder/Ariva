@@ -46,7 +46,7 @@ public sealed class IntegrationClientTests
         ids.Should().OnlyContain(id => IntegrationClient.IsClientId(id)).And.OnlyHaveUniqueItems();
         var secret = IntegrationCredentials.NewSecret();
         IntegrationCredentials.IsWellFormed(secret).Should().BeTrue();
-        secret.Should().HaveLength(IntegrationCredentials.SecretLength).And.StartWith("ics_");
+        (secret.Length == IntegrationCredentials.SecretLength && secret.StartsWith("ics_", StringComparison.Ordinal)).Should().BeTrue("a client secret's shape");
         IntegrationCredentials.IsWellFormed(secret[..^1] + "!").Should().BeFalse();
         IntegrationCredentials.IsWellFormed(secret + "A").Should().BeFalse();
         IntegrationClient.IsClientId("ic_AAAAAAAAAAAAAAAAAAAAAAAAAA").Should().BeFalse("lower case only");

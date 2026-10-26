@@ -243,7 +243,8 @@ public sealed class SensorEmulatorTests
 
         var json = JsonSerializer.Serialize(emulator.Status());
 
-        json.Should().NotContain("ardk_").And.Contain("S-17");
+        json.Contains("ardk_", StringComparison.Ordinal).Should().BeFalse("credentials never come back out");
+        json.Should().Contain("S-17");
     }
 
     [Theory]
@@ -275,6 +276,6 @@ public sealed class SensorEmulatorTests
         ]).ToList();
 
         problems.Should().HaveCount(5);
-        string.Join(" ", problems).Should().NotContain("ardk_A").And.NotContain("ardk_short");
+        (string.Join(" ", problems).Contains("ardk_A", StringComparison.Ordinal) || string.Join(" ", problems).Contains("ardk_short", StringComparison.Ordinal)).Should().BeFalse("a problem never quotes a credential");
     }
 }

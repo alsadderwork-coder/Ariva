@@ -231,7 +231,7 @@ public sealed class ParserPropertyTests
                 var (token, _, error) = Ariva.Infra.Integration.Outbound.TokenHandler.ReadToken(b, now);
                 (token is null).Should().NotBe(error is null);
                 if (token is not null)
-                    token.Should().MatchRegex("^[!-~]{1,8192}$", "a token is printable ASCII");
+                    (token.Length is >= 1 and <= 8192 && token.All(c => c is >= '!' and <= '~')).Should().BeTrue("a token is printable ASCII");
             });
         }
     }

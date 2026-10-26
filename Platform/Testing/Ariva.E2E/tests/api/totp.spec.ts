@@ -23,7 +23,7 @@ test('an enrolled account needs its code; the same code twice is refused and the
 	const noCode = await login(userName, password);
 	await expectProblemDetails(noCode, 401);
 	expect((await noCode.json()).error).toBe('mfa_required');
-	expect(noCode.refreshCookie(), 'no session before the second factor').toBeUndefined();
+	expect(noCode.refreshCookie() === undefined, 'no session before the second factor').toBe(true);
 
 	const wrongPassword = await login(userName, 'not-the-password-0000');
 	expect((await wrongPassword.json()).error, 'a wrong password never reveals that a code is needed').toBeUndefined();
@@ -46,18 +46,18 @@ test('enrolment: the secret is shown once, a wrong first code is refused, recove
 	const enrolled = await call('POST', enrolUrl, authorization);
 	expect(enrolled.status()).toBe(200);
 	const { secret, otpAuthUri } = await enrolled.json();
-	expect(otpAuthUri).toBe(`otpauth://totp/Ariva:${account.userName}?secret=${secret}&issuer=Ariva&algorithm=SHA1&digits=6&period=30`);
+	expect(otpAuthUri === `otpauth://totp/Ariva:${account.userName}?secret=${secret}&issuer=Ariva&algorithm=SHA1&digits=6&period=30`, 'the enrolment address').toBe(true);
 
 	expect((await call('POST', confirmUrl, { ...authorization, data: { code: '000000' } })).status()).toBe(400);
 	const confirmed = await call('POST', confirmUrl, { ...authorization, data: { code: totpCode(secret) } });
 	expect(confirmed.status()).toBe(200);
 	const { token, recoveryCodes } = await confirmed.json();
-	expect(recoveryCodes).toHaveLength(10);
+	expect(recoveryCodes.length).toBe(10);
 	expect(claimsOf(token.accessToken).amr).toEqual(['pwd', 'otp']);
 
 	const again = await call('POST', enrolUrl, { token: token.accessToken });
 	expect(again.status(), 'an enrolled account never gets its secret again').toBe(409);
-	expect(await again.text()).not.toContain(secret);
+	expect((await again.text()).includes(secret), 'the refusal never repeats the secret').toBe(false);
 
 	expect((await login(account.userName, account.password)).status()).toBe(401);
 	const recovered = await login(account.userName, account.password, undefined, undefined, { recoveryCode: recoveryCodes[0] });
@@ -72,7 +72,7 @@ test('enrolment: the secret is shown once, a wrong first code is refused, recove
 
 test('break-glass: signs in with a recovery code, is never locked out, and every sign-in is a critical event', async () => {
 	const credential = readBreakGlass();
-	expect(credential.recoveryCodes).toHaveLength(10);
+	expect(credential.recoveryCodes.length).toBe(10);
 
 	expect((await login(credential.userName, credential.password)).status()).toBe(401);
 	for (let attempt = 0; attempt < 12; attempt++) await login(credential.userName, 'not-the-password-0000');

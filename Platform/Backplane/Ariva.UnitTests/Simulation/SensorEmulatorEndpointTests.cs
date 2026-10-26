@@ -93,9 +93,11 @@ public sealed class SensorEmulatorEndpointTests
         using var get = await SendAsync(client, HttpMethod.Get, Route, ReadKey);
 
         put.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await TextAsync(put)).Should().NotContain("ardk_").And.Contain("S-15");
+        var answer = await TextAsync(put);
+        answer.Contains("ardk_", StringComparison.Ordinal).Should().BeFalse("credentials never come back out");
+        answer.Should().Contain("S-15");
         var text = await TextAsync(get);
-        text.Should().NotContain("ardk_");
+        text.Contains("ardk_", StringComparison.Ordinal).Should().BeFalse("credentials never come back out");
         JsonDocument.Parse(text).RootElement.GetProperty("devices")[0].GetProperty("queueZone").GetString().Should().Be("A-VIS");
     }
 
@@ -122,7 +124,7 @@ public sealed class SensorEmulatorEndpointTests
         using var response = await SendAsync(client, new HttpMethod(method), Route + path, ControlKey, json);
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
-        (await TextAsync(response)).Should().NotContain("ardk_B", "a refused credential is never quoted back");
+        (await TextAsync(response)).Contains("ardk_B", StringComparison.Ordinal).Should().BeFalse("a refused credential is never quoted back");
     }
 
     [Fact]

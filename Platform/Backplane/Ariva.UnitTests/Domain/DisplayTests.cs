@@ -140,8 +140,9 @@ public sealed class DisplayTests
     {
         var first = DisplayCredentials.New();
         var second = DisplayCredentials.New();
-        first.Credential.Should().StartWith("ardp_").And.HaveLength(48).And.NotBe(second.Credential);
-        first.Prefix.Should().Be(first.Credential[..13]);
+        (first.Credential.StartsWith("ardp_", StringComparison.Ordinal) && first.Credential.Length == 48).Should().BeTrue("a display credential's shape");
+        (first.Credential != second.Credential).Should().BeTrue("every credential is random");
+        (first.Prefix == first.Credential[..13]).Should().BeTrue("the prefix is the credential's first 13 characters");
         DisplayCredentials.Matches(first.Credential, first.Hash).Should().BeTrue();
         DisplayCredentials.Matches(second.Credential, first.Hash).Should().BeFalse();
         DisplayCredentials.Matches(DeviceCredentials.New().Credential, first.Hash).Should().BeFalse("a device credential is not a display credential");
@@ -149,6 +150,8 @@ public sealed class DisplayTests
 
         var display = new Display("DMO", "ARR-A", Values());
         display.SetCredential(first.Prefix, first.Hash, new DateTime(2026, 10, 4, 0, 0, 0, DateTimeKind.Utc));
-        display.AuditSummary().Should().Contain(first.Prefix).And.NotContain(first.Credential).And.NotContain(first.Hash);
+        var summary = display.AuditSummary();
+        summary.Contains(first.Credential, StringComparison.Ordinal).Should().BeFalse("the audit summary holds the prefix, never the credential");
+        summary.Should().Contain(first.Prefix).And.NotContain(first.Hash);
     }
 }

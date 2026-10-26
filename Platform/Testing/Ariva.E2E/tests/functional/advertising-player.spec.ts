@@ -372,7 +372,7 @@ async function openPlayer(browser: Browser, before?: (page: Page) => Promise<unk
 	});
 	if (before) await before(page);
 	await page.goto(`${webUrl}/display?code=${display}${query}#key=${encodeURIComponent(credential)}`);
-	await expect(page, 'the credential leaves the address bar').not.toHaveURL(/#key=/);
+	await expect.poll(() => new URL(page.url()).hash.includes('key='), { message: 'the credential leaves the address bar' }).toBe(false);
 	return { page, guards, media, close: () => context.close() };
 }
 
@@ -754,11 +754,11 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 		const url = new URL(request.url());
 		expect([...url.searchParams.keys()]).toEqual(['code']);
 		expect(url.searchParams.get('code')).toBe(display);
-		expect(request.url()).not.toContain(encodeURIComponent(credential));
+		expect(request.url().includes(encodeURIComponent(credential)), 'the key never travels in the address').toBe(false);
 		const headers = await request.allHeaders();
-		expect(headers['x-ariva-display-key']).toBe(credential);
-		expect(headers.authorization).toBeUndefined();
-		expect(headers.cookie).toBeUndefined();
+		expect(headers['x-ariva-display-key'] === credential, 'the key travels in its header').toBe(true);
+		expect(headers.authorization === undefined, 'no bearer token').toBe(true);
+		expect(headers.cookie === undefined, 'no cookie').toBe(true);
 		expect(headers['content-type']).toContain('application/json');
 
 		const sent = request.postDataJSON() as { plays: SentPlay[] };

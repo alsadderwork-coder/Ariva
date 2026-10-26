@@ -85,7 +85,7 @@ test('a 10-minute accelerated run reaches Ingest event for event', async () => {
 	test.setTimeout(90_000);
 	const loaded = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: credentials } });
 	await expectStatus(loaded, 200);
-	expect(await loaded.text()).not.toContain('ardk_');
+	expect((await loaded.text()).includes('ardk_'), 'the answer never holds a device credential').toBe(false);
 
 	const started = await call('POST', `${sensors}/start`, { headers: operator, data: { minute: 1095, speed: 60, untilMinute: 1105 } });
 	await expectStatus(started, 200);
@@ -97,7 +97,7 @@ test('a 10-minute accelerated run reaches Ingest event for event', async () => {
 	}
 	expect(status.running).toBe(false);
 	expect(status.nextMinute).toBe(1105);
-	expect(JSON.stringify(status)).not.toContain('ardk_');
+	expect(JSON.stringify(status).includes('ardk_'), 'the status never holds a device credential').toBe(false);
 
 	const bySensor = Object.fromEntries(status.devices.map((d: { sensor: string }) => [d.sensor, d]));
 	expect(bySensor['S-15'].pushes).toBe(10);
@@ -146,7 +146,7 @@ test('the seeded AUH-TA sensors play the AUH-TA evening once issued a credential
 
 	const loaded = await call('PUT', `${sensors}/devices`, { headers: operator, data: { devices: auhCredentials } });
 	await expectStatus(loaded, 200);
-	expect(await loaded.text()).not.toContain('ardk_');
+	expect((await loaded.text()).includes('ardk_'), 'the answer never holds a device credential').toBe(false);
 	const started = await call('POST', `${sensors}/start`, { headers: operator, data: { minute: 1100, speed: 60, untilMinute: 1110 } });
 	await expectStatus(started, 200);
 
@@ -156,7 +156,7 @@ test('the seeded AUH-TA sensors play the AUH-TA evening once issued a credential
 		status = await (await call('GET', sensors, { headers: operator })).json();
 	}
 	expect(status.running).toBe(false);
-	expect(JSON.stringify(status)).not.toContain('ardk_');
+	expect(JSON.stringify(status).includes('ardk_'), 'the status never holds a device credential').toBe(false);
 	const bySensor = Object.fromEntries(status.devices.map((d: { sensor: string }) => [d.sensor, d]));
 	for (const device of status.devices) {
 		expect(device.site, device.sensor).toBe('AUH-TA');

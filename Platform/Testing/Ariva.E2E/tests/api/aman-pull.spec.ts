@@ -95,7 +95,7 @@ test('an AMAN pull is registered only with TOTP client credentials below a feed 
 		const refused = await call('POST', endpoints, { token: admin, data: body });
 		expect(refused.status(), why).toBe(400);
 		expectNoLeak(await refused.text(), why);
-		expect(await refused.text()).not.toContain(secret);
+		expect((await refused.text()).includes(secret), 'a refusal never repeats the secret').toBe(false);
 	}
 });
 
@@ -109,7 +109,7 @@ test('the Integration host pulls every contract from the mock AMAN with a token 
 	const created = await call('POST', endpoints, { token: admin, data: endpoint(`ap-${run}`, secret) });
 	await expectStatus(created, 201);
 	const id = (await created.json()).id as string;
-	expect(await created.text()).not.toContain(secret);
+	expect((await created.text()).includes(secret), 'the answer never repeats the secret').toBe(false);
 	const wrong = await call('POST', endpoints, { token: admin, data: endpoint(`ap-${run}-w`, 'not-the-secret-of-this-client') });
 	await expectStatus(wrong, 201);
 
@@ -147,9 +147,9 @@ test('the Integration host pulls every contract from the mock AMAN with a token 
 	const listed = await call('GET', endpoints, { token: admin });
 	expect(listed.status()).toBe(200);
 	const text = await listed.text();
-	expect(text).not.toContain(secret);
+	expect(text.includes(secret), 'the list never shows the secret').toBe(false);
 	expect(text).not.toContain('not-the-secret-of-this-client');
-	expect(text).not.toContain(seed);
+	expect(text.includes(seed), 'the list never shows the seed').toBe(false);
 
 	// Stop both pulls so later runs and other suites see a quiet mock.
 	for (const code of [`ap-${run}`, `ap-${run}-w`]) {

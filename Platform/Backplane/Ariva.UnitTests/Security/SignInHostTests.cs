@@ -205,9 +205,9 @@ public sealed class SignInHostTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         response.Headers.CacheControl?.NoStore.Should().BeTrue();
-        body.Should().NotContain(refreshToken);
+        body.Contains(refreshToken, StringComparison.Ordinal).Should().BeFalse("the refresh token travels in the cookie only");
         var cookie = SetCookie(response);
-        cookie.Should().StartWith($"{CookieName}={refreshToken};");
+        cookie.StartsWith($"{CookieName}={refreshToken};", StringComparison.Ordinal).Should().BeTrue("the cookie carries the refresh token");
         var attributes = AttributesOf(cookie);
         attributes.Should().Contain("max-age=43200").And.Contain("path=/api/auth").And.Contain("secure").And.Contain("samesite=strict").And.Contain("httponly");
         attributes.Should().NotContain("domain=", "the cookie stays on the host that set it");
@@ -225,7 +225,7 @@ public sealed class SignInHostTests
         using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        _authenticator.Contexts.Should().ContainSingle().Which.PresentedRefreshToken.Should().Be(old, "the service revokes it (CWE-384)");
+        (_authenticator.Contexts.Should().ContainSingle().Which.PresentedRefreshToken == old).Should().BeTrue("the service revokes it (CWE-384)");
     }
 
     [Fact]
@@ -272,10 +272,10 @@ public sealed class SignInHostTests
         using var response = await client.SendAsync(RefreshRequest(presented, "1", WebOrigin), TestContext.Current.CancellationToken);
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        SetCookie(response).Should().StartWith($"{CookieName}={successor};");
+        SetCookie(response).StartsWith($"{CookieName}={successor};", StringComparison.Ordinal).Should().BeTrue("the cookie carries the successor");
         AttributesOf(SetCookie(response)).Should().Contain("max-age=39600");
-        _authenticator.Contexts.Should().ContainSingle().Which.PresentedRefreshToken.Should().Be(presented);
-        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).Should().NotContain(successor);
+        (_authenticator.Contexts.Should().ContainSingle().Which.PresentedRefreshToken == presented).Should().BeTrue("the presented token reaches the service");
+        (await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).Contains(successor, StringComparison.Ordinal).Should().BeFalse("the successor travels in the cookie only");
     }
 
     [Fact]

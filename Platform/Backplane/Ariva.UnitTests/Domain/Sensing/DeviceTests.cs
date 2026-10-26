@@ -343,13 +343,14 @@ public sealed class DeviceTests
 
         device.IssueCredential(issued.Prefix, issued.Hash, Now);
 
-        issued.Credential.Should().HaveLength(48).And.StartWith("ardk_");
-        device.CredentialPrefix.Should().Be(issued.Credential[..13]);
-        device.CredentialHash.Should().Be(DeviceCredentials.Hash(issued.Credential)).And.NotContain(issued.Credential[13..]);
+        (issued.Credential.Length == 48 && issued.Credential.StartsWith("ardk_", StringComparison.Ordinal)).Should().BeTrue("a device credential's shape");
+        (device.CredentialPrefix == issued.Credential[..13]).Should().BeTrue("the prefix is the credential's first 13 characters");
+        device.CredentialHash.Contains(issued.Credential[13..], StringComparison.Ordinal).Should().BeFalse("only a hash of the credential is kept");
+        device.CredentialHash.Should().Be(DeviceCredentials.Hash(issued.Credential));
         DeviceCredentials.Matches(issued.Credential, device.CredentialHash).Should().BeTrue();
         DeviceCredentials.Matches(issued.Credential[..47] + (issued.Credential[47] == 'A' ? 'B' : 'A'), device.CredentialHash).Should().BeFalse();
         DeviceCredentials.Matches(issued.Credential, null).Should().BeFalse();
-        DeviceCredentials.New().Credential.Should().NotBe(issued.Credential);
+        (DeviceCredentials.New().Credential != issued.Credential).Should().BeTrue("every credential is random");
         device.DomainEvents.OfType<DeviceRegistryChanged>().Should().NotContain(e => e.Change == "CredentialRotated", "the first credential is part of registration");
 
         device.IssueCredential(DeviceCredentials.New().Prefix, DeviceCredentials.New().Hash, Now);

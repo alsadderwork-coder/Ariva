@@ -127,10 +127,10 @@ test('a duty manager sets up a four-language board after a step-up; the player a
 	const reveal = page.getByTestId('credential-reveal');
 	await expect(reveal).toBeVisible();
 	playerAddress = ((await page.getByTestId('credential-value').textContent()) ?? '').trim();
-	expect(playerAddress).toMatch(new RegExp(`^${webUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/display\\?code=${code}#key=ardp_`));
+	expect(new RegExp(`^${webUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/display\\?code=${code}#key=ardp_`).test(playerAddress), "the player's address with its key").toBe(true);
 	await page.getByTestId('credential-done').click();
 	await expect(reveal).toHaveCount(0);
-	expect(await page.content(), 'gone once done').not.toContain('#key=');
+	expect((await page.content()).includes('#key='), 'gone once done').toBe(false);
 
 	const row = page.locator(`[data-testid="display-row"][data-code="${code}"]`);
 	await expect(row).toContainText('ar, en, pt, sw');
@@ -143,8 +143,8 @@ test('a duty manager sets up a four-language board after a step-up; the player a
 	const token = (await signIn(accounts().webAdmin)).accessToken;
 	const listed = await (await call('GET', `${api}?siteCode=DMO`, { token })).text();
 	const credential = decodeURIComponent(playerAddress.split('#key=')[1]);
-	expect(listed).toContain(credential.slice(0, 13));
-	expect(listed).not.toContain(credential);
+	expect(listed.includes(credential.slice(0, 13)), 'the list shows the prefix').toBe(true);
+	expect(listed.includes(credential), 'the list never shows the credential').toBe(false);
 	allowStatuses(guards, 401);
 	await guards.expectClean();
 });
@@ -164,7 +164,7 @@ test('the player shows bands in every language, holds them within the hysteresis
 		await redis.del(`${instance}live:zone:DMO/D-VIS`);
 
 		await page.goto(playerAddress);
-		await expect(page, 'the credential leaves the address bar').not.toHaveURL(/#key=/);
+		await expect.poll(() => new URL(page.url()).hash.includes('key='), { message: 'the credential leaves the address bar' }).toBe(false);
 		const entries = page.getByTestId('board-entry');
 		await expect(entries).toHaveCount(2);
 		const citizens = entries.nth(0);
@@ -229,7 +229,7 @@ test('only the display credential opens a board: users, other codes and wrong ke
 	expect((await call('GET', `${board}?code=${code}`)).status(), 'no key').toBe(401);
 	const answer = await call('GET', `${board}?code=${code}`, { headers: { 'X-Ariva-Display-Key': credential } });
 	expect(answer.headers()['cache-control']).toContain('no-store');
-	expect(await answer.text()).not.toContain(credential);
+	expect((await answer.text()).includes(credential), 'the board never repeats the key').toBe(false);
 
 	// A player with a wrong key shows the set-up message, not a board.
 	const { page, close } = await player(browser);

@@ -82,7 +82,8 @@ public sealed class RedactionEnricherTests
         logger.Information("Headers {@Headers}", headers);
 
         var rendered = Rendered(sink.Events[0]);
-        rendered.Should().NotContain(Jwt).And.NotContain("refresh-secret").And.NotContain("123456");
+        rendered.Contains(Jwt, StringComparison.Ordinal).Should().BeFalse("the token is redacted");
+        rendered.Should().NotContain("refresh-secret").And.NotContain("123456");
         rendered.Should().Contain("application/json", "values with harmless names are kept");
     }
 
@@ -162,8 +163,9 @@ public sealed class RedactionEnricherTests
             new[] { "Bearer " + Jwt, "plain" });
 
         var rendered = Rendered(sink.Events[0]);
+        rendered.Contains(Jwt, StringComparison.Ordinal).Should().BeFalse("the token is redacted");
         rendered.Should().Contain("officer.one");
-        rendered.Should().NotContain("correct horse").And.NotContain("654321").And.NotContain(Jwt);
+        rendered.Should().NotContain("correct horse").And.NotContain("654321");
         rendered.Should().Contain("plain");
     }
 
@@ -240,7 +242,8 @@ public sealed class RedactionEnricherTests
 
         var redacted = RedactionEnricher.RedactText($"push from S-17 with {credential} refused");
 
-        redacted.Should().NotContain(credential[5..]).And.Contain("ardk_" + RedactionEnricher.Redacted);
+        redacted.Contains(credential[5..], StringComparison.Ordinal).Should().BeFalse("the credential is masked");
+        redacted.Should().Contain("ardk_" + RedactionEnricher.Redacted);
         RedactionEnricher.IsSensitive("X-Ariva-Device-Key").Should().BeTrue();
     }
 
@@ -250,8 +253,10 @@ public sealed class RedactionEnricherTests
         // ARV-058: a display player's credential, in free text, under its header's name and in the player's address.
         var credential = Ariva.Infra.Security.DisplayCredentials.New().Credential;
 
-        RedactionEnricher.RedactText($"board for E2E-1 with {credential} refused").Should().NotContain(credential[5..]).And.Contain("ardp_" + RedactionEnricher.Redacted);
-        RedactionEnricher.RedactText($"/display?code=E2E-1#key={credential}").Should().NotContain(credential[5..]);
+        var inText = RedactionEnricher.RedactText($"board for E2E-1 with {credential} refused");
+        inText.Contains(credential[5..], StringComparison.Ordinal).Should().BeFalse("the credential is masked in text");
+        inText.Should().Contain("ardp_" + RedactionEnricher.Redacted);
+        RedactionEnricher.RedactText($"/display?code=E2E-1#key={credential}").Contains(credential[5..], StringComparison.Ordinal).Should().BeFalse("the credential is masked in a player's address");
         RedactionEnricher.IsSensitive("X-Ariva-Display-Key").Should().BeTrue();
         RedactionEnricher.IsSensitive("DisplayKey").Should().BeTrue();
     }

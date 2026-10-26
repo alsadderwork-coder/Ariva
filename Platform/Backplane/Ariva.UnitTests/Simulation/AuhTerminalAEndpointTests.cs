@@ -204,7 +204,7 @@ public sealed class AuhTerminalAEndpointTests
 
         loaded.StatusCode.Should().Be(HttpStatusCode.OK);
         var text = await loaded.Content.ReadAsStringAsync(Ct);
-        text.Should().NotContain("ardk_", "credentials never come back out");
+        text.Contains("ardk_", StringComparison.Ordinal).Should().BeFalse("credentials never come back out");
         var devices = JsonDocument.Parse(text).RootElement.GetProperty("devices").EnumerateArray().ToList();
         devices.Select(d => (d.GetProperty("site").GetString(), d.GetProperty("sensor").GetString(), d.GetProperty("queueZone").GetString())).Should()
             .Equal(("AUH-TA", "Q-VIS-01", "A-VIS"), ("DMO", "S-15", "A-VIS"));
@@ -226,7 +226,8 @@ public sealed class AuhTerminalAEndpointTests
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest, because);
         var text = await response.Content.ReadAsStringAsync(Ct);
-        text.Should().NotContain("<b>").And.NotContain("ardk_");
+        text.Contains("ardk_", StringComparison.Ordinal).Should().BeFalse("credentials never come back out");
+        text.Should().NotContain("<b>");
     }
 
     [Fact]
@@ -255,7 +256,8 @@ public sealed class AuhTerminalAEndpointTests
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         var text = await response.Content.ReadAsStringAsync(Ct);
-        text.Should().Contain("At most 150").And.NotContain("ardk_");
+        text.Contains("ardk_", StringComparison.Ordinal).Should().BeFalse("credentials never come back out");
+        text.Should().Contain("At most 150");
         Ariva.Simulation.Api.Emulators.Sensors.SensorEmulatorSettings.MaxDevices.Should().BeGreaterThanOrEqualTo(59 + 84, "the cap fits every sensor of both sites");
     }
 
@@ -285,7 +287,8 @@ public sealed class AuhTerminalAEndpointTests
         (await bad.Content.ReadAsStringAsync(Ct)).Should().NotContain("leaked").And.NotContain("ic_short");
         good.StatusCode.Should().Be(HttpStatusCode.OK);
         var text = await good.Content.ReadAsStringAsync(Ct);
-        text.Should().NotContain("ics_").And.NotContain(TotpSeed);
+        text.Contains("ics_", StringComparison.Ordinal).Should().BeFalse("the answer never holds a client secret");
+        text.Contains(TotpSeed, StringComparison.Ordinal).Should().BeFalse("the answer never holds the seed");
         var body = JsonDocument.Parse(text).RootElement;
         body.GetProperty("aodb").GetProperty("aidxConfigured").GetBoolean().Should().BeFalse("the reference AODB's client is left as it was");
         var auh = body.GetProperty("aodbSites").EnumerateArray().Single();

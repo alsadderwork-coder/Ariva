@@ -288,7 +288,7 @@ public sealed class OutboundTests
         var stub = new Stub((_, _) => new HttpResponseMessage(HttpStatusCode.OK));
         using (var invoker = new HttpMessageInvoker(new ApiKeyHeaderHandler("X-Api-Key", "the-key-123") { InnerHandler = stub }))
             await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://aodb.example.test/x"), Ct);
-        stub.Requests[0].Headers.GetValues("X-Api-Key").Should().Equal("the-key-123");
+        stub.Requests[0].Headers.GetValues("X-Api-Key").SequenceEqual(["the-key-123"]).Should().BeTrue("the call carries the API key once");
 
         var key = RandomNumberGenerator.GetBytes(32);
         var clock = new ManualClock(DateTimeOffset.FromUnixTimeSeconds(1_790_000_000));
@@ -327,10 +327,10 @@ public sealed class OutboundTests
         exchange.Method.Should().Be(HttpMethod.Post);
         var body = JsonDocument.Parse(stub.Bodies[0]).RootElement;
         body.GetProperty("clientId").GetString().Should().Be("ariva");
-        body.GetProperty("clientSecret").GetString().Should().Be("client-secret-1");
+        string.Equals(body.GetProperty("clientSecret").GetString(), "client-secret-1", StringComparison.Ordinal).Should().BeTrue("the exchange sends the client secret");
         Totp.Match(Base32.Decode(seed), body.GetProperty("totpCode").GetString(), clock.GetUtcNow(), null).Should().NotBeNull();
-        stub.Requests[1].Headers.Authorization!.Parameter.Should().Be("t1");
-        stub.Requests[1].Headers.GetValues("X-TOTP-Code").Single().Should().HaveLength(6);
+        string.Equals(stub.Requests[1].Headers.Authorization!.Parameter, "t1", StringComparison.Ordinal).Should().BeTrue("the call carries the exchanged token");
+        stub.Requests[1].Headers.GetValues("X-TOTP-Code").Single().Length.Should().Be(6);
 
         (await invoker.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://aodb.example.test/api/stale"), Ct)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         // ARV-050: one exchange per TOTP step (AMAN's replay guard): within the step of the first, no second exchange is sent.
@@ -360,8 +360,9 @@ public sealed class OutboundTests
         var exchange = stub.Requests[0];
         exchange.RequestUri!.AbsoluteUri.Should().Be("https://aodb.example.test/api/auth/token", "the same origin as the endpoint");
         stub.Bodies[0].Should().Be("grant_type=client_credentials&scope=flights.read");
-        Encoding.UTF8.GetString(Convert.FromBase64String(exchange.Headers.Authorization!.Parameter!)).Should().Be("ariva:s3cr3t%3Awith%2Fcolon");
-        stub.Requests[1].Headers.Authorization!.ToString().Should().Be("Bearer o1");
+        string.Equals(Encoding.UTF8.GetString(Convert.FromBase64String(exchange.Headers.Authorization!.Parameter!)), "ariva:s3cr3t%3Awith%2Fcolon", StringComparison.Ordinal)
+            .Should().BeTrue("HTTP basic authentication with the form-encoded pair");
+        string.Equals(stub.Requests[1].Headers.Authorization!.ToString(), "Bearer o1", StringComparison.Ordinal).Should().BeTrue("the call carries the exchanged token");
     }
 
     [Fact]

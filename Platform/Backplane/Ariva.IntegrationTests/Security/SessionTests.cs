@@ -29,7 +29,7 @@ public sealed class SessionTests(PostgresFixture fixture) : IAsyncDisposable
         var signIn = (await _host.LoginAsync("it.s.store", Password)).Data;
         var sessionId = SessionOf(signIn.Token.AccessToken);
 
-        signIn.RefreshToken.Should().HaveLength(43, "256 random bits, base64url");
+        signIn.RefreshToken.Length.Should().Be(43, "256 random bits, base64url");
         (await _host.ReadAsync<int>("SELECT idle_timeout_seconds FROM user_session WHERE id = @id", sessionId)).Should().Be(1800, "administrators idle out after 30 minutes");
         (await _host.ReadAsync<string>("SELECT ip_address FROM user_session WHERE id = @id", sessionId)).Should().Be("10.1.2.3");
         (await _host.ReadAsync<long>("SELECT count(*) FROM refresh_token WHERE session_id = @id AND length(token_hash) = 64", sessionId)).Should().Be(1);
@@ -68,7 +68,7 @@ public sealed class SessionTests(PostgresFixture fixture) : IAsyncDisposable
         var refreshed = await _host.RefreshAsync(signIn.RefreshToken);
 
         refreshed.HasErrors.Should().BeFalse();
-        refreshed.Data.RefreshToken.Should().NotBe(signIn.RefreshToken);
+        (refreshed.Data.RefreshToken != signIn.RefreshToken).Should().BeTrue("a refresh rotates the token");
         SessionOf(refreshed.Data.Token.AccessToken).Should().Be(SessionOf(signIn.Token.AccessToken));
         (await _host.RefreshAsync(refreshed.Data.RefreshToken)).HasErrors.Should().BeFalse("the successor is current");
     }
@@ -85,7 +85,7 @@ public sealed class SessionTests(PostgresFixture fixture) : IAsyncDisposable
         var third = await _host.RefreshAsync(signIn.RefreshToken);
 
         second.HasErrors.Should().BeFalse();
-        second.Data.RefreshToken.Should().Be(first.Data.RefreshToken, "a second tab refreshing at the same moment gets the same successor");
+        (second.Data.RefreshToken == first.Data.RefreshToken).Should().BeTrue("a second tab refreshing at the same moment gets the same successor");
         third.ErrorMessages.Should().Equal(ISvcAuthenticator.SessionExpired);
         (await _host.SessionStateAsync(sessionId)).Should().Be(SessionState.Revoked, "a further reuse is theft: the family is revoked");
         (await _host.RefreshAsync(first.Data.RefreshToken)).HasErrors.Should().BeTrue("the successor dies with its family");
@@ -115,7 +115,7 @@ public sealed class SessionTests(PostgresFixture fixture) : IAsyncDisposable
         var results = await Task.WhenAll(_host.RefreshAsync(signIn.RefreshToken), _host.RefreshAsync(signIn.RefreshToken));
 
         results.Should().OnlyContain(r => !r.HasErrors);
-        results[0].Data.RefreshToken.Should().Be(results[1].Data.RefreshToken);
+        (results[0].Data.RefreshToken == results[1].Data.RefreshToken).Should().BeTrue("both tabs get the same successor");
         (await _host.SessionStateAsync(SessionOf(signIn.Token.AccessToken))).Should().Be(SessionState.Active);
     }
 

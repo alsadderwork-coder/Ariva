@@ -61,6 +61,12 @@ jobs:
           node Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs
       - name: E2E artifact secret check self-test
         run: node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --self-test
+      # ARV-249: a failing assertion prints the value it got and the one it expected, so tests assert secrets as booleans,
+      # counts or shapes (expect-messages.mjs's matcher rule holds the E2E specs, this check the C# tests).
+      - name: C# tests assert no secret by value (self-test, then every test file)
+        run: |
+          node scripts/security/secret-assertions.mjs --self-test
+          node scripts/security/secret-assertions.mjs
       # ARV-164b: the client the oversized-body specs use reads whole answers and refuses a close, a reset or a malformed request.
       - name: E2E raw HTTP client self-test
         run: node Platform/Testing/Ariva.E2E/scripts/raw-http.mjs --self-test

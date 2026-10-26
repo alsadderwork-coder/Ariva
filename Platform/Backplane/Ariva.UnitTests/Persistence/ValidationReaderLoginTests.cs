@@ -125,8 +125,9 @@ public sealed class ValidationReaderLoginTests
     public void Problems_Should_RefuseThePassword_When_ItIsNotPrintableAscii(string password)
     {
         // The migration job derives the SCRAM-SHA-256 verifier itself; without SASLprep that is exact for printable ASCII only.
-        Reader(password: password).Problems(Database()).Should().ContainSingle(p => p.Contains("printable ASCII", StringComparison.Ordinal))
-            .Which.Should().Contain("trailing newline from a password file", "the operator is told what to look for (ARV-104g1 re-check)").And.NotContain(password.Trim());
+        var problem = Reader(password: password).Problems(Database()).Should().ContainSingle(p => p.Contains("printable ASCII", StringComparison.Ordinal)).Which;
+        problem.Contains(password.Trim(), StringComparison.Ordinal).Should().BeFalse("the problem never quotes the password");
+        problem.Should().Contain("trailing newline from a password file", "the operator is told what to look for (ARV-104g1 re-check)");
     }
 
     [Fact]
@@ -152,7 +153,8 @@ public sealed class ValidationReaderLoginTests
 
         var message = act.Should().Throw<InvalidOperationException>().Which.Message;
         message.Should().Contain("is the runtime login").And.Contain("must not be the runtime or the migration");
-        message.Should().NotContain(database.Password).And.NotContain(database.Migration.Password).And.NotContain(ReaderPassword);
+        (message.Contains(database.Password, StringComparison.Ordinal) || message.Contains(database.Migration.Password, StringComparison.Ordinal) || message.Contains(ReaderPassword, StringComparison.Ordinal))
+            .Should().BeFalse("the message names the logins, never their passwords");
     }
 
     [Fact]
@@ -168,7 +170,7 @@ public sealed class ValidationReaderLoginTests
         var reader = ValidationReaderSettings.FromConfiguration(configuration);
 
         reader.Username.Should().Be("ariva_validation");
-        reader.Password.Should().Be(ReaderPassword);
+        string.Equals(reader.Password, ReaderPassword, StringComparison.Ordinal).Should().BeTrue("the reader's password is read from its section");
         ValidationReaderSettings.SectionName.Should().Be("Database:ValidationReader");
         DatabaseSettings.FromConfiguration(configuration).Username.Should().Be("ariva_app", "the runtime settings are unchanged by the reader's section");
     }
@@ -183,7 +185,7 @@ public sealed class ValidationReaderLoginTests
         var parsed = new NpgsqlConnectionStringBuilder(Reader(password: "reader;Include Error Detail=true;x=").BuildReaderConnectionString(Database()));
 
         parsed.Username.Should().Be("ariva_validation");
-        parsed.Password.Should().Be("reader;Include Error Detail=true;x=", "a password must not be able to add connection options");
+        string.Equals(parsed.Password, "reader;Include Error Detail=true;x=", StringComparison.Ordinal).Should().BeTrue("a password must not be able to add connection options");
         parsed.IncludeErrorDetail.Should().BeFalse();
         parsed.Host.Should().Be("db.example");
         parsed.Port.Should().Be(6543);
@@ -219,7 +221,9 @@ public sealed class ValidationReaderLoginTests
 
         absent.HasErrors.Should().BeTrue();
         absent.ErrorMessages.Should().ContainSingle().Which.Should().Contain("not configured");
-        runtime.ErrorMessages.Should().ContainSingle().Which.Should().Contain("misconfigured").And.NotContain(ReaderPassword);
+        var misconfigured = runtime.ErrorMessages.Should().ContainSingle().Which;
+        misconfigured.Contains(ReaderPassword, StringComparison.Ordinal).Should().BeFalse("the error never quotes the password");
+        misconfigured.Should().Contain("misconfigured");
     }
 
     public static TheoryData<string, string[], DateTime, DateTime, string> OutOfBoundsReads()
@@ -264,7 +268,7 @@ public sealed class ValidationReaderLoginTests
         // is the StoredKey.
         var verifier = ScramVerifier.For("pencil", Convert.FromBase64String("W22ZaJ0SNY7soEsUEjb6gQ=="), 4096);
         var match = Regex.Match(verifier, @"^SCRAM-SHA-256\$4096:W22ZaJ0SNY7soEsUEjb6gQ==\$([A-Za-z0-9+/]{43}=):([A-Za-z0-9+/]{43}=)$", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-        match.Success.Should().BeTrue(verifier);
+        match.Success.Should().BeTrue("the verifier has the shape of RFC 7677's example");
         var storedKey = Convert.FromBase64String(match.Groups[1].Value);
         var serverKey = Convert.FromBase64String(match.Groups[2].Value);
         var authMessage = System.Text.Encoding.UTF8.GetBytes(
@@ -285,7 +289,8 @@ public sealed class ValidationReaderLoginTests
         var first = ScramVerifier.For(ReaderPassword);
         var second = ScramVerifier.For(ReaderPassword);
 
-        first.Should().NotBe(second, "every verifier has its own random salt").And.StartWith("SCRAM-SHA-256$4096:").And.NotContain(ReaderPassword);
+        first.Contains(ReaderPassword, StringComparison.Ordinal).Should().BeFalse("a verifier never holds the password");
+        first.Should().NotBe(second, "every verifier has its own random salt").And.StartWith("SCRAM-SHA-256$4096:");
         Regex.IsMatch(first, @"^SCRAM-SHA-256\$[0-9]{4,7}:[A-Za-z0-9+/]{22}==\$[A-Za-z0-9+/]{43}=:[A-Za-z0-9+/]{43}=$", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1))
             .Should().BeTrue("the shape script 0049 accepts");
         var few = () => ScramVerifier.For(ReaderPassword, new byte[16], 4095);
@@ -306,7 +311,9 @@ public sealed class ValidationReaderLoginTests
 
         var act = () => guard.StartAsync(TestContext.Current.CancellationToken);
 
-        (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("CWE-269").And.NotContain(ReaderPassword);
+        var refusal = (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message;
+        refusal.Contains(ReaderPassword, StringComparison.Ordinal).Should().BeFalse("the refusal never quotes the password");
+        refusal.Should().Contain("CWE-269");
     }
 
     [Fact]
@@ -343,7 +350,11 @@ public sealed class ValidationReaderLoginTests
         var act = () => guard.StartAsync(TestContext.Current.CancellationToken);
 
         if (refused)
-            (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("does not run the validation service").And.NotContain(ReaderPassword);
+        {
+            var refusal = (await act.Should().ThrowAsync<InvalidOperationException>()).Which.Message;
+            refusal.Contains(ReaderPassword, StringComparison.Ordinal).Should().BeFalse("the refusal never quotes the password");
+            refusal.Should().Contain("does not run the validation service");
+        }
         else
             await act.Should().NotThrowAsync();
         await new ValidationReaderGuard(Database(), new ValidationReaderSettings(), new FakeEnvironment(environment)).StartAsync(TestContext.Current.CancellationToken);

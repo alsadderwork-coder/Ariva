@@ -1287,7 +1287,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. 2026-10-25, from the ARV-155 review. Some of the tests are the sign-in's (SessionTests, TotpTests): changing their assertions changes no sign-in code, but take them with the owner's freeze in mind.",
       "dependsOn": [
         "ARV-155"

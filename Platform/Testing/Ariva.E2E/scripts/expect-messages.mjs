@@ -17,8 +17,17 @@
 // (its query may carry a token: whereOf in tests/support/api-assertions.ts leaves it out); or a variable whose
 // latest binding holds one of those, one step removed included (a template or a `+` concatenation that carries it). A
 // request URL may not carry access_token=, token=, key=, secret=, password= or a token, credential, secret or key in its
-// query: send those in a header, or through Node's fetch (`call` in tests/support/accounts.ts), which records no step. The
-// check reads code only: comments, strings and the static parts of template literals are masked first.
+// query: send those in a header, or through Node's fetch (`call` in tests/support/accounts.ts), which records no step.
+// ARV-249: a failing matcher prints its subject and its expected value, so an expect's subject and its matcher's arguments
+// may not be a secret either (a secret-named member or variable, a variable holding one, a part, an element or an encoding
+// of one, a template or concatenation that carries one, a call named for one such as `response.refreshCookie()`, a variable
+// bound to a process.env key, secret, password, token or seed, or the text of an element that reveals one: `credential-value`,
+// `totp-secret`, `recovery-codes`): assert a boolean, a count or a shape instead
+// (`expect(text.includes(secret)).toBe(false)`, `expect(codes.length).toBe(10)`, `expect(/^ics_/.test(secret)).toBe(true)`).
+// toBeTruthy, toBeDefined, not.toBeNull, not.toBeUndefined and not.toBeFalsy print nothing of a secret subject and stay allowed;
+// expect.poll's subject is a function, so only its matcher's arguments are read. scripts/security/secret-assertions.mjs holds
+// the C# tests to the same rule. The check reads code only: comments, strings and the static parts of template literals are
+// masked first.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -163,7 +172,7 @@ const READS_BODY_ALL = /\.\s*(?:text|json|body)\s*\(\s*\)/g;
 const BODY_PROPERTY = /\.\s*body\b(?!\s*\()/;
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
 /** Members and names that hold a secret: an answer's credential, a client secret, a TOTP seed, a password, a token, a key. */
-const SECRET_NAMES = 'credential|credentials|clientSecret|totpSecret|totpUri|temporaryPassword|password|newPassword|currentPassword|secret|token|accessToken|refreshToken|previewToken|recoveryCodes|recoveryCode|apiKey|deviceKey|displayKey|privateKey|jwt';
+const SECRET_NAMES = 'credential|credentials|clientSecret|totpSecret|totpSeed|totpUri|temporaryPassword|password|newPassword|currentPassword|secret|token|accessToken|refreshToken|previewToken|recoveryCodes|recoveryCode|apiKey|deviceKey|displayKey|privateKey|jwt';
 const SECRET_MEMBER = new RegExp(`\\.\\s*(?:${SECRET_NAMES})\\b(?!\\s*\\()|\\bprocess\\.env\\.\\w*(?:KEY|SECRET|PASSWORD|TOKEN|SEED)\\w*`);
 const SECRET_NAME = new RegExp(`^(?:${SECRET_NAMES})$|[a-z](?:Password|Secret|Credential|Token)$`);
 /** Query parameters that carry a credential, and expressions that name one, in a request's URL. */
@@ -225,6 +234,133 @@ function holds(entries, name, offset, what) {
 	let latest;
 	for (const entry of entries) if (entry.name === name && entry.at < offset) latest = entry;
 	return latest?.[what] === true;
+}
+
+/** Splits text at top-level occurrences of a sticky (/y) separator pattern, outside brackets. */
+function splitTop(text, separator) {
+	const parts = [];
+	let depth = 0;
+	let from = 0;
+	for (let i = 0; i < text.length; i++) {
+		const c = text[i];
+		if ('([{'.includes(c)) depth++;
+		else if (')]}'.includes(c)) depth--;
+		else if (depth === 0) {
+			separator.lastIndex = i;
+			const m = separator.exec(text);
+			if (m) {
+				parts.push(text.slice(from, i));
+				from = i + m[0].length;
+				i = from - 1;
+			}
+		}
+	}
+	parts.push(text.slice(from));
+	return parts;
+}
+
+/** The offset of the bracket that opens the one that closes at `close`, or -1. */
+function opening(text, close) {
+	let depth = 0;
+	for (let i = close; i >= 0; i--) {
+		if (')]}'.includes(text[i])) depth++;
+		else if ('([{'.includes(text[i]) && --depth === 0) return i;
+	}
+	return -1;
+}
+
+/** Calls whose result is their receiver's text, or a part or an element of it; and functions that pass their argument on. */
+const PASSES_ON = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toLowerCase', 'toUpperCase', 'toString', 'at', 'padStart', 'padEnd', 'replace', 'replaceAll', 'normalize', 'split', 'filter', 'sort', 'toSorted', 'reverse', 'find', 'findLast', 'flat', 'valueOf']);
+const PASSES_ARGUMENT = new Set(['encodeURIComponent', 'encodeURI', 'decodeURIComponent', 'decodeURI', 'String', 'concat']);
+/**
+ * Where a binding's value (its source text) holds a secret whatever its name: a process.env key that names a key, a secret,
+ * a password, a token or a seed, and the text of an element that shows one (a credential or a temporary password the
+ * screen reveals once, a TOTP seed, recovery codes).
+ */
+const SECRET_SOURCE = /\bprocess\.env\.\w*(?:KEY|SECRET|PASSWORD|TOKEN|SEED)\w*|getByTestId\(\s*['"](?:credential-value|credential-reveal|totp-secret|recovery-codes)['"]\s*\)[\s\S]*?\.(?:textContent|innerText|inputValue|allTextContents|allInnerTexts)\s*\(/;
+/** An element that reveals a secret, as a locator (`page.getByTestId('credential-value')`, or a variable bound to one). */
+const SECRET_ELEMENT = /^\s*(?:[\w$.]+\s*\.\s*)?getByTestId\(\s*['"](?:credential-value|credential-reveal|totp-secret|recovery-codes)['"]\s*\)\s*;?\s*$/;
+/** Web-first matchers that print the element's text or value when they fail. */
+const TEXT_MATCHERS = new Set(['toHaveText', 'toContainText', 'toHaveValue', 'toHaveValues', 'toHaveAccessibleName', 'toHaveAccessibleDescription', 'toMatchAriaSnapshot', 'not.toHaveText', 'not.toContainText', 'not.toHaveValue']);
+/** Calls whose result is a secret by their name (an answer's refresh cookie, a token, a TOTP code). */
+const SECRET_CALL = /(?:[Tt]oken|[Ss]ecret|[Pp]assword|[Cc]redential|[Cc]ookie|[Jj]wt)$|^(?:totp|otp)Code$/i;
+/** Matchers that print nothing of a secret subject: they fail only on a missing or falsy value (`not` as given). */
+const PRESENCE = new Set(['toBeTruthy', 'toBeDefined', 'not.toBeNull', 'not.toBeUndefined', 'not.toBeFalsy', 'not.toBeNaN']);
+
+/**
+ * Whether the value of an expression (masked text at the offset) is a secret, what a failing matcher prints: a secret-named
+ * member or variable (secretMember), a variable whose latest binding is one, an element, part or encoding of one, or a
+ * template, a concatenation, a `??`, `||` or `?:` that carries one. A comparison, `typeof`, `.length`, a `.test()` and any
+ * other call are values of their own.
+ */
+export function secretValue(expression, offset, entries, depth = 0) {
+	if (depth > 12) return false;
+	let e = expression.trim();
+	for (;;) {
+		const before = e;
+		e = e.replace(/^await\s+/, '').replace(/!+$/, '').replace(/\s+as\s+[\w$.<>[\]|,\s{}:?'"]+$/, '').replace(/\s+satisfies\s+[\w$.<>[\]|,\s]+$/, '').trim();
+		if (e.startsWith('(') && closing(e, 0) === e.length - 1) e = e.slice(1, -1).trim();
+		if (e === before) break;
+	}
+	if (!e || /^(?:typeof|void|delete)\b/.test(e) || /^!(?!=)/.test(e)) return false;
+	if (splitTop(e, /===|!==|==|!=|<=|>=|&&|=>|\binstanceof\b|\bin\b|\s<\s|\s>\s/y).length > 1) return false;
+	for (const separator of [/\?\?|\|\|/y, /\?(?![.[(])|:/y, /\+(?![+=])/y]) {
+		const parts = splitTop(e, separator);
+		if (parts.length > 1) return parts.some((part) => secretValue(part, offset, entries, depth + 1));
+	}
+	if (e.startsWith('`')) return [...e.matchAll(/\$\{/g)].some((m) => {
+		const close = closing(e, m.index + 1);
+		return close > 0 && secretValue(e.slice(m.index + 2, close), offset, entries, depth + 1);
+	});
+	if (/^['"]/.test(e) || /^[\d.]/.test(e) || /^\/.*\/[a-z]*$/s.test(e)) return false;
+	if (e.startsWith('[') || e.startsWith('{')) {
+		// An array or an object literal: printed whole, so a secret element or member value counts.
+		const close = closing(e, 0);
+		if (close === e.length - 1) return splitTop(e.slice(1, -1), /,/y).some((item) => secretValue(item.replace(/^\s*\.\.\./, '').replace(/^\s*[\w$'"]+\s*:(?!:)/, ''), offset, entries, depth + 1));
+	}
+	const last = e[e.length - 1];
+	if (last === ']') {
+		const open = opening(e, e.length - 1);
+		return open > 0 && secretValue(e.slice(0, open).replace(/\?\.$/, ''), offset, entries, depth + 1);
+	}
+	if (last === ')') {
+		const open = opening(e, e.length - 1);
+		if (open <= 0) return false;
+		const callee = e.slice(0, open).replace(/\?\.$/, '').replace(/<[^<>()]*>$/, '').trim();
+		const m = /^(?:(.*?)\s*\??\.\s*)?([A-Za-z_$][\w$]*)$/s.exec(callee);
+		if (!m) return false;
+		const [, receiver, name] = m;
+		const args = callArguments(e, open).map((at) => e.slice(at[0], at[1]));
+		if (SECRET_CALL.test(name)) return true; // response.refreshCookie(), totpCode(seed)
+		if (PASSES_ARGUMENT.has(name) && args.some((arg) => secretValue(arg, offset, entries, depth + 1))) return true;
+		if (PASSES_ON.has(name) || name === 'concat') return receiver !== undefined && secretValue(receiver, offset, entries, depth + 1);
+		return false;
+	}
+	const member = /\.\s*([A-Za-z_$][\w$]*)$/.exec(e);
+	if (member) return secretMember(member[1]);
+	if (!IDENTIFIER.test(e)) return false;
+	if (SECRET_NAME.test(e)) return true;
+	let latest;
+	for (const entry of entries) if (entry.name === e && entry.at < offset) latest = entry;
+	if (latest === undefined || latest.value.trim() === '') return false;
+	return SECRET_SOURCE.test(latest.raw ?? '') || secretValue(latest.value, latest.at, entries, depth + 1);
+}
+
+/** Whether a locator (source text and masked text at the offset) is an element that reveals a secret, or a variable bound to one. */
+function revealsSecret(raw, masked, offset, entries) {
+	if (SECRET_ELEMENT.test(raw)) return true;
+	const name = masked.trim();
+	if (!IDENTIFIER.test(name)) return false;
+	let latest;
+	for (const entry of entries) if (entry.name === name && entry.at < offset) latest = entry;
+	return latest !== undefined && SECRET_ELEMENT.test(latest.raw ?? '');
+}
+
+/** Whether a member name holds a secret (the names SECRET_MEMBER reads, a compound ending in Password, Secret, Credential or Token). */
+function secretMember(name) {
+	if (/^(?:must|require|requires|has|is|can|invalid|missing)[A-Z]/.test(name)) return false; // mustChangePassword: a flag
+	if (name === 'authorization' || name === 'cookie') return true; // a request's headers: a bearer token, a session cookie
+	return new RegExp(`^(?:${SECRET_NAMES})$`).test(name) || /[a-z](?:Password|Secret|Credential|Token|Jwt)$/.test(name);
 }
 
 /** Why a message, a title, an annotation, an attachment or a console argument (masked text at the offset) quotes an answer or a secret. */
@@ -340,6 +476,7 @@ function addressCandidates(source, masked, at, entries, support = []) {
 export function findings(source, support = []) {
 	const masked = mask(source);
 	const entries = bindings(masked);
+	for (const entry of entries) entry.raw = source.slice(entry.valueAt, entry.valueAt + entry.value.length);
 	const lineOf = (offset) => source.slice(0, offset).split('\n').length;
 	const result = [];
 	const report = (at, what, reason) => result.push({ line: lineOf(at[0]), reason: `${what} ${reason}`, text: source.slice(at[0], at[1]).trim().slice(0, 120) });
@@ -378,6 +515,26 @@ export function findings(source, support = []) {
 		if (!at) continue;
 		const reason = quotes(masked.slice(at[0], at[1]), at[0], entries);
 		if (reason) report(at, `typed value (${m[1]})`, `${reason}: type it with fillSecret`);
+	}
+	// ARV-249: a failing matcher prints its subject and its expected value (`Expected: "..."`, `Received string: "..."`), and the
+	// report keeps the failure: a secret is asserted as a boolean, a count or a shape (`expect(text.includes(secret)).toBe(false)`,
+	// `expect(token.length).toBe(43)`, `expect(/^ics_/.test(secret)).toBe(true)`), never by value. expect.poll's subject is a
+	// function and its matcher's argument a value: the argument is checked.
+	for (const m of masked.matchAll(/(?<![\w$.])expect(\s*\.\s*(?:soft|poll))?\s*\(/g)) {
+		const open = m.index + m[0].length - 1;
+		const close = closing(masked, open);
+		const subject = callArguments(masked, open)[0];
+		if (close < 0 || !subject) continue;
+		const chain = /^\s*((?:\.\s*(?:not|resolves|rejects)\s*)*)\.\s*(\w+)\s*\(/.exec(masked.slice(close + 1, close + 200));
+		if (!chain) continue;
+		const matcher = `${/\bnot\b/.test(chain[1]) ? 'not.' : ''}${chain[2]}`;
+		if (!/poll/.test(m[1] ?? '') && !PRESENCE.has(matcher) && secretValue(masked.slice(subject[0], subject[1]), subject[0], entries))
+			report(subject, `matcher subject (${matcher})`, 'is a secret, which a failing matcher prints: assert a boolean, a count or a shape');
+		else if (TEXT_MATCHERS.has(matcher) && revealsSecret(source.slice(subject[0], subject[1]), masked.slice(subject[0], subject[1]), subject[0], entries))
+			report(subject, `matcher subject (${matcher})`, 'is the element that reveals a secret, whose text a failing matcher prints: assert on a child that holds none, or read the text into a boolean');
+		for (const at of callArguments(masked, close + chain[0].length)) {
+			if (secretValue(masked.slice(at[0], at[1]), at[0], entries)) report(at, `matcher argument (${matcher})`, 'is a secret, which a failing matcher prints: compare as a boolean (`text.includes(secret)`, `a === b`)');
+		}
 	}
 	return result;
 }
@@ -503,7 +660,41 @@ const SELF_TEST = {
 		"await page.goto(`/display?code=${c}#${display.credential}`);",
 		// A preview token by its member name.
 		"expect(x, summary.previewToken).toBe(1);",
-		"await expectStatus(r, 200, `${summary.previewToken}`);"
+		"await expectStatus(r, 200, `${summary.previewToken}`);",
+		// ARV-249: a matcher's subject or argument that is a secret (a failing matcher prints both).
+		"expect(text, 'no credential comes back').not.toContain(account.password);",
+		"expect(c.clientSecret).toMatch(/^ics_[A-Za-z0-9_-]{43}$/);",
+		"expect(fresh.clientSecret).not.toBe(c.clientSecret);",
+		"expect(c.totpUri).toContain(`secret=${c.totpSecret}`);",
+		"expect(fresh.totpSecret).toBeNull();",
+		"expect(recoveryCodes).toHaveLength(10);",
+		"const next = (await reset.json()).temporaryPassword;\nexpect(JSON.stringify(entries)).not.toContain(next);",
+		"expect(read).not.toContain(credential.slice(13));",
+		"expect(page.url()).not.toContain(encodeURIComponent(credential));",
+		"expect(text).not.toContain(accessToken.split('.')[2]);",
+		"expect.soft((await rotated.json()).credential).not.toBe(credential);",
+		"await expect.poll(() => readBack()).toBe(issued.credential);",
+		"expect(code).toBe(totpCode(account.totpSecret));",
+		"expect(stored).toEqual({ id, key: display.credential });",
+		"expect(list).toEqual([first.credential]);",
+		"expect(x).toBe(token ?? '');",
+		"expect(await page.locator('#key').inputValue()).toBe(credential);",
+		"expect(header).toBe('Bearer ' + session.accessToken);",
+		"const issued = (await r.json()).credential as string;\nexpect(issued!).toMatch(/^ardk_/);",
+		// A secret returned by a call, read from process.env, or read from the element that reveals it.
+		"expect(a.refreshCookie()).toBe(b.refreshCookie());",
+		"expect(body).not.toContain(response.refreshCookie()!);",
+		"expect(theft.refreshCookie(), 'a refused refresh clears the cookie').toBe('');",
+		"expect(noCode.refreshCookie(), 'no session yet').toBeUndefined();",
+		"const seed = process.env.ARIVA_E2E_MOCK_AMAN_PULL_SEED ?? '';\nexpect(text).not.toContain(seed);",
+		"const first = ((await page.getByTestId('credential-value').textContent()) ?? '').trim();\nexpect(first).toMatch(pattern);",
+		"const next = (await page.getByTestId('credential-value').textContent())!.trim();\nexpect(await page.content()).not.toContain(next);",
+		"expect(x).toBe(account.totpSeed);",
+		// A request's auth headers; a web-first text matcher on the element that reveals a secret.
+		"expect(headers.authorization).toBeUndefined();",
+		"expect(headers.cookie).toBeUndefined();",
+		"const reveal = page.getByTestId('credential-reveal');\nawait expect(reveal).toContainText('Temporary password');",
+		"await expect(page.getByTestId('credential-value')).toHaveText(/ardk_/);"
 	],
 	good: [
 		"await expectStatus(r, 200);",
@@ -528,7 +719,6 @@ const SELF_TEST = {
 		"const m = `status of ${path}`;\nexpect(r.status(), m).toBe(200);",
 		"const key = `E2E-${n}`;\nawait test.step(`idempotency ${key}`, async () => {});",
 		"for (const prefix of ['ardk_', 'ardp_']) expect(text.includes(prefix), `no ${prefix} credential`).toBe(false);",
-		"expect(text, 'no credential comes back').not.toContain(account.password);",
 		"test.info().annotations.push({ type: 'note', description: 'the window leaves out the outage' });",
 		"await info.attach('record', { body: JSON.stringify(record), contentType: 'application/json' });",
 		"console.log(`log scan: ${files.length} host logs`);",
@@ -545,7 +735,38 @@ const SELF_TEST = {
 		"await fillSecret(page.getByLabel('Password', { exact: true }), account.password);",
 		"await page.getByLabel('Password', { exact: true }).fill(payload);",
 		"expect(r.status(), `status of ${whereOf(response)}`).toBe(401);",
-		"const tokens = await signIn(a);\nexpect(tokens.length, 'two sessions').toBe(2);"
+		"const tokens = await signIn(a);\nexpect(tokens.length, 'two sessions').toBe(2);",
+		// ARV-249: secrets asserted as booleans, counts and shapes; presence matchers; flags and values of their own.
+		"expect(text.includes(account.password), 'no password comes back').toBe(false);",
+		"expect(/^ics_[A-Za-z0-9_-]{43}$/.test(c.clientSecret), 'a client secret').toBe(true);",
+		"expect(fresh.clientSecret === c.clientSecret, 'a new secret').toBe(false);",
+		"expect(fresh.totpSecret === null, 'no new seed').toBe(true);",
+		"expect(recoveryCodes.length).toBe(10);",
+		"expect(typeof previewToken).toBe('string');",
+		"expect(issued.credential).toBeTruthy();",
+		"expect(issued.credential).not.toBeNull();",
+		"expect(body.user.mustChangePassword).toBe(true);",
+		"expect(await codes(border.accessToken)).toEqual(['DMO']);",
+		"expect(answer.credentials.every((c) => format.test(c.credential))).toBe(true);",
+		"expect(Object.keys(body).sort()).toEqual(['accessToken', 'expiresAt', 'sessionId']);",
+		"expect(token.tokenType).toBe('Bearer');",
+		"expect(claimsOf(admin).amr).toEqual(['pwd', 'otp']);",
+		"expect(await (await call('GET', url, { token: admin })).json()).toMatchObject({ a: 1 });",
+		"expect(x).toMatchObject({ token: 'Bearer' });",
+		"expect(credential.slice(0, 13).length).toBe(13);",
+		"const ok = format.test(issued.credential);\nexpect(ok).toBe(true);",
+		"expect(secretPath).toBe('/x'); // a name that ends in Path is no secret",
+		"await expect.poll(() => count(issued.credential)).toBe(0);",
+		"expect(response.refreshCookie()).toBeTruthy();",
+		"expect(a.refreshCookie() === b.refreshCookie(), 'the same successor').toBe(true);",
+		"const reveal = page.getByTestId('credential-reveal');\nawait expect(reveal).toHaveCount(0);",
+		"const shownCodes = page.getByTestId('recovery-codes').getByRole('listitem');\nawait expect(shownCodes).toHaveCount(10);",
+		"const host = process.env.ARIVA_E2E_MAIN_URL ?? '';\nexpect(host).toBe('http://127.0.0.1');",
+		"const cookies = await page.context().cookies();\nexpect(cookies.length).toBe(1);",
+		"expect(headers.authorization === undefined, 'no bearer token').toBe(true);",
+		"const reveal = page.getByTestId('credential-reveal');\nawait expect(reveal.locator('#credential-title')).toContainText('Temporary password');",
+		"await expect(page.getByTestId('credential-value')).toBeVisible();",
+		"await expect(page.getByTestId('recovery-codes')).toHaveCount(0);"
 	]
 };
 

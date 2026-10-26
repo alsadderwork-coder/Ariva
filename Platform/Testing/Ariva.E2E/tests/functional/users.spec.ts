@@ -87,12 +87,13 @@ test('an administrator creates an account after a step-up, gives it a site and r
 	await fillSecret(page.locator('#step-up-code'), totpCode(accounts().webUsers.totpSecret!));
 	await dialog.getByRole('button', { name: 'Confirm' }).click();
 	const reveal = page.getByTestId('credential-reveal');
-	await expect(reveal).toContainText('Temporary password');
+	// The title, not the panel: a failing toContainText prints the text it read, and the panel holds the password.
+	await expect(reveal.locator('#credential-title')).toContainText('Temporary password');
 	const first = ((await page.getByTestId('credential-value').textContent()) ?? '').trim();
-	expect(first).toMatch(temporaryPattern);
+	expect(temporaryPattern.test(first), 'a temporary password').toBe(true);
 	await page.getByTestId('credential-done').click();
 	await expect(reveal).toHaveCount(0);
-	expect(await page.content(), 'gone once done').not.toContain(first);
+	expect((await page.content()).includes(first), 'gone once done').toBe(false);
 
 	const panel = page.locator(`[data-testid="user-panel"][data-user="${created}"]`);
 	await expect(panel).toBeVisible();
@@ -119,8 +120,8 @@ test('an administrator creates an account after a step-up, gives it a site and r
 	await panel.getByTestId('confirm-reset-password').click();
 	await expect(reveal).toBeVisible();
 	const second = ((await page.getByTestId('credential-value').textContent()) ?? '').trim();
-	expect(second).toMatch(temporaryPattern);
-	expect(second).not.toBe(first);
+	expect(temporaryPattern.test(second), 'a temporary password').toBe(true);
+	expect(second === first, 'a reset gives a new one').toBe(false);
 	expect((await login(created, first)).status(), 'the first temporary password').toBe(401);
 	expect((await (await login(created, second)).json()).scope, 'the new one, for the first sign-in only').toBe('pending');
 	await page.getByTestId('credential-done').click();
@@ -157,8 +158,7 @@ test('an administrator creates an account after a step-up, gives it a site and r
 	await expect(createdEntry.getByTestId('audit-after')).toContainText(`displayName=${JSON.stringify(name)}`);
 	await expect(page.locator(injected)).toHaveCount(0);
 	const audit = await page.getByTestId('audit-log').textContent();
-	expect(audit).not.toContain(first);
-	expect(audit).not.toContain(second);
+	expect((audit ?? '').includes(first) || (audit ?? '').includes(second), 'the audit log never holds a temporary password').toBe(false);
 
 	// Action filter, and back to every account.
 	await page.getByLabel('Action').fill('User.RoleGranted');

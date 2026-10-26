@@ -45,7 +45,7 @@ test('a full account sees its roles, permissions and sites, never a secret', asy
 	]);
 	const text = await response.text();
 	expectNoLeak(text, 'GET /api/auth/me');
-	expect(text).not.toContain(accounts().webHandler.password);
+	expect(text.includes(accounts().webHandler.password), 'the answer never holds the password').toBe(false);
 });
 
 test('an administrator has every site and the user permissions', async () => {

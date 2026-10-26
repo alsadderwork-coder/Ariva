@@ -80,9 +80,10 @@ public sealed class DeviceRegistryTests(PostgresFixture fixture) : IAsyncDisposa
         device.State.Should().Be("Commissioning");
         device.Footprint.Text.Should().Be("10 x 10 m");
         device.Footprint.Source.Should().Be("AssumedFromBoq");
-        credential.Should().StartWith("ardk_").And.HaveLength(48);
-        (await _host.ReadAsync<string>("SELECT credential_hash FROM device WHERE id = @id", device.Id)).Should().Be(DeviceCredentials.Hash(credential));
-        (await _host.ReadAsync<string>("SELECT credential_prefix FROM device WHERE id = @id", device.Id)).Should().Be(credential[..13]);
+        (credential.StartsWith("ardk_", StringComparison.Ordinal) && credential.Length == 48).Should().BeTrue("a device credential's shape");
+        string.Equals(await _host.ReadAsync<string>("SELECT credential_hash FROM device WHERE id = @id", device.Id), DeviceCredentials.Hash(credential), StringComparison.Ordinal)
+            .Should().BeTrue("only the credential's hash is stored");
+        (await _host.ReadAsync<string>("SELECT credential_prefix FROM device WHERE id = @id", device.Id) == credential[..13]).Should().BeTrue("the prefix is the credential's first 13 characters");
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE position(@secret IN coalesce(before_summary, '') || coalesce(after_summary, '')) > 0", null, credential[13..]))
             .Should().Be(0, "the credential is never audited");
 
@@ -119,7 +120,7 @@ public sealed class DeviceRegistryTests(PostgresFixture fixture) : IAsyncDisposa
         (await _host.ReadAsync<double>("SELECT x FROM device WHERE id = @id", device.Id)).Should().Be(25, "a refused move changes nothing");
 
         var rotated = await _host.AsCallerAsync(admin, s => Devices(s).RotateCredentialAsync(device.Id, Ct));
-        rotated.Data.Credential.Should().NotBe(credential);
+        (rotated.Data.Credential != credential).Should().BeTrue("a rotation issues a new credential");
         var storedHash = await _host.ReadAsync<string>("SELECT credential_hash FROM device WHERE id = @id", device.Id);
         DeviceCredentials.Matches(rotated.Data.Credential, storedHash).Should().BeTrue();
         DeviceCredentials.Matches(credential, storedHash).Should().BeFalse("the old credential stops working at once");

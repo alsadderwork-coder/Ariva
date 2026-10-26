@@ -50,8 +50,7 @@ test.describe('signing in', () => {
 		// Memory only (CWE-384): neither web storage nor a readable cookie holds the access token.
 		const accessToken = await token;
 		const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }) + document.cookie);
-		expect(stored).not.toContain(accessToken);
-		expect(stored).not.toContain(accessToken.split('.')[2]);
+		expect(stored.includes(accessToken) || stored.includes(accessToken.split('.')[2]), 'no access token or signature in storage').toBe(false);
 		const cookies = await page.context().cookies();
 		const refreshCookie = cookies.find((cookie) => cookie.name === '__Secure-ariva_rt');
 		expect(refreshCookie, 'the refresh cookie').toMatchObject({ httpOnly: true, secure: true, sameSite: 'Strict', path: '/api/auth' });
@@ -99,16 +98,16 @@ test.describe('signing in', () => {
 		expect(storage.local.map(([key]) => key), 'the sign-in hint').toContain('ariva-signed-in');
 		expect(storage.local.map(([key]) => key).filter((key) => !allowedLocal.includes(key)), 'localStorage keys beyond the sign-in hint and the theme').toEqual([]);
 		expect(storage.session.map(([key]) => key).filter((key) => !key.startsWith('sveltekit:')), 'sessionStorage keys other than the sveltekit: ones').toEqual([]);
-		expect(storage.cookie, 'a readable cookie').not.toContain('__Secure-ariva_rt');
+		expect(storage.cookie.includes('__Secure-ariva_rt'), 'a readable cookie').toBe(false);
 		const stored = JSON.stringify([...storage.local, ...storage.session]) + storage.cookie;
 		for (const token of tokens) {
-			expect(stored, 'an access token').not.toContain(token);
-			expect(stored, 'an access token signature').not.toContain(token.split('.')[2]);
+			expect(stored.includes(token), 'an access token').toBe(false);
+			expect(stored.includes(token.split('.')[2]), 'an access token signature').toBe(false);
 		}
-		expect(stored, 'a JWT').not.toMatch(/eyJ[\w-]+\.[\w-]+/);
-		expect(stored, 'the user name').not.toContain(account.userName);
-		if (own?.email) expect(stored, 'the email address').not.toContain(own.email);
-		expect(stored, 'an email address').not.toMatch(/[\w.+-]+@[\w-]+(\.[\w-]+)+/);
+		expect(/eyJ[\w-]+\.[\w-]+/.test(stored), 'a JWT').toBe(false);
+		expect(stored.includes(account.userName), 'the user name').toBe(false);
+		if (own?.email) expect(stored.includes(own.email), 'the email address').toBe(false);
+		expect(/[\w.+-]+@[\w-]+(\.[\w-]+)+/.test(stored), 'an email address').toBe(false);
 		await guards.expectClean();
 	});
 
@@ -326,7 +325,7 @@ test.describe('first sign-in', () => {
 		await expect(qr).toHaveAttribute('aria-label', 'QR code to add Ariva to your authenticator app');
 		expect((await qr.locator('path').getAttribute('d'))?.length ?? 0).toBeGreaterThan(500);
 		const secret = (await page.getByTestId('totp-secret').textContent())!.replace(/\s+/g, '');
-		expect(secret).toMatch(/^[A-Z2-7]{16,}$/);
+		expect(/^[A-Z2-7]{16,}$/.test(secret), 'a Base32 seed').toBe(true);
 		fs.appendFileSync(integrationSeedsFile, secret + '\n');
 
 		await fillSecret(page.getByLabel('Code from the app'), totpCode(secret));
@@ -335,9 +334,9 @@ test.describe('first sign-in', () => {
 		await expect(steps.locator('[aria-current="step"]')).toContainText('Recovery codes');
 		const codes = page.getByTestId('recovery-codes').getByRole('listitem');
 		await expect(codes).toHaveCount(10);
-		const shown = (await codes.allTextContents()).map((code) => code.trim());
+		const recoveryCodes = (await codes.allTextContents()).map((code) => code.trim());
 		await page.getByTestId('copy-recovery-codes').click();
-		await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(shown.join('\n'));
+		await expect.poll(async () => (await page.evaluate(() => navigator.clipboard.readText())) === recoveryCodes.join('\n'), { message: 'the clipboard holds the recovery codes' }).toBe(true);
 
 		await expect(page.getByTestId('setup-finish')).toBeDisabled();
 		await page.getByLabel('I have saved the codes').check();

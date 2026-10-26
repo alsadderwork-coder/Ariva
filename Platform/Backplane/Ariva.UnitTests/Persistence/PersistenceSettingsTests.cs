@@ -87,7 +87,7 @@ public sealed class PersistenceSettingsTests
 
         var parsed = new NpgsqlConnectionStringBuilder(settings.BuildConnectionString());
 
-        parsed.Password.Should().Be("p;Include Error Detail=true;x=");
+        string.Equals(parsed.Password, "p;Include Error Detail=true;x=", StringComparison.Ordinal).Should().BeTrue("the password stays one value");
         parsed.IncludeErrorDetail.Should().BeFalse("a password must not be able to add connection options");
     }
 

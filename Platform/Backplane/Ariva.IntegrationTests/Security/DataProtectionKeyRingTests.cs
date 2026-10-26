@@ -35,7 +35,7 @@ public sealed class DataProtectionKeyRingTests(PostgresFixture fixture)
 
         var protectedByA = Protector(hostA).Protect("refresh-token-family-42");
 
-        Protector(hostB).Unprotect(protectedByA).Should().Be("refresh-token-family-42");
+        (Protector(hostB).Unprotect(protectedByA) == "refresh-token-family-42").Should().BeTrue("the other host reads the value back");
 
         var withoutCertificate = () => Protector(hostWithOtherCertificate).Unprotect(protectedByA);
         withoutCertificate.Should().Throw<CryptographicException>("the key in the database is encrypted with a certificate this host does not hold");

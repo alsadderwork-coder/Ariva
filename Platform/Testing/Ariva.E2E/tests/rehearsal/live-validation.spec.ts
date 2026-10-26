@@ -526,7 +526,7 @@ test('the reference evening through the live pipeline: every criterion from Ariv
 	const put = await call('PUT', `${validation}/observers`, { headers: operator, data: { observers } });
 	expect(put.status(), 'the observers are given to the simulator').toBe(200);
 	const putText = await put.text();
-	for (const entry of observers) for (const secret of [entry.userName, entry.password, entry.totpSecret]) if (secret) expect(putText, 'no credential comes back').not.toContain(secret);
+	for (const entry of observers) for (const secret of [entry.userName, entry.password, entry.totpSecret]) if (secret) expect(putText.includes(secret), 'no credential comes back').toBe(false);
 
 	const manager = await signInWithSecondFactor(accounts().liveRehearsalManager);
 	const managerId = claimsOf(manager).sub as string;

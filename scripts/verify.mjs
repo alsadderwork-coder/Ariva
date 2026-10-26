@@ -600,6 +600,10 @@ const steps = {
     run('E2E expect message check self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs', '--self-test']);
     run('E2E expect messages hold no answer body', 'node', ['Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs']);
     run('E2E artifact secret check self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs', '--self-test']);
+    // ARV-249 (CWE-532): a failing assertion prints the value it got and the one it expected, so no C# test asserts a secret by
+    // value (the TypeScript side is expect-messages.mjs's matcher rule, above).
+    run('C# secret assertion check self-test', 'node', ['scripts/security/secret-assertions.mjs', '--self-test']);
+    run('C# tests assert no secret by value', 'node', ['scripts/security/secret-assertions.mjs']);
     // ARV-164b: the client four security specs send their oversized requests with, refusing what is not a whole answer.
     run('E2E raw HTTP client self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/raw-http.mjs', '--self-test']);
     // ARV-126: the backup and restore tooling. The wrapper's validation and argument arrays; the database script's syntax

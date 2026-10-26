@@ -86,24 +86,24 @@ test('a duty manager registers a sensor after a step-up; the credential is shown
 	const credential = (await page.getByTestId('credential-value').textContent())!.trim();
 	expect(credential.length).toBeGreaterThan(30);
 	await page.getByTestId('copy-credential').click();
-	await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(credential);
+	await expect.poll(async () => (await page.evaluate(() => navigator.clipboard.readText())) === credential, { message: 'the clipboard holds the credential' }).toBe(true);
 	expect((await call('GET', deviceUrl, { token: credential })).status(), 'the shown credential works at Ingest').toBe(200);
 
 	await page.getByTestId('credential-done').click();
 	await expect(reveal).toHaveCount(0);
-	expect(await page.content(), 'gone from the page once done').not.toContain(credential);
+	expect((await page.content()).includes(credential), 'gone from the page once done').toBe(false);
 	const panel = page.getByTestId('device-panel');
 	await expect(panel.getByTestId('device-state')).toHaveText('Commissioning');
 	const prefix = (await panel.getByTestId('credential-prefix').textContent()) ?? '';
-	expect(prefix).not.toContain(credential);
+	expect(prefix.includes(credential), 'the prefix is not the credential').toBe(false);
 
 	// Never shown again: not after closing, not after a reload, not in the registry's answers.
 	await page.reload();
 	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Devices');
-	expect(await page.content()).not.toContain(credential);
+	expect((await page.content()).includes(credential), 'not shown after a reload').toBe(false);
 	const admin = (await signIn(accounts().webAdmin)).accessToken;
 	const registry = await call('GET', `${hosts.main}/api/v1/admin/devices?siteCode=DMO&text=${code}`, { token: admin });
-	expect(await registry.text()).not.toContain(credential);
+	expect((await registry.text()).includes(credential), "not in the registry's answers").toBe(false);
 
 	// A calibration at 97 percent takes it Online; a model with a payload is shown as text.
 	await page.getByTestId('devices-table').getByRole('button', { name: code }).click();
@@ -122,9 +122,9 @@ test('a duty manager registers a sensor after a step-up; the credential is shown
 	await page.getByTestId('confirm-rotate').click();
 	await expect(reveal).toBeVisible();
 	const next = (await page.getByTestId('credential-value').textContent())!.trim();
-	expect(next).not.toBe(credential);
+	expect(next === credential, 'a rotation shows a new credential').toBe(false);
 	await page.getByTestId('credential-done').click();
-	expect(await page.content()).not.toContain(next);
+	expect((await page.content()).includes(next), 'gone once done').toBe(false);
 	// Ingest keeps a device's credential record cached for up to a minute (as device-auth.spec.ts allows).
 	await expect
 		.poll(async () => (await call('GET', deviceUrl, { token: credential })).status(), {

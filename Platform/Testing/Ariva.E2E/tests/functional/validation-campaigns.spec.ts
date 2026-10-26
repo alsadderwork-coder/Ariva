@@ -389,8 +389,8 @@ test('a border shift supervisor plans a campaign on the screen, starts it, follo
 	// empty snapshot, written on navigation) hold no campaign id, name, reason or token.
 	expect(await storedByAriva(page), 'nothing in web storage').toBe(storedBefore);
 	const everything = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
-	for (const secret of [planned.id, run, reason, String(claimsOf(observer).sub)]) expect(everything, 'web storage').not.toContain(secret);
-	expect(everything, 'web storage').not.toMatch(/eyJ[\w-]+\.[\w-]+/);
+	expect(/eyJ[\w-]+\.[\w-]+/.test(everything), 'web storage holds no JWT').toBe(false);
+	for (const value of [planned.id, run, reason, String(claimsOf(observer).sub)]) expect(everything, 'web storage').not.toContain(value);
 	await guards.expectClean();
 });
 
@@ -441,8 +441,8 @@ test('closing a campaign asks for a fresh second factor: Escape keeps it running
 	// After the step-up and the close, still nothing of the campaign, its results or the new token in web storage.
 	expect(await storedByAriva(page), 'nothing in web storage').toBe(storedBefore);
 	const everything = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
-	for (const secret of [planned.id, run, served.revision.contentSha256]) expect(everything, 'web storage').not.toContain(secret);
-	expect(everything, 'web storage').not.toMatch(/eyJ[\w-]+\.[\w-]+/);
+	expect(/eyJ[\w-]+\.[\w-]+/.test(everything), 'web storage holds no JWT').toBe(false);
+	for (const value of [planned.id, run, served.revision.contentSha256]) expect(everything, 'web storage').not.toContain(value);
 	allowStatuses(guards, 401);
 	await guards.expectClean();
 });

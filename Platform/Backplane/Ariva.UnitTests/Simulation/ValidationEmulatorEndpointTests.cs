@@ -333,12 +333,15 @@ public sealed class ValidationEmulatorEndpointTests
         var text = await good.Content.ReadAsStringAsync(Ct);
 
         good.StatusCode.Should().Be(HttpStatusCode.OK);
-        text.Should().NotContain(Observer1).And.NotContain(Password1).And.NotContain(Seed1).And.NotContain(Observer2).And.NotContain(Password2);
+        (text.Contains(Password1, StringComparison.Ordinal) || text.Contains(Seed1, StringComparison.Ordinal) || text.Contains(Password2, StringComparison.Ordinal)).Should().BeFalse("no observer's password or seed is shown");
+        text.Should().NotContain(Observer1).And.NotContain(Observer2);
         var observers = (await JsonOf(good)).GetProperty("observers");
         observers.GetArrayLength().Should().Be(2);
         observers[0].GetProperty("secondFactor").GetBoolean().Should().BeTrue();
         observers[1].GetProperty("secondFactor").GetBoolean().Should().BeFalse();
-        (await (await SendAsync(client, HttpMethod.Get, Route, ReadKey)).Content.ReadAsStringAsync(Ct)).Should().NotContain(Password1).And.NotContain(Observer1);
+        var read = await (await SendAsync(client, HttpMethod.Get, Route, ReadKey)).Content.ReadAsStringAsync(Ct);
+        read.Contains(Password1, StringComparison.Ordinal).Should().BeFalse("a read never shows a password");
+        read.Should().NotContain(Observer1);
 
         foreach (var bad in new[]
                  {
@@ -382,14 +385,16 @@ public sealed class ValidationEmulatorEndpointTests
         report.GetProperty("deskMinutes").GetInt32().Should().Be(60);
         report.GetProperty("refusals").GetArrayLength().Should().Be(0);
         var text = await first.Content.ReadAsStringAsync(Ct);
-        text.Should().NotContain(Observer1).And.NotContain(Password1).And.NotContain("tok-");
+        text.Contains(Password1, StringComparison.Ordinal).Should().BeFalse("no observer's password is shown");
+        text.Contains("tok-", StringComparison.Ordinal).Should().BeFalse("no token is shown");
+        text.Should().NotContain(Observer1);
 
         var calls = main.Calls.ToList();
         calls.Should().OnlyContain(c => c.Uri.Host == "api-main-service", "the simulator calls only the configured Ariva.Api.Main");
         var logins = calls.Where(c => c.Uri.AbsolutePath == "/api/auth/login").Select(c => JsonDocument.Parse(c.Body).RootElement).ToList();
         logins.Should().HaveCount(2, "each observer signs in once through the normal sign-in");
         logins[0].GetProperty("userName").GetString().Should().Be(Observer1);
-        logins[0].GetProperty("code").GetString().Should().MatchRegex("^[0-9]{6}$", "the account has an authenticator: a TOTP code goes with the password");
+        (logins[0].GetProperty("code").GetString() is { Length: 6 } totp && totp.All(char.IsAsciiDigit)).Should().BeTrue("the account has an authenticator: a TOTP code goes with the password");
         logins[1].GetProperty("code").ValueKind.Should().Be(JsonValueKind.Null);
         var writes = calls.Where(c => c.Method == "POST" && c.Uri.AbsolutePath != "/api/auth/login").ToList();
         writes.Should().OnlyContain(c => c.Bearer.StartsWith("tok-sim.observer", StringComparison.Ordinal) && ManualCount.IsIdempotencyKey(c.Key));
@@ -798,7 +803,7 @@ public sealed class ValidationEmulatorEndpointTests
             lines.Should().NotContain(l => l.Contains("\"SourceContext\":\"Microsoft.AspNetCore.Hosting", StringComparison.Ordinal) && !l.Contains("\"Level\":\"Warning", StringComparison.Ordinal) &&
                                            !l.Contains("\"Level\":\"Error", StringComparison.Ordinal) && !l.Contains("\"Level\":\"Critical", StringComparison.Ordinal));
             foreach (var secret in new[] { Password1, Seed1, ControlKey, "tok-", Observer1 })
-                text.Should().NotContain(secret);
+                text.Contains(secret, StringComparison.Ordinal).Should().BeFalse("the log holds none of the rehearsal's secrets");
         }
         finally
         {
@@ -831,7 +836,7 @@ public sealed class ValidationEmulatorEndpointTests
         capture.Lines.Should().Contain(l => l.Contains("Validation rehearsal by demo-operator", StringComparison.Ordinal));
         var everything = string.Join("\n", capture.Lines);
         foreach (var secret in new[] { Password1, Password2, Seed1, "tok-", Observer1, Observer2, "wrong-password-0000" })
-            everything.Should().NotContain(secret);
+            everything.Contains(secret, StringComparison.Ordinal).Should().BeFalse("the log holds none of the rehearsal's secrets");
         // A code counts only as a number of its own (inside a longer run of digits, such as a duration, it is a coincidence).
         foreach (var code in codes)
             Regex.IsMatch(everything, $"(?<![0-9]){code}(?![0-9])").Should().BeFalse("the TOTP code is never logged");

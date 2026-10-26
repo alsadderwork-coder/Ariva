@@ -36,7 +36,7 @@ test('an administrator creates a user with a one-time temporary password', async
 	temporaryPassword = body.temporaryPassword;
 	expect(body.user.roles).toEqual(['BorderShiftSupervisor']);
 	expect(body.user.mustChangePassword).toBe(true);
-	expect(temporaryPassword).toMatch(/^[A-Za-z2-9]{5}(-[A-Za-z2-9]{5}){3}$/);
+	expect(/^[A-Za-z2-9]{5}(-[A-Za-z2-9]{5}){3}$/.test(temporaryPassword), 'four groups of five').toBe(true);
 
 	expect((await call('POST', usersUrl, { token: admin, data: { userName } })).status(), 'duplicate').toBe(409);
 	expect((await call('POST', usersUrl, { token: admin, data: { userName: "<script>alert(1)</script>" } })).status(), 'markup as a username').toBe(400);
@@ -46,7 +46,7 @@ test('an administrator creates a user with a one-time temporary password', async
 	expect((await signedIn.json()).scope).toBe('pending');
 	const view = await call('GET', `${usersUrl}/${userId}`, { token: admin });
 	const text = await view.text();
-	expect(text).not.toContain(temporaryPassword);
+	expect(text.includes(temporaryPassword), 'a read never shows the temporary password').toBe(false);
 	expect(text).not.toMatch(/passwordHash|salt|totpSecret/i);
 });
 
@@ -86,7 +86,7 @@ test('grants, revokes and resets work for a stepped-up administrator and are aud
 	const entries = page.data as { id: string; action: string; actorName: string }[];
 	expect(entries.map((entry) => entry.action)).toEqual(['User.TotpReset', 'User.PasswordReset', 'User.RoleRevoked', 'User.RoleGranted', 'User.Created']);
 	expect(entries.every((entry) => entry.actorName === accounts().securityAdmin.userName)).toBe(true);
-	expect(JSON.stringify(entries)).not.toContain(next);
+	expect(JSON.stringify(entries).includes(next), 'the audit trail never holds the temporary password').toBe(false);
 
 	const entry = `${auditUrl}/${entries[0].id}`;
 	expect((await call('GET', entry, { token: admin })).status()).toBe(200);

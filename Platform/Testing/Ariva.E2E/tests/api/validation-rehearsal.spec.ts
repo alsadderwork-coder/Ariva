@@ -292,7 +292,7 @@ async function useObservers(list: { userName: string; password: string; totpSecr
 	const answer = await call('PUT', `${simulation}/observers`, { headers: operator, data: { observers: list } });
 	await expectStatus(answer, 200);
 	const text = await answer.text();
-	for (const entry of list) for (const secret of [entry.userName, entry.password, entry.totpSecret]) if (secret) expect(text, 'no credential comes back').not.toContain(secret);
+	for (const entry of list) for (const secret of [entry.userName, entry.password, entry.totpSecret]) if (secret) expect(text.includes(secret), 'no credential comes back').toBe(false);
 }
 
 /** A campaign over both zones, their four lines and the seven desks for yesterday, planned and started by <token>. */
@@ -371,7 +371,7 @@ test('the control endpoints need the control scope, never echo a credential, and
 	expect(status.status()).toBe(200);
 	expectApiSecurityHeaders(status);
 	const statusText = await status.text();
-	for (const entry of observers()) for (const secret of [entry.userName, entry.password, entry.totpSecret]) if (secret) expect(statusText).not.toContain(secret);
+	for (const entry of observers()) for (const secret of [entry.userName, entry.password, entry.totpSecret]) if (secret) expect(statusText.includes(secret), 'no credential in the status').toBe(false);
 	expect((await status.json()).observers.map((o: any) => [o.observer, o.secondFactor])).toEqual([
 		[1, true],
 		[2, false]

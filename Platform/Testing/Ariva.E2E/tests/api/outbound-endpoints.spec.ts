@@ -94,11 +94,11 @@ test('an administrator registers an endpoint with a second factor; the secret is
 	const created = await register({ code: code('generic'), name: 'E2E generic', purpose: 'Generic', siteCodes: ['DMO'], connection: connection(), secret: { apiKey: `key-${run}` } });
 	await expectStatus(created, 201);
 	const text = await created.text();
-	expect(text).not.toContain(`key-${run}`);
+	expect(text.includes(`key-${run}`), 'the answer never shows the key').toBe(false);
 	expect(await created.json()).toMatchObject({ baseUrl: 'https://aodb.example.test/api/', authKind: 'ApiKeyHeader', headerName: 'X-Api-Key', status: 'Active' });
 	const listed = await (await call('GET', api, { token: admin })).text();
 	expect(listed).toContain(code('generic'));
-	expect(listed).not.toContain(`key-${run}`);
+	expect(listed.includes(`key-${run}`), 'the list never shows the key').toBe(false);
 
 	// Moving an endpoint without its secret would send the stored key to the new place: refused.
 	const id = (await created.json()).id;

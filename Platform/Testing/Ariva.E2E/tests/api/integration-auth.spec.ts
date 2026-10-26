@@ -71,14 +71,13 @@ test.beforeAll(async () => {
 test('an administrator registers a client and sees its secret and seed once; a password-only session cannot', async () => {
 	const c = await register('E2E AODB register');
 	expect(c.client.clientId).toMatch(/^ic_[a-z2-7]{26}$/);
-	expect(c.clientSecret).toMatch(/^ics_[A-Za-z0-9_-]{43}$/);
-	expect(c.totpUri).toContain(`secret=${c.totpSecret}`);
+	expect(/^ics_[A-Za-z0-9_-]{43}$/.test(c.clientSecret), 'a client secret').toBe(true);
+	expect(c.totpUri.includes(`secret=${c.totpSecret}`), 'the enrolment address carries the seed').toBe(true);
 
 	const read = await call('GET', `${adminApi}/${c.client.id}`, { token: admin });
 	expect(read.status()).toBe(200);
 	const text = await read.text();
-	expect(text).not.toContain(c.clientSecret);
-	expect(text).not.toContain(c.totpSecret);
+	expect(text.includes(c.clientSecret) || text.includes(c.totpSecret), 'a read shows neither credential').toBe(false);
 
 	const passwordOnly = (await signIn(accounts().SystemAdministrator)).accessToken;
 	const refused = await call('POST', adminApi, { token: passwordOnly, data: { name: 'x', kind: 'Aodb', scopes: ['flights:write'], siteCodes: ['DMO'] } });
@@ -182,8 +181,8 @@ test('ten failures lock the exchange until an administrator unlocks it; disablin
 	const rotated = await call('POST', `${adminApi}/${c.client.id}/secret`, { token: admin });
 	expect(rotated.status()).toBe(200);
 	const fresh = await rotated.json();
-	expect(fresh.clientSecret).not.toBe(c.clientSecret);
-	expect(fresh.totpSecret).toBeNull();
+	expect(fresh.clientSecret === c.clientSecret, 'a rotation issues a new secret').toBe(false);
+	expect(fresh.totpSecret === null, 'the seed is kept, so none is shown').toBe(true);
 	expect((await call('GET', check('DMO'), { token, address: inside() })).status(), 'a token from before the rotation').toBe(401);
 	expect((await exchange(id, c.clientSecret, totpCode(c.totpSecret, 1))).status(), 'the old secret').toBe(401);
 	const newToken = await tokenOf({ ...c, clientSecret: fresh.clientSecret }, 1);

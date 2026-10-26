@@ -102,10 +102,10 @@ public sealed class AdministrationTests
         // 2,000 draws: a three-letter context word turns up in about one in a thousand raw draws, so the redraw is exercised.
         var passwords = Enumerable.Range(0, 2000).Select(_ => TemporaryPasswords.New(policy, "ops.three")).ToList();
 
-        passwords.Should().OnlyHaveUniqueItems();
-        passwords.Should().OnlyContain(p => p.Length == 23 && p.Count(c => c == '-') == 3);
-        passwords.Should().OnlyContain(p => policy.Validate(p, "ops.three").Count == 0);
-        passwords.Should().OnlyContain(p => !p.Any(c => "0O1lI".Contains(c)), "no look-alike characters");
+        passwords.Distinct(StringComparer.Ordinal).Count().Should().Be(passwords.Count, "no temporary password repeats");
+        passwords.All(p => p.Length == 23 && p.Count(c => c == '-') == 3).Should().BeTrue("four groups of five");
+        passwords.All(p => policy.Validate(p, "ops.three").Count == 0).Should().BeTrue("every one passes the policy");
+        passwords.All(p => !p.Any(c => "0O1lI".Contains(c))).Should().BeTrue("no look-alike characters");
     }
 
     #endregion

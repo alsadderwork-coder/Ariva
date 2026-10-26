@@ -117,7 +117,7 @@ public sealed class KeyRingEncryptionTests
         });
 
         using var otherHost = Host(repository, DataProtectionCertificates.From(certificate));
-        Protector(otherHost).Unprotect(protectedValue).Should().Be("totp-seed", "every host decrypts with the shared certificate");
+        (Protector(otherHost).Unprotect(protectedValue) == "totp-seed").Should().BeTrue("every host decrypts with the shared certificate");
     }
 
     [Fact]
@@ -147,7 +147,7 @@ public sealed class KeyRingEncryptionTests
         using var host = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: DateTimeOffset.UtcNow.AddDays(1));
         using var closed = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: null);
 
-        Protector(host).Unprotect(legacyPayload).Should().Be("outbound-secret", "old keys stay readable during the migration window");
+        (Protector(host).Unprotect(legacyPayload) == "outbound-secret").Should().BeTrue("old keys stay readable during the migration window");
         FluentActions.Invoking(() => Protector(closed).Unprotect(legacyPayload)).Should().Throw<CryptographicException>(
             "without DataProtection:LegacyFormatUntil the older format, which anyone can write with the public certificate, is refused");
     }
@@ -171,7 +171,7 @@ public sealed class KeyRingEncryptionTests
 
         FluentActions.Invoking(() => Protector(attacker).Unprotect(payload)).Should().Throw<CryptographicException>(
             "the host never protects with a key someone planted in the table");
-        Protector(host).Unprotect(payload).Should().Be("totp-seed");
+        (Protector(host).Unprotect(payload) == "totp-seed").Should().BeTrue("the host reads its own value back");
     }
 
     [Fact]
