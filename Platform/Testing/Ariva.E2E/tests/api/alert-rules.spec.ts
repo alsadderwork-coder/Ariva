@@ -191,7 +191,11 @@ test('a backtest returns the count and first fire time, within bounds, for creat
 		data: { rule: rule({ metric: 'PredictedNowcast', leadMinutes: 30, minQueueLength: null, escalateAfterMinutes: null, escalateToRole: null }), fromUtc, toUtc }
 	});
 	await expectStatus(predicted, 200);
-	expect((await predicted.json()).targetsWithData, 'no arrival-wave projection before ARV-047').toBe(0);
+	// The projection starts at the current minute (ARV-047), so a backtest that ended a minute ago can hold a predicted value
+	// at its last minute only, and for the arrivals queue only (ARV-185: D-VIS is a departures queue): never an alert.
+	const projected = await predicted.json();
+	expect(projected.count, 'one minute never sustains a breach').toBe(0);
+	expect(projected.targetsWithData, 'the departures queue has no projection').toBeLessThanOrEqual(1);
 
 	for (const [why, data] of [
 		['longer than a day', { rule: rule(), fromUtc: new Date(now - 26 * 3600_000).toISOString(), toUtc }],

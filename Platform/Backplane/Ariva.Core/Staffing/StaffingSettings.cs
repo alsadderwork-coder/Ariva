@@ -107,7 +107,8 @@ public sealed record StaffingSettings
     /// <summary>
     /// Queue minutes read for <paramref name="lanes"/> lanes at most: one row per zone and minute (queue_minute's key), so
     /// lanes times <see cref="QueueReadMinutes"/>; at most 100 x 256 = 25,600. The read refuses a site above it, which only a
-    /// table without that key could reach.
+    /// table without that key could reach, or a row whose minute_utc is not a whole minute (the key holds any timestamp, so
+    /// such rows could add more than one row per zone and minute; the queue engine writes whole minutes only).
     /// </summary>
     public int MaxQueueRows(int lanes) => Math.Max(0, lanes) * QueueReadMinutes;
 

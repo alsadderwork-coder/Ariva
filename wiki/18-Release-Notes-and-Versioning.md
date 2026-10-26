@@ -146,6 +146,16 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-185: one lane rule for the staffing recommendation and the predicted nowcast, and the shared queue's demand (2026-10-26)
+
+Changed (owner decisions of 2026-10-26): the predicted nowcast's arrival-wave projection takes a queue's lane from the queue zone's own lane category, as the immigration screen, the nowcast desk term and the staffing recommendation do, and the same arrivals hall as the recommendation (formulas F14 and F16). The shared lane `ALL` (one queue for every manual category) now has demand: the manual categories (CIT, RES, VIS, CRW) without a queue of their own at the site. No database script, setting or API change.
+
+Known effects:
+
+- A queue zone without a lane category has no projection, whatever desks its service zones stand at: set the lane of every arrivals queue in the zone profile (the Zones screen) before relying on its predicted-nowcast rules. A queue whose own lane differs from its desks' categories now takes its own (a citizens queue at desks coded CIT and RES takes CIT only).
+- Seeded sites: DMO's arrivals queues (A-CIT, A-RES, A-VIS, A-CRW, A-EG and the band A-OV) now have a projection (DMO has no service zones, so before they had none) and their predicted-nowcast rules judge; NBJ-BC1's arrivals hall queue `ALL` and its band now take every manual category's arrivals (the projection was zero) and its staffing recommendation has arrivals (it read `NoLaneDemand`); AUH-TA is unchanged.
+- The staffing recommendation's open-now wait is checked again as read: a stored row with a recommendation and desks open now known but no open-now wait (which the engine never writes) reads `Stale`.
+
 ### ARV-236: TimescaleDB 2.31 and the third-party pins moved to their newest patches (2026-10-23)
 
 - The TimescaleDB chart runs `timescale/timescaledb-ha:pg17-ts2.31` (PostgreSQL 17.11 as before, TimescaleDB 2.31.0, toolkit 1.26.0), where it ran `pg17-ts2.30` (TimescaleDB 2.30.2 and toolkit 1.25.0 on a database created under it). The chart's `appVersion` moves with it. The database pod restarts once on the release, as on any change to its image; the hosts reconnect, and the database keeps working on its old extension versions.

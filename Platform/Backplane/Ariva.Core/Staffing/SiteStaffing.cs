@@ -5,12 +5,16 @@ using Ariva.Core.Queueing;
 namespace Ariva.Core.Staffing;
 
 /// <summary>
-/// One lane of a site's arrivals hall as the recommendation reads it (ARV-181a): a queue zone of the published profile with
-/// a lane category on a level with an Immigration checkpoint, its desks (the nowcast desk term's match: kind Desk at the
-/// level's immigration and emigration checkpoints whose lane categories include the zone's; keys site/checkpoint/desk), how
-/// many of them are in service (N), and its recent queue minutes.
+/// One lane of a site's arrivals hall as the recommendation reads it (ARV-181a; the hall's queue zones as ARV-185 defines
+/// them for the recommendation and the predicted-breach wave alike, <c>ArrivalsHallLanes</c>): a queue zone of the published
+/// profile with a lane category on a level with an Immigration checkpoint, its desks (the nowcast desk term's match: kind Desk
+/// at the level's immigration and emigration checkpoints whose lane categories include the zone's; keys
+/// site/checkpoint/desk), how many of them are in service (N), its recent queue minutes, and whether its zone key fits
+/// (<see cref="Ariva.Core.Sensing.ZoneKeys.Fits"/>): a zone whose key does not fit has no queue minutes and is not computed,
+/// but it is still one of the hall's queue zones and counts in its lane's sharing (ARV-185).
 /// </summary>
-public sealed record StaffingLaneInput(string Zone, string Lane, IReadOnlyList<string> DeskKeys, int DesksInService, IReadOnlyList<QueueMinuteSample> QueueMinutes);
+public sealed record StaffingLaneInput(string Zone, string Lane, IReadOnlyList<string> DeskKeys, int DesksInService, IReadOnlyList<QueueMinuteSample> QueueMinutes,
+    bool KeyFits = true);
 
 /// <summary>
 /// What a site's recommendation reads at <see cref="NowUtc"/>: its arrivals-hall lanes, the closed desk minutes of their
@@ -61,12 +65,12 @@ public static class SiteStaffing
     public const int MaxQueueLength = 1_000_000;
 
     /// <summary>
-    /// Whether the engine takes a lane: at most <see cref="StaffingRecommendation.MaxDesks"/> distinct desks and 0 to that
-    /// many in service. A lane beyond it is refused on its own (no row; the read counts it for its warning), never cut short,
-    /// and still counts in its category's sharing: it is still one of the hall's queue zones.
+    /// Whether the engine takes a lane: its zone key fits, and at most <see cref="StaffingRecommendation.MaxDesks"/> distinct
+    /// desks and 0 to that many in service. A lane beyond it is refused on its own (no row; the read counts it for its
+    /// warning), never cut short, and still counts in its category's sharing: it is still one of the hall's queue zones.
     /// </summary>
     public static bool Takes(StaffingLaneInput lane) =>
-        lane is not null && lane.DesksInService is >= 0 and <= StaffingRecommendation.MaxDesks &&
+        lane is not null && lane.KeyFits && lane.DesksInService is >= 0 and <= StaffingRecommendation.MaxDesks &&
         (lane.DeskKeys ?? []).Where(k => k is not null).Distinct(StringComparer.Ordinal).Count() <= StaffingRecommendation.MaxDesks;
 
     /// <summary>The window the projection takes: from now to the plan's end, at most <see cref="ArrivalWave.MaxProjectionWindow"/>.</summary>
@@ -118,7 +122,10 @@ public static class SiteStaffing
         var plan = StaffingRecommendation.Plan(now);
         var projection = ArrivalWave.Project(input.Flights ?? [], now, ProjectionWindow(now, plan), wave);
         var minutes = EgateCoupling.Couple(projection.Minutes, input.RejectRate, coupling.LagMinutes, coupling.RejectLane, input.LiveRejects);
+        // Every queue zone of the hall counts in its lane's sharing and in which categories the shared lane takes, the lanes the
+        // engine refuses and those whose zone key does not fit included (ARV-185).
         var sharing = input.Lanes.Where(l => l?.Lane is not null).GroupBy(l => l.Lane, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
+        var hallLanes = sharing.Keys.ToList();
         var deskMinutes = (input.DeskMinutes ?? []).Where(m => m?.DeskKey is not null).GroupBy(m => m.DeskKey, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
 
@@ -127,7 +134,7 @@ public static class SiteStaffing
         {
             if (lane?.Zone is null || lane.Lane is null)
                 throw new ArgumentException("Every lane has a zone and a lane category.", nameof(input));
-            // A lane beyond the desk bound is refused on its own (CWE-120): the others are still computed.
+            // A lane beyond the desk bound (CWE-120), or whose zone key does not fit, is refused on its own: the others are still computed.
             if (!Takes(lane))
                 continue;
             var keys = (lane.DeskKeys ?? []).Where(k => k is not null).Distinct(StringComparer.Ordinal).ToList();
@@ -148,7 +155,8 @@ public static class SiteStaffing
             var openFresh = term is not null && term.AsOfMinuteUtc >= minute.AddMinutes(-settings.OpenFreshMinutes);
             int? openNow = openFresh ? Math.Min(term.OpenServers, StaffingRecommendation.MaxDesks) : null;
 
-            var arrivals = StaffingRecommendation.LaneArrivals(plan, minutes, projection.Flights, lane.Lane, sharing[lane.Lane], input.FlightsTruncated);
+            var arrivals = StaffingRecommendation.LaneArrivals(plan, minutes, projection.Flights, LaneDemand.Categories(lane.Lane, hallLanes), sharing[lane.Lane],
+                input.FlightsTruncated);
             var target = settings.TargetFor(input.SiteCode, lane.Lane);
             var busyCap = settings.BusyCapFor(input.SiteCode);
             var staffing = StaffingRecommendation.Recommend(new LaneStaffingInput(queueNow, arrivals, throughput.RatePerDeskMinute, openNow, lane.DesksInService, target, busyCap));

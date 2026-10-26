@@ -85,11 +85,14 @@ public static class ArrivingLegs
 
 /// <summary>
 /// The arrival wave for predicted-breach rules (ARV-038 <see cref="IArrivalWaveSource"/>, ARV-047): a queue zone's
-/// projected arrivals per minute are the hall arrivals (F14) of the lane categories it serves, each lane shared equally
-/// among the site's queue zones that serve it. A queue zone serves the lane categories of the desks its service zones
-/// stand at (the site's published zone profiles; an overflow zone takes its queue zone's), counting only desks of an
-/// Immigration checkpoint on the queue zone's level (ARV-191): an emigration queue, or a queue linked to desks of another
-/// level, neither shares a lane nor receives the arrivals wave. A zone serving no lane has no projection (null), so its
+/// projected arrivals per minute are the hall arrivals (F14) of the categories its lane takes, shared equally among the
+/// arrivals hall's queue zones of that lane. One rule with the staffing recommendation (ARV-185,
+/// <see cref="Staffing.ArrivalsHallLanes"/>): the lane is the queue zone's own lane category, as the immigration screen and
+/// the nowcast desk term read it; the hall is the queue zones of the site's published profile on a level with an Immigration
+/// checkpoint, but a queue whose service zones stand only at desks of Emigration checkpoints (ARV-191: a departures queue
+/// neither shares a lane nor receives the arrivals wave); the categories are <see cref="LaneDemand.Categories"/> (the shared
+/// lane ALL takes the manual categories without a lane of their own). An overflow zone takes its queue zone's arrivals and
+/// does not split them further. A zone outside the hall, or whose lane takes no category, has no projection (null), so its
 /// predicted rules have nothing to judge. Minutes are projected from the current minute
 /// with the longest window (<see cref="ArrivalWave.MaxWindow"/>); earlier minutes have no projection, so a predicted
 /// value needs every minute after it to be from now on: a backtest finds none, except at most for its last minute when it
@@ -103,7 +106,17 @@ public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider ti
     : IArrivalWaveSource
 {
     private readonly Dictionary<string, IReadOnlyList<MinuteDemand>> _projections = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Dictionary<string, (bool Queue, IReadOnlyList<string> Lanes)>> _lanes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, (bool Queue, string Lane)>> _lanes = new(StringComparer.Ordinal);
+
+    // The arrivals hall's queue zones (ArrivalsHallLanes, ARV-185) and the overflow zones of each, with the queue zone's lane.
+    private const string HallZonesSql = "WITH hall AS (" + Staffing.ArrivalsHallLanes.QueueZones + """
+        )
+        SELECT h.zone AS "Zone", 'Queue' AS "Kind", h.lane AS "Lane" FROM hall h
+        UNION
+        SELECT o.name, 'Overflow', h.lane
+          FROM hall h JOIN zone o ON o.profile_id = h.profile_id AND o.queue_zone_id = h.id AND o.kind = 'Overflow'
+         ORDER BY 1, 2, 3
+        """;
 
     public async Task<IReadOnlyDictionary<DateTime, double>> ArrivalsAsync(string siteCode, string zoneName, DateTime fromUtc, DateTime toUtc,
         CancellationToken ct = default)
@@ -111,12 +124,15 @@ public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider ti
         if (siteCode is null || zoneName is null)
             return null;
         var zones = await LanesAsync(siteCode, ct);
-        if (!zones.TryGetValue(zoneName, out var target) || target.Lanes.Count == 0)
+        if (!zones.TryGetValue(zoneName, out var target))
             return null;
-        var served = target.Lanes;
-        // Shared among queue zones only: an overflow zone takes its queue zone's arrivals, it does not split them further.
-        var sharing = served.ToDictionary(lane => lane, lane => Math.Max(1, zones.Values.Count(z => z.Queue && System.Linq.Enumerable.Contains(z.Lanes, lane, StringComparer.Ordinal))),
-            StringComparer.Ordinal);
+        var hallLanes = zones.Values.Where(z => z.Queue).Select(z => z.Lane).Distinct(StringComparer.Ordinal).ToList();
+        var categories = LaneDemand.Categories(target.Lane, hallLanes);
+        if (categories.Count == 0)
+            return null;
+        // Shared among the hall's queue zones of the lane only: an overflow zone takes its queue zone's arrivals, it does not
+        // split them further.
+        var sharing = Math.Max(1, zones.Values.Count(z => z.Queue && string.Equals(z.Lane, target.Lane, StringComparison.Ordinal)));
 
         if (!_projections.TryGetValue(siteCode, out var minutes))
         {
@@ -127,45 +143,22 @@ public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider ti
             _projections[siteCode] = minutes = EgateCoupling.Couple(projection.Minutes, gates.Rate, coupling.LagMinutes, coupling.RejectLane, gates.LiveRejects);
         }
 
+        // A minute that is not plausible (LaneDemand.Of: NaN) is no projection for that minute, as a minute the wave lacks.
         return minutes
             .Where(m => m.MinuteUtc > fromUtc && m.MinuteUtc <= toUtc)
-            .ToDictionary(m => m.MinuteUtc, m => served.Sum(lane => Of(m.Lanes, lane) / sharing[lane]));
+            .ToDictionary(m => m.MinuteUtc, m => LaneDemand.Of(m.Lanes, categories) / sharing);
     }
 
-    /// <summary>The passengers of one lane category code (CIT, RES, VIS, CRW, EG); another code has none.</summary>
-    public static double Of(LaneCounts lanes, string code)
-    {
-        ArgumentNullException.ThrowIfNull(lanes);
-        return lanes.Of(code);
-    }
-
-    private async Task<Dictionary<string, (bool Queue, IReadOnlyList<string> Lanes)>> LanesAsync(string siteCode, CancellationToken ct)
+    private async Task<Dictionary<string, (bool Queue, string Lane)>> LanesAsync(string siteCode, CancellationToken ct)
     {
         if (_lanes.TryGetValue(siteCode, out var known))
             return known;
-        // ARV-191: a queue zone (q, the zone itself or the queue zone of an overflow band) takes a lane only through the desks
-        // of an Immigration checkpoint on its own level, the arrivals hall as the staffing recommendation scopes its lanes
-        // (a queue zone on a level with an Immigration checkpoint, Staffing/StaffingInputs.cs). Border desks of every kind
-        // carry lane categories, emigration desks included: without this scope a departures queue standing at lane-coded
-        // emigration desks would count in the lane's sharing (dividing an arrivals queue's share, which under-predicts its
-        // breach) and be judged on the arrivals wave itself. A desk of another level links no queue either, as the desk
-        // term's match keeps a queue's desks on its level.
-        var rows = await unitOfWork.StorageProvider.ExecuteSqlAsync<ZoneLaneRow>("""
-            SELECT DISTINCT t.name AS "Zone", t.kind AS "Kind", d.lane_category_codes AS "Codes"
-              FROM zone_profile p
-              JOIN zone t ON t.profile_id = p.id AND t.kind IN ('Queue', 'Overflow')
-              JOIN zone q ON q.profile_id = p.id AND q.id = COALESCE(CASE WHEN t.kind = 'Overflow' THEN t.queue_zone_id END, t.id)
-              JOIN zone s ON s.profile_id = p.id AND s.queue_zone_id = q.id AND s.desk_id IS NOT NULL
-              JOIN desk d ON d.id = s.desk_id AND d.site_code = p.site_code AND d.deleted_on IS NULL
-              JOIN checkpoint c ON c.id = d.checkpoint_id AND c.site_code = p.site_code AND c.deleted_on IS NULL AND c.kind = 'Immigration'
-                               AND c.level_id = q.level_id
-             WHERE p.site_code = :site AND p.status = 'Published' AND d.lane_category_codes IS NOT NULL
-            """, new Dictionary<string, object> { ["site"] = siteCode }, ct);
+        var rows = await unitOfWork.StorageProvider.ExecuteSqlAsync<ZoneLaneRow>(HallZonesSql, new Dictionary<string, object> { ["site"] = siteCode }, ct);
+        // One row per zone: a site has one published profile, whose zone names are unique (script 0012).
         var lanes = rows
+            .Where(r => r.Zone is not null && r.Lane is not null)
             .GroupBy(r => r.Zone, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key,
-                g => (g.First().Kind == "Queue", (IReadOnlyList<string>)g.SelectMany(r => r.Codes.Split(',')).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList()),
-                StringComparer.Ordinal);
+            .ToDictionary(g => g.Key, g => (g.First().Kind == "Queue", g.First().Lane), StringComparer.Ordinal);
         _lanes[siteCode] = lanes;
         return lanes;
     }
@@ -174,7 +167,7 @@ public sealed class ProjectedArrivalWave(IUnitOfWork unitOfWork, TimeProvider ti
     {
         public string Zone { get; set; }
         public string Kind { get; set; }
-        public string Codes { get; set; }
+        public string Lane { get; set; }
     }
 }
 

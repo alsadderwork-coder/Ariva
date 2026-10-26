@@ -147,9 +147,11 @@ public sealed class StaffingTests(PostgresFixture fixture) : IAsyncDisposable
     /// <summary>
     /// A site whose arrivals level (checkpoint IMM, Immigration) has <paramref name="lanes"/> VIS queue zones Q-001 onwards
     /// and <paramref name="desks"/> VIS desks W-0001 onwards, and, when <paramref name="cit"/>, a CIT queue zone A-CIT with
-    /// one CIT desk C-01; published. Planted with generate_series.
+    /// one CIT desk C-01, and, when <paramref name="unkeyed"/>, a VIS queue zone named with 200 U's (its key, the site code, a
+    /// slash and the name, is longer than a message key: the profile editor refuses such a name, so it is planted);
+    /// published. Planted with generate_series.
     /// </summary>
-    private async Task PlantLanesAsync(string site, string iata, int lanes, int desks, bool cit = false)
+    private async Task PlantLanesAsync(string site, string iata, int lanes, int desks, bool cit = false, bool unkeyed = false)
     {
         await Host.CreateUserAsync("it.staff.probe." + Guid.NewGuid().ToString("N")[..8]);
         await ExecuteAsync("""
@@ -172,9 +174,12 @@ public sealed class StaffingTests(PostgresFixture fixture) : IAsyncDisposable
             INSERT INTO zone (id, profile_id, name, kind, level_id, polygon, lane_category)
             SELECT gen_random_uuid(), p.id, 'A-CIT', 'Queue', l.id, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', 'CIT'
               FROM zone_profile p, level l WHERE p.site_code = @site AND l.site_code = @site AND @cit;
+            INSERT INTO zone (id, profile_id, name, kind, level_id, polygon, lane_category)
+            SELECT gen_random_uuid(), p.id, repeat('U', 200), 'Queue', l.id, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000', 'VIS'
+              FROM zone_profile p, level l WHERE p.site_code = @site AND l.site_code = @site AND @unkeyed;
             UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('a', 64), published_on = @published, published_by = 'it'
              WHERE site_code = @site AND status = 'Draft';
-            """, ("site", site), ("iata", iata), ("lanes", lanes), ("desks", desks), ("cit", cit), ("published", Now.AddDays(-1)));
+            """, ("site", site), ("iata", iata), ("lanes", lanes), ("desks", desks), ("cit", cit), ("unkeyed", unkeyed), ("published", Now.AddDays(-1)));
     }
 
     private Task<long> CountAsync(string zonePrefix) =>
@@ -460,6 +465,45 @@ public sealed class StaffingTests(PostgresFixture fixture) : IAsyncDisposable
         (await CountAsync("STJ")).Should().Be(13);
         (await RowsAsync("STJ/A-CIT", Minute)).Should().HaveCount(13).And.OnlyContain(r => r.Desks == 1);
         (await RowsAsync("STJ/Q-001", Minute)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Run_Should_KeepAZoneWhoseKeyDoesNotFitInTheSharing_AndWriteNothingForIt_When_ItsNameIsTooLong()
+    {
+        // ARV-185 (CWE-501, CWE-120): STM's VIS queue Q-001 and a VIS queue whose key does not fit share the lane: the read
+        // keeps the second, without queue minutes and not taken, counted apart from the desk bound; Q-001 is written with half
+        // of VIS's arrivals. STN's only queue does not fit: nothing is read from queue_minute (no key to read), nothing is written.
+        await PlantLanesAsync("STM", "XSM", 1, 2, unkeyed: true);
+        await PlantLanesAsync("STN", "XSN", 0, 1, unkeyed: true);
+        await ExecuteAsync("""
+            INSERT INTO flight_leg (id, site_code, flight_key, direction, carrier, number, scheduled_utc, seats, schedule_source_utc, on_block_utc, on_block_source_utc,
+                                    cancelled, diverted, status, feed, schedule_feed, updated_utc)
+            VALUES (gen_random_uuid(), 'STM', 'QR900-ON', 'Arrival', 'QR', '900', @onBlock, 125, @onBlock, @onBlock, @onBlock, false, false, 'OnBlock', 'aodb', 'aodb', @onBlock);
+            """, ("onBlock", Minute.AddMinutes(-5)));
+        Host.Clock.Advance(TimeSpan.FromSeconds(45));
+        var settings = new StaffingSettings();
+
+        var read = await Host.AsCallerAsync(null, s => s.GetRequiredService<StaffingInputs>().ReadAsync("STM", Now, settings, Ct));
+
+        read.Should().Match<StaffingRead>(r => r.Refused == null && r.RefusedLanes == 0 && r.UnkeyedLanes == 1);
+        var unkeyed = read.Input.Lanes.Single(l => l.Zone.Length == 200);
+        unkeyed.Should().Match<StaffingLaneInput>(l => !l.KeyFits && l.Lane == "VIS" && l.QueueMinutes.Count == 0 && l.DeskKeys.Count == 2);
+        SiteStaffing.Takes(unkeyed).Should().BeFalse();
+        var shared = SiteStaffing.Compute(read.Input, settings, new ArrivalWaveSettings(), new EgateCouplingSettings()).Single();
+        var alone = SiteStaffing.Compute(read.Input with { Lanes = [.. read.Input.Lanes.Where(l => l.KeyFits)] }, settings, new ArrivalWaveSettings(),
+            new EgateCouplingSettings()).Single();
+        shared.Zone.Should().Be("Q-001");
+        alone.Staffing.Intervals[0].Arrivals.Should().BePositive();
+        shared.Staffing.Intervals[0].Arrivals.Should().BeApproximately(alone.Staffing.Intervals[0].Arrivals.Value / 2, 1e-9, "shared with the zone that does not fit");
+
+        (await Runner().SiteAsync("STM", Ct)).Should().Be(new StaffingSitePass(1, 13, null, 1));
+        (await RowsAsync("STM/Q-001", Minute)).Should().HaveCount(13);
+        (await CountAsync("STM")).Should().Be(13);
+
+        var only = await Host.AsCallerAsync(null, s => s.GetRequiredService<StaffingInputs>().ReadAsync("STN", Now, settings, Ct));
+        only.Should().Match<StaffingRead>(r => r.Refused == null && r.RefusedLanes == 0 && r.UnkeyedLanes == 1 && r.Input.Lanes.Count == 1);
+        (await Runner().SiteAsync("STN", Ct)).Should().Be(new StaffingSitePass(0, 0, null, 1));
+        (await CountAsync("STN")).Should().Be(0);
     }
 
     [Fact]

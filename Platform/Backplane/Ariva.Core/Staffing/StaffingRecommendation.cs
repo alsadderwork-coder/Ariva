@@ -27,7 +27,11 @@ public enum StaffingGap
     /// <summary>The lane has no desk in service.</summary>
     NoDesks,
 
-    /// <summary>The lane's category has no demand model in the arrival wave (it knows CIT, RES, VIS and CRW at manual desks).</summary>
+    /// <summary>
+    /// The lane takes no manual category of the arrival wave: the recommendation is for manual desks (CIT, RES, VIS and CRW,
+    /// and the shared lane ALL for those without a lane of their own: <see cref="Ariva.Core.Flights.LaneDemand"/>); the e-gate
+    /// lane EG is not desks.
+    /// </summary>
     NoLaneDemand,
 
     /// <summary>
@@ -153,25 +157,38 @@ public static class StaffingRecommendation
     }
 
     /// <summary>
-    /// A lane category's arrivals per interval of <paramref name="plan"/> (F14 hall arrivals per minute, rejects already
-    /// coupled into <paramref name="minutes"/>, divided by <paramref name="sharing"/>, the arrivals-hall queue zones of the
-    /// category). No guess: legs left unread (<paramref name="truncated"/>) give <see cref="StaffingGap.ArrivalsTruncated"/>
-    /// everywhere; a category the wave has no demand for gives <see cref="StaffingGap.NoLaneDemand"/>; a flight without a
-    /// passenger figure gives <see cref="StaffingGap.FlightWithoutPassengers"/> to every interval holding one of its hall
-    /// minutes (owner decision 2026-10-15); an interval whose sum is not a plausible number (a minute not finite or negative,
-    /// or above <see cref="MaxPassengers"/> in all) gives <see cref="StaffingGap.ArrivalsOutOfRange"/>. Minutes the
-    /// projection does not hold count none (it holds every minute from now to beyond the plan's end).
+    /// A lane category's arrivals per interval of <paramref name="plan"/> when no other lane of the hall takes a category of
+    /// it (<see cref="LaneDemand.Categories"/> with no other lanes): the shared lane takes every manual category.
     /// </summary>
     public static IReadOnlyList<LaneDemandInterval> LaneArrivals(IReadOnlyList<StaffingSlot> plan, IEnumerable<MinuteDemand> minutes, IEnumerable<FlightWave> flights,
-        string laneCategory, int sharing, bool truncated)
+        string laneCategory, int sharing, bool truncated) =>
+        LaneArrivals(plan, minutes, flights, LaneDemand.Categories(laneCategory, []), sharing, truncated);
+
+    /// <summary>
+    /// A lane's arrivals per interval of <paramref name="plan"/>: the F14 hall arrivals per minute of
+    /// <paramref name="categories"/> (the lane's own, or the shared lane's: <see cref="LaneDemand"/>), rejects already coupled
+    /// into <paramref name="minutes"/>, divided by <paramref name="sharing"/>, the arrivals-hall queue zones of the lane. No
+    /// guess: legs left unread (<paramref name="truncated"/>) give <see cref="StaffingGap.ArrivalsTruncated"/> everywhere; a
+    /// lane that takes no manual category (<see cref="ImmigrationRules.Lanes"/>: e-gates are not desks) gives
+    /// <see cref="StaffingGap.NoLaneDemand"/>; a flight without a passenger figure gives
+    /// <see cref="StaffingGap.FlightWithoutPassengers"/> to every interval holding one of its hall minutes (owner decision
+    /// 2026-10-15); an interval whose sum is not a plausible number (a minute not finite or negative, or above
+    /// <see cref="MaxPassengers"/> in all) gives <see cref="StaffingGap.ArrivalsOutOfRange"/>. Minutes the projection does not
+    /// hold count none (it holds every minute from now to beyond the plan's end).
+    /// </summary>
+    public static IReadOnlyList<LaneDemandInterval> LaneArrivals(IReadOnlyList<StaffingSlot> plan, IEnumerable<MinuteDemand> minutes, IEnumerable<FlightWave> flights,
+        IReadOnlyList<string> categories, int sharing, bool truncated)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(minutes);
         ArgumentNullException.ThrowIfNull(flights);
+        ArgumentNullException.ThrowIfNull(categories);
         ArgumentOutOfRangeException.ThrowIfLessThan(sharing, 1);
         if (truncated)
             return [.. plan.Select(s => new LaneDemandInterval(s.StartUtc, s.Minutes, null, StaffingGap.ArrivalsTruncated))];
-        if (laneCategory is null || !ImmigrationRules.Lanes.Contains(laneCategory))
+        // The manual categories only: the e-gate lane keeps its arrivals in the wave (LaneDemand), but e-gates are not desks.
+        IReadOnlyList<string> manual = [.. categories.Where(c => c is not null && ImmigrationRules.Lanes.Contains(c))];
+        if (manual.Count == 0)
             return [.. plan.Select(s => new LaneDemandInterval(s.StartUtc, s.Minutes, null, StaffingGap.NoLaneDemand))];
 
         var byMinute = new Dictionary<DateTime, double>();
@@ -179,9 +196,9 @@ public static class StaffingRecommendation
         {
             if (minute?.Lanes is null)
                 continue;
-            var value = minute.Lanes.Of(laneCategory);
             // A minute that is not a finite, non-negative number poisons its interval (NaN), never the site.
-            byMinute[minute.MinuteUtc] = double.IsFinite(value) && value >= 0 ? byMinute.GetValueOrDefault(minute.MinuteUtc) + value : double.NaN;
+            var value = LaneDemand.Of(minute.Lanes, manual);
+            byMinute[minute.MinuteUtc] = double.IsFinite(value) ? byMinute.GetValueOrDefault(minute.MinuteUtc) + value : double.NaN;
         }
 
         var unknown = flights.Where(f => f is not null && f.Passengers is null).Select(f => (f.HallFirstUtc, f.HallLastUtc)).ToList();

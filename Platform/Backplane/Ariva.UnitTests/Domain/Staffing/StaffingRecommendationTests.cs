@@ -283,6 +283,32 @@ public sealed class StaffingRecommendationTests
     }
 
     [Fact]
+    public void LaneArrivals_Should_SumTheManualCategoriesTheLaneTakes_When_TheQueueIsShared()
+    {
+        // ARV-185 (owner decision 2026-10-26): one flight of 240 (CIT 50, RES 30, VIS 100, CRW 20, EG 40) on-block 14:00, d = 10:
+        // 41 % of each category in the first interval and 59 % in the second (F14's example shape).
+        var plan = StaffingRecommendation.Plan(T0);
+        var wave = ArrivalWave.Project([Flight("F1", T0, new AmanLaneDemand(240, 50, 30, 100, 20, 40, T0))], T0, 195, new ArrivalWaveSettings { DelayMinutes = 10 });
+
+        // The NBJ seed's hall: one shared queue takes every manual category (200), never the e-gates'.
+        var all = StaffingRecommendation.LaneArrivals(plan, wave.Minutes, wave.Flights, "ALL", 1, false);
+        // A visitors queue of its own: the shared queue takes CIT, RES and CRW (100), here shared by two queues.
+        var rest = StaffingRecommendation.LaneArrivals(plan, wave.Minutes, wave.Flights, LaneDemand.Categories("ALL", ["ALL", "VIS"]), 2, false);
+        // E-gates are not desks: the recommendation takes the manual categories only.
+        var withGates = StaffingRecommendation.LaneArrivals(plan, wave.Minutes, wave.Flights, ["CIT", "EG"], 1, false);
+
+        ShouldBe(all.Select(i => i.Arrivals), [82, 118, .. Enumerable.Repeat(0.0, 11)]);
+        ShouldBe(rest.Take(2).Select(i => i.Arrivals), 20.5, 29.5);
+        ShouldBe(withGates.Take(2).Select(i => i.Arrivals), 20.5, 29.5);
+        all.Should().OnlyContain(i => i.Gap == StaffingGap.None);
+        StaffingRecommendation.LaneArrivals(plan, wave.Minutes, wave.Flights, LaneDemand.Categories("ALL", ["ALL", "CIT", "RES", "VIS", "CRW"]), 1, false)
+            .Should().OnlyContain(i => i.Gap == StaffingGap.NoLaneDemand && i.Arrivals == null, "every manual category has a queue of its own");
+        StaffingRecommendation.LaneArrivals(plan, wave.Minutes, wave.Flights, ["EG"], 1, false).Should().OnlyContain(i => i.Gap == StaffingGap.NoLaneDemand);
+        FluentActions.Invoking(() => StaffingRecommendation.LaneArrivals(plan, wave.Minutes, wave.Flights, (IReadOnlyList<string>)null, 1, false))
+            .Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
     public void LaneArrivals_Should_NotGuess_When_AFlightHasNoPassengersTheLegsAreTruncatedOrTheLaneHasNoDemand()
     {
         var plan = StaffingRecommendation.Plan(T0);

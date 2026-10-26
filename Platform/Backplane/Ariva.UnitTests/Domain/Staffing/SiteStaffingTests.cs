@@ -177,6 +177,49 @@ public sealed class SiteStaffingTests
         rows[0].Staffing.Gap.Should().Be(StaffingGap.None);
     }
 
+    [Fact]
+    public void Compute_Should_GiveTheSharedQueueTheCategoriesWithoutAQueueOfTheirOwn_When_AHallHasBoth()
+    {
+        // ARV-185 (owner decision 2026-10-26): with a VIS queue of its own the shared queue ALL takes CIT, RES and CRW; the
+        // e-gate rejects join VIS (the reference reject lane), so the shared queue takes none of them. Alone (the NBJ seed's
+        // halls) it takes every manual category and the rejects.
+        var all = Desks("AA", 4);
+        var vis = Desks("AR", 4);
+        List<StaffingLaneInput> lanes = [new("A-ALL", "ALL", all, 4, Queue(10, 2)), new("A-VIS", "VIS", vis, 4, Queue(10, 2))];
+        var flight = Flight("F1", Minute.AddMinutes(-5), new AmanLaneDemand(260, 50, 30, 100, 20, 60, Minute));
+
+        var rows = SiteStaffing.Compute(Site(lanes, Open([.. all, .. vis]), [flight], rejectRate: 0.5), new StaffingSettings(), Wave, Coupling);
+        var alone = SiteStaffing.Compute(Site([lanes[0]], Open(all), [flight], rejectRate: 0.5), new StaffingSettings(), Wave, Coupling).Single();
+
+        rows.Single(r => r.Lane == "ALL").Staffing.Intervals[0].Arrivals.Should().BeApproximately(0.89 * 100, 1e-9);
+        rows.Single(r => r.Lane == "VIS").Staffing.Intervals[0].Arrivals.Should().BeApproximately(0.89 * (100 + 0.5 * 60), 1e-9);
+        alone.Staffing.Intervals[0].Arrivals.Should().BeApproximately(0.89 * (200 + 0.5 * 60), 1e-9);
+        alone.Staffing.Gap.Should().Be(StaffingGap.None);
+    }
+
+    [Fact]
+    public void Compute_Should_KeepAZoneWhoseKeyDoesNotFitInTheSharing_And_GiveItNoRow_When_Given()
+    {
+        // ARV-185: a zone whose key does not fit (ZoneKeys.Fits) is not computed, but it is still one of the hall's two VIS
+        // queues: the other takes half of VIS's arrivals, and the shared queue still leaves VIS to them.
+        var vis = Desks("AR", 2);
+        var all = Desks("AA", 2);
+        List<StaffingLaneInput> lanes =
+        [
+            new("A-VIS", "VIS", vis, 2, [], KeyFits: false),
+            new("A-VIS-2", "VIS", vis, 2, Queue(10, 1)),
+            new("A-ALL", "ALL", all, 2, Queue(10, 1))
+        ];
+        var flight = Flight("F1", Minute.AddMinutes(-5), new AmanLaneDemand(150, 50, 0, 100, 0, 0, Minute));
+
+        var rows = SiteStaffing.Compute(Site(lanes, Open([.. vis, .. all]), [flight]), new StaffingSettings(), Wave, Coupling);
+
+        SiteStaffing.Takes(lanes[0]).Should().BeFalse();
+        rows.Select(r => r.Zone).Should().Equal("A-VIS-2", "A-ALL");
+        rows[0].Staffing.Intervals[0].Arrivals.Should().BeApproximately(0.89 * 100 / 2, 1e-9, "shared with the zone that does not fit");
+        rows[1].Staffing.Intervals[0].Arrivals.Should().BeApproximately(0.89 * 50, 1e-9);
+    }
+
     [Theory]
     [InlineData(1_000_000, true)]
     [InlineData(0, true)]

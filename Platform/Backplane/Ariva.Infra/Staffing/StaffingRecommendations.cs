@@ -11,7 +11,8 @@ using NpgsqlTypes;
 namespace Ariva.Infra.Staffing;
 
 /// <summary>
-/// What one run of the staffing recommendation did (lanes refused on their own beyond the desk bound in <see cref="LanesRefused"/>)
+/// What one run of the staffing recommendation did (lanes refused on their own in <see cref="LanesRefused"/>: beyond the desk
+/// bound, or whose zone key does not fit, ARV-185)
 /// and how long it took (<see cref="Elapsed"/>, from the host's <see cref="TimeProvider"/>; ARV-124a).
 /// </summary>
 public sealed record StaffingRun(int Sites, int SitesHeldElsewhere, int SitesFailed, int SitesRefused, int Lanes, int Rows, int LanesRefused = 0)
@@ -21,7 +22,8 @@ public sealed record StaffingRun(int Sites, int SitesHeldElsewhere, int SitesFai
 
 /// <summary>
 /// What one site's pass did: lanes computed and rows inserted, or the bound that refused it (a fixed text), and the lanes
-/// refused on their own (<see cref="StaffingInputs.TooManyLaneDesks"/>) while the rest of the site was computed.
+/// refused on their own (<see cref="StaffingInputs.TooManyLaneDesks"/>, <see cref="StaffingInputs.UnkeyedZone"/>) while the rest
+/// of the site was computed.
 /// </summary>
 public sealed record StaffingSitePass(int Lanes, int Rows, string Refused = null, int RefusedLanes = 0);
 
@@ -143,10 +145,17 @@ public sealed class StaffingRecommendations(IServiceScopeFactory scopes, Databas
                 read.RefusedLanes, StaffingInputs.TooManyLaneDesks);
         }
 
+        if (read.UnkeyedLanes > 0)
+        {
+            // ARV-185: a zone the profile editor refuses (written outside it); the site and the count with the fixed text, never its name.
+            logger.LogWarning("Staffing recommendation of site {Site}: {Lanes} lanes refused: {Bound}; they have no minute until back within the bound", siteCode,
+                read.UnkeyedLanes, StaffingInputs.UnkeyedZone);
+        }
+
         var lanes = SiteStaffing.Compute(read.Input, settings, wave, coupling);
         var inserted = lanes.Count == 0 ? 0 : await WriteAsync(connection, transaction, siteCode, lanes, now, ct);
         await transaction.CommitAsync(ct);
-        return new StaffingSitePass(lanes.Count, inserted, null, read.RefusedLanes);
+        return new StaffingSitePass(lanes.Count, inserted, null, read.RefusedLanes + read.UnkeyedLanes);
     }
 
     /// <summary>Inserts the lanes' rows not yet recorded for their minute and returns how many were inserted.</summary>

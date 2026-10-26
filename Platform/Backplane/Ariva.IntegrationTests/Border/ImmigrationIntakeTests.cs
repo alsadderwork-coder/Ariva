@@ -275,13 +275,13 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
     }
 
     [Fact]
-    public async Task ProjectedArrivalWave_Should_GiveEachQueueZoneTheLanesItsDesksServe_When_ARuleReadsIt()
+    public async Task ProjectedArrivalWave_Should_GiveEachQueueZoneItsOwnLanesShare_When_ARuleReadsIt()
     {
         await SeedAsync();
         // Each test of the shared database projects its own day, so the order the tests run in never mixes their flights.
         _host.Clock.Advance(TimeSpan.FromDays(2));
-        // A second site at the demo airport whose published profile links queue zones to desks through service zones:
-        // two queues for visitors, one for citizens and residents, an overflow band of the first, and a queue with no desk.
+        // A second site at the demo airport whose published profile has two visitor queues, a citizens queue (whose desk also
+        // serves residents), an overflow band of the first, and a queue with no lane.
         await ProbeSiteAsync();
         var minute = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
         var leg = new FlightLegData("XP1-WAVE-A", "XP", "1", null, "Arrival", minute.AddMinutes(10), null, null, minute.AddMinutes(-11), null, Origin: "BEY",
@@ -299,9 +299,10 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         (await Arrivals("Q-VIS-1")).Values.Sum().Should().BeApproximately(50, 1e-6);
         (await Arrivals("Q-VIS-2")).Values.Sum().Should().BeApproximately(50, 1e-6);
         (await Arrivals("OV-1")).Values.Sum().Should().BeApproximately(50, 1e-6, "an overflow band takes its queue's arrivals");
-        (await Arrivals("Q-CIT")).Values.Sum().Should().BeApproximately(50, 1e-6);
-        (await Arrivals("Q-CIT"))[minute].Should().BeApproximately(50 * 0.03, 1e-6);
-        (await Arrivals("Q-NONE")).Should().BeNull("a queue serving no lane has no projection");
+        // ARV-185: the zone's own lane, CIT, not the categories of its desk (CIT and RES): residents have no queue here.
+        (await Arrivals("Q-CIT")).Values.Sum().Should().BeApproximately(40, 1e-6);
+        (await Arrivals("Q-CIT"))[minute].Should().BeApproximately(40 * 0.03, 1e-6);
+        (await Arrivals("Q-NONE")).Should().BeNull("a queue with no lane has no projection");
         (await _host.AsCallerAsync(null, s => s.GetRequiredService<Ariva.Core.Alerting.IArrivalWaveSource>()
             .ArrivalsAsync("XS2", "Q-VIS-1", minute.AddMinutes(-120), minute.AddMinutes(-60), Ct))).Should().BeEmpty("the past has no projection");
     }
@@ -309,8 +310,8 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
     /// <summary>
     /// A second site, XS2, at the demo airport (once per database): a terminal, an immigration checkpoint with desks for
     /// visitors (two) and citizens and residents and an e-gate, all mapped to AMAN codes (XV1, XV2, XC1, XG1), and a
-    /// published profile linking queue zones to the desks through service zones: two visitor queues, one for citizens and
-    /// residents, an overflow band of the first and a queue with no desk.
+    /// published profile linking queue zones to the desks through service zones: two visitor queues (lane VIS), a citizens
+    /// queue (lane CIT) at the citizens and residents desk, an overflow band of the first and a queue with no lane or desk.
     /// </summary>
     private Task ProbeSiteAsync() => ExecuteAsMigrationAsync("""
         DO $probe$
@@ -336,11 +337,11 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
                     (gen_random_uuid(), 'Aman', 'XC1', 'a0470000-0000-0000-0000-000000000013', 'XS2'),
                     (gen_random_uuid(), 'Aman', 'XG1', 'a0470000-0000-0000-0000-000000000014', 'XS2');
                 INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a0470000-0000-0000-0000-000000000020', 'XS2', 'Probe', 'Draft');
-                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
-                    ('a0470000-0000-0000-0000-000000000021', 'a0470000-0000-0000-0000-000000000020', 'Q-VIS-1', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
-                    ('a0470000-0000-0000-0000-000000000022', 'a0470000-0000-0000-0000-000000000020', 'Q-VIS-2', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
-                    ('a0470000-0000-0000-0000-000000000023', 'a0470000-0000-0000-0000-000000000020', 'Q-CIT', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
-                    ('a0470000-0000-0000-0000-000000000024', 'a0470000-0000-0000-0000-000000000020', 'Q-NONE', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000');
+                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, lane_category, polygon) VALUES
+                    ('a0470000-0000-0000-0000-000000000021', 'a0470000-0000-0000-0000-000000000020', 'Q-VIS-1', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, 'VIS', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a0470000-0000-0000-0000-000000000022', 'a0470000-0000-0000-0000-000000000020', 'Q-VIS-2', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, 'VIS', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a0470000-0000-0000-0000-000000000023', 'a0470000-0000-0000-0000-000000000020', 'Q-CIT', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, 'CIT', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a0470000-0000-0000-0000-000000000024', 'a0470000-0000-0000-0000-000000000020', 'Q-NONE', 'Queue', 'a0470000-0000-0000-0000-000000000002', NULL, NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000');
                 INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
                     ('a0470000-0000-0000-0000-000000000031', 'a0470000-0000-0000-0000-000000000020', 'S-V1', 'Service', 'a0470000-0000-0000-0000-000000000002', 'a0470000-0000-0000-0000-000000000021', 'a0470000-0000-0000-0000-000000000011', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
                     ('a0470000-0000-0000-0000-000000000032', 'a0470000-0000-0000-0000-000000000020', 'S-V2', 'Service', 'a0470000-0000-0000-0000-000000000002', 'a0470000-0000-0000-0000-000000000022', 'a0470000-0000-0000-0000-000000000012', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
@@ -352,15 +353,15 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         """);
 
     /// <summary>
-    /// ARV-191: border desks of every kind carry lane categories, emigration desks included, so a queue zone takes a lane of
-    /// the arrival wave only through the desks of an Immigration checkpoint on its own level (the arrivals hall, the scope of
-    /// the staffing recommendation's lanes). At XW1 an arrivals queue and an emigration queue on the departures level both
-    /// stand at Visitors desks; an emigration checkpoint shares the arrivals level; and a departures queue's service zone
-    /// names an arrivals immigration desk. The arrivals queue keeps the whole Visitors lane (not a quarter of it) and none of
-    /// the others is projected the arrivals wave.
+    /// ARV-191, ARV-185: only the arrivals hall's queues take the arrival wave, the staffing recommendation's lanes
+    /// (ArrivalsHallLanes): a queue zone on a level with an Immigration checkpoint, but a queue whose service zones stand only
+    /// at emigration desks. At XW1 every queue's own lane is VIS: an arrivals queue, an emigration queue on the departures
+    /// level, a queue on the arrivals level standing at the desk of an emigration checkpoint that shares the level, and a
+    /// departures queue whose service zone names an arrivals immigration desk. The arrivals queue keeps the whole Visitors lane
+    /// (not a quarter of it) and none of the others is projected the arrivals wave.
     /// </summary>
     [Fact]
-    public async Task ProjectedArrivalWave_Should_LinkAQueueThroughItsLevelsImmigrationDesksOnly_When_AnEmigrationQueueServesTheSameLane()
+    public async Task ProjectedArrivalWave_Should_ProjectOnlyTheArrivalsHallsQueues_When_AnEmigrationQueueHasTheSameLane()
     {
         await SeedAsync();
         // Each test of the shared database projects its own day, so the order the tests run in never mixes their flights.
@@ -386,8 +387,8 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         (await Arrivals("OV-ARR")).Values.Sum().Should().BeApproximately(100, 1e-6, "an overflow band takes its queue's arrivals");
         (await Arrivals("Q-DEP")).Should().BeNull("an emigration queue on the departures level is not projected the arrivals wave");
         (await Arrivals("OV-DEP")).Should().BeNull("nor is the overflow band of an emigration queue");
-        (await Arrivals("Q-EMA")).Should().BeNull("the desks of an emigration checkpoint on the arrivals level link no queue to a lane either");
-        (await Arrivals("Q-STRAY")).Should().BeNull("an immigration desk on another level than the queue links it to no lane");
+        (await Arrivals("Q-EMA")).Should().BeNull("a queue standing only at an emigration desk is not in the arrivals hall, even on its level");
+        (await Arrivals("Q-STRAY")).Should().BeNull("a queue on a level without an Immigration checkpoint is not in the arrivals hall, whatever its desks");
     }
 
     /// <summary>
@@ -395,7 +396,7 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
     /// (Visitors desks V1 and V2) and an emigration checkpoint (Visitors desk E2), and a departures level with an emigration
     /// checkpoint (Visitors desk E1). Its published profile links, through service zones, the arrivals queue Q-ARR (with its
     /// overflow band OV-ARR) to V1, the departures queue Q-DEP (with its overflow band OV-DEP) to E1, the arrivals level queue
-    /// Q-EMA to E2, and the departures level queue Q-STRAY to V2.
+    /// Q-EMA to E2, and the departures level queue Q-STRAY to V2; every queue's lane is VIS (ARV-185).
     /// </summary>
     private Task DeparturesProbeSiteAsync() => ExecuteAsMigrationAsync("""
         DO $probe$
@@ -419,11 +420,11 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
                     ('a1910000-0000-0000-0000-000000000013', 'a1910000-0000-0000-0000-000000000005', 'XW1', 'E1', 'Departing visitors 1', 'Desk', 'VIS'),
                     ('a1910000-0000-0000-0000-000000000014', 'a1910000-0000-0000-0000-000000000006', 'XW1', 'E2', 'Departing visitors 2', 'Desk', 'VIS');
                 INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a1910000-0000-0000-0000-000000000040', 'XW1', 'Departures probe', 'Draft');
-                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
-                    ('a1910000-0000-0000-0000-000000000041', 'a1910000-0000-0000-0000-000000000040', 'Q-ARR', 'Queue', 'a1910000-0000-0000-0000-000000000002', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
-                    ('a1910000-0000-0000-0000-000000000042', 'a1910000-0000-0000-0000-000000000040', 'Q-DEP', 'Queue', 'a1910000-0000-0000-0000-000000000003', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
-                    ('a1910000-0000-0000-0000-000000000043', 'a1910000-0000-0000-0000-000000000040', 'Q-EMA', 'Queue', 'a1910000-0000-0000-0000-000000000002', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
-                    ('a1910000-0000-0000-0000-000000000044', 'a1910000-0000-0000-0000-000000000040', 'Q-STRAY', 'Queue', 'a1910000-0000-0000-0000-000000000003', NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000');
+                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, lane_category, polygon) VALUES
+                    ('a1910000-0000-0000-0000-000000000041', 'a1910000-0000-0000-0000-000000000040', 'Q-ARR', 'Queue', 'a1910000-0000-0000-0000-000000000002', NULL, NULL, 'VIS', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000042', 'a1910000-0000-0000-0000-000000000040', 'Q-DEP', 'Queue', 'a1910000-0000-0000-0000-000000000003', NULL, NULL, 'VIS', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000043', 'a1910000-0000-0000-0000-000000000040', 'Q-EMA', 'Queue', 'a1910000-0000-0000-0000-000000000002', NULL, NULL, 'VIS', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1910000-0000-0000-0000-000000000044', 'a1910000-0000-0000-0000-000000000040', 'Q-STRAY', 'Queue', 'a1910000-0000-0000-0000-000000000003', NULL, NULL, 'VIS', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000');
                 INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
                     ('a1910000-0000-0000-0000-000000000051', 'a1910000-0000-0000-0000-000000000040', 'S-V1', 'Service', 'a1910000-0000-0000-0000-000000000002', 'a1910000-0000-0000-0000-000000000041', 'a1910000-0000-0000-0000-000000000011', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
                     ('a1910000-0000-0000-0000-000000000052', 'a1910000-0000-0000-0000-000000000040', 'S-E1', 'Service', 'a1910000-0000-0000-0000-000000000003', 'a1910000-0000-0000-0000-000000000042', 'a1910000-0000-0000-0000-000000000013', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
@@ -432,6 +433,175 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
                     ('a1910000-0000-0000-0000-000000000055', 'a1910000-0000-0000-0000-000000000040', 'OV-ARR', 'Overflow', 'a1910000-0000-0000-0000-000000000002', 'a1910000-0000-0000-0000-000000000041', NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
                     ('a1910000-0000-0000-0000-000000000056', 'a1910000-0000-0000-0000-000000000040', 'OV-DEP', 'Overflow', 'a1910000-0000-0000-0000-000000000003', 'a1910000-0000-0000-0000-000000000042', NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000');
                 UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('b', 64), published_on = now() WHERE id = 'a1910000-0000-0000-0000-000000000040';
+        END
+        $probe$;
+        """);
+
+    /// <summary>
+    /// ARV-185: one lane rule for the predicted-breach wave, the immigration screen, the nowcast desk term and the staffing
+    /// recommendation (owner decision 2026-10-26). At XL1 each reader gives every queue zone its own lane category: the
+    /// recommendation's lanes are the arrivals hall's queues with their own lanes; the immigration screen shows the same lane
+    /// for each; the wave projects exactly those whose lane takes a category of the wave, the shared queue ALL taking the
+    /// manual categories without a queue of their own, and the same arrivals as the recommendation; and the desk term and the
+    /// recommendation read the same desks for each, so the same desks open now.
+    /// </summary>
+    [Fact]
+    public async Task Readers_Should_AgreeOnEveryQueueZonesLane_When_TheyReadTheSameSite()
+    {
+        await SeedAsync();
+        // Each test of the shared database projects its own day, so the order the tests run in never mixes their flights.
+        _host.Clock.Advance(TimeSpan.FromDays(7));
+        await LaneProbeSiteAsync();
+        var minute = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
+        var leg = new FlightLegData("XL1-LANE-A", "XL", "1", null, "Arrival", minute.AddMinutes(10), null, null, minute.AddMinutes(-11), null, Origin: "BEY",
+            Destination: "DMO", PaxEstimate: 300);
+        (await _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcFlightIntake>().ApplyLegsAsync("XL1", "it-wave", [leg], Now.AddMinutes(-1), Ct)))
+            .Should().OnlyContain(r => !r.HasErrors);
+        (await Apply<InboundFlightLaneDemand>(i => i.ApplyLaneDemandAsync(ImmigrationScope.ForSite("XL1"), "aman-kafka",
+            [new("XL1", "XL1-LANE-A", new DateTimeOffset(minute.AddMinutes(10)), 160,
+                new Dictionary<string, int> { ["VIS"] = 100, ["CIT"] = 40, ["RES"] = 10, ["CRW"] = 10 }, 0, new DateTimeOffset(Now.AddMinutes(-5)), "xl1-ld")], Ct)))
+            .Should().OnlyContain(r => r.Applied);
+        // The last two closed minutes of the arrivals level's desks: V1, E2 and A1 serving, V2 idle, A2 unknown, the e-gate serving.
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            foreach (var (key, lane, idle, serving, unknown) in new[]
+                     {
+                         ("XL1/IMM/V1", "VIS", 0, 60, 0), ("XL1/IMM/V2", "VIS", 60, 0, 0), ("XL1/EMA/E2", "VIS", 0, 60, 0),
+                         ("XL1/IMM/A1", "ALL", 0, 60, 0), ("XL1/IMM/A2", "ALL", 0, 0, 60), ("XL1/IMM/G1", "EG", 0, 60, 0)
+                     })
+            {
+                foreach (var ago in new[] { 1, 2 })
+                {
+                    await using var command = new NpgsqlCommand("""
+                        INSERT INTO desk_minute (desk_code, lane, minute_utc, closed_seconds, idle_seconds, serving_seconds, paused_seconds, unknown_seconds, transactions,
+                                                 sensor_derived_seconds, present_seconds, degraded, updated_on)
+                        VALUES (@key, @lane, @minute, 0, @idle, @serving, 0, @unknown, 0, 0, 0, false, now())
+                        """, connection);
+                    command.Parameters.AddWithValue("key", key);
+                    command.Parameters.AddWithValue("lane", lane);
+                    command.Parameters.AddWithValue("minute", minute.AddMinutes(-ago));
+                    command.Parameters.AddWithValue("idle", (double)idle);
+                    command.Parameters.AddWithValue("serving", (double)serving);
+                    command.Parameters.AddWithValue("unknown", (double)unknown);
+                    await command.ExecuteNonQueryAsync(Ct);
+                }
+            }
+        }
+
+        // The recommendation: the arrivals hall's queues, each with its own lane, and their desks.
+        var settings = new Ariva.Core.Staffing.StaffingSettings();
+        var read = await _host.AsCallerAsync(null, s => new Ariva.Infra.Staffing.StaffingInputs(s.GetRequiredService<IUnitOfWork>(),
+            s.GetRequiredService<ArrivalWaveSettings>(), s.GetRequiredService<EgateCouplingSettings>()).ReadAsync("XL1", Now, settings, Ct));
+        read.Refused.Should().BeNull();
+        var lanes = read.Input.Lanes;
+        lanes.Select(l => (l.Zone, l.Lane)).Should().Equal(("Q-ALL", "ALL"), ("Q-EG", "EG"), ("Q-FT", "FT"), ("Q-VIS-1", "VIS"), ("Q-VIS-2", "VIS"));
+        lanes.Single(l => l.Zone == "Q-ALL").DeskKeys.Should().BeEquivalentTo("XL1/IMM/A1", "XL1/IMM/A2");
+        lanes.Single(l => l.Zone == "Q-VIS-1").DeskKeys.Should().BeEquivalentTo(["XL1/IMM/V1", "XL1/IMM/V2", "XL1/EMA/E2"],
+            "the desk term's match: the level's immigration and emigration desks of the lane");
+        lanes.Single(l => l.Zone == "Q-EG").DeskKeys.Should().BeEmpty("e-gates are not desks");
+
+        // The immigration screen: the same lane for every one of them.
+        var view = (await View("XL1", await WaveUserAsync(RoleCodes.SystemAdministrator))).Data;
+        var shown = view.Halls.Single(h => h.Kind == "Immigration").Queues.ToDictionary(q => q.Zone, q => q.Lane, StringComparer.Ordinal);
+        lanes.Should().OnlyContain(l => shown.ContainsKey(l.Zone) && shown[l.Zone] == l.Lane);
+
+        // The wave: exactly the hall's queues whose lane takes a category (and the overflow band of one), with the
+        // recommendation's arrivals. VIS 100 shared by two queues; the shared queue takes CIT, RES and CRW (60), VIS having
+        // queues of its own; no e-gate eligible passengers.
+        async Task<IReadOnlyDictionary<DateTime, double>> Arrivals(string zone) =>
+            await _host.AsCallerAsync(null, s => s.GetRequiredService<Ariva.Core.Alerting.IArrivalWaveSource>().ArrivalsAsync("XL1", zone, minute.AddMinutes(-1), minute.AddMinutes(200), Ct));
+        var expected = new Dictionary<string, double?>(StringComparer.Ordinal)
+        {
+            ["Q-VIS-1"] = 50, ["Q-VIS-2"] = 50, ["Q-ALL"] = 60, ["OV-ALL"] = 60, ["Q-EG"] = 0,
+            ["Q-FT"] = null, ["Q-NONE"] = null, ["Q-EMA"] = null, ["Q-DEP"] = null
+        };
+        foreach (var (zone, sum) in expected)
+        {
+            var wave = await Arrivals(zone);
+            if (sum is null)
+                wave.Should().BeNull(zone);
+            else
+                wave.Values.Sum().Should().BeApproximately(sum.Value, 1e-6, zone);
+        }
+
+        var rows = Ariva.Core.Staffing.SiteStaffing.Compute(read.Input, settings, _host.Provider.GetRequiredService<ArrivalWaveSettings>(),
+            _host.Provider.GetRequiredService<EgateCouplingSettings>());
+        foreach (var zone in new[] { "Q-VIS-1", "Q-VIS-2", "Q-ALL" })
+        {
+            rows.Single(r => r.Zone == zone).Staffing.Intervals.Sum(i => i.Arrivals ?? double.NaN).Should()
+                .BeApproximately(expected[zone].Value, 1e-6, $"{zone}: the recommendation's arrivals are the wave's");
+        }
+
+        rows.Single(r => r.Zone == "Q-FT").Staffing.Intervals.Should().OnlyContain(i => i.Gap == Ariva.Core.Staffing.StaffingGap.NoLaneDemand);
+
+        // The desk term: the same desks per zone, so the same desks open now.
+        var terms = await new Ariva.Infra.Streaming.DeskTermSource(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock)
+            .LoadAsync([.. lanes.Select(l => Ariva.Core.Sensing.ZoneKeys.For("XL1", l.Zone))], 5, Ct);
+        terms.Keys.Should().BeEquivalentTo("XL1/Q-ALL", "XL1/Q-VIS-1", "XL1/Q-VIS-2");
+        foreach (var lane in lanes.Where(l => l.DeskKeys.Count > 0))
+        {
+            var open = Ariva.Core.Staffing.SiteStaffing.OpenNow([.. read.Input.DeskMinutes.Where(m => lane.DeskKeys.Contains(m.DeskKey))], Now);
+            var term = terms[Ariva.Core.Sensing.ZoneKeys.For("XL1", lane.Zone)];
+            (term.Desks, term.OpenServers, term.AsOfMinuteUtc).Should().Be((open.Desks, open.OpenServers, open.AsOfMinuteUtc), lane.Zone);
+        }
+
+        terms["XL1/Q-VIS-1"].Should().Match<Ariva.Core.Queueing.DeskTerm>(t => t.Desks == 3 && t.OpenServers == 3,
+            "V1 and E2 serve and V2 is idle: open is idle or serving (F8's n_open)");
+        rows.Single(r => r.Zone == "Q-VIS-1").OpenNow.Should().Be(3);
+    }
+
+    /// <summary>
+    /// A site, XL1, at the demo airport (once per database) for ARV-185: an arrivals level with an immigration checkpoint
+    /// (Visitors desks V1 and V2, shared lane desks A1 and A2, e-gate G1) and an emigration checkpoint (Visitors desk E2),
+    /// and a departures level with an emigration checkpoint (Visitors desk E1). Its published profile has, on the arrivals
+    /// level, two visitor queues (Q-VIS-1 at V1, Q-VIS-2 at V2), the shared queue Q-ALL at A1 with its overflow band OV-ALL,
+    /// the e-gate queue Q-EG at G1, a queue of a site's own lane code FT without desks, a queue without a lane (Q-NONE) and
+    /// a visitor queue standing at the emigration desk E2 (Q-EMA); and the departures visitor queue Q-DEP at E1.
+    /// </summary>
+    private Task LaneProbeSiteAsync() => ExecuteAsMigrationAsync("""
+        DO $probe$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM zone_profile WHERE id = 'a1850000-0000-0000-0000-000000000040') THEN
+                RETURN;
+            END IF;
+                INSERT INTO site (id, code, name) SELECT gen_random_uuid(), 'XL1', 'Lane agreement probe' WHERE NOT EXISTS (SELECT 1 FROM site WHERE code = 'XL1');
+                INSERT INTO terminal (id, airport_id, code, name, site_code)
+                     SELECT 'a1850000-0000-0000-0000-000000000001', id, 'XTL', 'Probe terminal L', 'XL1' FROM airport WHERE iata_code = 'DMO' AND deleted_on IS NULL;
+                INSERT INTO level (id, terminal_id, site_code, code, name, floor_number, width_metres, depth_metres) VALUES
+                    ('a1850000-0000-0000-0000-000000000002', 'a1850000-0000-0000-0000-000000000001', 'XL1', 'ARR', 'Arrivals', 0, 100, 100),
+                    ('a1850000-0000-0000-0000-000000000003', 'a1850000-0000-0000-0000-000000000001', 'XL1', 'DEP', 'Departures', 1, 100, 100);
+                INSERT INTO checkpoint (id, level_id, site_code, code, name, kind) VALUES
+                    ('a1850000-0000-0000-0000-000000000004', 'a1850000-0000-0000-0000-000000000002', 'XL1', 'IMM', 'Arrival immigration', 'Immigration'),
+                    ('a1850000-0000-0000-0000-000000000005', 'a1850000-0000-0000-0000-000000000003', 'XL1', 'EMI', 'Departure emigration', 'Emigration'),
+                    ('a1850000-0000-0000-0000-000000000006', 'a1850000-0000-0000-0000-000000000002', 'XL1', 'EMA', 'Emigration on the arrivals level', 'Emigration');
+                INSERT INTO desk (id, checkpoint_id, site_code, code, name, kind, lane_category_codes) VALUES
+                    ('a1850000-0000-0000-0000-000000000011', 'a1850000-0000-0000-0000-000000000004', 'XL1', 'V1', 'Visitors 1', 'Desk', 'VIS'),
+                    ('a1850000-0000-0000-0000-000000000012', 'a1850000-0000-0000-0000-000000000004', 'XL1', 'V2', 'Visitors 2', 'Desk', 'VIS'),
+                    ('a1850000-0000-0000-0000-000000000013', 'a1850000-0000-0000-0000-000000000004', 'XL1', 'A1', 'Shared 1', 'Desk', 'ALL'),
+                    ('a1850000-0000-0000-0000-000000000014', 'a1850000-0000-0000-0000-000000000004', 'XL1', 'A2', 'Shared 2', 'Desk', 'ALL'),
+                    ('a1850000-0000-0000-0000-000000000015', 'a1850000-0000-0000-0000-000000000004', 'XL1', 'G1', 'E-gate 1', 'EGate', 'EG'),
+                    ('a1850000-0000-0000-0000-000000000016', 'a1850000-0000-0000-0000-000000000006', 'XL1', 'E2', 'Departing visitors 2', 'Desk', 'VIS'),
+                    ('a1850000-0000-0000-0000-000000000017', 'a1850000-0000-0000-0000-000000000005', 'XL1', 'E1', 'Departing visitors 1', 'Desk', 'VIS');
+                INSERT INTO zone_profile (id, site_code, name, status) VALUES ('a1850000-0000-0000-0000-000000000040', 'XL1', 'Lane probe', 'Draft');
+                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, lane_category, polygon) VALUES
+                    ('a1850000-0000-0000-0000-000000000041', 'a1850000-0000-0000-0000-000000000040', 'Q-VIS-1', 'Queue', 'a1850000-0000-0000-0000-000000000002', NULL, NULL, 'VIS', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000042', 'a1850000-0000-0000-0000-000000000040', 'Q-VIS-2', 'Queue', 'a1850000-0000-0000-0000-000000000002', NULL, NULL, 'VIS', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000043', 'a1850000-0000-0000-0000-000000000040', 'Q-ALL', 'Queue', 'a1850000-0000-0000-0000-000000000002', NULL, NULL, 'ALL', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000044', 'a1850000-0000-0000-0000-000000000040', 'Q-EG', 'Queue', 'a1850000-0000-0000-0000-000000000002', NULL, NULL, 'EG', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000045', 'a1850000-0000-0000-0000-000000000040', 'Q-FT', 'Queue', 'a1850000-0000-0000-0000-000000000002', NULL, NULL, 'FT', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000046', 'a1850000-0000-0000-0000-000000000040', 'Q-NONE', 'Queue', 'a1850000-0000-0000-0000-000000000002', NULL, NULL, NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000047', 'a1850000-0000-0000-0000-000000000040', 'Q-EMA', 'Queue', 'a1850000-0000-0000-0000-000000000002', NULL, NULL, 'VIS', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000048', 'a1850000-0000-0000-0000-000000000040', 'Q-DEP', 'Queue', 'a1850000-0000-0000-0000-000000000003', NULL, NULL, 'VIS', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000');
+                INSERT INTO zone (id, profile_id, name, kind, level_id, queue_zone_id, desk_id, polygon) VALUES
+                    ('a1850000-0000-0000-0000-000000000051', 'a1850000-0000-0000-0000-000000000040', 'S-V1', 'Service', 'a1850000-0000-0000-0000-000000000002', 'a1850000-0000-0000-0000-000000000041', 'a1850000-0000-0000-0000-000000000011', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000052', 'a1850000-0000-0000-0000-000000000040', 'S-V2', 'Service', 'a1850000-0000-0000-0000-000000000002', 'a1850000-0000-0000-0000-000000000042', 'a1850000-0000-0000-0000-000000000012', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000053', 'a1850000-0000-0000-0000-000000000040', 'S-A1', 'Service', 'a1850000-0000-0000-0000-000000000002', 'a1850000-0000-0000-0000-000000000043', 'a1850000-0000-0000-0000-000000000013', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000054', 'a1850000-0000-0000-0000-000000000040', 'S-G1', 'Service', 'a1850000-0000-0000-0000-000000000002', 'a1850000-0000-0000-0000-000000000044', 'a1850000-0000-0000-0000-000000000015', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000055', 'a1850000-0000-0000-0000-000000000040', 'S-E2', 'Service', 'a1850000-0000-0000-0000-000000000002', 'a1850000-0000-0000-0000-000000000047', 'a1850000-0000-0000-0000-000000000016', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000056', 'a1850000-0000-0000-0000-000000000040', 'S-E1', 'Service', 'a1850000-0000-0000-0000-000000000003', 'a1850000-0000-0000-0000-000000000048', 'a1850000-0000-0000-0000-000000000017', '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000'),
+                    ('a1850000-0000-0000-0000-000000000057', 'a1850000-0000-0000-0000-000000000040', 'OV-ALL', 'Overflow', 'a1850000-0000-0000-0000-000000000002', 'a1850000-0000-0000-0000-000000000043', NULL, '1.000 1.000,3.000 1.000,3.000 2.000,1.000 2.000');
+                UPDATE zone_profile SET status = 'Published', version = 1, geometry_hash = repeat('c', 64), published_on = now() WHERE id = 'a1850000-0000-0000-0000-000000000040';
         END
         $probe$;
         """);
@@ -506,9 +676,10 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
             r => (r.GetString(0), r.GetInt64(1)), t0, t0.AddMinutes(18));
         dmo["DMO/IMM/AR-09"].Should().BeGreaterThanOrEqualTo(50, "DMO's interval reached DMO's desk (other tests feed DMO too)");
         // XS3 and XS4 are the desk zone sites of DeskFeed_Should_GiveDesksAStateFromTheirZones (ARV-116), XS5 the site of
-        // DeskFeed_Should_WriteExactlyTheSensorMinutesTheCapLeaves (ARV-117a), and XS6 to XS9 the transaction rhythm sites of
-        // DeskRhythmFeedTests (ARV-149, XS9 ARV-149a), which may run first.
-        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE NOT (desk_code LIKE 'DMO/%' OR desk_code LIKE 'XS2/%' OR desk_code LIKE 'XS3/%' OR desk_code LIKE 'XS4/%' OR desk_code LIKE 'XS5/%' OR desk_code LIKE 'XS6/%' OR desk_code LIKE 'XS7/%' OR desk_code LIKE 'XS8/%' OR desk_code LIKE 'XS9/%')"))
+        // DeskFeed_Should_WriteExactlyTheSensorMinutesTheCapLeaves (ARV-117a), XS6 to XS9 the transaction rhythm sites of
+        // DeskRhythmFeedTests (ARV-149, XS9 ARV-149a), and XL1 the site of Readers_Should_AgreeOnEveryQueueZonesLane (ARV-185),
+        // which may run first.
+        (await _host.ReadAsync<long>("SELECT count(*) FROM desk_minute WHERE NOT (desk_code LIKE 'DMO/%' OR desk_code LIKE 'XS2/%' OR desk_code LIKE 'XS3/%' OR desk_code LIKE 'XS4/%' OR desk_code LIKE 'XS5/%' OR desk_code LIKE 'XS6/%' OR desk_code LIKE 'XS7/%' OR desk_code LIKE 'XS8/%' OR desk_code LIKE 'XS9/%' OR desk_code LIKE 'XL1/%')"))
             .Should().Be(0);
 
 

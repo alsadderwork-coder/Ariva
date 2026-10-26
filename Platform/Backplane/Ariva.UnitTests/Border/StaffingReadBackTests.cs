@@ -136,8 +136,13 @@ public sealed class StaffingReadBackTests
             ["wait open 120"] = r => r.WaitOpen = 120,
             ["wait open just below 0"] = r => r.WaitOpen = -0.001,
             ["wait open just above 120"] = r => r.WaitOpen = 120.001,
+            // ARV-185: the engine writes the wait with the desks open now whenever there is a recommendation and they are known,
+            // but when nothing is open while people wait.
             ["wait open unknown"] = r => r.WaitOpen = null,
+            ["wait open unknown without open now"] = r => { r.OpenNow = null; r.WaitOpen = null; },
             ["wait open without open now"] = r => r.OpenNow = null,
+            ["wait open without a recommendation"] = r => { NoRecommendation(r, "BacklogUnknown"); r.WaitOpen = 8; },
+            ["no service open now without a recommendation"] = r => { NoRecommendation(r, "BacklogUnknown"); r.NoServiceOpen = true; r.OpenNow = 0; },
             ["no service open now"] = r => { r.NoServiceOpen = true; r.WaitOpen = null; r.OpenNow = 0; },
             ["no service open now with a wait"] = r => r.NoServiceOpen = true,
             ["no service open now unknown"] = r => { r.NoServiceOpen = true; r.WaitOpen = null; r.OpenNow = null; },
@@ -222,7 +227,7 @@ public sealed class StaffingReadBackTests
         "as written", "lane 2 letters", "lane 4 letters", "start at the minute", "start 194 minutes on", "minutes 1", "minutes 15", "arrivals 0",
         "arrivals a million", "arrivals unknown without a recommendation", "recommended 0, no desk needed", "recommended 1,000 of 1,000 desks", "bound Busy",
         "bound Both", "at the limit with every desk", "shortfall 1 at the limit", "shortfall a million at the limit", "wait 0", "wait 120", "wait open 0",
-        "wait open 120", "wait open unknown", "no service open now", "gap ArrivalsOutOfRange", "lane gap NoDesks", "lane gap NoThroughput",
+        "wait open 120", "wait open unknown without open now", "no service open now", "gap ArrivalsOutOfRange", "lane gap NoDesks", "lane gap NoThroughput",
         "lane gap NoQueueLength", "queue 0", "queue a million", "open now 0", "open now 1,000", "desks 1,000", "target 1", "target 120", "busy cap 0.5",
         "busy cap 1", "rate 1,000", "rate just above 0", "source Fallback"
     };
@@ -282,7 +287,6 @@ public sealed class StaffingReadBackTests
     [InlineData("at the limit with every desk")]
     [InlineData("shortfall a million at the limit")]
     [InlineData("wait 120")]
-    [InlineData("wait open unknown")]
     [InlineData("gap ArrivalsOutOfRange")]
     public void Answer_Should_ShowTheMinute_When_OneIntervalIsChangedWithinItsBounds(string change)
     {

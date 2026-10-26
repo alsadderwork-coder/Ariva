@@ -28,8 +28,8 @@ internal static class StaffingReadBack
     /// recommendation, no recommendation under a lane-wide gap, the lane-wide gap the one its desks, throughput and queue
     /// give, arrivals known where there is a recommendation, at most the lane's desks recommended and all of them at the
     /// limit, a shortfall only at the limit, a bound
-    /// exactly when a desk is needed, a wait exactly with a recommendation, a wait with the desks open now only when they
-    /// are known and serve, and the throughput with its source.
+    /// exactly when a desk is needed, a wait exactly with a recommendation, a wait with the desks open now exactly when there
+    /// is a recommendation, they are known and they serve (ARV-185), and the throughput with its source.
     /// </summary>
     internal static bool Plausible(StaffingRow r) =>
         r is not null && r.Lane is not null && LaneCategory.IsValid(r.Lane) && WholeMinute(r.MinuteUtc) && WholeMinute(r.StartUtc) &&
@@ -58,8 +58,10 @@ internal static class StaffingReadBack
         r.LaneGap == LaneGapOf(r) &&
         (r.Bound == nameof(StaffingBound.None)) == r.Recommended is null or 0 &&
         (r.WaitRecommended is null) == (r.Recommended is null) &&
-        (r.WaitOpen is null || (r.Recommended is not null && r.OpenNow is not null)) &&
-        (!r.NoServiceOpen || (r.WaitOpen is null && r.Recommended is not null && r.OpenNow is not null));
+        // The engine writes a wait with the desks open now in every interval with a recommendation while they are known, but
+        // when nothing is open while people wait (ARV-185): a missing one there is not a row it wrote.
+        (r.WaitOpen is null) == (r.Recommended is null || r.OpenNow is null || r.NoServiceOpen) &&
+        (!r.NoServiceOpen || (r.Recommended is not null && r.OpenNow is not null));
 
     // The lane-wide gap the engine gives (StaffingRecommendation.Recommend): no desks, then no throughput, then no queue now.
     private static string LaneGapOf(StaffingRow r) =>

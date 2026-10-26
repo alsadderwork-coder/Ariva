@@ -474,12 +474,11 @@
     },
     {
       "id": "ARV-185",
-      "title": "[E12] Staffing recommendation refinements: shared queues, one lane mapping, look-back and read-back tightening",
-      "description": "Low findings from ARV-181a (2026-10-15), not needed before the pilot. From the engineer: (1) a hall with one shared queue for all categories (the NBJ seed's lane ALL) gets 'no lane demand'; its demand would be the sum of the manual lanes; (2) the predicted-breach alert finds a queue's lanes through its service zones' desks, while the immigration screen, the nowcast desk term and the recommendation use the zone's own lane category; make them one rule; (3) the reference simulator's look-back (raise an earlier interval when a later one cannot meet the target at the desk limit) is not built. From the ARV-181a re-review: (4) zones whose keys do not fit (ZoneKeys.Fits) are dropped before the category's sharing, unlike refused lanes; count them too; (5) Plausible still accepts a missing open-now wait where the engine always writes one; tighten to (WaitOpen is null) == (Recommended is null || OpenNow is null || NoServiceOpen); (6) the MaxQueueRows comment should also name a queue_minute row off a whole minute. CWEs to review: CWE-501.",
+      "title": "[E12] Staffing recommendation refinements: shared queues, one lane mapping and read-back tightening",
+      "description": "Low findings from ARV-181a (2026-10-15), not needed before the pilot. From the engineer: (1) a hall with one shared queue for all categories (the NBJ seed's lane ALL) gets 'no lane demand'; its demand would be the sum of the manual lanes; (2) the predicted-breach alert finds a queue's lanes through its service zones' desks, while the immigration screen, the nowcast desk term and the recommendation use the zone's own lane category; make them one rule. From the ARV-181a re-review: (4) zones whose keys do not fit (ZoneKeys.Fits) are dropped before the category's sharing, unlike refused lanes; count them too; (5) Plausible still accepts a missing open-now wait where the engine always writes one; tighten to (WaitOpen is null) == (Recommended is null || OpenNow is null || NoServiceOpen); (6) the MaxQueueRows comment should also name a queue_minute row off a whole minute. Item (3), the reference simulator's look-back, moved to ARV-185a on 2026-10-26 (backlog/progress.md). Owner decisions of 2026-10-26: every reader uses the zone's own lane category, with the arrivals hall the recommendation and the wave share (ARV-191's departures queue left out); the shared lane ALL takes the manual categories with no arrivals-hall queue of their own. CWEs to review: CWE-501.",
       "acceptanceCriteria": [
         "A shared all-category queue gets the sum of its lanes' demand, with a table case",
         "One lane mapping rule for the predicted-breach alert, the immigration screen, the nowcast desk term and the recommendation, with tests that they agree",
-        "The look-back raises earlier intervals when a later one cannot meet the target at the desk limit, matching the simulator's Recommend on seed 9303 within a stated bound",
         "Zones whose keys do not fit count in the sharing; Plausible's open-now pairing is tightened with read-back cases; the MaxQueueRows comment is corrected",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
@@ -489,10 +488,31 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3 (the owner's rule of 2026-10-14).",
       "dependsOn": [
         "ARV-181a"
+      ]
+    },
+    {
+      "id": "ARV-185a",
+      "title": "[E12] Staffing recommendation look-back: raise earlier intervals when a later one cannot meet the target at the desk limit",
+      "description": "Split from ARV-185 on 2026-10-26 (backlog/progress.md): item (3) of ARV-181a's low findings. The reference simulator's recommender (Platform/Simulation/Ariva.Simulation.Api/Scenarios/Engine/ScenarioDay.Forecast.cs, Recommend) looks back: when an interval misses the target even at the desk limit N, it raises the nearest earlier interval below N to N (at most 8 passes, busy cap 0.85), so the backlog carried into the heavy interval is smaller. F16's engine (Ariva.Core/Staffing/StaffingRecommendation, decided forward) does not. Why split: matching the simulator needs two choices the forward engine never made and that change what lane_staffing stores: the bound within which the engine must match the simulator on seed 9303 (per interval and lane, desks and waits), and how a raised interval is labelled (script 0053's bound column takes None, Wait, Busy or Both only, so a raised interval needs a new name or a flag, which is a new script and a change to the read-back check, the staffing API and the immigration screen's words). CWEs to review: CWE-501 (the stored rows are read back).",
+      "acceptanceCriteria": [
+        "The look-back raises earlier intervals when a later one cannot meet the target at the desk limit, matching the simulator's Recommend on seed 9303 within a stated bound (formulas.md F16 gains the rule, its table cases and the bound)",
+        "A raised interval is labelled as such in lane_staffing (a new versioned script if the bound column changes), checked again by StaffingReadBack.Plausible with read-back cases, and shown in words on the immigration screen's staffing rows",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "The story's new API end-to-end and Playwright functional tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix (the full suite when the change is wide; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M. Phase 3. Split from ARV-185 (2026-10-26); the owner decides the bound and the label before it starts.",
+      "dependsOn": [
+        "ARV-185"
       ]
     },
     {

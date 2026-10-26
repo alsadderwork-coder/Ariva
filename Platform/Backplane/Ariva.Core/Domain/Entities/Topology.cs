@@ -77,7 +77,8 @@ public static partial class TopologyCodes
 
 /// <summary>
 /// A lane category code (glossary): the class of traveller a lane serves, site-configurable, 2 to 4 upper case
-/// letters. Reference codes: CRW crew and diplomats, CIT citizens, RES residents, VIS visitors, EG e-gate eligible.
+/// letters. Reference codes: CRW crew and diplomats, CIT citizens, RES residents, VIS visitors, EG e-gate eligible;
+/// ALL a shared queue for every manual category (<see cref="Shared"/>).
 /// </summary>
 public static partial class LaneCategory
 {
@@ -86,6 +87,13 @@ public static partial class LaneCategory
     public const string Residents = "RES";
     public const string Visitors = "VIS";
     public const string EGateEligible = "EG";
+
+    /// <summary>
+    /// One queue and its desks for every manual category, without segregation (the NBJ seed's halls, owner 2026-10-09). Its
+    /// demand is the manual categories that no arrivals-hall queue of the site has as its own lane (owner decision
+    /// 2026-10-26, ARV-185, <c>Ariva.Core.Flights.LaneDemand</c>).
+    /// </summary>
+    public const string Shared = "ALL";
 
     public static readonly IReadOnlyList<string> Reference = [Crew, Citizens, Residents, Visitors, EGateEligible];
 
