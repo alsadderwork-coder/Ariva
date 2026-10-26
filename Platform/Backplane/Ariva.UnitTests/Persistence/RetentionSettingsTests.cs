@@ -227,7 +227,8 @@ public sealed partial class RetentionSettingsTests
     {
         // Nothing listens on the port: a job that tried to connect would fail with a connection error instead.
         var settings = new DatabaseSettings { Host = "127.0.0.1", Port = 1, Retention = new RetentionSettings { RawSensingDays = 3 } };
-        var migrator = new DatabaseMigrator(settings, new ValidationReaderSettings(), new NHibernateSessionFactoryProvider(settings), NullLoggerFactory.Instance);
+        var migrator = new DatabaseMigrator(settings, new ValidationReaderSettings(), new NHibernateSessionFactoryProvider(settings), NullLoggerFactory.Instance,
+            new DatabaseEnvironment(null));
 
         var migrate = () => migrator.MigrateAsync(TestContext.Current.CancellationToken);
 

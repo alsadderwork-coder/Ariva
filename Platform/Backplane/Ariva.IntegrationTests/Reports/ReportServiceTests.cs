@@ -166,6 +166,29 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
             .Equal(new[] { ReportErrors.InvalidDate }, "more than 400 days back");
     }
 
+    /// <summary>
+    /// ARV-180 (CWE-863): a reader whose roles hold no <c>Alert.View</c> sees no alert in the daily report or its alerts CSV,
+    /// R-002 (anyone's) included, while the rest of the report is unchanged. The role is a code of the test's own, in no seed:
+    /// it stands for a role that reads reports without <c>Alert.View</c>, which no role of the seed is today. The on-demand
+    /// report and the scheduled deliveries read through the same reader with their reader's roles.
+    /// </summary>
+    [Fact]
+    public async Task Daily_Should_ListNoAlert_When_TheReadersRolesHoldNoAlertView()
+    {
+        const string reportOnly = "it-report-only";
+        var admin = await AdminAsync();
+        Task<Fluentx.Result<DailyReport>> Read(params string[] roles) => Host.AsCallerAsync(admin, s =>
+            s.GetRequiredService<ReportReader>().ReadAsync("DMO", Yesterday, roles, Host.Clock.GetUtcNow().UtcDateTime, Ct));
+
+        var report = (await Read(reportOnly)).Data;
+
+        report.Alerts.Should().BeEmpty("R-002 has no owner, but the reader's roles hold no Alert.View");
+        ReportCsv.Write(report, ReportCsv.Section.Alerts).Trim().Split('\n').Should().ContainSingle("the alerts CSV holds its header only");
+        report.Lanes.Single(l => l.Zone == "A-CIT").Waits.Should().Be(20, "the rest of the report is the same for every reader");
+        (await Read(reportOnly, RoleCodes.TerminalDutyManager)).Data.Alerts.Select(a => a.RuleCode).Should()
+            .Equal(new[] { "R-002" }, "with a role that holds Alert.View, the owner rule applies as before");
+    }
+
     [Fact]
     public async Task Schedule_Should_SendOnlyToAccountsThatMayReadTheSite_And_BeAudited()
     {

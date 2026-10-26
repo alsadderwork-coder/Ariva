@@ -13,7 +13,8 @@ namespace Ariva.IntegrationTests.Operations;
 /// host's own, as in the unit tests' hosts.
 /// </summary>
 /// <typeparam name="TEntryPoint">A type in the host assembly (its <c>_IAssemblyMark</c>).</typeparam>
-internal sealed class DeployedHost<TEntryPoint>(IReadOnlyDictionary<string, string> settings) : WebApplicationFactory<TEntryPoint>
+/// <param name="environment">The host environment, <see cref="Environment"/> unless a test starts the host as another (ARV-180: vm-local).</param>
+internal sealed class DeployedHost<TEntryPoint>(IReadOnlyDictionary<string, string> settings, string environment = "k8s-dev") : WebApplicationFactory<TEntryPoint>
     where TEntryPoint : class
 {
     public const string Environment = "k8s-dev";
@@ -26,7 +27,7 @@ internal sealed class DeployedHost<TEntryPoint>(IReadOnlyDictionary<string, stri
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
-        builder.UseEnvironment(Environment);
+        builder.UseEnvironment(environment);
         builder.UseSetting("Database:AllowSchemaUpdate", "false");
         builder.UseSetting("Database:VerifySchemaOnStartup", "true");
         builder.UseSetting("Redis:Enabled", "false");

@@ -11,8 +11,8 @@ namespace Ariva.Infra.Services.Reports;
 /// Reads one site's local day for the daily report (ARV-060) and builds it (<see cref="DailyReports"/>): the stored
 /// minutes of its queue zones with their histograms, the alerts raised that day that the given roles see (the same rule
 /// as the alert screens: the owner role, the escalation role once escalated, or an administrator; an alert on a
-/// border-only metric only for roles holding <c>ArrivalWaveLanes.View</c>, <see cref="BorderAlerts"/>, ARV-181b2 and ARV-187), and the
-/// outages of its devices. The caller decides who may read the site; this class only reads. ARV-096d (CWE-400, CWE-120): each read
+/// border-only metric only for roles holding <c>ArrivalWaveLanes.View</c>, <see cref="BorderAlerts"/>, ARV-181b2 and ARV-187; and
+/// none at all for roles without <c>Alert.View</c>, <see cref="ReportAlerts"/>, ARV-180), and the outages of its devices. The caller decides who may read the site; this class only reads. ARV-096d (CWE-400, CWE-120): each read
 /// takes at most its bound of <see cref="Limits"/> plus one row, and a day past a bound is refused (<see cref="ReportErrors.TooLarge"/>),
 /// never cut short.
 /// </summary>
@@ -77,11 +77,12 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
         var admin = Enumerable.Contains(roles, RoleCodes.SystemAdministrator, StringComparer.Ordinal);
         // ARV-181b2, ARV-187: alerts on a border-only metric only for roles holding ArrivalWaveLanes.View, whatever their owner and
         // escalation roles (the on-demand report, its CSV and the scheduled deliveries all read here with their reader's roles).
+        // ARV-180: and alerts at all only for roles holding Alert.View (ReportAlerts), an alert without an owner included.
         var alerts = await ExecuteSqlAsync<AlertRow>("""
             SELECT rule_code AS "RuleCode", rule_name AS "RuleName", zone_name AS "ZoneName", device_code AS "DeviceCode", severity AS "Severity",
                    state AS "State", raised_utc AS "RaisedUtc", COALESCE(cleared_utc, resolved_utc) AS "ClearedUtc"
             FROM alert
-            WHERE site_code = :site AND raised_utc >= :from AND raised_utc < :to
+            WHERE site_code = :site AND raised_utc >= :from AND raised_utc < :to AND :alertView
               AND (:admin OR owner_role IS NULL OR owner_role IN (:roles) OR (escalated_utc IS NOT NULL AND escalate_to_role IN (:roles)))
               AND (:border OR metric NOT IN (:borderMetrics))
             ORDER BY raised_utc LIMIT 5000
@@ -94,7 +95,8 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
             // An empty IN list is not valid SQL; a role code that cannot exist stands in for "none".
             ["roles"] = roles.Count > 0 ? roles.ToList() : ["-"],
             ["border"] = BorderAlerts.Receives(roles),
-            ["borderMetrics"] = BorderAlerts.MetricNames
+            ["borderMetrics"] = BorderAlerts.MetricNames,
+            ["alertView"] = ReportAlerts.Receives(roles)
         }, ct);
 
         var outages = await ExecuteSqlAsync<OutageRow>("""

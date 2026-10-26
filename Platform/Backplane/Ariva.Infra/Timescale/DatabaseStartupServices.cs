@@ -38,6 +38,35 @@ internal sealed class DevelopmentMigrationService(DatabaseMigrator migrator, Dat
 }
 
 /// <summary>
+/// ARV-180 (CWE-269, CWE-287): a vm-local host that writes to its database at start (it migrates it, seeds the development
+/// accounts or seeds the demo topology) checks first that the database is not another environment's
+/// (<see cref="DatabaseEnvironment"/>), with the migration login when it migrates (a fresh developer database has no runtime
+/// login yet) and with the runtime login otherwise. The check runs in <see cref="StartingAsync"/>, which the host runs for every
+/// lifecycle service before it starts any hosted service, so a refusal stops the host before any seed or migration whether the
+/// services start one after another or at once (the review's finding H1). The migration checks again before any script, for
+/// the migration command.
+/// </summary>
+internal sealed class DevelopmentDatabaseGuard(DatabaseSettings settings, DatabaseEnvironment environment) : IHostedLifecycleService
+{
+    public async Task StartingAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = PostgresConnections.Create(settings.AllowSchemaUpdate ? settings.BuildMigrationConnectionString() : settings.BuildConnectionString());
+        await connection.OpenAsync(cancellationToken);
+        await environment.EnsureMayUseAsync(connection, cancellationToken);
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
+/// <summary>
 /// Every host outside vm-local (Database:VerifySchemaOnStartup): stop at startup when the database lacks a shipped
 /// script or an applied script was changed, instead of running new code against the wrong schema.
 /// </summary>

@@ -773,6 +773,16 @@ The live minutes a full buffer touched (events refused for it, or applied before
 | `Late`, `Future`, `Invalid`, `UnknownGeometry` | Events behind the watermark (their minutes are recomputed, section 4.10), ahead of the clock beyond 5 minutes, with times or counts out of bounds, or naming a line or zone the profile does not have | A device's clock (section 4.5), its dialect mapping or the zone profile's lines |
 | `Duplicates`, `Reverse`, `UnmatchedExits`, `NegativeWaits`, `TooManyDevices` | Pairing outcomes: a repeated entry or exit, an inward crossing of an exit line, an exit with nobody to pair (people inside when the zone started afresh, wiki 18), an exit before its entry, a zone with more devices than it tracks apart | Expected in small numbers; many of one kind points at the zone's lines or a device's geometry (wiki 06) |
 
+### 4.23 A deployed database reached by a developer's process (ARV-180)
+
+The migration job logs the error "The database recorded the environment vm-local and now records ...": before this release's migration, a vm-local process (a developer's host, an E2E run, the migration command run as vm-local) migrated this database, and may have run NHibernate SchemaUpdate on it and seeded the development accounts, whose passwords are known, and the demo topology. Since ARV-180 a vm-local process refuses a database that records another environment, so this means the database had no record yet (migrated before ARV-180) or was reached before its first migration with ARV-180.
+
+1. Treat it as a security incident: find who ran it (the developer machines that could reach the database, the tunnels or port forwards open at the time).
+2. Disable every account the seed created or reset, in user administration (Users and access), which revokes their sessions: `SELECT user_name, created_on, modified_on FROM "user" WHERE created_by = 'development-seed' OR modified_by = 'development-seed'` with a read-only login lists them. Check the audit trail for what those accounts did since.
+3. Remove the demo topology if it was seeded and is not wanted (the fictional site `DMO` and the illustrative sites, their rows created by `demo-seed`, ARV-019 and ARV-139a), through the administration screens.
+4. Compare the schema with a fresh migration of the same release (`pg_dump --schema-only` of both): SchemaUpdate adds columns and tables the scripts do not; report any difference to Dalil support.
+5. The job has recorded the cluster's environment again, so from now on a vm-local process refuses this database.
+
 ## 5. Routine checks
 
 | Frequency | Check |

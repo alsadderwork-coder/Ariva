@@ -88,7 +88,7 @@ Arrival-wave API (ARV-047, `ArrivalWave.View`: border shift supervisors, termina
 
 ### Alerts (ARV-039)
 
-You see the alerts of your sites that your role is responsible for: the rule's owner role, the escalation role once an alert has been escalated, and every role for a rule without an owner (administrators see all). Open desks below recommendation alerts (ARV-181b2) and predicted-breach (predicted nowcast) alerts (ARV-187) are border data: only border shift supervisors and administrators see them, act on them, are told of them on the live screens, get their emails and find them in the daily report and the weekly summary, whatever the alert's owner and escalation roles say. An alert moves forward only:
+You see the alerts of your sites that your role is responsible for: the rule's owner role, the escalation role once an alert has been escalated, and every role for a rule without an owner (administrators see all). The daily report and the weekly summary list alerts only for readers whose roles may see alerts (`Alert.View`, ARV-180); every role that reads reports may today. Open desks below recommendation alerts (ARV-181b2) and predicted-breach (predicted nowcast) alerts (ARV-187) are border data: only border shift supervisors and administrators see them, act on them, are told of them on the live screens, get their emails and find them in the daily report and the weekly summary, whatever the alert's owner and escalation roles say. An alert moves forward only:
 
 | From | Action | To | Who |
 |---|---|---|---|

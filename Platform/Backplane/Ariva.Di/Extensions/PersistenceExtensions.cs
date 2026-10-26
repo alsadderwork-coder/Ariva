@@ -6,6 +6,7 @@ using Ariva.Infra.Timescale;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace Ariva.Di.Extensions;
 
@@ -38,7 +39,21 @@ public static class PersistenceExtensions
         services.AddScoped<IStorageProvider, NHibernateStorageProvider>();
         services.AddScoped<IUnitOfWork, UnitOfWork>();
         services.AddSingleton<DatabaseMigrator>();
+        // ARV-180: the environment the migration job records in the database, and a vm-local host checks before it migrates or seeds.
+        var environment = DatabaseEnvironment.FromConfiguration(configuration);
+        services.AddSingleton(environment);
 
+        // ARV-180: SchemaUpdate on a developer machine only. A test enforces it on the committed files; this refuses a process
+        // of a named environment other than vm-local that is given Database__AllowSchemaUpdate (the integration tests' own
+        // processes name none).
+        if (settings.AllowSchemaUpdate && environment.Name is not null && !environment.IsVmLocal)
+            throw new InvalidOperationException($"Database:AllowSchemaUpdate is only allowed in vm-local; this process runs as '{environment.Name}' (ARV-180).");
+        // ARV-180: a vm-local host that writes to its database at start (migration, development accounts, demo topology) checks
+        // the database's environment before any hosted service starts (the guard's StartingAsync), and the hosted services
+        // start one after another whatever the configuration says (servicesStartConcurrently), as the guards here rely on.
+        services.PostConfigure<HostOptions>(options => options.ServicesStartConcurrently = false);
+        if (environment.IsVmLocal && (settings.AllowSchemaUpdate || SeedsDevelopmentAccounts(configuration) || SeedsDemoTopology(configuration)))
+            services.AddHostedService<DevelopmentDatabaseGuard>();
         // vm-local migrates at startup; every other environment only checks, the migration job changes the schema.
         if (settings.AllowSchemaUpdate)
             services.AddHostedService<DevelopmentMigrationService>();
@@ -50,6 +65,17 @@ public static class PersistenceExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// Whether the host is configured with development accounts (Auth:DevelopmentUsers), which Ariva.Api.Main seeds at start in
+    /// vm-local (ARV-180). Read here, before the accounts are registered, so that the guard starts before the seed.
+    /// </summary>
+    internal static bool SeedsDevelopmentAccounts(IConfiguration configuration) =>
+        configuration.GetSection("Auth:DevelopmentUsers").GetChildren().Any();
+
+    /// <summary>Whether the host seeds the demo topology at start (Seed:DemoTopology, Ariva.Api.Main), as <see cref="DemoSeedExtensions"/> reads it.</summary>
+    internal static bool SeedsDemoTopology(IConfiguration configuration) =>
+        configuration.GetValue<bool>(DemoSeedExtensions.SettingName);
 
     /// <summary>
     /// ARV-082a (CWE-319, CWE-295): in production every connection to PostgreSQL uses TLS verified against the pinned internal

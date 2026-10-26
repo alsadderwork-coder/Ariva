@@ -10,13 +10,16 @@ namespace Ariva.Infra.Timescale;
 /// the Cronz retention job reads), then creates or updates the runtime login the hosts use, with the server's limit on one of its
 /// statements (ARV-096d, script 0063), and (ARV-104g1) the validation
 /// reader login, the only login that reads the shadow nowcast. On a developer machine (Database:AllowSchemaUpdate) NHibernate
-/// SchemaUpdate then adds whatever the scripts do not cover yet, also with the migration login.
+/// SchemaUpdate then adds whatever the scripts do not cover yet, also with the migration login. ARV-180: the job records its
+/// environment in the database after the scripts (<see cref="DatabaseEnvironment"/>), and a vm-local migration refuses, before
+/// anything changes, a database that records another environment.
 /// </summary>
 internal sealed class DatabaseMigrator(
     DatabaseSettings settings,
     ValidationReaderSettings reader,
     NHibernateSessionFactoryProvider factoryProvider,
-    ILoggerFactory loggerFactory)
+    ILoggerFactory loggerFactory,
+    DatabaseEnvironment environment)
 {
     private readonly ILogger _logger = loggerFactory.CreateLogger<DatabaseMigrator>();
 
@@ -29,11 +32,24 @@ internal sealed class DatabaseMigrator(
         settings.Retention.EnsureValid();
         // ARV-096d: and a command or statement timeout out of range.
         settings.EnsureValidLimits();
+        // ARV-180: and an environment that cannot be recorded.
+        environment.EnsureValid();
 
         var migrationConnection = settings.BuildMigrationConnectionString();
+        // ARV-180: a vm-local migration (a developer's host, the E2E suites) stops before anything changes on a database that
+        // records another environment: its settings reach a deployed store.
+        if (environment.IsVmLocal)
+        {
+            await using var connection = PostgresConnections.Create(migrationConnection);
+            await connection.OpenAsync(ct);
+            await environment.EnsureMayUseAsync(connection, ct);
+        }
+
         var runner = new SqlScriptRunner(migrationConnection, loggerFactory.CreateLogger<SqlScriptRunner>());
         var applied = await runner.ApplyAsync(SqlScriptCatalog.Embedded(), ct);
         _logger.LogInformation("Migration applied {Count} script(s)", applied.Count);
+        // ARV-180: right after the scripts, so a job that fails later still leaves the record.
+        await environment.RecordAsync(migrationConnection, _logger, ct);
 
         // ARV-111a: after the scripts, so the configured periods replace the scripts' defaults on every release.
         await RetentionPolicies.ApplyAsync(migrationConnection, settings.Retention, _logger, ct);

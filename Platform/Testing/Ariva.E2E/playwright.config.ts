@@ -198,6 +198,9 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, 
 		// otherwise runs the development schema update at startup and the hosts would stop on the refused connection.
 		env: {
 			Database__AllowSchemaUpdate: databaseAvailable ? 'true' : 'false',
+			// ARV-180: a vm-local host that seeds at start checks its database's environment first, so without a database the
+			// demo topology seed (on in Main's vm-local settings) is off too, and the hosts start without one.
+			Seed__DemoTopology: databaseAvailable ? 'true' : 'false',
 			LogFile__Path: logFile,
 			// Every host validates tokens with the run's development key; tests read it to sign tampered tokens.
 			Auth__Tokens__DevelopmentKeyDirectory: process.env.ARIVA_E2E_KEY_DIR!,

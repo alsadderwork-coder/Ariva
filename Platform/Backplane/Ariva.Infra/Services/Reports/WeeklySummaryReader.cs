@@ -16,7 +16,8 @@ namespace Ariva.Infra.Services.Reports;
 /// parameters and every grouping uses them (<c>width_bucket</c>), so a week with a clock change has 167 or 169 hours and
 /// PostgreSQL's own time zone data never decides a local day. Every query is constant and parameterised (CWE-89), names the
 /// site (a zone key built from it, a desk joined to the site's own checkpoints, the site code of an alert, a device or a
-/// ledger minute), and reads only what the given roles allow (CWE-863): the alerts they see, airport desks only with
+/// ledger minute), and reads only what the given roles allow (CWE-863): the alerts they see (none without <c>Alert.View</c>,
+/// <see cref="ReportAlerts"/>, ARV-180), airport desks only with
 /// <c>AirportDesks.View</c>, data quality and availability only with <c>DataQuality.View</c>. Every read is bounded by
 /// <see cref="Limits"/> and a read that passes its bound is refused, never cut short (LIMIT bound + 1, CWE-120).
 /// <para>
@@ -217,13 +218,14 @@ internal sealed class WeeklySummaryReader(IUnitOfWork unitOfWork, AvailabilityLe
 
         // The alerts the roles see, by the alert screens' rule (as the daily report): the owner role, the escalation role once
         // escalated, an alert without an owner, or an administrator; an alert on a border-only metric only for roles holding
-        // ArrivalWaveLanes.View, whatever its owner and escalation roles (BorderAlerts, ARV-181b2, ARV-187).
+        // ArrivalWaveLanes.View, whatever its owner and escalation roles (BorderAlerts, ARV-181b2, ARV-187); and alerts at all only
+        // for roles holding Alert.View (ReportAlerts, ARV-180), an alert without an owner included.
         var admin = Enumerable.Contains(roles, RoleCodes.SystemAdministrator, StringComparer.Ordinal);
         var alerts = await ExecuteSqlAsync<AlertRow>("""
             SELECT rule_code AS "RuleCode", rule_name AS "RuleName", zone_name AS "ZoneName", severity AS "Severity", state AS "State",
                    raised_utc AS "RaisedUtc", acknowledged_utc AS "AcknowledgedUtc", escalated_utc AS "EscalatedUtc"
             FROM alert
-            WHERE site_code = :site AND raised_utc >= :from AND raised_utc < :to
+            WHERE site_code = :site AND raised_utc >= :from AND raised_utc < :to AND :alertView
               AND (:admin OR owner_role IS NULL OR owner_role IN (:roles) OR (escalated_utc IS NOT NULL AND escalate_to_role IN (:roles)))
               AND (:border OR metric NOT IN (:borderMetrics))
             ORDER BY raised_utc LIMIT :cap
@@ -237,6 +239,7 @@ internal sealed class WeeklySummaryReader(IUnitOfWork unitOfWork, AvailabilityLe
             ["roles"] = roles.Count > 0 ? roles.ToList() : ["-"],
             ["border"] = BorderAlerts.Receives(roles),
             ["borderMetrics"] = BorderAlerts.MetricNames,
+            ["alertView"] = ReportAlerts.Receives(roles),
             ["cap"] = Limits.MaxAlerts + 1
         }, ct);
         if (alerts.Count > Limits.MaxAlerts)

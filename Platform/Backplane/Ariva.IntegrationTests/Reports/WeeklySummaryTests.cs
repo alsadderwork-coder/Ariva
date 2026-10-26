@@ -600,6 +600,27 @@ public sealed class WeeklySummaryTests(PostgresFixture fixture) : IAsyncDisposab
         (await SummaryAsync(p.Admin, "XTZ", Week)).ErrorMessages.Should().Equal(new[] { WeeklySummaryErrors.TimeZoneUnknown }, "never summarised in UTC instead");
     }
 
+    /// <summary>
+    /// ARV-180 (CWE-863): the weekly summary counts no alert for a reader whose roles hold no <c>Alert.View</c>, R-002 (anyone's)
+    /// included. The role is a code of the test's own, in no seed, standing for a role that reads reports without <c>Alert.View</c>.
+    /// </summary>
+    [Fact]
+    public async Task Summary_Should_CountNoAlert_When_TheReadersRolesHoldNoAlertView()
+    {
+        const string reportOnly = "it-report-only";
+        var p = await PlantAsync();
+        After();
+        Task<Fluentx.Result<WeeklySummary>> Read(params string[] roles) => _host.AsCallerAsync(p.Border, s =>
+            new WeeklySummaryReader(s.GetRequiredService<IUnitOfWork>(), s.GetRequiredService<AvailabilityLedgerReader>())
+                .ReadAsync("DMO", Week, TimeZoneInfo.FindSystemTimeZoneById("Asia/Dubai"), roles, _host.Clock.GetUtcNow().UtcDateTime, Ct));
+
+        var summary = (await Read(reportOnly)).Data;
+
+        summary.Alerts.Total.Should().Be(0, "R-002 has no owner, but the reader's roles hold no Alert.View");
+        summary.Alerts.ByDay.Should().OnlyContain(d => d.Count == 0);
+        (await Read(reportOnly, RoleCodes.TerminalDutyManager)).Data.Alerts.Total.Should().Be(2, "with a role that holds Alert.View, the owner rule applies as before");
+    }
+
     [Fact]
     public async Task Reads_Should_BeRefusedRatherThanCutShort_When_TheyPassTheirBound()
     {

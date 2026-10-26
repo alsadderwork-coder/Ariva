@@ -71,6 +71,7 @@ These periods are migration-job parameters (`Database:Retention`; in the cluster
 | `outbound_endpoint` | Table | Configuration | None: a system Ariva calls, its settings and its secret protected by the key ring; audit columns | Indefinite: disabled, never deleted | Script 0028 | Integration (Ariva.Api.Main; used by Ariva.Api.Integration) |
 | `retention_period` | Table | Configuration | None: each relational data set's period with the time and the login that set it | One row per data set, replaced by every migration | Migration job (`Database:Retention`); script 0054 | Platform (migration job) |
 | `schema_version` | Table | Platform | None: the applied scripts with their checksum, time and login | Indefinite | The script runner (`SqlScriptRunner`) | Platform (migration job) |
+| `database_environment` | Table | Platform | None: the environment the last migration recorded, with the time and the login (ARV-180) | One row, replaced by every migration | Migration job (`Application:Environment`); script 0064 | Platform (migration job) |
 
 ### Devices, sensing and queue measurement
 
