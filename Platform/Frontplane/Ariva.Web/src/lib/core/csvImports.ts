@@ -280,7 +280,7 @@ export type Failure =
 	  }
 	| { kind: 'reason'; reason: string; row?: number };
 
-// The titles CsvImportAnswers and CsvImportLimitAttribute give their problems; Api.ts joins title and detail with ': '.
+// The titles CsvImportAnswers and UploadLimitAttribute give their problems; Api.ts joins title and detail with ': '.
 const titles = /^(?:Not valid|Too large|Conflict|Not found|Too many requests): /;
 const atRow = /^Row (\d{1,7}): (.+)$/s;
 

@@ -223,8 +223,10 @@ internal sealed class SvcSiteConfiguration(
         if (airports.Count != codes.Count)
             return await RefuseImportAsync(siteCode, SiteConfigurationErrors.UnknownAirport, bundle);
 
-        // Two imports of one site queue on its row; the second sees the first's records once it holds the lock.
-        await LockSiteAsync(siteCode, ct);
+        // Two imports of one site queue on its row; the second sees the first's records once it holds the lock. The wait is
+        // bounded (ARV-250): an import holds the host's one upload permit while it waits, so past the wait it answers SiteBusy.
+        if (!await TryLockSiteAsync(siteCode, SiteConfigurationLimits.SiteLockWait, ct))
+            return await RefuseImportAsync(siteCode, SiteConfigurationErrors.SiteBusy, bundle);
         if (!await IsEmptyAsync(siteCode, ct))
             return await RefuseImportAsync(siteCode, SiteConfigurationErrors.SiteNotEmpty, bundle);
 
@@ -437,21 +439,12 @@ internal sealed class SvcSiteConfiguration(
     private async Task<bool> ReachableAsync(string siteCode, CancellationToken ct) =>
         siteCode is not null && (await siteScope.GetAsync(ct)).Allows(siteCode) && await Query<Site>().AnyAsync(s => s.Code == siteCode, ct);
 
-    private Task LockSiteAsync(string siteCode, CancellationToken ct) =>
-        ExecuteCommandAsync<LockRow>("""SELECT 1 AS "Value" FROM site WHERE code = :code FOR UPDATE""",
-            new Dictionary<string, object> { ["code"] = siteCode }, ct);
-
     /// <summary>
     /// The audit entry's summary: the outcome, a refusal's fixed text, the bundle hash, the envelope's format version and
     /// source site (both checked before they are recorded), the number of parts and the counts. Never a part's content.
     /// </summary>
     private static string Summary(string outcome, string reason, string bundleSha256, int? formatVersion, string sourceSite, int parts, SiteConfigurationCountsViewModel counts) =>
         JsonSerializer.Serialize(new { outcome, reason, bundleSha256, formatVersion, sourceSite, parts, counts }, JsonSerializerOptions.Web);
-
-    private sealed class LockRow
-    {
-        public int Value { get; set; }
-    }
 
     #endregion
 }

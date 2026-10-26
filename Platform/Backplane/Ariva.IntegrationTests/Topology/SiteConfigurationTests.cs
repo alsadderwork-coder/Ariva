@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using Ariva.Core;
@@ -13,6 +14,7 @@ using Ariva.Core.Services.Storage;
 using Ariva.Core.Services.Topology;
 using Ariva.Infra.Security;
 using Ariva.Infra.Storage;
+using Ariva.IntegrationTests.CsvImports;
 using Ariva.IntegrationTests.Security;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
@@ -37,7 +39,8 @@ namespace Ariva.IntegrationTests.Topology;
 /// answers the conflict and writes nothing; a rule naming a zone the imported draft lacks is refused.
 /// ARV-154: every create that adds configuration to a site holds the site's row from before its first write to its commit;
 /// a create started during an import waits and succeeds after it, and an import started during a create waits for it and
-/// finds the site not empty.
+/// finds the site not empty. ARV-250: an import waits at most SiteConfigurationLimits.SiteLockWait for the site's row and
+/// answers SiteBusy past it.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisposable
@@ -712,14 +715,46 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
         await AirportAsync(admin, "QXK");
 
         // Without the site row lock, imports that overlap would all see the site empty and the losers would fail on the
-        // terminal's unique index (TerminalTaken); with it, each later one waits and finds the winner's records.
+        // terminal's unique index (TerminalTaken); with it, each later one waits and finds the winner's records, or answers
+        // SiteBusy when the winner held the row past the bounded wait (ARV-250).
         var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ =>
             _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCFK", Request(bundle), "QXK", Ct))));
 
         results.Count(r => !r.HasErrors).Should().Be(1, "the site row lock lets one import see the site empty");
-        results.Where(r => r.HasErrors).Should().OnlyContain(r => r.ErrorMessages.SequenceEqual(new[] { SiteConfigurationErrors.SiteNotEmpty }));
+        results.Where(r => r.HasErrors).Should().OnlyContain(r => r.ErrorMessages.SequenceEqual(new[] { SiteConfigurationErrors.SiteNotEmpty })
+            || r.ErrorMessages.SequenceEqual(new[] { SiteConfigurationErrors.SiteBusy }));
         (await _host.ReadAsync<long>("SELECT count(*) FROM terminal WHERE site_code = @secret", secret: "XCFK")).Should().Be(1);
         (await _host.ReadAsync<long>("SELECT count(*) FROM zone_profile WHERE site_code = @secret", secret: "XCFK")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Import_Should_AnswerSiteBusyAfterTheWait_When_AnotherTransactionHoldsTheSiteLonger()
+    {
+        // ARV-250: an import holds its host's one upload permit while it waits for the site's row, so it waits at most
+        // SiteConfigurationLimits.SiteLockWait and answers SiteBusy past it: audited as refused, nothing written.
+        var admin = await AdministratorAsync("lw");
+        await SourceAsync(admin, "XCLW", "QLW");
+        var bundle = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCLW", Ct))).Bundle;
+        await SiteAsync(admin, "XCLX");
+        await AirportAsync(admin, "QLX");
+
+        TimeSpan waited;
+        Fluentx.Result<SiteConfigurationImportViewModel> busy;
+        await using (await SiteHolder.HoldAsync(fixture.ConnectionString(await _host.DatabaseAsync()), "XCLX"))
+        {
+            var clock = Stopwatch.StartNew();
+            busy = await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCLX", Request(bundle), "QLX", Ct));
+            waited = clock.Elapsed;
+        }
+
+        busy.ErrorMessages.Should().Equal(SiteConfigurationErrors.SiteBusy);
+        waited.Should().BeGreaterThanOrEqualTo(SiteConfigurationLimits.SiteLockWait - TimeSpan.FromMilliseconds(100), "it waits for the lock first")
+            .And.BeLessThan(SiteConfigurationLimits.SiteLockWait + TimeSpan.FromSeconds(15), "and no longer than its wait and the bundle's checks");
+        (await RecordsAsync("XCLX")).Should().Be(0, "nothing of the bundle");
+        (await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE action = 'SiteConfiguration.ImportRefused' AND target_name = @secret", secret: "XCLX"))
+            .Should().Contain("\"outcome\":\"refused\"").And.Contain(SiteConfigurationErrors.SiteBusy);
+        Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCLX", Request(bundle), "QLX", Ct))).Counts.Terminals
+            .Should().Be(1, "once the lock is free the same bundle imports");
     }
 
     /// <summary>Whether a session of this test's database waits for a lock (ARV-154).</summary>

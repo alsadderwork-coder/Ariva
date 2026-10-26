@@ -215,6 +215,11 @@ public sealed class RequestTimeoutsTests
     [InlineData("Security:RateLimiting:Reports:QueueLimit", "-1", "*Security:RateLimiting*")]
     [InlineData("Security:RateLimiting:CsvImports:PermitLimit", "0", "*Security:RateLimiting*")]
     [InlineData("Security:RateLimiting:CsvImports:WindowSeconds", "0", "*Security:RateLimiting*")]
+    [InlineData("Security:RateLimiting:CsvImports:SegmentsPerWindow", "601", "*Security:RateLimiting*")]
+    [InlineData("Security:RateLimiting:Uploads:PermitLimit", "0", "*Security:RateLimiting*")]
+    [InlineData("Security:RateLimiting:Uploads:WindowSeconds", "0", "*Security:RateLimiting*")]
+    [InlineData("Security:RateLimiting:Uploads:SegmentsPerWindow", "0", "*Security:RateLimiting*")]
+    [InlineData("Security:RateLimiting:Uploads:WindowSeconds", "86401", "*Security:RateLimiting*")]
     public async Task CreateClient_Should_FailAtStartup_When_ATimeoutOrTheReportsPolicyIsOutOfBounds(string key, string value, string message)
     {
         await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder => builder.UseSetting(key, value));

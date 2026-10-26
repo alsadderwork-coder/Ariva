@@ -1,6 +1,7 @@
 using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
+using Ariva.Api.Main.Controllers.AdminArea.Uploads;
 using Ariva.Core;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Services.Imports;
@@ -20,7 +21,7 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Imports;
 /// slow: <see cref="SteadyUploadAttribute"/>, ARV-096); never cached.
 /// The file is scanned for malware at preview and again at commit (ARV-092b): 400 for a detection, 503 with Retry-After
 /// while no scanner answers. A user's previews, and apart from them their commits, are counted before the file is read
-/// (<see cref="CsvImportLimitAttribute"/>, ARV-155: 429 with Retry-After), and an import waits at most 5 s for the site's lock
+/// (<see cref="UploadLimitAttribute"/>, ARV-155: 429 with Retry-After), and an import waits at most 5 s for the site's lock
 /// (409 when another import or change holds it longer).
 /// </summary>
 [ApiController]
@@ -32,7 +33,7 @@ namespace Ariva.Api.Main.Controllers.AdminArea.Imports;
 public sealed class DeviceImportsController(ISvcDeviceImports imports) : ControllerBase
 {
     [HttpPost("preview")]
-    [CsvImportLimit(CsvImportLimitAttribute.Preview)]
+    [UploadLimit(UploadLimitAttribute.CsvPreview)]
     [Permission(nameof(Global.Defaults.Permissions.CreateDevice))]
     [RequiresRecentMfa]
     [RequestSizeLimit(CsvImportAnswers.MaxRequestBytes)]
@@ -56,7 +57,7 @@ public sealed class DeviceImportsController(ISvcDeviceImports imports) : Control
     }
 
     [HttpPost("commit")]
-    [CsvImportLimit(CsvImportLimitAttribute.Commit)]
+    [UploadLimit(UploadLimitAttribute.CsvCommit)]
     [Permission(nameof(Global.Defaults.Permissions.CreateDevice))]
     [RequiresRecentMfa]
     [RequestSizeLimit(CsvImportAnswers.MaxRequestBytes)]

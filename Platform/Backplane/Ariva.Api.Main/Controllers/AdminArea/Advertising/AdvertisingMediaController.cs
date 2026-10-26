@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Security;
 using Ariva.Api.Main.Controllers.AdminArea.Topology;
+using Ariva.Api.Main.Controllers.AdminArea.Uploads;
 using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Services.Displays;
@@ -74,6 +75,7 @@ public sealed class AdvertisingMediaController(ISvcAdvertisingMedia media) : Con
     [HttpPost]
     [Permission(nameof(Global.Defaults.Permissions.ManageAdvertising))]
     [EnableRateLimiting(RateLimitingExtensions.UploadPolicy)]
+    [UploadLimit(UploadLimitAttribute.AdvertisingMedia)]
     [RequestTimeout(RequestTimeoutsExtensions.TransferPolicy)]
     [RequestSizeLimit(MaxRequestBytes)]
     [AdvertisingUploadLimit]

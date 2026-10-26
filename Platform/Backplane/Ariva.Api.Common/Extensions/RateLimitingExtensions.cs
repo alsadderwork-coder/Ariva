@@ -120,8 +120,8 @@ public static class RateLimitingExtensions
             .Bind(configuration.GetSection(RateLimitingSettings.SectionName))
             .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.DisplayPlays.IsValid && settings.IntegrationAuth.IsValid &&
                                 settings.IntegrationBatch.IsValid && settings.IntegrationAidx.IsValid && settings.IntegrationClient.IsValid &&
-                                settings.ValidationResults.IsValid && settings.Reports.IsValid && settings.CsvImports.IsValid,
-                $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds and a QueueLimit of zero or more.")
+                                settings.ValidationResults.IsValid && settings.Reports.IsValid && settings.CsvImports.IsValid && settings.Uploads.IsValid,
+                $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds, a QueueLimit of zero or more and, for a sliding window, at most 86,400 WindowSeconds in 1 to 600 SegmentsPerWindow (no more than WindowSeconds).")
             .ValidateOnStart();
 
         services.AddRateLimiter(_ => { });

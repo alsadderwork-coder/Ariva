@@ -7,9 +7,9 @@ using System.Reflection;
 using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Logging;
 using Ariva.Api.Main.Controllers.AdminArea.Imports;
+using Ariva.Api.Main.Controllers.AdminArea.Uploads;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
-using Ariva.Core.Services;
 using Ariva.Core.Services.Imports;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
@@ -24,8 +24,8 @@ namespace Ariva.UnitTests.Security;
 
 /// <summary>
 /// ARV-155 (CWE-400, CWE-770) on Ariva.Api.Main in process, the import services replaced: a user's CSV import previews, and
-/// apart from them their commits, are counted per user in a fixed window (here 2 in 10 minutes), one allowance for the device
-/// and the desk code mapping imports. Past it a request answers 429 with Retry-After and the fixed text before the file is
+/// apart from them their commits, are counted per user in a sliding window (here 2 in 10 minutes), one allowance for the device
+/// and the desk code mapping imports (UploadLimitTests holds the limit's other kinds). Past it a request answers 429 with Retry-After and the fixed text before the file is
 /// read (a malformed body is refused 429, not the upload filter's 400) and never reaches the service; another user, and the
 /// same user's other step, are not held back. A refusal is recorded as a refused request (LimitReached); a caller the
 /// authorization refuses is never counted; an import that waited out the site's lock answers 409 with its fixed text; every
@@ -70,7 +70,7 @@ public sealed class CsvImportLimitTests : IDisposable
 
         answers.Should().Equal([HttpStatusCode.BadRequest, HttpStatusCode.BadRequest], "the first two reach the service, which refuses the empty file");
         refused.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
-        refused.Headers.RetryAfter?.Delta.Should().BeGreaterThan(TimeSpan.Zero).And.BeLessThanOrEqualTo(TimeSpan.FromMinutes(10));
+        refused.Headers.RetryAfter?.Delta.Should().Be(TimeSpan.FromSeconds(610), "the window and one segment");
         using (var problem = JsonDocument.Parse(await refused.Content.ReadAsStringAsync(Ct)))
             problem.RootElement.GetProperty("detail").GetString().Should().Be(CsvImportErrors.TooManyImports);
         mappingRefused.StatusCode.Should().Be(HttpStatusCode.TooManyRequests, "one allowance for both imports' previews");
@@ -186,20 +186,11 @@ public sealed class CsvImportLimitTests : IDisposable
             .SelectMany(c => c.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)).ToList();
 
         actions.Should().HaveCount(4);
-        actions.Select(a => (a.Name, a.GetCustomAttribute<CsvImportLimitAttribute>()?.Step))
-            .Should().BeEquivalentTo(new[] { ("Preview", "preview"), ("Commit", "commit"), ("Preview", "preview"), ("Commit", "commit") });
-    }
-
-    [Fact]
-    public void CallerOf_Should_PreferTheUserIdAndRefuseACallerWithNeither_When_Asked()
-    {
-        var id = Guid.Parse("0199a000-0000-7000-8000-000000000155");
-
-        CsvImportLimitAttribute.CallerOf(User(id, "planner")).Should().Be("id:" + id.ToString("N", CultureInfo.InvariantCulture));
-        CsvImportLimitAttribute.CallerOf(User(null, "planner")).Should().Be("name:planner", "only the test scheme's principals have no id");
-        CsvImportLimitAttribute.CallerOf(User(null, null)).Should().BeNull();
-        CsvImportLimitAttribute.CallerOf(User(null, "")).Should().BeNull();
-        CsvImportLimitAttribute.CallerOf(null).Should().BeNull();
+        actions.Select(a => (a.Name, a.GetCustomAttribute<UploadLimitAttribute>()?.Kind)).Should().BeEquivalentTo(new[]
+        {
+            ("Preview", UploadLimitAttribute.CsvPreview), ("Commit", UploadLimitAttribute.CsvCommit),
+            ("Preview", UploadLimitAttribute.CsvPreview), ("Commit", UploadLimitAttribute.CsvCommit)
+        });
     }
 
     #endregion
@@ -273,14 +264,6 @@ public sealed class CsvImportLimitTests : IDisposable
         request.Headers.Add(TestAuthenticationHandler.MethodsHeader, "pwd,otp");
         request.Headers.Add(TestAuthenticationHandler.AuthTimeHeader, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture));
         return request;
-    }
-
-    private static ICurrentUser User(Guid? id, string name)
-    {
-        var user = new Mock<ICurrentUser>();
-        user.SetupGet(u => u.Id).Returns(id);
-        user.SetupGet(u => u.UserName).Returns(name);
-        return user.Object;
     }
 
     private sealed class EverySiteScope : ISiteScope

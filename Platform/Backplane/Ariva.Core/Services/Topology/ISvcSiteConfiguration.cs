@@ -50,6 +50,9 @@ public static class SiteConfigurationErrors
     public const string InvalidAirportCode = "airportCode is an IATA code: three upper case letters.";
     public const string UnknownAirport = "An airport the import names does not exist here; an import never creates an airport.";
     public const string SiteNotEmpty = "The site already has configuration; a bundle is imported into an empty site only.";
+
+    /// <summary>The site's row lock was held by another import or change longer than <see cref="SiteConfigurationLimits.SiteLockWait"/> (ARV-250).</summary>
+    public const string SiteBusy = "Another import or change at this site is in progress: try again in a moment.";
     public const string TerminalTaken = "A terminal code of the bundle is already used at its airport.";
     public const string AmbiguousTerminals = "The site has two terminals with one code at different airports, which a bundle cannot tell apart.";
     public const string ProfileOnRemovedTopology = "The published zone profile names a level or desk that no longer exists; publish one on the current topology first.";
@@ -111,7 +114,7 @@ public static class SiteConfigurationErrors
     /// <summary>Errors that mean the site's state does not allow the action (409).</summary>
     public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal)
     {
-        SiteNotEmpty, TerminalTaken, AmbiguousTerminals, ProfileOnRemovedTopology, TooManyRecords, TooLargeToExport, FloorPlanFileUnreadable, DisplayCodeTaken,
+        SiteNotEmpty, SiteBusy, TerminalTaken, AmbiguousTerminals, ProfileOnRemovedTopology, TooManyRecords, TooLargeToExport, FloorPlanFileUnreadable, DisplayCodeTaken,
         ReferencesOutsideProfile, DeviceOnRemovedLevel, RuleCodesBeyondImportBound, TopologyNamesNotImportable, ProfileNotImportable, TextsNotImportable,
         FloorPlanNamesNotImportable, RulesNotImportable
     };
@@ -148,6 +151,13 @@ public static class SiteConfigurationLimits
     /// rule service numbers a new rule after the highest code ever used, so this leaves the target at least 899,999 codes.
     /// </summary>
     public const int MaxImportedRuleNumber = 100_000;
+
+    /// <summary>
+    /// The longest an import waits for the site's row lock (ARV-250, as the CSV imports' <c>CsvImportLimits.SiteLockWait</c>):
+    /// it holds the host's one upload permit while it waits, so behind another import or change it answers
+    /// <see cref="SiteConfigurationErrors.SiteBusy"/> (409) instead of queueing.
+    /// </summary>
+    public static readonly TimeSpan SiteLockWait = TimeSpan.FromSeconds(5);
 
     public const int MaxZones = ZoneProfile.MaxZones;
     public const int MaxLines = ZoneProfile.MaxLines;

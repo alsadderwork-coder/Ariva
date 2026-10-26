@@ -219,6 +219,9 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, 
 			// ARV-155: the suite previews and commits CSV imports many times a minute with the same accounts; the per-user
 			// limit itself is tested in CsvImportLimitTests.
 			Security__RateLimiting__CsvImports__PermitLimit: '10000',
+			// ARV-250: likewise every other upload (floor plans, SSIM files, site configuration transfers, advertisements); the
+			// limit itself is tested in UploadLimitTests.
+			Security__RateLimiting__Uploads__PermitLimit: '10000',
 			...emailEnvironment(),
 			...extraEnvironment
 		}

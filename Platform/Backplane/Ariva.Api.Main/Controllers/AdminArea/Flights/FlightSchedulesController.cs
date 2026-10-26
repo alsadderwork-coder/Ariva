@@ -40,6 +40,7 @@ public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : C
 
     [HttpPost("preview")]
     [Permission(nameof(Global.Defaults.Permissions.CreateFlightSchedule))]
+    [UploadLimit(UploadLimitAttribute.FlightSchedulePreview)]
     [RequestSizeLimit(MaxRequestBytes)]
     [RequestFormLimits(MultipartBodyLengthLimit = MaxRequestBytes)]
     [ProducesResponseType<SsimPreviewViewModel>(StatusCodes.Status200OK)]
@@ -48,6 +49,7 @@ public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : C
     [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Preview(string siteCode, IFormFile file, [FromForm] int? horizonDays, CancellationToken ct)
     {
         if (await RefuseAsync(siteCode, file, ct) is { } refused)
@@ -58,6 +60,7 @@ public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : C
 
     [HttpPost("import")]
     [Permission(nameof(Global.Defaults.Permissions.CreateFlightSchedule))]
+    [UploadLimit(UploadLimitAttribute.FlightScheduleImport)]
     [RequestSizeLimit(MaxRequestBytes)]
     [RequestFormLimits(MultipartBodyLengthLimit = MaxRequestBytes)]
     [ProducesResponseType<SsimImportViewModel>(StatusCodes.Status200OK)]
@@ -67,6 +70,7 @@ public sealed class FlightSchedulesController(ISvcFlightSchedules schedules) : C
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Import(string siteCode, IFormFile file, [FromForm] int? horizonDays, [FromForm] string previewToken, CancellationToken ct)
     {
         if (await RefuseAsync(siteCode, file, ct) is { } refused)

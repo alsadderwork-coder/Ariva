@@ -1,6 +1,7 @@
 using Ariva.Api.Common.Extensions;
 using Ariva.Api.Common.Filters;
 using Ariva.Api.Common.Security;
+using Ariva.Api.Main.Controllers.AdminArea.Uploads;
 using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.InputModels;
@@ -70,6 +71,7 @@ public sealed class FloorPlansController(ISvcFloorPlans plans) : ControllerBase
     [HttpPost]
     [Permission(nameof(Global.Defaults.Permissions.CreateFloorPlan))]
     [EnableRateLimiting(RateLimitingExtensions.UploadPolicy)]
+    [UploadLimit(UploadLimitAttribute.FloorPlan)]
     [RequestTimeout(RequestTimeoutsExtensions.TransferPolicy)]
     [RequestSizeLimit(MaxRequestBytes)]
     [RequestFormLimits(MultipartBodyLengthLimit = MaxRequestBytes)]
@@ -80,6 +82,7 @@ public sealed class FloorPlansController(ISvcFloorPlans plans) : ControllerBase
     [ProducesResponseType(StatusCodes.Status408RequestTimeout)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Upload(Guid levelId, IFormFile file, [FromForm] double metresPerPixel, [FromForm] double originX, [FromForm] double originY, CancellationToken ct)
     {
         if (file is null)

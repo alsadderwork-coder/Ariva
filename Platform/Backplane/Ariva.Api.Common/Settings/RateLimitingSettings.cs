@@ -70,11 +70,22 @@ public sealed class RateLimitingSettings
     /// The CSV imports' previews and, counted apart, their commits per user (ARV-155): each holds the site's row lock and the
     /// host's one upload permit while it runs (a preview's dry run about 3 s at 500 devices, 12 s at 10,000 mappings), so one
     /// user looping them would delay every registration, calibration and publication at the site and turn other uploads away
-    /// (429). A fixed window per user and step in this host process, counted after authorization and before the file is read;
-    /// with N replicas a user may reach N times the limit, and across a window's end twice it. Default 6 previews and 6 commits in
-    /// each 10-minute window. QueueLimit is not used: a refused import is answered at once.
+    /// (429). A sliding window per user and step in this host process (ARV-250; a fixed one let twice the limit through across
+    /// its end), counted after authorization and before the file is read; with N replicas a user may reach N times the limit.
+    /// Default 6 previews and 6 commits in any 10 minutes less one segment (10 seconds). A refused import is answered at once.
     /// </summary>
-    public FixedWindowSettings CsvImports { get; set; } = new() { PermitLimit = 6, WindowSeconds = 600 };
+    public SlidingWindowSettings CsvImports { get; set; } = new() { PermitLimit = 6, WindowSeconds = 600, SegmentsPerWindow = 60 };
+
+    /// <summary>
+    /// Every other upload per user and kind (ARV-250): floor plans, SSIM previews and, apart, imports, site configuration
+    /// exports and, apart, imports, advertisement images and videos. Each holds the host's one upload permit while its body
+    /// arrives (a 20 MB file up to about 11 minutes at the slowest rate allowed) and while it is checked and stored, so one user
+    /// starting them in a loop would turn every other upload away (429). This caps the transfers a user starts, not how long slow
+    /// ones hold the permit (docs/security/costly-operations.md section 15, item 17). A sliding window per user and kind in this host process, counted
+    /// after authorization and before the body is read; with N replicas a user may reach N times the limit. Default 10 of a kind
+    /// in any 10 minutes less one segment (10 seconds). A refused upload is answered at once.
+    /// </summary>
+    public SlidingWindowSettings Uploads { get; set; } = new() { PermitLimit = 10, WindowSeconds = 600, SegmentsPerWindow = 60 };
 }
 
 /// <summary>A concurrency limiter: <see cref="PermitLimit"/> requests at once and <see cref="QueueLimit"/> waiting.</summary>
@@ -85,6 +96,33 @@ public sealed class ConcurrencySettings
     public int QueueLimit { get; set; }
 
     public bool IsValid => PermitLimit > 0 && QueueLimit >= 0;
+}
+
+/// <summary>
+/// A sliding window limiter (ARV-250): <see cref="PermitLimit"/> requests in a window of <see cref="WindowSeconds"/> seconds kept
+/// in <see cref="SegmentsPerWindow"/> segments. A permit is free again one window after the segment it was taken in began, so at
+/// most <see cref="PermitLimit"/> are taken in any stretch one segment shorter than the window. No queue: a refusal is at once.
+/// </summary>
+public sealed class SlidingWindowSettings
+{
+    /// <summary>Requests allowed in a window.</summary>
+    public int PermitLimit { get; set; }
+
+    /// <summary>Window length in seconds.</summary>
+    public int WindowSeconds { get; set; }
+
+    /// <summary>The window's segments: more of them make the bound hold over a stretch closer to the whole window.</summary>
+    public int SegmentsPerWindow { get; set; } = 60;
+
+    /// <summary>The longest window: a day.</summary>
+    public const int MaxWindowSeconds = 86_400;
+
+    /// <summary>The most segments: each user and kind counted keeps one number per segment.</summary>
+    public const int MaxSegmentsPerWindow = 600;
+
+    /// <summary>True when every value is usable by the limiter: a window of at most a day, a segment a whole second at least.</summary>
+    public bool IsValid => PermitLimit > 0 && WindowSeconds is > 0 and <= MaxWindowSeconds && SegmentsPerWindow is > 0 and <= MaxSegmentsPerWindow &&
+                           SegmentsPerWindow <= WindowSeconds;
 }
 
 /// <summary>

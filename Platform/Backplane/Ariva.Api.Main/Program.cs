@@ -121,8 +121,8 @@ builder.Services.AddArivaValidationResults(builder.Configuration);
 // Request timeouts (ARV-096): a default for every endpoint without its own policy, and the reports and transfer policies;
 // Main only (Ariva.Api.Common/Settings/RequestTimeoutsSettings.cs says why the other hosts set none).
 builder.Services.AddAppRequestTimeouts(builder.Configuration);
-// CSV import previews and commits per user (ARV-155): counted after authorization, before the file is read.
-builder.Services.AddSingleton<Ariva.Api.Main.Controllers.AdminArea.Imports.CsvImportRateLimiter>();
+// Every upload per user and kind (ARV-155 for the CSV imports, ARV-250 for the rest): counted after authorization, before the body is read.
+builder.Services.AddSingleton<Ariva.Api.Main.Controllers.AdminArea.Uploads.UploadRateLimiter>();
 
 // Integration clients (ARV-042): administrators register the systems that call the Integration API.
 builder.Services.AddArivaIntegrationClients();

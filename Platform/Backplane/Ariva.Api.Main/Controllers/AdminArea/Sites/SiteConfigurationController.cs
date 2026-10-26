@@ -40,9 +40,11 @@ public sealed class SiteConfigurationController(ISvcSiteConfiguration configurat
     [HttpGet]
     [Permission(nameof(Global.Defaults.Permissions.TransferSiteConfiguration))]
     [RequiresRecentMfa]
+    [UploadLimit(UploadLimitAttribute.SiteConfigurationExport)]
     [ProducesResponseType<SiteConfigurationExportViewModel>(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Export(string siteCode, CancellationToken ct)
     {
         NoStore();
@@ -56,6 +58,7 @@ public sealed class SiteConfigurationController(ISvcSiteConfiguration configurat
     [HttpPost]
     [Permission(nameof(Global.Defaults.Permissions.TransferSiteConfiguration))]
     [RequiresRecentMfa]
+    [UploadLimit(UploadLimitAttribute.SiteConfigurationImport)]
     [RequestSizeLimit(SiteConfigurationLimits.MaxBundleBytes)]
     [ProducesResponseType<SiteConfigurationImportViewModel>(StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -64,6 +67,7 @@ public sealed class SiteConfigurationController(ISvcSiteConfiguration configurat
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status413PayloadTooLarge)]
     [ProducesResponseType(StatusCodes.Status503ServiceUnavailable)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<IActionResult> Import(string siteCode, [FromBody] ImportSiteConfigurationRequest request, [FromQuery, MaxLength(3)] string airportCode,
         CancellationToken ct)
     {

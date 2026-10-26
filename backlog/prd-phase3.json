@@ -1308,7 +1308,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. 2026-10-25, from the ARV-155 review. Consider a sliding window (SlidingWindowRateLimiter) so the stated bound holds in any interval, for ARV-155's limit too.",
       "dependsOn": [
         "ARV-155"
@@ -1556,6 +1556,26 @@
       "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14). Filed 2026-10-26 by ARV-245 from its security review.",
       "dependsOn": [
         "ARV-245"
+      ]
+    },
+    {
+      "id": "ARV-265",
+      "title": "[E17] Uploads: one user's share of the host's upload permit and its queue",
+      "description": "From the ARV-250 security review (2026-10-26, Medium, recorded as costly-operations section 15 item 17 and in the V15.2.2 evidence). The `upload` policy takes one upload at a time per Ariva.Api.Main process and two waiting, and the rate limiting middleware takes that queue before authentication, so ARV-250's per-user limit counts a request only once it holds the permit. One user can send three 20 MB floor plan or SSIM uploads at the 32 KB a second floor (about 11 minutes each): they hold the permit and both waiting places, and every other user's upload and the site configuration export get 429 for about 33 minutes, while keeping that up takes about one request of each kind every 11 minutes, far under the per-user limit. Proposal: a per-user share of the permit and its queue (for example at most one running or waiting upload per user and host process) enforced once the caller is known, either a per-user concurrency lease taken after authentication before the host's queue is joined, or the upload policy's queue moved after authentication for these endpoints only, keeping a request that sends no credentials out of the queue (ARV-096b); or a per-user budget of transfer time. CWEs to review: CWE-400, CWE-770.",
+      "acceptanceCriteria": [
+        "One user's slow uploads cannot hold the host's upload permit and every waiting place: a second user's upload gets the permit or a waiting place while the first user's transfers run, with the refused request of the first user answered 429 with Retry-After and a fixed text before its body is read",
+        "A test on a real Kestrel (TestServer has no minimum data rate), as SteadyUploadTests.Upload_Should_BeCutOffAndFreeTheSlot_When_ACsvImportTricklesBelowTheRate: one user trickles three uploads at the floor, another user's upload is taken; and an unauthenticated request still takes no place and waits for none",
+        "costly-operations section 7 and section 15 item 17, wiki 04 and wiki 13a updated with the bound; asvs-l2 V15.2.2's residual removed or narrowed",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration and E2E tests for the story's areas pass through node scripts/verify.mjs story (test cadence in docs/harness/test-cadence.md)",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S to M. Phase 3 (the owner's rule of 2026-10-14). Filed 2026-10-26 by ARV-250 from its security review. No sign-in code: the share is taken after authentication, which stays as it is.",
+      "dependsOn": [
+        "ARV-250"
       ]
     }
   ]
