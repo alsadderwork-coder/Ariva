@@ -380,8 +380,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
-      "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14). 2026-10-14 (ARV-125b re-review, nit 1): an empty monitoring namespaces list defaults to $.Release.Namespace, which validate.yaml does not check (Kubernetes guarantees a valid name on install and upgrade, helm template --namespace does not); apply the same DNS-label check to the effective value. Also from the ARV-125b work, for Phase 3: rules for the wiki 10 section 3 alarms not built yet (sensor degraded, zone Unknown, clock drift, stale AODB feed, unknown AMAN codes, bin maturity backlog, failed retention job, display stale, client locked out).",
+      "passes": true,
+      "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14). 2026-10-14 (ARV-125b re-review, nit 1): an empty monitoring namespaces list defaults to $.Release.Namespace, which validate.yaml does not check (Kubernetes guarantees a valid name on install and upgrade, helm template --namespace does not); apply the same DNS-label check to the effective value. The ARV-125b work's list of wiki 10 section 3 alarms without rules is ARV-259 (2026-10-26); the ARV-179 review's Lows 3 and 6 are ARV-258.",
       "dependsOn": [
         "ARV-125a"
       ]
@@ -1351,6 +1351,68 @@
       "notes": "Size S. Phase 3. Low 1 of the ARV-178 review (backlog/progress.md, 2026-10-26).",
       "dependsOn": [
         "ARV-178"
+      ]
+    },
+    {
+      "id": "ARV-257",
+      "title": "[E17] A per-site AMAN feed age gauge, before a second border site",
+      "description": "From ARV-179 (2026-10-26; the ARV-125a engineer's finding 3). The AMAN feed alert watches ariva.border.feed.records, which has no site tag, so with several border sites a feed that stops at one site while another's flows raises no alert (wiki 10 section 2a, known gaps). One border site (the pilot) is not affected. A per-site gauge of the AMAN feed's age, from the desk feed's heartbeat (DeskFeedState.HeartbeatUtc, read per site by Ariva.Api.Stream's DeskFeed), with no desk or officer data, lets the alert name the site. CWEs to review: CWE-400, CWE-532.",
+      "acceptanceCriteria": [
+        "A gauge of the seconds since each border site's AMAN feed was last heard (the desk feed's heartbeat), tagged with the site only, reported by the replica that read the site lately (bounded by the configured border sites), with MetricTagTests and MeterExportTests covering it",
+        "The AMAN feed alert rule (section 3.1) reads it per site, with its chart render test; wiki 10 sections 2a, 3.1 and 4.4 updated, and the known gap removed",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3; needed before a second border site goes live. Split from ARV-179, whose criterion allowed the residual stated in wiki 10 section 2a.",
+      "dependsOn": [
+        "ARV-179"
+      ]
+    },
+    {
+      "id": "ARV-258",
+      "title": "[E17] A gauge of the queue engine's checkpoint age with its rule, and AIDX's feed tag pinned",
+      "description": "From the ARV-179 security review (2026-10-26, Lows 3 and 6). (1) QueueStreamWorker pauses reading after any failed checkpoint while a zone is at its bound (its catch takes NpgsqlException, TimeoutException, IOException and InvalidOperationException), and some of those happen while the database answers: a statement timeout on a slow database, a lock wait, or a zone's state above StreamStore.MaxStateBytes (64 MiB, an InvalidOperationException). Then databaseUnavailable does not fire, ariva.stream.consumer_lag stays flat (the watermark it fetched does not move), and only the Error log \"Queue stream checkpoint failed\" says so, which no shipped rule reads (wiki 10 section 2a, known gaps). (2) MetricTagTests.FlightItems_Should_BeTaggedWithTheClientsOwnFeed_When_ARequestNamesAnother drives the batch endpoints (BatchCall) only; AidxController passes IntegrationBatches.FeedOf(caller.ClientId) on its own path, and nothing pins it. CWEs to review: CWE-400, CWE-501.",
+      "acceptanceCriteria": [
+        "A gauge of the seconds since the queue engine's last successful checkpoint, per Stream instance and with no tag but the group (or none), reported while the worker runs, with MetricTagTests and MeterExportTests covering it",
+        "An alert rule in the chart (section 3.1) fires when it passes a configurable age (default a few checkpoint intervals), with its chart render test; wiki 10 sections 2a and 3.1 updated and the known gap narrowed",
+        "A test that AIDX intake counts under the client's own feed whatever the message says (as the batch endpoints' test), or a source test that every intake call in Ariva.Api.Integration passes IntegrationBatches.FeedOf(caller.ClientId)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3. Lows 3 and 6 of the ARV-179 review (backlog/progress.md, 2026-10-26).",
+      "dependsOn": [
+        "ARV-179"
+      ]
+    },
+    {
+      "id": "ARV-259",
+      "title": "[E17] Alert rules for the wiki 10 section 3 alarms not built yet",
+      "description": "From ARV-179 (2026-10-26; the ARV-179 review's Low 7, from the ARV-125b work). Wiki 10 section 3 lists the alarms on the system itself; section 3.1 lists the rules the chart ships. These have no rule yet: sensor degraded, zone Unknown (an entry or exit line without coverage), clock drift unstable, stale AODB feed, unknown AMAN desk or gate code, bin maturity backlog, retention job failed (the database disk part ships), display stale, and integration client locked out. Most have a metric already (ariva.devices.degraded, ariva.zones.degraded_now, ariva.feeds.stale, ariva.border.feed.unmapped, ariva.integration.lockouts); the others need one first. The list was carried in ARV-179's notes and belonged to no story. CWEs to review: CWE-400, CWE-532.",
+      "acceptanceCriteria": [
+        "Each alarm of wiki 10 section 3 has a chart rule (off by default where it fits only some deployments) or a stated reason in section 3.1 why it has none, with a metric for each rule that needs one (bounded tags, MetricTagTests and MeterExportTests covering it)",
+        "Each rule has a chart render test (its expression, its for duration and severity from values), as the ARV-125b rules have",
+        "Wiki 10 sections 3 and 3.1 updated: what each rule watches and what to do when it fires",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M. Phase 3. Split from ARV-179's notes by its review (Low 7, backlog/progress.md, 2026-10-26).",
+      "dependsOn": [
+        "ARV-179"
       ]
     }
   ]

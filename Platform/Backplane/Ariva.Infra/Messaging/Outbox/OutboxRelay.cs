@@ -93,9 +93,12 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// topic's fault: the pass ends without holding it. An event row's broker failure still ends the pass.
 /// </para>
 /// <para>
-/// ARV-125a: every relay, leader or not, measures the backlog (<see cref="MeasureAsync"/>) at most every
-/// <see cref="MeasureEvery"/> on a short connection of its own, outside the pass, also while the producer is not ready, so a
-/// Kafka outage shows as a growing backlog (<see cref="OutboxMetrics"/>).
+/// ARV-125a: every relay, leader or not, measures the backlog (<see cref="MeasureAsync"/>) every <see cref="MeasureEvery"/>
+/// on a short connection of its own, also while the producer is not ready, so a Kafka outage shows as a growing backlog
+/// (<see cref="OutboxMetrics"/>). Since ARV-179 it does so on a loop of its own, beside the passes: a slow count in a large
+/// backlog (after an outage, when draining matters) never delays a pass, where before it held each pass up to its 10 second
+/// bound once every 30 seconds. The relay's stop waits for a measurement at most <see cref="MeasureStopBound"/>, whatever the
+/// measurement does (one that does not take its token included), so it never eats into the time the host's later services have to stop.
 /// </para>
 /// </summary>
 public sealed class OutboxRelay(
@@ -112,7 +115,14 @@ public sealed class OutboxRelay(
     /// <summary>How often the backlog is measured (ARV-125a); a measurement is reported for three of these.</summary>
     public static readonly TimeSpan MeasureEvery = TimeSpan.FromSeconds(30);
 
-    private DateTimeOffset _nextMeasure = DateTimeOffset.MinValue;
+    /// <summary>The most the relay's stop waits for a measurement in hand (ARV-179).</summary>
+    public static readonly TimeSpan MeasureStopBound = TimeSpan.FromSeconds(5);
+
+    /// <summary>How the backlog is measured: <see cref="MeasureAsync"/>, or a test's own (ARV-179).</summary>
+    internal Func<CancellationToken, Task<OutboxBacklog>> MeasureBacklog { get; init; }
+
+    /// <summary>How often the backlog is measured: <see cref="MeasureEvery"/>, or a test's own (ARV-179).</summary>
+    internal TimeSpan MeasureInterval { get; init; } = MeasureEvery;
 
     /// <summary>The most of a pass spent on dead letters (ARV-175): events written meanwhile wait at most this much more.</summary>
     public static readonly TimeSpan DeadLetterPassBound = TimeSpan.FromSeconds(5);
@@ -131,10 +141,23 @@ public sealed class OutboxRelay(
     {
         var settings = kafka.Outbox;
         logger.LogInformation("Outbox relay started: batch {BatchSize}, poll {PollMilliseconds} ms", settings.BatchSize, settings.PollMilliseconds);
+        // ARV-179: on a task of its own, so that neither its first connection nor a slow count runs on the passes' path.
+        var measuring = metrics is null ? Task.CompletedTask : Task.Run(() => MeasureLoopAsync(stoppingToken), CancellationToken.None);
+        try
+        {
+            await RelayLoopAsync(settings, stoppingToken);
+        }
+        finally
+        {
+            await measuring.WaitAsync(MeasureStopBound, timeProvider, CancellationToken.None).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+    }
+
+    private async Task RelayLoopAsync(OutboxRelaySettings settings, CancellationToken stoppingToken)
+    {
         while (!stoppingToken.IsCancellationRequested)
         {
             var delay = TimeSpan.FromMilliseconds(settings.PollMilliseconds);
-            await MeasureIfDueAsync(stoppingToken);
             try
             {
                 var pass = await RunOnceAsync(stoppingToken);
@@ -157,22 +180,44 @@ public sealed class OutboxRelay(
         }
     }
 
-    /// <summary>Measures the backlog when <see cref="MeasureEvery"/> has passed; a failure leaves the last measurement to expire.</summary>
-    private async Task MeasureIfDueAsync(CancellationToken ct)
+    /// <summary>
+    /// Measures the backlog at once and then every <see cref="MeasureInterval"/> until the host stops (ARV-179); a failure leaves
+    /// the last measurement to expire. A measurement that outlasts the interval delays only the next one (the timer does not
+    /// queue ticks).
+    /// </summary>
+    private async Task MeasureLoopAsync(CancellationToken ct)
     {
-        if (metrics is null || timeProvider.GetUtcNow() < _nextMeasure)
-            return;
-        _nextMeasure = timeProvider.GetUtcNow() + MeasureEvery;
+        using var timer = new PeriodicTimer(MeasureInterval, timeProvider);
+        do
+        {
+            try
+            {
+                metrics.Report(await (MeasureBacklog ?? MeasureAsync)(ct), MeasureInterval * 3);
+            }
+#pragma warning disable CA1031 // a failed measurement must not stop the measuring; the relay's pass meets the same cause and logs it
+            catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+#pragma warning restore CA1031
+            {
+                // The database is away: the backlog is not reported until it is measured again.
+                logger.LogDebug(e, "Outbox backlog not measured");
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+        while (await NextTickAsync(timer, ct));
+    }
+
+    private static async Task<bool> NextTickAsync(PeriodicTimer timer, CancellationToken ct)
+    {
         try
         {
-            metrics.Report(await MeasureAsync(ct), MeasureEvery * 3);
+            return await timer.WaitForNextTickAsync(ct);
         }
-#pragma warning disable CA1031 // a failed measurement must not stop the relay; the pass below meets the same cause and logs it
-        catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
-#pragma warning restore CA1031
+        catch (OperationCanceledException)
         {
-            // The database is away: the backlog is not reported until it is measured again.
-            logger.LogDebug(e, "Outbox backlog not measured");
+            return false;
         }
     }
 

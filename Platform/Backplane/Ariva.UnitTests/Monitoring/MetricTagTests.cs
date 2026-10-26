@@ -23,8 +23,9 @@ namespace Ariva.UnitTests.Monitoring;
 /// identifier, or a value taken from a request. Every Ariva metrics type (<see cref="MeterExportTests.MeterTypes"/>) is
 /// built on a meter factory of the test's own and driven through every method; every instrument it publishes must have
 /// been measured, with tag keys from <see cref="AllowedKeys"/> only. Tag values are constants, validated names or codes
-/// (a site that exists, a feed named by the client's credential, a topic constant, an Ariva group, a check's registration
-/// name), and those that come from a record or a registration are reduced to <c>unknown</c> or <c>other</c> otherwise.
+/// (a site that exists, a feed named by the client's credential or by an administrator, never by a request (ARV-179:
+/// <see cref="FlightItems_Should_BeTaggedWithTheClientsOwnFeed_When_ARequestNamesAnother"/>), a topic constant, an Ariva
+/// group, a check's registration name), and those that come from a record or a registration are reduced to <c>unknown</c> or <c>other</c> otherwise.
 /// </summary>
 public sealed partial class MetricTagTests
 {
@@ -218,6 +219,71 @@ public sealed partial class MetricTagTests
         reader.Sum(KafkaProducerMetrics.DeadLettersName, ("topic", KafkaProducerMetrics.Unknown), ("group", KafkaProducerMetrics.Unknown),
             ("outcome", KafkaProducerMetrics.FailedOutcome)).Should().Be(1);
         FluentActions.Invoking(() => metrics.DeadLetter(Letter(), "lost")).Should().Throw<ArgumentOutOfRangeException>("an outcome is sent, kept or failed");
+    }
+
+    private const string Client = "ic_aodbclientaodbclientaodbcl";
+
+    /// <summary>An integration batch call to a flight endpoint as the client <see cref="Client"/>, through the real controller.</summary>
+    private static async Task<int> PostLegsAsync(Ariva.Api.Integration.Controllers.FlightFeedController controller, string body, string query)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddControllers();
+        var http = new Microsoft.AspNetCore.Http.DefaultHttpContext { RequestServices = services.BuildServiceProvider() };
+        http.Items[Ariva.Api.Common.Security.IntegrationAuthentication.CallerItem] =
+            new Ariva.Core.Domain.ViewModels.IntegrationCallerViewModel(Client, "AODB", ["flights:write"], [Site], false);
+        http.Request.Method = "POST";
+        http.Request.QueryString = new Microsoft.AspNetCore.Http.QueryString(query);
+        http.Request.ContentType = "application/json";
+        http.Request.Headers[Ariva.Core.Integration.IntegrationBatches.IdempotencyKeyHeader] = Guid.NewGuid().ToString();
+        var bytes = System.Text.Encoding.UTF8.GetBytes(body);
+        http.Request.Body = new MemoryStream(bytes);
+        http.Request.ContentLength = bytes.Length;
+        controller.ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = http };
+        var result = await controller.Legs(Site, TestContext.Current.CancellationToken);
+        return result switch
+        {
+            Microsoft.AspNetCore.Mvc.ContentResult content => content.StatusCode ?? 200,
+            Microsoft.AspNetCore.Mvc.ObjectResult problem => problem.StatusCode ?? 0,
+            _ => 0
+        };
+    }
+
+    /// <summary>
+    /// ARV-179 (the ARV-125a review's finding 1): the feed a flight metric is tagged with is the client's own
+    /// (<see cref="Ariva.Core.Integration.IntegrationBatches.FeedOf"/>), never a name the request chooses. A body that names a
+    /// feed is refused (the batch is read strictly), a query that names one is not read, and every series an accepted batch
+    /// adds carries the client's feed, so a client adds at most one feed value per site, kind and outcome however many names
+    /// it tries. The other feeds are named by administrators (ACRIS and AMAN pull endpoints) or are constants (<c>ssim</c>).
+    /// </summary>
+    [Fact]
+    public async Task FlightItems_Should_BeTaggedWithTheClientsOwnFeed_When_ARequestNamesAnother()
+    {
+        using var metrics = new FlightMetrics();
+        using var reader = new Setup.InstrumentReader(metrics.Meter);
+        var intake = new Moq.Mock<Ariva.Core.Services.Flights.ISvcFlightIntake>();
+        intake.Setup(i => i.ApplyLegsAsync(Moq.It.IsAny<string>(), Moq.It.IsAny<string>(), Moq.It.IsAny<IReadOnlyList<FlightLegData>>(),
+                Moq.It.IsAny<DateTime?>(), Moq.It.IsAny<CancellationToken>()))
+            .Returns((string site, string feed, IReadOnlyList<FlightLegData> legs, DateTime? _, CancellationToken _) =>
+            {
+                // As SvcFlightIntake ends every call: the items counted under the call's feed.
+                IReadOnlyList<FlightItemResult> results = [.. legs.Select((l, i) => new FlightItemResult(i, l.FlightKey, true, [], []))];
+                metrics.Items("legs", site, feed, results);
+                return Task.FromResult(results);
+            });
+        var idempotency = new Moq.Mock<Ariva.Core.Services.Integration.ISvcIntegrationIdempotency>();
+        idempotency.Setup(i => i.ClaimAsync(Moq.It.IsAny<Ariva.Core.Services.Integration.IdempotencyRequest>(), Moq.It.IsAny<CancellationToken>()))
+            .Returns(Task.FromResult(Ariva.Core.Services.Integration.IdempotencyClaim.Claimed));
+        var controller = new Ariva.Api.Integration.Controllers.FlightFeedController(intake.Object, idempotency.Object, TimeProvider.System);
+        const string leg = """{"flightKey":"DMO-RJ111-20261003-A","carrier":"RJ","number":"111","direction":"Arrival","scheduledUtc":"2026-10-03T10:00:00Z"}""";
+
+        (await PostLegsAsync(controller, $$"""{"feed":"chosen-by-the-client","items":[{{leg}}]}""", "")).Should().Be(400, "a batch names no feed");
+        (await PostLegsAsync(controller, $$"""{"items":[{{leg}}]}""", "?feed=chosen-by-the-client")).Should().Be(200);
+        (await PostLegsAsync(controller, $$"""{"items":[{{leg}}]}""", "?feed=another-name")).Should().Be(200);
+
+        reader.Sum("ariva.flights.items").Should().Be(2);
+        reader.Sum("ariva.flights.items", ("feed", Ariva.Core.Integration.IntegrationBatches.FeedOf(Client))).Should().Be(2,
+            "every series is the client's own feed, whatever name the request tried");
     }
 
     // Keys that would name a person, a credential, a document or a network address.

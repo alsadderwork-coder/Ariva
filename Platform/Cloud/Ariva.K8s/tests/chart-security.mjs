@@ -1823,6 +1823,25 @@ for (const [label, file, sets, message, annotation] of [
 	}
 }
 
+// ARV-179 (the ARV-125b re-review's nit 1): an empty namespaces list reads the release's namespace, which helm template takes
+// as given (Kubernetes checks it on install and upgrade only), so the chart checks it as a listed one.
+{
+	const findings = [];
+	// An empty list through a values file: --set namespaces={} gives a list of one empty name.
+	const empty = valuesFile({ monitoring: { alerts: { disk: { namespaces: [] } } } });
+	const bad = render('values-k8s-dev.yaml', [], 'Ariva_NS', [empty]);
+	if (bad.status === 0) findings.push('an empty disk namespaces list with a release namespace that is not a Kubernetes name rendered');
+	else if (!bad.stderr.includes("monitoring.alerts.disk.namespaces is empty, so the rule reads the release's namespace")) findings.push(`refused for another reason\n${bad.stderr}`);
+	const good = render('values-k8s-dev.yaml', [], 'ariva-dev', [empty]);
+	if (good.status !== 0) findings.push(`an empty disk namespaces list with a valid release namespace failed\n${good.stderr}`);
+	if (findings.length) {
+		failed = true;
+		for (const f of findings) console.error(`FAIL monitoring namespaces: ${f}`);
+	} else {
+		console.log('PASS monitoring namespaces: an empty list reads the release namespace, checked as a Kubernetes name');
+	}
+}
+
 // ARV-082a: an https OTLP endpoint renders in production and reaches every host; the rule is production's, so dev keeps
 // http; the servers' CA secret names reach exactly the five API hosts and the two jobs.
 {
