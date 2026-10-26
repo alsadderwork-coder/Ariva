@@ -563,7 +563,7 @@
         "node scripts/verify.mjs docs passes"
       ],
       "priority": 43,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3 (owner rule of 2026-10-14: low findings unless needed before the pilot). Nothing here is exploitable today: the scripts apply the grants and the signed dump manifest gates a restore.",
       "dependsOn": [
         "ARV-111a"
@@ -1514,6 +1514,28 @@
       "notes": "Size M. Phase 3 (the owner's rule of 2026-10-14). Defence in depth behind the signed manifest, which stays the gate.",
       "dependsOn": [
         "ARV-183"
+      ]
+    },
+    {
+      "id": "ARV-263",
+      "title": "[E17] Post-restore check: TimescaleDB jobs pinned, and the last privilege residuals of ARV-189",
+      "description": "From the ARV-189 security review (round 3, 2026-10-26, R2 to R5, recorded as residuals in the CWE-269 row). TimescaleDB's job rows in _timescaledb_catalog.bgw_job (owner, procedure, config, hypertable) travel in a dump as catalog table data, which check-dump accepts without an owner check, and a job runs as its owner; ariva-db.sh check only counts the jobs. Pin each job a migrated database has (its procedure, its owner the migration login, its hypertable and its config's keys and values within the scripts' bounds) and fail on any other job or difference. Also: the toast tables' own ACLs and USAGE on pg_toast are not compared (a superuser's change only); pg_maintain (PostgreSQL 17) is missing from the powerful roles of ARV-183's logins line; and restoring a backup older than ARIVA_RUNTIME_PRIVILEGES_AT (restore's own check passing it as not compared, its closing message, then a check after --migrate) has no end-to-end test. CWEs to review: CWE-269, CWE-345.",
+      "acceptanceCriteria": [
+        "check fails on a TimescaleDB job whose owner, procedure, hypertable or config differs from a migrated database's, and on any job a migrated database does not have, with BackupRestoreTests planting each in the catalog",
+        "check reports a toast table granting the runtime role or a login of it anything, and USAGE on pg_toast for them, with a test",
+        "A role holding pg_maintain fails the logins line, with a test",
+        "BackupRestoreTests (or a sibling) restores a backup taken before the latest script that changes the runtime role's grants: restore passes with the not compared lines and its closing message, check fails until --migrate, then passes",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 312,
+      "passes": false,
+      "notes": "Size M. Phase 3 (the owner's rule of 2026-10-14). Defence in depth behind the signed manifest, which stays the gate; a job row needs a forged dump that passes the signature, or the superuser.",
+      "dependsOn": [
+        "ARV-189"
       ]
     }
   ]

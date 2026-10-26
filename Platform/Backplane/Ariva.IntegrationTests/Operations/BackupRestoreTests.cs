@@ -136,11 +136,17 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         // The restore into the fresh server, then the release's migration job with this deployment's own runtime password.
         var restore = await _target.OpsAsync(Ct, "restore", "--input", DumpPath);
         restore.ExitCode.Should().Be(0, restore.Stderr + restore.Stdout);
-        restore.Stdout.Should().Contain("every object belongs to ariva").And.Contain("ariva_runtime has no CREATE on public");
+        restore.Stdout.Should().Contain("every object belongs to ariva")
+            .And.Contain("ariva_runtime and the logins that hold it have no CREATE on public, on any other schema or on the database");
         // ARV-183 and its review: the wider checks pass on a clean restore (every Ariva function body is one its scripts ship, and
         // the system functions are template1's).
-        foreach (var line in new[] { "logins", "held roles", "role settings", "settings", "rules", "other functions", "plpgsql", "system functions", "replication", "planted" })
+        foreach (var line in new[] { "logins", "held roles", "role settings", "settings", "rules", "other functions", "plpgsql", "system functions", "replication", "planted",
+                     "internal privileges", "runtime grants", "default privileges" })
             restore.Stdout.Should().Contain($"ok    {line}|");
+        // The backup is at the latest script, so restore's own check compares the runtime role's privileges and the views (an ok
+        // "not compared" would be the wrong pass here).
+        restore.Stdout.Should().Contain("ok    runtime privileges|ariva_runtime's grants on public as the scripts leave them")
+            .And.Contain("ok    views|the views of public are the scripts' 3, each reading what its script reads");
         var again = await _target.OpsAsync(Ct, "restore", "--input", DumpPath);
         again.ExitCode.Should().NotBe(0, "a restore goes into an empty database only");
         again.Stderr.Should().Contain("is not empty");
@@ -308,6 +314,13 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         var check = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         check.ExitCode.Should().Be(0, check.Stdout + check.Stderr);
         check.Stdout.Should().Contain("ariva_app holds ariva_runtime only (DML)");
+        // ARV-189: the runtime role's privileges as ARIVA_RUNTIME_PRIVILEGES lists them, compared since the database is at the
+        // list's script (a script that changes them without the list fails here; the line above it names each difference).
+        check.Stdout.Should().Contain("ok    runtime privileges|ariva_runtime's grants on public as the scripts leave them")
+            .And.Contain("ok    views|the views of public are the scripts' 3, each reading what its script reads")
+            .And.Contain("ok    internal privileges|ariva_runtime: each inheritance child no wider than its parent")
+            .And.Contain("ok    runtime grants|every grant of a relation or column to the runtime role goes to ariva_runtime without grant option")
+            .And.Contain("ok    default privileges|script 0001's only");
         // TimescaleDB's own functions and event triggers are extension members: a clean restore has nothing to report.
         check.Stdout.Should().Contain("functions|no C, untrusted-language or SECURITY DEFINER function outside the extensions")
             .And.Contain("event triggers|none outside the extensions").And.Contain("group members|only the migration login and the named logins")
@@ -375,7 +388,19 @@ public sealed class BackupRestoreTests : IAsyncLifetime
     /// Ariva function with another body or owner, a function added to plpgsql, a system function replaced in place, a
     /// publication and a subscription, and what --allow-login and --allow-setting let pass; a superuser read that fails is a
     /// FAIL; and a search path the migration login sets for the database, with an aggregate and an operator under system names
-    /// that would make a superuser of it, is reported, the superuser reads nothing, and the login stays as it was.
+    /// that would make a superuser of it, is reported, the superuser reads nothing, and the login stays as it was. ARV-189: a lost
+    /// revoke (report_delivery's table-wide UPDATE) and a grant on a chunk of the sensing events; and the purge with EXECUTE given
+    /// with grant option, given to another role, or with another setting, each reported and passing again once put back. Its
+    /// review: MAINTAIN on a hypertable, a view the scripts do not create, a grant on a compressed chunk, a continuous aggregate's
+    /// table and a view outside public, an inheritance child of a table of public, a sequence the runtime role may set, an
+    /// extension table granted to PUBLIC and a table granted to the runtime login rather than the role; and a database behind
+    /// the list fails a plain check. Its second round: a view in information_schema, a view under a chunk's compressed name, a
+    /// view the forged catalog names as a continuous aggregate's direct view that reads the shadow nowcast, a column of an
+    /// extension table, a grant with grant option, a PUBLIC grant, and CREATE on the database. Its third round: default
+    /// privileges for every schema and for _timescaledb_internal, a view over a toast table, a system table granted to PUBLIC
+    /// and another to the runtime role, and CREATE on a schema for the runtime login. Its fourth: script 0001's own default
+    /// privileges widened (TRUNCATE on public's tables, UPDATE with grant option on its sequences), and PUBLIC SELECT on an
+    /// information_schema view that initdb leaves to its owner (_pg_user_mappings).
     /// </summary>
     private async Task AssertCheckFindsWhatAForgedDumpWouldLeaveAsync()
     {
@@ -407,6 +432,48 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         check.Stdout.Should().Contain("FAIL  plpgsql|also holds function it_hidden()");
         check.Stdout.Should().Contain("FAIL  system functions|reverse differ from template1's");
         check.Stdout.Should().Contain("FAIL  replication|publication it_pub, subscription it_sub");
+        // ARV-189: a lost revoke (report_delivery's table-wide UPDATE back, which script 0054 takes to four columns) and a grant on
+        // a chunk, which reaches the append-only sensing events by the chunk's name. The database lacks its latest script here
+        // (AssertHostsVerifySchemaVersionAsync forgot it), so the runtime role's privileges and the views are not compared until
+        // the script is recorded again, and a plain check fails on that (only restore's own check, whose migration job follows,
+        // passes it); what lies outside public is checked either way.
+        check.Stdout.Should().Contain("FAIL  runtime privileges|not compared: the database is at ", check.Stdout)
+            .And.Contain("FAIL  views|not compared: the database is behind the list");
+        Line(check, "FAIL  internal privileges|").Should().Contain("_timescaledb_internal._hyper_")
+            .And.Contain("_compressed", "a compressed chunk no wider than its hypertable either")
+            .And.Contain("_timescaledb_internal._materialized_hypertable_", "a continuous aggregate's table at most SELECT")
+            .And.Contain("it_side.it_view", "nothing on a relation outside public")
+            .And.Contain("it_side.it_child (inherits public.alert_rule)")
+            .And.Contain("public.outbox_message_seq_seq (sets values)")
+            .And.Contain("_timescaledb_catalog.hypertable (extension table)", "PUBLIC given more than the extension gave");
+        // Its second round: each relation judged by what it is. A view in information_schema, a view under the compressed name
+        // of an uncompressed chunk, and a view the catalog names as a continuous aggregate's direct view, each reading what the
+        // runtime role may not write or read, are reported by what they read; so is a column of an extension table.
+        Line(check, "FAIL  internal privileges|").Should().Contain("information_schema.it_view, ", "any grant on a relation created after initdb, information_schema included")
+            .And.Contain("information_schema.it_view (reads public.retention_period)")
+            .And.Contain("_compressed (reads public.retention_period)")
+            .And.Contain("_timescaledb_internal._direct_view_999 (reads public.queue_minute_shadow)")
+            .And.Contain("_timescaledb_catalog.bgw_job (config) (extension table)")
+            .And.Contain("_timescaledb_internal._direct_view_998 (reads pg_toast.pg_toast_", "a view over a toast table reads the rows behind its table")
+            .And.Contain("pg_statistic (system table)", "PUBLIC given more than initdb gave")
+            .And.Contain("pg_authid (system table)")
+            .And.Contain("information_schema._pg_user_mappings (system table)", "initdb gives PUBLIC no SELECT on information_schema's _pg_ views");
+        // Each entry lists its grants in byte order, the owner's own (ariva=...) first for every schema; script 0001's own
+        // entries widened are reported as well as entries of their own.
+        Line(check, "FAIL  default privileges|").Should().Contain("ariva in every schema on tables gives ").And.Contain("ariva_runtime=TRIGGER")
+            .And.Contain("ariva in _timescaledb_internal on tables gives ariva_runtime=DELETE,ariva_runtime=INSERT,ariva_runtime=SELECT,ariva_runtime=UPDATE")
+            .And.Contain("ariva in public on tables gives ariva_runtime=DELETE,ariva_runtime=INSERT,ariva_runtime=SELECT,ariva_runtime=TRUNCATE,ariva_runtime=UPDATE")
+            .And.Contain("ariva in public on sequences gives ariva_runtime=SELECT,ariva_runtime=UPDATE with grant option,ariva_runtime=USAGE");
+        Line(check, "FAIL  runtime grants|").Should().Contain($"public.integration_call to {RuntimeLogin}")
+            .And.Contain("public.audit_entry to ariva_runtime with grant option").And.Contain("public.site to PUBLIC");
+        Line(check, "FAIL  runtime role|may create objects: ").Should().Contain("ariva_runtime in the database").And.Contain("ariva_app in schema it_side");
+        await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.RememberLatestScript);
+        var compared = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
+        compared.Stdout.Should().Contain("FAIL  runtime privileges|", compared.Stdout);
+        Line(compared, "FAIL  runtime privileges|").Should().Contain(
+            "report_delivery (the scripts: SELECT,INSERT,UPDATE(attempts reason sent_utc status); found: SELECT,INSERT,UPDATE)")
+            .And.Contain("sensing_event (the scripts: SELECT,INSERT; found: SELECT,INSERT,MAINTAIN)");
+        Line(compared, "FAIL  views|").Should().Contain("it_deliveries (the scripts: no such view; found: reads report_delivery)");
         check.Stdout.Should().Contain("ok    planted|", "nothing under a system name outside the extensions yet");
         check.Stdout.Should().Contain("FAIL  extensions|pg_stat_statements (a DBA-provided server's own: name it with --allow-extension)");
         var allowed = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--allow-extension", "pg_stat_statements", "--allow-login", "it_repl",
@@ -440,6 +507,21 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.RevokePurgeFromPublic);
         FunctionsLine(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Should().Contain("public.it_definer")
             .And.NotContain("ariva_retention_purge", "the shipped body with the shipped grants");
+        // ARV-189 (L2): the purge's other pinned properties, each forged as the migration login and put back: EXECUTE with grant
+        // option, EXECUTE for another role, and another setting for its sessions.
+        foreach (var (forge, back, why) in new[]
+                 {
+                     (Query.PurgeWithGrantOption, Query.PurgeWithoutGrantOption, "ariva_runtime may grant EXECUTE on"),
+                     (Query.PurgeForReader, Query.PurgeNotForReader, "EXECUTE granted to another role"),
+                     (Query.PurgeOtherTimeZone, Query.PurgeUtc, "another setting for its sessions")
+                 })
+        {
+            await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), forge);
+            FunctionsLine(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Should().Contain("public.ariva_retention_purge (plpgsql, SECURITY DEFINER)", why);
+            await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), back);
+            FunctionsLine(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Should().NotContain("ariva_retention_purge", $"{why}, put back");
+        }
+
         await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.ForgePurgeBody);
         FunctionsLine(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Should().Contain("public.ariva_retention_purge (plpgsql, SECURITY DEFINER)",
             "another body under the purge's name, its settings and grants unchanged");
@@ -523,6 +605,7 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         NewestCompacted,
         StreamOffsets,
         ForgetLatestScript,
+        RememberLatestScript,
         PlantAsMigrationLogin,
         PlantAsSuperuser,
         AlterSystem,
@@ -531,6 +614,12 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         MigrationLoginIsSuperuser,
         GiveMigrationLoginReplication,
         RevokePurgeFromPublic,
+        PurgeWithGrantOption,
+        PurgeWithoutGrantOption,
+        PurgeForReader,
+        PurgeNotForReader,
+        PurgeOtherTimeZone,
+        PurgeUtc,
         ForgePurgeBody
     }
 
@@ -577,6 +666,8 @@ public sealed class BackupRestoreTests : IAsyncLifetime
             """,
         Query.StreamOffsets => "SELECT count(*) FROM stream_offset",
         Query.ForgetLatestScript => "DELETE FROM schema_version WHERE script_name = (SELECT max(script_name) FROM schema_version)",
+        // The latest shipped script recorded again as the runner records it (its name and checksum are bound below).
+        Query.RememberLatestScript => "INSERT INTO schema_version (script_name, checksum, execution_ms) VALUES (@name, @checksum, 0)",
         Query.PlantAsMigrationLogin => """
             CREATE FUNCTION public.it_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
             GRANT EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) TO PUBLIC;
@@ -586,6 +677,31 @@ public sealed class BackupRestoreTests : IAsyncLifetime
             CREATE RULE it_rule AS ON INSERT TO public.site DO ALSO NOTHING;
             CREATE OR REPLACE FUNCTION public.validation_row_immutable() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
             CREATE PUBLICATION it_pub FOR TABLE public.site;
+            GRANT UPDATE ON public.report_delivery TO ariva_runtime;
+            DO $$ BEGIN
+                EXECUTE (SELECT format('GRANT UPDATE ON %I.%I TO ariva_runtime', chunk_schema, chunk_name)
+                           FROM timescaledb_information.chunks WHERE hypertable_name = 'sensing_event' ORDER BY chunk_name LIMIT 1);
+                EXECUTE (SELECT format('GRANT UPDATE ON %I.%I TO ariva_runtime', chunk_schema, chunk_name || '_compressed')
+                           FROM timescaledb_information.chunks WHERE hypertable_name = 'sensing_event' AND is_compressed ORDER BY chunk_name LIMIT 1);
+                EXECUTE (SELECT format('GRANT INSERT ON %I.%I TO ariva_runtime', materialization_hypertable_schema, materialization_hypertable_name)
+                           FROM timescaledb_information.continuous_aggregates WHERE view_name = 'queue_minute_15m');
+            END $$;
+            GRANT MAINTAIN ON public.sensing_event TO ariva_runtime;
+            CREATE VIEW public.it_deliveries AS SELECT * FROM public.report_delivery;
+            CREATE SCHEMA it_side;
+            GRANT CREATE ON SCHEMA it_side TO ariva_app;
+            CREATE VIEW it_side.it_view AS SELECT 1 AS one;
+            GRANT SELECT ON it_side.it_view TO ariva_runtime;
+            CREATE TABLE it_side.it_child () INHERITS (public.alert_rule);
+            GRANT UPDATE ON SEQUENCE public.outbox_message_seq_seq TO ariva_runtime;
+            GRANT SELECT ON public.integration_call TO ariva_app;
+            GRANT SELECT ON public.audit_entry TO ariva_runtime WITH GRANT OPTION;
+            GRANT SELECT ON public.site TO PUBLIC;
+            GRANT CREATE ON DATABASE ariva TO ariva_runtime;
+            ALTER DEFAULT PRIVILEGES GRANT TRIGGER ON TABLES TO ariva_runtime;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA _timescaledb_internal GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ariva_runtime;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT TRUNCATE ON TABLES TO ariva_runtime;
+            ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT UPDATE ON SEQUENCES TO ariva_runtime WITH GRANT OPTION;
             """,
         Query.PlantAsSuperuser => """
             CREATE FUNCTION public.it_c_function() RETURNS language_handler AS '$libdir/plpgsql', 'plpgsql_call_handler' LANGUAGE c;
@@ -604,6 +720,32 @@ public sealed class BackupRestoreTests : IAsyncLifetime
             CREATE FUNCTION pg_catalog.it_hidden() RETURNS int LANGUAGE sql AS 'SELECT 1';
             ALTER EXTENSION plpgsql ADD FUNCTION pg_catalog.it_hidden();
             CREATE OR REPLACE FUNCTION pg_catalog.reverse(text) RETURNS text LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT $1 $$;
+            GRANT UPDATE ON _timescaledb_catalog.hypertable TO PUBLIC;
+            GRANT UPDATE (config) ON _timescaledb_catalog.bgw_job TO ariva_runtime;
+            CREATE VIEW information_schema.it_view AS SELECT * FROM public.retention_period;
+            ALTER VIEW information_schema.it_view OWNER TO ariva;
+            GRANT UPDATE ON information_schema.it_view TO ariva_runtime;
+            DO $$
+            DECLARE target text := (SELECT format('%I.%I', chunk_schema, chunk_name || '_compressed') FROM timescaledb_information.chunks
+                                     WHERE hypertable_name = 'queue_minute' AND NOT is_compressed ORDER BY chunk_name LIMIT 1);
+            BEGIN
+                EXECUTE format('CREATE VIEW %s AS SELECT * FROM public.retention_period', target);
+                EXECUTE format('ALTER VIEW %s OWNER TO ariva', target);
+                EXECUTE format('GRANT UPDATE ON %s TO ariva_runtime', target);
+            END $$;
+            CREATE VIEW _timescaledb_internal._direct_view_999 AS SELECT * FROM public.queue_minute_shadow;
+            ALTER VIEW _timescaledb_internal._direct_view_999 OWNER TO ariva;
+            GRANT SELECT ON _timescaledb_internal._direct_view_999 TO ariva_runtime;
+            UPDATE _timescaledb_catalog.continuous_agg SET direct_view_name = '_direct_view_999' WHERE user_view_name = 'line_minute_15m';
+            DO $$ BEGIN
+                EXECUTE (SELECT format('CREATE VIEW _timescaledb_internal._direct_view_998 AS SELECT chunk_id, chunk_seq FROM %s', reltoastrelid::regclass)
+                           FROM pg_class WHERE oid = 'public.alert_rule'::regclass);
+            END $$;
+            ALTER VIEW _timescaledb_internal._direct_view_998 OWNER TO ariva;
+            GRANT SELECT ON _timescaledb_internal._direct_view_998 TO ariva_runtime;
+            GRANT SELECT ON pg_catalog.pg_statistic TO PUBLIC;
+            GRANT SELECT ON pg_catalog.pg_authid TO ariva_runtime;
+            GRANT SELECT ON information_schema._pg_user_mappings TO PUBLIC;
             """,
         Query.AlterSystem => "ALTER SYSTEM SET work_mem = '8MB'",
         Query.Subscription => "CREATE SUBSCRIPTION it_sub CONNECTION 'host=127.0.0.1 dbname=ariva' PUBLICATION it_pub WITH (connect = false)",
@@ -627,6 +769,13 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         Query.MigrationLoginIsSuperuser => "SELECT rolsuper FROM pg_roles WHERE rolname = 'ariva'",
         Query.GiveMigrationLoginReplication => "ALTER ROLE ariva REPLICATION",
         Query.RevokePurgeFromPublic => "REVOKE EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) FROM PUBLIC",
+        Query.PurgeWithGrantOption => "GRANT EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) TO ariva_runtime WITH GRANT OPTION",
+        Query.PurgeWithoutGrantOption => "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) FROM ariva_runtime",
+        Query.PurgeForReader => "GRANT EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) TO ariva_validation_reader",
+        Query.PurgeNotForReader => "REVOKE EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) FROM ariva_validation_reader",
+        // ALTER FUNCTION ... SET replaces the setting where it stands, so setting it back restores the shipped array.
+        Query.PurgeOtherTimeZone => "ALTER FUNCTION public.ariva_retention_purge(text, integer) SET TimeZone = 'Asia/Dubai'",
+        Query.PurgeUtc => "ALTER FUNCTION public.ariva_retention_purge(text, integer) SET TimeZone = 'UTC'",
         // CREATE OR REPLACE keeps the function's grants; the settings are the shipped ones, so only the body differs.
         Query.ForgePurgeBody => """
             CREATE OR REPLACE FUNCTION public.ariva_retention_purge(p_data_set text, p_limit integer) RETURNS integer
@@ -656,6 +805,13 @@ public sealed class BackupRestoreTests : IAsyncLifetime
 #pragma warning disable CA2100 // every command text is a literal from Sql(Query) above
         await using var command = new NpgsqlCommand(sql, connection);
 #pragma warning restore CA2100
+        if (query == Query.RememberLatestScript)
+        {
+            var latest = SqlScriptCatalog.Embedded()[^1];
+            command.Parameters.AddWithValue("name", latest.Name);
+            command.Parameters.AddWithValue("checksum", latest.Checksum);
+        }
+
         await command.ExecuteNonQueryAsync(Ct);
     }
 

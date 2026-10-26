@@ -160,7 +160,12 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         RawRetentionDays,
         AlertEmailPeriod,
         RemoveRetentionPolicy,
+        PurgeEmails,
         PurgeIntegrationCalls,
+        PurgeDeliveries,
+        PurgeAsInvoker,
+        PurgeAsDefiner,
+        RuntimeColumnUpdates,
         PurgeGrantees,
         PublicMayPurge
     }
@@ -188,7 +193,15 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         Query.AlertEmailPeriod => "SELECT days FROM retention_period WHERE data_set = 'email_message'",
         Query.RemoveRetentionPolicy => "SELECT remove_retention_policy('sensing_event')",
         // ARV-111a: the purge as the hosts call it, and who may call it (grantee 0 is PUBLIC, shown as "-").
+        Query.PurgeEmails => "SELECT ariva_retention_purge('email_message', 100)",
         Query.PurgeIntegrationCalls => "SELECT ariva_retention_purge('integration_call', 100)",
+        Query.PurgeDeliveries => "SELECT ariva_retention_purge('report_delivery', 100)",
+        Query.PurgeAsInvoker => "ALTER FUNCTION ariva_retention_purge(text, integer) SECURITY INVOKER",
+        Query.PurgeAsDefiner => "ALTER FUNCTION ariva_retention_purge(text, integer) SECURITY DEFINER",
+        Query.RuntimeColumnUpdates => """
+            SELECT string_agg(t || '.' || c || ':' || has_column_privilege('ariva_runtime', t, c, 'UPDATE')::text, ',' ORDER BY t, c)
+              FROM (VALUES ('report_delivery', 'created_utc'), ('email_message', 'created_utc'), ('integration_call', 'at_utc'), ('report_delivery', 'status')) v(t, c)
+            """,
         Query.PurgeGrantees => """
             SELECT string_agg(a.grantee::regrole::text || ':' || a.privilege_type || CASE WHEN a.is_grantable THEN '+grant' ELSE '' END, ',' ORDER BY a.grantee::regrole::text)
               FROM pg_proc p, aclexplode(p.proacl) a WHERE p.oid = 'ariva_retention_purge(text,integer)'::regprocedure
@@ -272,9 +285,25 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         (await ScalarAsync<string>(owner, Query.RawRetentionDays)).Should().Be("60");
 
         // ARV-111a: the purge runs as this non-superuser owner, so its privileges are checked as in the clusters. The runtime
-        // login may call it (nothing is old enough here: 0 rows); the reader login may not; EXECUTE belongs to the owner and
-        // ariva_runtime only, without grant option, and not to PUBLIC.
-        (await ScalarAsync<int>(runtime, Query.PurgeIntegrationCalls)).Should().Be(0);
+        // login may call it for each of the three data sets (ARV-189: each branch's DELETE is checked as the statement starts, so
+        // nothing old enough here, 0 rows, still proves it), and only because it runs as the owner: as SECURITY INVOKER every
+        // branch is refused to the runtime login, which may delete none of these rows itself. The reader login may not call it;
+        // EXECUTE belongs to the owner and ariva_runtime only, without grant option, and not to PUBLIC.
+        foreach (var purge in new[] { Query.PurgeEmails, Query.PurgeIntegrationCalls, Query.PurgeDeliveries })
+            (await ScalarAsync<int>(runtime, purge)).Should().Be(0, purge.ToString());
+        await ScalarAsync<object>(owner, Query.PurgeAsInvoker);
+        foreach (var purge in new[] { Query.PurgeEmails, Query.PurgeIntegrationCalls, Query.PurgeDeliveries })
+        {
+            var asInvoker = async () => await ScalarAsync<int>(runtime, purge);
+            (await asInvoker.Should().ThrowAsync<PostgresException>(purge.ToString())).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
+        }
+
+        await ScalarAsync<object>(owner, Query.PurgeAsDefiner);
+        (await ScalarAsync<int>(runtime, Query.PurgeDeliveries)).Should().Be(0, "the shipped SECURITY DEFINER again");
+        // ARV-189 (L4): the owner's view of the column grants scripts 0023, 0025 and 0054 leave: the runtime role cannot move a
+        // row's age (so the purge's cutoff) and may still mark a delivery.
+        (await ScalarAsync<string>(owner, Query.RuntimeColumnUpdates)).Should().Be(
+            "email_message.created_utc:false,integration_call.at_utc:false,report_delivery.created_utc:false,report_delivery.status:true");
         var readerPurge = async () => await ScalarAsync<int>(reader, Query.PurgeIntegrationCalls);
         (await readerPurge.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
         (await ScalarAsync<string>(owner, Query.PurgeGrantees)).Should().Be($"{MigrationLogin}:EXECUTE,ariva_runtime:EXECUTE");

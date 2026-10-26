@@ -5,6 +5,7 @@ using Ariva.Infra.Settings;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 
@@ -261,9 +262,83 @@ public sealed class RetentionTests(PostgresFixture fixture)
         (await PeriodsAsync()).Should().ContainKey("report_delivery");
     }
 
+    [Fact]
+    public async Task RetentionJob_Should_RaiseTheRunsOwnFailure_AndWarn_When_ItsLockCannotBeReleasedEither()
+    {
+        // ARV-189 (L3): the run fails (the runtime role may no longer read the periods) and releasing its advisory lock fails too
+        // (pg_advisory_unlock taken from PUBLIC in this database only): the run's own exception is the one raised, the unlock's
+        // failure is the warning, and the lock goes with the session (here when the pool closes the connection).
+        (await MigrateAsync()).Should().Be(0);
+        var log = new RoundLog();
+        var runtime = new DatabaseSettings { Host = fixture.Hostname, Port = fixture.Port, Name = _database, Username = RuntimeLogin, Password = RuntimePassword };
+        var round = new RetentionRound(runtime, new RetentionJobSettings { BatchSize = 10, MaxBatchesPerRun = 1 }, log);
+        await ExecuteAsync(Admin, "REVOKE SELECT ON retention_period FROM ariva_runtime; REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock(integer, integer) FROM PUBLIC");
+        try
+        {
+            var run = async () => await round.RunAsync(Ct);
+
+            var thrown = (await run.Should().ThrowAsync<PostgresException>()).Which;
+            thrown.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
+            thrown.MessageText.Should().Contain("retention_period", "the run's own failure, not the unlock's");
+            var warning = log.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning).Subject;
+            warning.Message.Should().Be("Retention: the run's advisory lock could not be released; it is released with the connection's session");
+            warning.Exception.Should().BeOfType<PostgresException>().Which.MessageText.Should().Contain("pg_advisory_unlock");
+            (await ScalarAsync<long>(Admin, "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 52 AND objid = 0 AND objsubid = 2"))
+                .Should().Be(1, "the pooled session still holds it");
+            ClearRuntimePool(runtime);
+            var held = 1L;
+            for (var attempt = 0; attempt < 50 && held > 0; attempt++)
+            {
+                await Task.Delay(100, Ct);
+                held = await ScalarAsync<long>(Admin, "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 52 AND objid = 0 AND objsubid = 2");
+            }
+
+            held.Should().Be(0, "it went with the session");
+        }
+        finally
+        {
+            await ExecuteAsync(Admin, "GRANT SELECT ON retention_period TO ariva_runtime; GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock(integer, integer) TO PUBLIC");
+            // Whatever failed above, no pooled session keeps the lock from this class's other tests.
+            ClearRuntimePool(runtime);
+        }
+
+        (await round.RunAsync(Ct)).HeldElsewhere.Should().BeFalse("the next run takes the lock again");
+    }
+
     #endregion
 
     #region Helpers
+
+    private static void ClearRuntimePool(DatabaseSettings runtime)
+    {
+        using var pooled = new NpgsqlConnection(runtime.BuildConnectionString());
+        NpgsqlConnection.ClearPool(pooled);
+    }
+
+    // Keeps each entry the round logs (level, message, exception).
+    private sealed class RoundLog : ILogger<RetentionRound>
+    {
+        private readonly List<(LogLevel Level, string Message, Exception Exception)> _entries = [];
+
+        public IReadOnlyList<(LogLevel Level, string Message, Exception Exception)> Entries
+        {
+            get
+            {
+                lock (_entries)
+                    return [.. _entries];
+            }
+        }
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        {
+            lock (_entries)
+                _entries.Add((logLevel, formatter(state, exception), exception));
+        }
+    }
 
     private string Admin => fixture.ConnectionString(_database);
 

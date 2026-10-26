@@ -30,7 +30,20 @@
 #                                   outside the extensions but Ariva's own with a body its scripts ship (ARIVA_FUNCTIONS);
 #                                   nothing added to plpgsql; the system's functions as in template1; no publication or
 #                                   subscription; and no function or operator under a system name outside the extensions
-#                                   (planted_objects). A DBA-provided server's own extension, login and setting pass when
+#                                   (planted_objects). Since ARV-189 also the runtime role's privileges on every relation of
+#                                   public as the scripts leave them (ARIVA_RUNTIME_PRIVILEGES) and the views of public as
+#                                   the scripts create them (ARIVA_VIEWS), both compared once the database is at
+#                                   ARIVA_RUNTIME_PRIVILEGES_AT (a database behind it fails, but right after restore, whose
+#                                   migration job follows); outside public each relation judged by what it is, not by its
+#                                   name: an inheritance child no wider than its parent and only TimescaleDB's chunks
+#                                   inheriting, a compressed chunk no wider than its hypertable, a continuous aggregate's
+#                                   table and views at most SELECT, no view (in public too) wider than what it reads,
+#                                   nothing on any other relation created after initdb, no sequence it may set, no
+#                                   extension or system table granting more than it was created with; no CREATE on any
+#                                   schema or the database for the role or its logins; no grant to a role that holds
+#                                   ariva_runtime (the runtime login), with grant option, or on Ariva's relations to
+#                                   PUBLIC; and default privileges as script 0001 leaves them and nothing else. A
+#                                   DBA-provided server's own extension, login and setting pass when
 #                                   named with --allow-extension, --allow-login and --allow-setting (plain names)
 #   keyring [--certificate-sha256 HEX]...   the Data Protection keys and the certificate each needs
 #   after-kafka-loss --confirm-stream-stopped [--dry-run]
@@ -118,6 +131,109 @@ validation_row_immutable:088cf6b77bcb43ae7ac661717cbfb339ff2b47a9b86711d4b9b3a3b
 zone_health_bin_final_is_immutable:546495444ddf733639f5cc6b2e5d09ec19c72d4dec1c8406d69fd905a722333d,\
 zone_profile_geometry_immutable:ffb5713b5a9b0bbca725c0208082cfe8b3dcbb4bd525317f08bb29b6391af07d,\
 zone_profile_immutable:c3c11583ac7dd5add9f4bafea3c4ba323d27a97cd9adeebd77b06ef9f4ea5a13"
+
+# ARV-189: the runtime role's privileges on every relation of public that Ariva's scripts leave other than the default
+# SELECT, INSERT, UPDATE and DELETE (script 0001's default privileges), with its column grants, as
+# <relation>=<privileges>[,<privilege>(<column> ...)] entries separated by ";". check compares them with the database once
+# it is at ARIVA_RUNTIME_PRIVILEGES_AT or later (before that the migration job has not applied the scripts the list
+# reflects), so a restore that lost a revoke, or gained a grant, is reported. OpsScriptTests refuses a later script that
+# grants to or revokes from ariva_runtime, or creates a view, until this list (or ARIVA_VIEWS) and its script move with it;
+# BackupRestoreTests holds the list equal to a migrated database.
+readonly ARIVA_RUNTIME_PRIVILEGES_AT="0064_database_environment.sql"
+readonly ARIVA_RUNTIME_PRIVILEGES="advertising_media=SELECT,INSERT,UPDATE;\
+advertising_play=SELECT,INSERT;\
+advertising_playlist=SELECT,INSERT,UPDATE;\
+advertising_policy=SELECT,INSERT,UPDATE;\
+advertising_schedule=SELECT,INSERT,UPDATE;\
+airport=SELECT,INSERT,UPDATE;\
+alert=SELECT,INSERT,UPDATE;\
+alert_rule=SELECT,INSERT,UPDATE;\
+aman_pull_cursor=SELECT,INSERT,UPDATE;\
+audit_entry=SELECT,INSERT;\
+availability_cursor=SELECT,INSERT,UPDATE;\
+availability_minute=SELECT,INSERT;\
+border_desk_interval=SELECT,INSERT;\
+border_desk_session=SELECT,INSERT;\
+border_egate_interval=SELECT,INSERT;\
+checkpoint=SELECT,INSERT,UPDATE;\
+counter_allocation=SELECT,INSERT,UPDATE;\
+data_protection_key=SELECT,INSERT;\
+database_environment=SELECT;\
+desk=SELECT,INSERT,UPDATE;\
+desk_code_mapping=SELECT,INSERT,UPDATE;\
+desk_feed_state=SELECT,INSERT,UPDATE;\
+desk_minute=SELECT,INSERT,UPDATE;\
+desk_observation=SELECT,INSERT;\
+desk_observation_batch=SELECT,INSERT;\
+desk_sensor_minute=SELECT,INSERT,UPDATE;\
+desk_zone_reading=SELECT,INSERT;\
+device=SELECT,INSERT,UPDATE;\
+device_calibration=SELECT,INSERT;\
+device_health_event=SELECT,INSERT;\
+display=SELECT,INSERT,UPDATE;\
+egate_minute=SELECT,INSERT,UPDATE;\
+email_message=SELECT,INSERT,UPDATE(attempts next_attempt_utc reason sent_utc status);\
+feed_freshness=SELECT,INSERT,UPDATE;\
+flight_event=SELECT,INSERT;\
+flight_leg=SELECT,INSERT,UPDATE;\
+floor_plan=SELECT,INSERT,UPDATE;\
+inbound_lane_demand=SELECT,INSERT,UPDATE;\
+instruction_slide=SELECT,INSERT,UPDATE;\
+integration_call=SELECT,INSERT;\
+integration_client=SELECT,INSERT,UPDATE;\
+integration_idempotency=SELECT,INSERT,DELETE,UPDATE(response_body status_code);\
+lane_staffing=SELECT,INSERT;\
+level=SELECT,INSERT,UPDATE;\
+line_minute=SELECT,INSERT,UPDATE;\
+line_minute_15m=SELECT;\
+maintenance_window=SELECT,INSERT,UPDATE;\
+manual_count=SELECT,INSERT;\
+operating_day_exception=SELECT,INSERT,UPDATE;\
+operating_week=SELECT,INSERT,UPDATE;\
+outbound_endpoint=SELECT,INSERT,UPDATE;\
+overflow_bin_15m=SELECT;\
+overflow_minute=SELECT,INSERT,UPDATE;\
+queue_bin=SELECT,INSERT,UPDATE;\
+queue_minute=SELECT,INSERT,UPDATE;\
+queue_minute_15m=SELECT;\
+queue_minute_shadow=INSERT,SELECT(minute_utc zone_key),UPDATE(no_service nowcast_degraded nowcast_minutes sensor_cycle_minutes updated_on);\
+recovery_code=SELECT,INSERT,UPDATE;\
+refresh_token=SELECT,INSERT,UPDATE;\
+replay_run=SELECT,INSERT;\
+report_delivery=SELECT,INSERT,UPDATE(attempts reason sent_utc status);\
+report_schedule=SELECT,INSERT,UPDATE;\
+retention_period=SELECT;\
+schema_version=SELECT;\
+sensing_batch=SELECT,INSERT;\
+sensing_day_key=SELECT,INSERT,DELETE;\
+sensing_event=SELECT,INSERT;\
+site=SELECT,INSERT,UPDATE(modified_by modified_by_id modified_on name);\
+stream_offset=SELECT,INSERT,UPDATE;\
+stream_partition_count=SELECT,INSERT;\
+stream_zone_state=SELECT,INSERT,UPDATE;\
+terminal=SELECT,INSERT,UPDATE;\
+tracer_batch=SELECT,INSERT;\
+tracer_run=SELECT,INSERT;\
+user=SELECT,INSERT,UPDATE;\
+user_session=SELECT,INSERT,UPDATE;\
+validation_campaign=SELECT,INSERT,UPDATE(closed_by_id closed_utc started_by_id started_utc status);\
+validation_campaign_desk=SELECT,INSERT;\
+validation_campaign_line=SELECT,INSERT;\
+validation_campaign_zone=SELECT,INSERT;\
+validation_result_revision=SELECT,INSERT;\
+zone_health_bin=SELECT,INSERT,UPDATE;\
+zone_outage=SELECT,INSERT,UPDATE"
+
+# ARV-189 review: the views of public as the scripts create them, as <view>=<what it reads> entries separated by ";": a
+# continuous aggregate its hypertable, a plain view the relations it names (separated by spaces). check compares them, as
+# it does the privileges, once the database is at ARIVA_RUNTIME_PRIVILEGES_AT: a view a forged dump adds takes the default
+# DML of script 0001 and reads with its owner's rights. OpsScriptTests holds the names equal to the scripts' views.
+readonly ARIVA_VIEWS="line_minute_15m=line_minute;overflow_bin_15m=overflow_minute;queue_minute_15m=queue_minute"
+
+# Set by restore only: a database behind ARIVA_RUNTIME_PRIVILEGES_AT is then the expected state (the migration job follows),
+# not a failure. check sets check_not_compared when it reported such a database, so that restore's last line says what to do.
+check_after_restore=0
+check_not_compared=0
 
 # The migration password stays in this shell; children get it only as PGPASSWORD of the migration login's connections.
 MIGRATION_PASSWORD="${ARIVA_MIGRATION_PASSWORD:-}"
@@ -451,8 +567,13 @@ SQL
   local logins=()
   [[ -z "$runtime" ]] || logins+=(--runtime-login "$runtime")
   [[ -z "$reader" ]] || logins+=(--reader-login "$reader")
+  check_after_restore=1
   cmd_check "${logins[@]}" "${allowed[@]}"
-  say "restore finished. Next: run the migration job (api-main --migrate) so the runtime and validation reader logins exist with this deployment's passwords, restore the files, start the hosts, then run keyring with the Data Protection certificate."
+  if ((check_not_compared)); then
+    say "restore finished, but the backup is older than this release's scripts: the runtime role's privileges and the views are not compared yet. Next: run the migration job with api-main --migrate (the platform stays stopped), then check with --runtime-login, and start the hosts only when it passes; then restore the files and run keyring with the Data Protection certificate."
+  else
+    say "restore finished. Next: run the migration job (api-main --migrate) so the runtime and validation reader logins exist with this deployment's passwords, restore the files, start the hosts, then run keyring with the Data Protection certificate."
+  fi
 }
 
 cmd_check() {
@@ -478,7 +599,9 @@ cmd_check() {
   # database or an object the login created cannot change what a name in it means, or what it reports.
   local report
   report="$(as_migration_catalog --tuples-only --no-align --set=runtime="$runtime" --set=reader="$reader" --set=allowed_extensions="$extensions" \
-    --set=allowed_logins="$logins_allowed" --set=allowed_settings="$settings_allowed" --set=ariva_functions="$ARIVA_FUNCTIONS" <<'SQL'
+    --set=allowed_logins="$logins_allowed" --set=allowed_settings="$settings_allowed" --set=ariva_functions="$ARIVA_FUNCTIONS" \
+    --set=runtime_privileges="$ARIVA_RUNTIME_PRIVILEGES" --set=runtime_privileges_at="$ARIVA_RUNTIME_PRIVILEGES_AT" \
+    --set=ariva_views="$ARIVA_VIEWS" --set=after_restore="$check_after_restore" <<'SQL'
 WITH RECURSIVE me AS (SELECT oid FROM pg_roles WHERE rolname = current_user),
 foreign_owned AS (
     SELECT n.nspname || '.' || c.relname AS name
@@ -493,6 +616,225 @@ foreign_owned AS (
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')),
 runtime_owned AS (
     SELECT count(*) AS n FROM pg_class WHERE relowner IN (SELECT oid FROM pg_roles WHERE rolname = 'ariva_runtime' OR (:'runtime' <> '' AND rolname = :'runtime'))),
+-- ARV-189: the script the database is at and whether it is behind the lists (compared byte by byte: the names are ASCII and
+-- the order is the scripts' own, whatever the database's collation).
+pinned_at AS (
+    SELECT coalesce(max(script_name), 'no script') AS latest,
+           coalesce(max(script_name), '') COLLATE "C" < :'runtime_privileges_at' COLLATE "C" AS behind
+      FROM public.schema_version),
+-- ARV-189: the privileges compared, in this order: every table privilege of this server (MAINTAIN since PostgreSQL 17) and
+-- those a column can carry.
+table_privileges(p, i) AS (
+    SELECT t.p, t.i FROM unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']
+           || CASE WHEN current_setting('server_version_num')::integer >= 170000 THEN ARRAY['MAINTAIN'] ELSE ARRAY[]::text[] END) WITH ORDINALITY t(p, i)),
+column_privileges(p, i) AS (
+    SELECT t.p, t.i FROM unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) WITH ORDINALITY t(p, i)),
+-- ARV-189: the runtime role's privileges on every relation of public outside the extensions, as ARIVA_RUNTIME_PRIVILEGES writes
+-- them: its table-wide privileges in a fixed order, then each privilege it holds on some columns only, with those columns. Any
+-- grant counts, a PUBLIC one included (has_table_privilege, has_column_privilege).
+runtime_privileges AS (
+    SELECT c.relname::text AS name,
+           concat_ws(',', VARIADIC ARRAY(
+               SELECT t.p FROM table_privileges t WHERE has_table_privilege('ariva_runtime', c.oid, t.p) ORDER BY t.i)
+             || ARRAY(
+               SELECT t.p || '(' || string_agg(a.attname::text, ' ' ORDER BY a.attname) || ')'
+                 FROM column_privileges t
+                 JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+                WHERE NOT has_table_privilege('ariva_runtime', c.oid, t.p) AND has_column_privilege('ariva_runtime', c.oid, a.attnum, t.p)
+                GROUP BY t.p, t.i ORDER BY t.i)) AS privileges
+      FROM pg_class c
+     WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+       AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')),
+pinned_privileges AS (
+    SELECT split_part(e, '=', 1) AS name, split_part(e, '=', 2) AS privileges FROM unnest(string_to_array(:'runtime_privileges', ';')) e),
+-- A relation the list does not name has the default DML; one it names that the database lacks is reported too.
+privilege_drift AS (
+    SELECT coalesce(a.name, p.name) || ' (the scripts: ' || coalesce(p.privileges, 'SELECT,INSERT,UPDATE,DELETE') || '; found: '
+           || CASE WHEN a.name IS NULL THEN 'no such relation' ELSE coalesce(nullif(a.privileges, ''), 'none') END || ')' AS name
+      FROM runtime_privileges a FULL JOIN pinned_privileges p ON p.name = a.name
+     WHERE a.privileges IS DISTINCT FROM coalesce(p.privileges, 'SELECT,INSERT,UPDATE,DELETE')),
+-- ARV-189 review: the views of public (and any materialized view or foreign table) are the scripts' own, each reading what its
+-- script reads: a continuous aggregate its hypertable, a plain view the relations it names. A view the scripts do not create
+-- would take the default DML and act with its owner's rights on whatever it reads.
+public_views AS (
+    SELECT v.relname::text AS name,
+           coalesce((SELECT ca.hypertable_name::text FROM timescaledb_information.continuous_aggregates ca
+                      WHERE ca.view_schema = 'public' AND ca.view_name = v.relname),
+                    (SELECT string_agg(s.x, ' ' ORDER BY s.x)
+                       FROM (SELECT DISTINCT CASE WHEN t.relnamespace = 'public'::regnamespace THEN t.relname::text ELSE t.oid::regclass::text END AS x
+                               FROM pg_rewrite r
+                               JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid AND d.refclassid = 'pg_class'::regclass
+                               JOIN pg_class t ON t.oid = d.refobjid
+                              WHERE r.ev_class = v.oid AND d.refobjid <> v.oid) s), '') AS reads
+      FROM pg_class v
+     WHERE v.relnamespace = 'public'::regnamespace AND v.relkind IN ('v', 'm', 'f')
+       AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = v.oid AND d.deptype = 'e')),
+pinned_views AS (
+    SELECT split_part(e, '=', 1) AS name, split_part(e, '=', 2) AS reads FROM unnest(string_to_array(:'ariva_views', ';')) e),
+view_drift AS (
+    SELECT coalesce(a.name, p.name) || ' (the scripts: ' || coalesce('reads ' || p.reads, 'no such view') || '; found: '
+           || CASE WHEN a.name IS NULL THEN 'no such view' ELSE 'reads ' || coalesce(nullif(a.reads, ''), 'nothing') END || ')' AS name
+      FROM public_views a FULL JOIN pinned_views p ON p.name = a.name
+     WHERE a.reads IS DISTINCT FROM p.reads),
+-- ARV-189: outside public, the runtime role holds privileges only where TimescaleDB keeps a hypertable's rows or a continuous
+-- aggregate's, and each relation is judged by what it is, never by its name or by catalog rows alone, which a dump carries
+-- (its review): an inheritance child grants no more than its parent (a chunk reaches its hypertable's rows), and only a table
+-- the catalog lists as a chunk of the hypertable it inherits from is one; a chunk's compressed form (a table TimescaleDB 2.31
+-- names after the chunk with _compressed) grants no more than the chunk's hypertable; a continuous aggregate's materialization
+-- table and its partial and direct views (as the catalog names them) at most SELECT; no view, here or in public, grants a
+-- privilege the runtime role lacks on a relation it reads (a view reads with its owner's rights); any other relation created
+-- after initdb (oid 16384 and above, information_schema and pg_catalog included) outside public and the extensions grants it
+-- nothing; no sequence lets it set a value; no extension table grants PUBLIC, the role or a login of it more than the
+-- extension did (pg_init_privs), table-wide or on a column; and no table of the server's own grants the role or a login of it
+-- anything, or PUBLIC more than initdb did (pg_init_privs records pg_catalog's; information_schema's views, which it does not
+-- record, may give PUBLIC SELECT and nothing else, but its _pg_ views, which initdb leaves to their owner: _pg_user_mappings
+-- shows every user mapping's options, passwords included).
+runtime_members(oid) AS (
+    SELECT m.member FROM pg_auth_members m WHERE m.roleid = 'ariva_runtime'::regrole AND m.member <> (SELECT oid FROM me)
+    UNION
+    SELECT m.member FROM pg_auth_members m JOIN runtime_members r ON m.roleid = r.oid WHERE m.member <> (SELECT oid FROM me)),
+runtime_grantees(oid) AS (
+    SELECT 'ariva_runtime'::regrole::oid
+    UNION
+    SELECT r.oid FROM runtime_members r),
+-- ARV-189 review: the runtime role and the logins that hold it create nothing, in any schema or in the database.
+runtime_create AS (
+    SELECT pg_get_userbyid(r.oid) || ' in schema ' || n.nspname AS name
+      FROM runtime_grantees r CROSS JOIN pg_namespace n WHERE has_schema_privilege(r.oid, n.oid, 'CREATE')
+    UNION ALL
+    SELECT pg_get_userbyid(r.oid) || ' in the database' FROM runtime_grantees r
+     WHERE has_database_privilege(r.oid, (SELECT oid FROM pg_database WHERE datname = current_database()), 'CREATE')),
+extension_members AS (
+    SELECT d.objid AS relation FROM pg_depend d
+     WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e'),
+inherit_pairs AS (
+    SELECT i.inhrelid AS relation, i.inhparent AS parent FROM pg_inherits i
+     WHERE NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.relation = i.inhrelid)),
+chunks AS (
+    SELECT p.relation, p.parent FROM inherit_pairs p JOIN pg_class c ON c.oid = p.relation AND c.relkind = 'r'
+     WHERE EXISTS (SELECT 1 FROM timescaledb_information.chunks ch
+                    WHERE to_regclass(format('%I.%I', ch.chunk_schema, ch.chunk_name)) = p.relation
+                      AND to_regclass(format('%I.%I', ch.hypertable_schema, ch.hypertable_name)) = p.parent)),
+compressed AS (
+    SELECT c.oid AS relation, k.parent
+      FROM chunks k JOIN pg_class h ON h.oid = k.relation
+      JOIN pg_class c ON c.relnamespace = h.relnamespace AND c.relname = h.relname || '_compressed' AND c.relkind = 'r'),
+read_only AS (
+    SELECT c.oid AS relation
+      FROM timescaledb_information.continuous_aggregates m
+      JOIN pg_class c ON c.oid = to_regclass(format('%I.%I', m.materialization_hypertable_schema, m.materialization_hypertable_name)) AND c.relkind = 'r'
+    UNION
+    SELECT c.oid
+      FROM _timescaledb_catalog.continuous_agg a
+      JOIN pg_class c ON c.relkind = 'v' AND c.oid IN (to_regclass(format('%I.%I', a.partial_view_schema, a.partial_view_name)),
+                                                       to_regclass(format('%I.%I', a.direct_view_schema, a.direct_view_name)))),
+-- What each view of Ariva's reads: the relations its rewrite rule depends on (a toast table and a sequence too, its review's
+-- third round: a view over a toast table reads the rows behind a table the runtime role may not read).
+view_reads AS (
+    SELECT DISTINCT v.oid AS view, d.refobjid AS reads
+      FROM pg_class v JOIN pg_rewrite r ON r.ev_class = v.oid
+      JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> v.oid
+      JOIN pg_class t ON t.oid = d.refobjid AND t.relkind IN ('r', 'p', 'v', 'm', 'f', 't', 'S')
+     WHERE v.relkind IN ('v', 'm') AND v.oid >= 16384 AND NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.relation = v.oid)),
+internal_drift AS (
+    SELECT x.relation::regclass::text || ' (wider than ' || x.parent::regclass::text || ')' AS name
+      FROM (SELECT p.relation, p.parent FROM inherit_pairs p UNION ALL SELECT k.relation, k.parent FROM compressed k) x
+     WHERE EXISTS (SELECT 1 FROM table_privileges t WHERE has_table_privilege('ariva_runtime', x.relation, t.p) AND NOT has_table_privilege('ariva_runtime', x.parent, t.p))
+        OR EXISTS (SELECT 1 FROM column_privileges t
+                     JOIN pg_attribute a ON a.attrelid = x.relation AND a.attnum > 0 AND NOT a.attisdropped
+                    WHERE has_column_privilege('ariva_runtime', x.relation, a.attnum, t.p) AND NOT has_table_privilege('ariva_runtime', x.parent, t.p)
+                      AND NOT EXISTS (SELECT 1 FROM pg_attribute h WHERE h.attrelid = x.parent AND h.attname = a.attname AND NOT h.attisdropped
+                                                                      AND has_column_privilege('ariva_runtime', x.parent, h.attnum, t.p)))
+    UNION ALL
+    SELECT p.relation::regclass::text || ' (inherits ' || p.parent::regclass::text || ')'
+      FROM inherit_pairs p WHERE NOT EXISTS (SELECT 1 FROM chunks k WHERE k.relation = p.relation)
+    UNION ALL
+    SELECT r.relation::regclass::text || ' (more than SELECT)' FROM read_only r
+     WHERE EXISTS (SELECT 1 FROM table_privileges t WHERE t.p <> 'SELECT' AND has_table_privilege('ariva_runtime', r.relation, t.p))
+        OR EXISTS (SELECT 1 FROM column_privileges t JOIN pg_attribute a ON a.attrelid = r.relation AND a.attnum > 0 AND NOT a.attisdropped
+                    WHERE t.p <> 'SELECT' AND has_column_privilege('ariva_runtime', r.relation, a.attnum, t.p))
+    UNION ALL
+    SELECT DISTINCT v.view::regclass::text || ' (reads ' || v.reads::regclass::text || ')'
+      FROM view_reads v CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) t(p)
+     WHERE (has_table_privilege('ariva_runtime', v.view, t.p)
+            OR CASE WHEN t.p = 'DELETE' THEN false
+                    ELSE EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = v.view AND a.attnum > 0 AND NOT a.attisdropped
+                                                               AND has_column_privilege('ariva_runtime', v.view, a.attnum, t.p)) END)
+       AND NOT has_table_privilege('ariva_runtime', v.reads, t.p)
+    UNION ALL
+    SELECT c.oid::regclass::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE c.oid >= 16384 AND n.nspname <> 'public' AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp%'
+       AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+       AND NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.relation = c.oid)
+       AND NOT EXISTS (SELECT 1 FROM chunks k WHERE k.relation = c.oid)
+       AND NOT EXISTS (SELECT 1 FROM compressed k WHERE k.relation = c.oid)
+       AND NOT EXISTS (SELECT 1 FROM read_only r WHERE r.relation = c.oid)
+       AND (EXISTS (SELECT 1 FROM table_privileges t WHERE has_table_privilege('ariva_runtime', c.oid, t.p))
+            OR EXISTS (SELECT 1 FROM column_privileges t JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+                        WHERE has_column_privilege('ariva_runtime', c.oid, a.attnum, t.p)))
+    UNION ALL
+    SELECT c.oid::regclass::text || ' (sets values)' FROM pg_class c
+     WHERE c.relkind = 'S' AND c.oid >= 16384
+       AND CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('ariva_runtime', c.oid, 'UPDATE') ELSE false END
+    UNION ALL
+    SELECT DISTINCT c.oid::regclass::text || CASE WHEN g.attname IS NULL THEN '' ELSE ' (' || g.attname || ')' END
+           || CASE WHEN c.oid < 16384 THEN ' (system table)' ELSE ' (extension table)' END
+      FROM pg_class c
+      CROSS JOIN LATERAL (SELECT 0 AS objsubid, NULL::name AS attname, x.grantee, x.privilege_type FROM aclexplode(c.relacl) x
+                          UNION ALL
+                          SELECT t.attnum, t.attname, x.grantee, x.privilege_type FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) x
+                           WHERE t.attrelid = c.oid AND t.attnum > 0 AND t.attacl IS NOT NULL) g
+     WHERE (c.oid < 16384 OR EXISTS (SELECT 1 FROM extension_members e WHERE e.relation = c.oid))
+       AND (g.grantee IN (SELECT r.oid FROM runtime_grantees r)
+            OR (g.grantee = 0 AND (c.oid >= 16384 OR g.objsubid <> 0 OR g.privilege_type <> 'SELECT'
+                                   OR EXISTS (SELECT 1 FROM pg_init_privs ip WHERE ip.objoid = c.oid AND ip.classoid = 'pg_class'::regclass)
+                                   OR (c.relnamespace = 'information_schema'::regnamespace AND c.relname LIKE '\_pg\_%'))))
+       AND NOT EXISTS (SELECT 1 FROM pg_init_privs ip CROSS JOIN LATERAL aclexplode(ip.initprivs) b
+                        WHERE ip.objoid = c.oid AND ip.classoid = 'pg_class'::regclass AND ip.objsubid = g.objsubid
+                          AND b.grantee = g.grantee AND b.privilege_type = g.privilege_type)),
+-- ARV-189 review: every grant to the runtime role goes to ariva_runtime, without the right to pass it on: a table or column
+-- granted to a login that holds it (the runtime login) reaches the hosts the same way and no comparison above would see it,
+-- and a grant option would let a host widen what other logins read. Nor does a relation of Ariva's (outside the extensions,
+-- created after initdb) grant PUBLIC anything: a migrated database has no such grant, and every login of the server holds
+-- PUBLIC. The migration login, which holds ariva_runtime as the role's creator (PostgreSQL 16 and later) and owns every
+-- relation, is not one of the role's members here.
+stray_grants AS (
+    SELECT DISTINCT c.oid::regclass::text || CASE WHEN g.attname IS NULL THEN '' ELSE ' (' || g.attname || ')' END
+           || CASE WHEN g.grantee = 0 THEN ' to PUBLIC' ELSE ' to ' || pg_get_userbyid(g.grantee) END
+           || CASE WHEN g.is_grantable THEN ' with grant option' ELSE '' END AS name
+      FROM pg_class c
+      CROSS JOIN LATERAL (SELECT NULL::name AS attname, x.grantee, x.is_grantable FROM aclexplode(c.relacl) x
+                          UNION ALL
+                          SELECT t.attname, x.grantee, x.is_grantable FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) x
+                           WHERE t.attrelid = c.oid AND t.attnum > 0 AND t.attacl IS NOT NULL) g
+     WHERE g.grantee IN (SELECT r.oid FROM runtime_members r)
+        OR (g.grantee = 'ariva_runtime'::regrole AND g.is_grantable)
+        OR (g.grantee = 0 AND c.oid >= 16384 AND NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.relation = c.oid))),
+-- ARV-189 review (its third round): the default privileges are script 0001's and nothing else: the tables the migration login
+-- creates in public give ariva_runtime SELECT, INSERT, UPDATE and DELETE, its sequences there SELECT and USAGE, without grant
+-- option. A dump carries default privileges (the migration login's DEFAULT ACL entries) and any role may change its own, so
+-- another entry would widen what the tables and views of a later release give, past every check of this one.
+default_privileges AS (
+    SELECT d.defaclrole, d.defaclnamespace, d.defaclobjtype,
+           coalesce((SELECT string_agg(x.e, ',' ORDER BY x.e COLLATE "C")
+                       FROM (SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END || '=' || a.privilege_type
+                                    || CASE WHEN a.is_grantable THEN ' with grant option' ELSE '' END AS e
+                               FROM aclexplode(d.defaclacl) a) x), '') AS entries
+      FROM pg_default_acl d),
+default_drift AS (
+    SELECT pg_get_userbyid(p.defaclrole) || ' in '
+           || CASE WHEN p.defaclnamespace = 0 THEN 'every schema' ELSE p.defaclnamespace::regnamespace::text END || ' on '
+           || CASE p.defaclobjtype WHEN 'r' THEN 'tables' WHEN 'S' THEN 'sequences' WHEN 'f' THEN 'functions' WHEN 'T' THEN 'types'
+                                   WHEN 'n' THEN 'schemas' WHEN 'L' THEN 'large objects' ELSE p.defaclobjtype::text END
+           || ' gives ' || coalesce(nullif(p.entries, ''), 'nothing') AS name
+      FROM default_privileges p
+     WHERE NOT (p.defaclrole = (SELECT oid FROM me) AND p.defaclnamespace = 'public'::regnamespace
+                AND ((p.defaclobjtype = 'r' AND p.entries = 'ariva_runtime=DELETE,ariva_runtime=INSERT,ariva_runtime=SELECT,ariva_runtime=UPDATE')
+                     OR (p.defaclobjtype = 'S' AND p.entries = 'ariva_runtime=SELECT,ariva_runtime=USAGE')))
+    UNION ALL
+    SELECT 'script 0001''s for ' || x.what || ' missing' FROM (VALUES ('r', 'tables'), ('S', 'sequences')) x(t, what)
+     WHERE NOT EXISTS (SELECT 1 FROM default_privileges p
+                        WHERE p.defaclrole = (SELECT oid FROM me) AND p.defaclnamespace = 'public'::regnamespace AND p.defaclobjtype::text = x.t)),
 -- What a forged dump would leave behind (defence in depth; the signed manifest is the gate): code the superuser could run.
 risky_functions AS (
     SELECT n.nspname || '.' || p.proname || ' (' || l.lanname || CASE WHEN p.prosecdef THEN ', SECURITY DEFINER' ELSE '' END || ')' AS name
@@ -603,9 +945,38 @@ UNION ALL SELECT 'hypertables|' || (SELECT count(*) FROM timescaledb_information
     || (SELECT count(*) FROM timescaledb_information.jobs WHERE application_name NOT LIKE 'Telemetry%') || ' TimescaleDB jobs'
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'owners|every object belongs to ' || current_user
                       ELSE 'FAIL owners|' || count(*) || ' objects belong to another role, for example ' || min(name) END FROM foreign_owned
-UNION ALL SELECT CASE WHEN has_schema_privilege('ariva_runtime', 'public', 'CREATE') THEN 'FAIL runtime role|ariva_runtime may create objects in public'
-                      ELSE 'runtime role|ariva_runtime has no CREATE on public' END
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'runtime role|ariva_runtime and the logins that hold it have no CREATE on public, on any other schema or on the database'
+                      ELSE 'FAIL runtime role|may create objects: ' || string_agg(name, ', ' ORDER BY name) END FROM runtime_create
 UNION ALL SELECT CASE WHEN (SELECT n FROM runtime_owned) = 0 THEN 'runtime role|owns nothing' ELSE 'FAIL runtime role|owns ' || (SELECT n FROM runtime_owned) || ' relations' END
+UNION ALL SELECT CASE
+        WHEN (SELECT behind FROM pinned_at) AND :'after_restore' = '1'
+            THEN 'runtime privileges|not compared: the database is at ' || (SELECT latest FROM pinned_at) || ' and the list at ' || :'runtime_privileges_at'
+                 || ' (run the migration job, then check again before starting the hosts)'
+        WHEN (SELECT behind FROM pinned_at)
+            THEN 'FAIL runtime privileges|not compared: the database is at ' || (SELECT latest FROM pinned_at) || ' and the list at ' || :'runtime_privileges_at'
+                 || ' (run the migration job, then check again)'
+        WHEN count(*) = 0 THEN 'runtime privileges|ariva_runtime''s grants on public as the scripts leave them (' || (SELECT count(*) FROM pinned_privileges)
+                 || ' relations other than the default SELECT, INSERT, UPDATE and DELETE)'
+        ELSE 'FAIL runtime privileges|' || count(*) || ' relations differ from the scripts: '
+             || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM privilege_drift ORDER BY name LIMIT 10) first_ten)
+             || CASE WHEN count(*) > 10 THEN ', and ' || (count(*) - 10) || ' more' ELSE '' END END FROM privilege_drift
+UNION ALL SELECT CASE
+        WHEN (SELECT behind FROM pinned_at) AND :'after_restore' = '1' THEN 'views|not compared: the database is behind the list (as runtime privileges)'
+        WHEN (SELECT behind FROM pinned_at) THEN 'FAIL views|not compared: the database is behind the list (as runtime privileges)'
+        WHEN count(*) = 0 THEN 'views|the views of public are the scripts'' ' || (SELECT count(*) FROM pinned_views) || ', each reading what its script reads'
+        ELSE 'FAIL views|' || count(*) || ' views differ from the scripts: '
+             || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM view_drift ORDER BY name LIMIT 10) first_ten)
+             || CASE WHEN count(*) > 10 THEN ', and ' || (count(*) - 10) || ' more' ELSE '' END END FROM view_drift
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'internal privileges|ariva_runtime: each inheritance child no wider than its parent and only TimescaleDB''s chunks inheriting, each compressed chunk no wider than its hypertable, each continuous aggregate''s table and views at most SELECT, no view wider than what it reads, nothing on any other relation created after initdb outside public and the extensions, no sequence it may set, no extension or system table granting more than it was created with'
+                      ELSE 'FAIL internal privileges|' || count(*) || ' relations grant ariva_runtime more than these rules allow: '
+                           || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM internal_drift ORDER BY name LIMIT 50) first_ones)
+                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END FROM internal_drift
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'runtime grants|every grant of a relation or column to the runtime role goes to ariva_runtime without grant option, none to a role that holds it, and none of Ariva''s relations grants PUBLIC anything'
+                      ELSE 'FAIL runtime grants|' || count(*) || ' grants to a role that holds ariva_runtime, with grant option or to PUBLIC: '
+                           || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM stray_grants ORDER BY name LIMIT 50) first_ones)
+                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END FROM stray_grants
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'default privileges|script 0001''s only: the migration login''s tables in public give ariva_runtime SELECT, INSERT, UPDATE and DELETE, its sequences there SELECT and USAGE'
+                      ELSE 'FAIL default privileges|' || count(*) || ' entries differ from script 0001''s: ' || string_agg(name, '; ' ORDER BY name) END FROM default_drift
 UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader')
                                      AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolcanlogin OR rolreplication OR rolbypassrls))
                       THEN 'FAIL group roles|an Ariva group role is privileged or can sign in' ELSE 'group roles|NOLOGIN, unprivileged' END
@@ -702,6 +1073,7 @@ SQL
     else
       printf 'ok    %s\n' "$line"
     fi
+    [[ "$line" != *"|not compared:"* ]] || check_not_compared=1
   done <<<"$report"
   ((failed == 0)) || die "check failed"
 }
