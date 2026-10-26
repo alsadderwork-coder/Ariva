@@ -1,22 +1,22 @@
 {
-  "commit": "1f382c418438ff9b011b33c295d67f3b8772a325",
+  "commit": "6c07ea5defec5eddd917da77212b459591abe6f8",
   "at": "2026-10-26",
-  "stories": 5,
+  "stories": 6,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 142
+      "seconds": 158
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 8
+      "seconds": 9
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 482
+      "seconds": 579
     },
     {
       "name": "test count guard self-test",
@@ -31,7 +31,7 @@
     {
       "name": "security scanner self-test",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "security scan",
@@ -46,12 +46,22 @@
     {
       "name": "E2E expect messages hold no answer body",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "E2E artifact secret check self-test",
       "ok": true,
       "seconds": 0
+    },
+    {
+      "name": "C# secret assertion check self-test",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "C# tests assert no secret by value",
+      "ok": true,
+      "seconds": 1
     },
     {
       "name": "E2E raw HTTP client self-test",
@@ -61,7 +71,7 @@
     {
       "name": "ops tooling self-test (backup and restore wrapper)",
       "ok": true,
-      "seconds": 1
+      "seconds": 2
     },
     {
       "name": "ops database script syntax",
@@ -91,17 +101,17 @@
     {
       "name": "offline bundle builder self-test",
       "ok": true,
-      "seconds": 7
+      "seconds": 8
     },
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "seconds": 48
+      "seconds": 49
     },
     {
       "name": "nuget vulnerability audit (fails on high or critical)",
       "ok": true,
-      "seconds": 29
+      "seconds": 23
     },
     {
       "name": "npm audit (web)",
@@ -116,7 +126,7 @@
     {
       "name": "npm audit (chart tests)",
       "ok": true,
-      "seconds": 1
+      "seconds": 0
     },
     {
       "name": "docs text rules",
@@ -129,22 +139,22 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 13
+      "seconds": 16
     },
     {
       "name": "web lint",
       "ok": true,
-      "seconds": 9
+      "seconds": 10
     },
     {
       "name": "web build",
       "ok": true,
-      "seconds": 32
+      "seconds": 34
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 1131
+      "seconds": 1196
     },
     {
       "name": "integration test count guard (every listed case has its results)",
@@ -152,9 +162,14 @@
       "seconds": 1
     },
     {
+      "name": "visual browser image (the pinned Playwright image, reused or pulled)",
+      "ok": true,
+      "seconds": 0
+    },
+    {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 160
+      "seconds": 216
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
@@ -163,16 +178,26 @@
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 1340
+      "seconds": 1263
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
       "ok": true
     },
     {
-      "name": "mutation tests (no engine change since cc41345b26)",
+      "name": "mutation log check self-test",
       "ok": true,
-      "skipped": true
+      "seconds": 0
+    },
+    {
+      "name": "dotnet tool restore (dotnet-stryker)",
+      "ok": true,
+      "seconds": 0
+    },
+    {
+      "name": "mutation tests (Stryker.NET in a worktree of 6c07ea5def, 3 engine files changed since 1f382c4184; fails on safe mode, no score or tests left out)",
+      "ok": true,
+      "seconds": 5020
     }
   ]
 }
