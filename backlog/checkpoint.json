@@ -1,22 +1,22 @@
 {
-  "commit": "cc41345b2674ea6eeb71edae5f694dbe1773c2ff",
-  "at": "2026-10-25",
+  "commit": "1f382c418438ff9b011b33c295d67f3b8772a325",
+  "at": "2026-10-26",
   "stories": 5,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 134
+      "seconds": 142
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 7
+      "seconds": 8
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 432
+      "seconds": 482
     },
     {
       "name": "test count guard self-test",
@@ -86,7 +86,7 @@
     {
       "name": "offline bundle verifier self-test",
       "ok": true,
-      "seconds": 7
+      "seconds": 8
     },
     {
       "name": "offline bundle builder self-test",
@@ -96,12 +96,12 @@
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "seconds": 45
+      "seconds": 48
     },
     {
       "name": "nuget vulnerability audit (fails on high or critical)",
       "ok": true,
-      "seconds": 22
+      "seconds": 29
     },
     {
       "name": "npm audit (web)",
@@ -116,7 +116,7 @@
     {
       "name": "npm audit (chart tests)",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "docs text rules",
@@ -129,7 +129,7 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 15
+      "seconds": 13
     },
     {
       "name": "web lint",
@@ -139,12 +139,12 @@
     {
       "name": "web build",
       "ok": true,
-      "seconds": 31
+      "seconds": 32
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 1087
+      "seconds": 1131
     },
     {
       "name": "integration test count guard (every listed case has its results)",
@@ -154,7 +154,7 @@
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 155
+      "seconds": 160
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
@@ -163,14 +163,14 @@
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 1280
+      "seconds": 1340
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
       "ok": true
     },
     {
-      "name": "mutation tests (no engine change since 103c2acd73)",
+      "name": "mutation tests (no engine change since cc41345b26)",
       "ok": true,
       "skipped": true
     }
