@@ -114,6 +114,44 @@ public sealed partial class OpsScriptTests
     }
 
     [Fact]
+    public void Check_Should_PinEveryFunctionBodyTheShippedScriptsCreate_When_ItLooksForOthers()
+    {
+        // ARV-183 (CWE-269) and its review: check passes a function outside the extensions only when it is Ariva's own with a
+        // body one of the scripts ships, so its list is every CREATE FUNCTION of the scripts as name:SHA-256 of the body, the
+        // bodies a later script replaced included (a backup taken before that script holds the older one). A script that adds
+        // or changes a function adds its line here, or check fails after a restore; the expected list is in the message.
+        var shipped = SqlScriptCatalog.Embedded()
+            .SelectMany(script => FunctionBodies(script.Sql))
+            .Select(function => $"{function.Name}:{Sha256(function.Body)}")
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        var listed = ArivaFunctionsList().Match(Script.Value);
+        listed.Success.Should().BeTrue("the script lists Ariva's functions in ARIVA_FUNCTIONS");
+
+        listed.Groups["entries"].Value.Replace("\\\n", string.Empty, StringComparison.Ordinal).Split(',').Order(StringComparer.Ordinal)
+            .Should().Equal(shipped, "every function body the shipped scripts create, and nothing else:\n" + string.Join(",\\\n", shipped));
+        shipped.Should().Contain("ariva_retention_purge:535ad38b539587c302aa4ea85e1c3508d55e5d5df6bf4f0675bbadf0076f78d7", "the body the purge's own check pins");
+        shipped.Select(entry => entry[..entry.IndexOf(':', StringComparison.Ordinal)]).Distinct(StringComparer.Ordinal).Should().HaveCountGreaterThan(20);
+    }
+
+    [Fact]
+    public void FunctionBodies_Should_ReadOnlyDefinitions_When_CommentsStringsAndOtherQuotesHoldTheWords()
+    {
+        // The reader behind the list above: a CREATE FUNCTION in a comment, a string or a DO block's body is not one, and a body
+        // is exactly the text between its own dollar quotes, another tag inside it included.
+        const string sql = """
+            -- CREATE FUNCTION in_a_comment() AS $$ no $$
+            /* CREATE FUNCTION in_a_block() AS $$ no $$ */
+            SELECT 'CREATE FUNCTION in_a_string() AS $$ no $$';
+            DO $$ BEGIN EXECUTE 'CREATE FUNCTION in_a_do() RETURNS int AS $f$ SELECT 1 $f$'; END $$;
+            CREATE OR REPLACE FUNCTION public.Real_One(a int) RETURNS text LANGUAGE plpgsql AS $fn$ BEGIN RETURN '$$'; END $fn$;
+            """;
+
+        FunctionBodies(sql).Should().Equal([("real_one", " BEGIN RETURN '$$'; END ")]);
+    }
+
+    [Fact]
     public void Superuser_Should_RunOnlyTimescaleDbsFixedStatements_When_TheScriptIsRead()
     {
         // ARV-126 and ARV-236 (CWE-269): the database superuser runs TimescaleDB's restore mode steps and the extensions' update,
@@ -123,7 +161,11 @@ public sealed partial class OpsScriptTests
         var calls = SuperuserCall().Matches(text).ToList();
 
         calls.Select(call => call.Groups["sql"].Value.Trim()).Should().BeEquivalentTo(
-            ["SELECT timescaledb_pre_restore();", "SELECT timescaledb_post_restore();", "ALTER EXTENSION timescaledb UPDATE;", "ALTER EXTENSION timescaledb_toolkit UPDATE;"],
+            ["SELECT public.timescaledb_pre_restore();", "SELECT public.timescaledb_post_restore();", "ALTER EXTENSION timescaledb UPDATE;",
+             "ALTER EXTENSION timescaledb_toolkit UPDATE;",
+             // ARV-183: check reads the ALTER SYSTEM settings, a view only the superuser may read; its review: with nothing named
+             // through the search path (the operator qualified, no function), and the restore mode functions with their schema.
+             "SELECT DISTINCT s.name FROM pg_catalog.pg_file_settings s WHERE s.sourcefile OPERATOR(pg_catalog.~~) '%/postgresql.auto.conf' ORDER BY 1;"],
             "each superuser session runs one fixed statement");
         calls.Select(call => call.Groups["args"].Value.Trim()).Should().OnlyContain(args => args.Length == 0 || args == "--tuples-only --no-align");
         calls.Select(call => call.Groups["prefix"].Value.Trim()).Should().OnlyContain(prefix => prefix.Length == 0 || prefix == "PGOPTIONS='-c lock_timeout=30s'",
@@ -142,10 +184,12 @@ public sealed partial class OpsScriptTests
             "local args=(--exit-on-error --no-password --host=\"$SOCKET_DIR\" --port=\"$PORT\" --username=\"$SUPERUSER\" --dbname=\"$DATABASE\")",
             "--superuser) (($# >= 2)) || usage; SUPERUSER=\"$2\"; shift 2 ;;"
         ]);
+        // ARV-183 review: every superuser session has the catalog's search path, a startup option the database owner's settings
+        // cannot override (the superuser psql line below), so an object the migration login planted is never picked up.
         code.Where(line => PostgresClient().IsMatch(line)).Should().BeEquivalentTo(
         [
             "PGPASSWORD=\"$MIGRATION_PASSWORD\" PGAPPNAME=ariva-ops PGCONNECT_TIMEOUT=15 psql --no-psqlrc --quiet --no-password \\",
-            "PGAPPNAME=ariva-ops psql --no-psqlrc --quiet --no-password --set=ON_ERROR_STOP=1 \\",
+            "PGOPTIONS=\"${PGOPTIONS:+$PGOPTIONS }-c search_path=pg_catalog,pg_temp\" PGAPPNAME=ariva-ops psql --no-psqlrc --quiet --no-password --set=ON_ERROR_STOP=1 \\",
             "PGPASSWORD=\"$MIGRATION_PASSWORD\" PGAPPNAME=ariva-ops pg_dump \"${args[@]}\"",
             "toc=\"$(pg_restore --list)\" || die \"the input is not a custom-format dump\"",
             "toc=\"$(pg_restore --list \"$input\")\" || die \"$input is not a custom-format dump\"",
@@ -154,6 +198,66 @@ public sealed partial class OpsScriptTests
         ]);
         code.Should().NotContain(line => line.Contains("PGUSER", StringComparison.Ordinal) || Regex.IsMatch(line, @"(^|\s)-U(\s|$)"));
     }
+
+    #endregion
+
+    #region Helpers
+
+    /// <summary>
+    /// Each CREATE FUNCTION of a script with its body, the text between its dollar quotes (what PostgreSQL stores as the
+    /// function's source). Comments, string literals and dollar-quoted text outside a definition (a DO block) are skipped.
+    /// </summary>
+    private static List<(string Name, string Body)> FunctionBodies(string sql)
+    {
+        var found = new List<(string Name, string Body)>();
+        string pending = null;
+        var i = 0;
+        while (i < sql.Length)
+        {
+            if (string.CompareOrdinal(sql, i, "--", 0, 2) == 0)
+            {
+                var end = sql.IndexOf('\n', i);
+                i = end < 0 ? sql.Length : end;
+                continue;
+            }
+            if (string.CompareOrdinal(sql, i, "/*", 0, 2) == 0)
+            {
+                var end = sql.IndexOf("*/", i, StringComparison.Ordinal);
+                i = end < 0 ? sql.Length : end + 2;
+                continue;
+            }
+            if (sql[i] == '\'')
+            {
+                var end = i + 1;
+                while ((end = sql.IndexOf('\'', end)) >= 0 && end + 1 < sql.Length && sql[end + 1] == '\'')
+                    end += 2;
+                i = end < 0 ? sql.Length : end + 1;
+                continue;
+            }
+            var quote = DollarQuote().Match(sql, i);
+            if (quote.Success)
+            {
+                var close = sql.IndexOf(quote.Value, i + quote.Length, StringComparison.Ordinal);
+                close.Should().BeGreaterThan(0, "every dollar quote is closed");
+                if (pending is not null)
+                    found.Add((pending, sql[(i + quote.Length)..close]));
+                pending = null;
+                i = close + quote.Length;
+                continue;
+            }
+            var create = FunctionStart().Match(sql, i);
+            if (create.Success && (i == 0 || !(char.IsLetterOrDigit(sql[i - 1]) || sql[i - 1] == '_')))
+            {
+                pending = create.Groups["name"].Value.ToLowerInvariant();
+                i += create.Length;
+                continue;
+            }
+            i++;
+        }
+        return found;
+    }
+
+    private static string Sha256(string text) => Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)));
 
     #endregion
 
@@ -173,6 +277,15 @@ public sealed partial class OpsScriptTests
 
     [GeneratedRegex(@"\bpsql --no-psqlrc")]
     private static partial Regex PsqlOutsideHelpers();
+
+    [GeneratedRegex(@"\GCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:public\.)?(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(", RegexOptions.IgnoreCase)]
+    private static partial Regex FunctionStart();
+
+    [GeneratedRegex(@"\G\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")]
+    private static partial Regex DollarQuote();
+
+    [GeneratedRegex(@"^readonly ARIVA_FUNCTIONS=""(?<entries>[a-z0-9_:,\\\n]+)""$", RegexOptions.Multiline)]
+    private static partial Regex ArivaFunctionsList();
 
     [GeneratedRegex(@"^(?<prefix>[^\n]*?)\bas_superuser\b(?<args>[^<\n]*)<<'SQL'[^\n]*\n(?<sql>.*?)\nSQL\n", RegexOptions.Singleline | RegexOptions.Multiline)]
     private static partial Regex SuperuserCall();

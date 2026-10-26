@@ -137,6 +137,10 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         var restore = await _target.OpsAsync(Ct, "restore", "--input", DumpPath);
         restore.ExitCode.Should().Be(0, restore.Stderr + restore.Stdout);
         restore.Stdout.Should().Contain("every object belongs to ariva").And.Contain("ariva_runtime has no CREATE on public");
+        // ARV-183 and its review: the wider checks pass on a clean restore (every Ariva function body is one its scripts ship, and
+        // the system functions are template1's).
+        foreach (var line in new[] { "logins", "held roles", "role settings", "settings", "rules", "other functions", "plpgsql", "system functions", "replication", "planted" })
+            restore.Stdout.Should().Contain($"ok    {line}|");
         var again = await _target.OpsAsync(Ct, "restore", "--input", DumpPath);
         again.ExitCode.Should().NotBe(0, "a restore goes into an empty database only");
         again.Stderr.Should().Contain("is not empty");
@@ -364,12 +368,23 @@ public sealed class BackupRestoreTests : IAsyncLifetime
     /// Defence in depth behind the signed manifest (ARV-126 review): `ariva-db.sh check` fails on what a forged dump run by
     /// the superuser could leave: a C function, a SECURITY DEFINER function (and, ARV-111a, the retention purge granted to
     /// PUBLIC, or with another body), an event trigger, an extra member of Ariva's runtime role, and a migration login given
-    /// replication; the purge passes again once its grants are the shipped ones.
+    /// replication; the purge passes again once its grants are the shipped ones. ARV-183: also a privileged login, an ALTER
+    /// SYSTEM setting, a rule, a function outside the extensions (in pg_catalog, and a plain one in public) and an extension
+    /// of the server's own, which --allow-extension lets pass. Its review: roles with each attribute and a login that reaches a
+    /// superuser or a server role through another role, Ariva's runtime role given a server role, a role's own setting, an
+    /// Ariva function with another body or owner, a function added to plpgsql, a system function replaced in place, a
+    /// publication and a subscription, and what --allow-login and --allow-setting let pass; a superuser read that fails is a
+    /// FAIL; and a search path the migration login sets for the database, with an aggregate and an operator under system names
+    /// that would make a superuser of it, is reported, the superuser reads nothing, and the login stays as it was.
     /// </summary>
     private async Task AssertCheckFindsWhatAForgedDumpWouldLeaveAsync()
     {
         await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.PlantAsMigrationLogin);
         await ExecuteAsync(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.PlantAsSuperuser);
+        // ALTER SYSTEM cannot run in a transaction block, so on its own (one statement, no implicit block).
+        await ExecuteAsync(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.AlterSystem);
+        // CREATE SUBSCRIPTION on its own as well (no slot is created without a connection).
+        await ExecuteAsync(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.Subscription);
 
         var check = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         check.ExitCode.Should().NotBe(0, check.Stdout);
@@ -379,6 +394,49 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         check.Stdout.Should().Contain("public.ariva_retention_purge (plpgsql, SECURITY DEFINER)", "EXECUTE granted to PUBLIC");
         check.Stdout.Should().Contain("FAIL  event triggers|it_event");
         check.Stdout.Should().Contain("FAIL  group members|ariva_runtime has member it_extra_member");
+        Line(check, "FAIL  logins|").Should().Contain("it_privileged (createrole)").And.Contain("it_super (superuser)").And.Contain("it_back (holds it_super)")
+            .And.Contain("it_repl (replication)").And.Contain("it_bypass (bypassrls)").And.Contain("ariva_runtime (holds pg_execute_server_program)")
+            .And.Contain($"{RuntimeLogin} (holds pg_execute_server_program)", "the runtime login reaches the server role through ariva_runtime");
+        check.Stdout.Should().Contain("FAIL  held roles|ariva_runtime holds pg_execute_server_program");
+        check.Stdout.Should().Contain("FAIL  role settings|it_back work_mem");
+        check.Stdout.Should().Contain("FAIL  settings|ALTER SYSTEM set work_mem (postgresql.auto.conf)");
+        check.Stdout.Should().Contain("FAIL  rules|public.site it_rule");
+        Line(check, "FAIL  other functions|").Should().Contain("pg_catalog.it_shadow").And.Contain("public.it_plain")
+            .And.Contain("public.validation_row_immutable", "an Ariva name with a body no script ships")
+            .And.Contain("public.zone_profile_immutable", "an Ariva name owned by another role");
+        check.Stdout.Should().Contain("FAIL  plpgsql|also holds function it_hidden()");
+        check.Stdout.Should().Contain("FAIL  system functions|reverse differ from template1's");
+        check.Stdout.Should().Contain("FAIL  replication|publication it_pub, subscription it_sub");
+        check.Stdout.Should().Contain("ok    planted|", "nothing under a system name outside the extensions yet");
+        check.Stdout.Should().Contain("FAIL  extensions|pg_stat_statements (a DBA-provided server's own: name it with --allow-extension)");
+        var allowed = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--allow-extension", "pg_stat_statements", "--allow-login", "it_repl",
+            "--allow-setting", "work_mem");
+        allowed.Stdout.Should().Contain("ok    extensions|plpgsql, timescaledb and timescaledb_toolkit, and allowed: pg_stat_statements")
+            .And.Contain("ok    settings|no ALTER SYSTEM setting (postgresql.auto.conf) but the allowed: work_mem")
+            .And.Contain("ok    role settings|none but the runtime login's statement timeout, and allowed: work_mem");
+        Line(allowed, "FAIL  logins|").Should().NotContain("it_repl").And.Contain("it_bypass (bypassrls)");
+        foreach (var (option, value) in new[] { ("--allow-extension", "pg-stat"), ("--allow-login", "It_Repl"), ("--allow-setting", "work-mem") })
+        {
+            var badName = await _target.OpsAsync(Ct, "check", option, value);
+            badName.ExitCode.Should().NotBe(0);
+            badName.Stderr.Should().Contain($"{option} must be");
+        }
+        // A superuser read that fails (here a superuser name the socket does not map) is a FAIL, never a pass.
+        var unread = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--superuser", "it_nobody");
+        unread.Stdout.Should().Contain("FAIL  settings|postgresql.auto.conf could not be read as the superuser");
+
+        // The review's escalation: as the migration login, a schema of its own with an aggregate and an operator under system
+        // names that make a superuser of whoever runs them as one, a count(*) that always says 0, and that schema first on the
+        // search path of every session of the database.
+        await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.HijackSearchPath);
+        var hijacked = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
+        (await ScalarAsync<bool>(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.MigrationLoginIsSuperuser)).Should().BeFalse(
+            "no statement of check ran the planted objects as the superuser");
+        hijacked.ExitCode.Should().NotBe(0);
+        Line(hijacked, "FAIL  planted|").Should().Contain("function it_evil.string_agg").And.Contain("function it_evil.count").And.Contain("operator it_evil.~~")
+            .And.Contain("database setting search_path=it_evil, pg_catalog, public");
+        hijacked.Stdout.Should().Contain("FAIL  settings|ALTER SYSTEM settings not read: the superuser reads nothing while the line above fails");
+        hijacked.Stdout.Should().Contain("FAIL  event triggers|it_event", "the report's own session keeps the catalog's search path, so count(*) is the system's");
         await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.RevokePurgeFromPublic);
         FunctionsLine(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Should().Contain("public.it_definer")
             .And.NotContain("ariva_retention_purge", "the shipped body with the shipped grants");
@@ -435,9 +493,13 @@ public sealed class BackupRestoreTests : IAsyncLifetime
 
     private static string Hex(int bytes) => Convert.ToHexString(RandomNumberGenerator.GetBytes(bytes));
 
-    /// <summary>The functions line of an <c>ariva-db.sh check</c> report (ARV-111a).</summary>
+    /// <summary>The one line of an <c>ariva-db.sh check</c> report that starts with <paramref name="prefix"/>.</summary>
+    private static string Line(ExecResult check, string prefix) =>
+        check.Stdout.Split('\n').Single(line => line.StartsWith(prefix, StringComparison.Ordinal));
+
+    /// <summary>The functions line of an <c>ariva-db.sh check</c> report (ARV-111a), not ARV-183's other functions line.</summary>
     private static string FunctionsLine(ExecResult check) =>
-        check.Stdout.Split('\n').Single(line => line.Contains("functions|", StringComparison.Ordinal));
+        check.Stdout.Split('\n').Single(line => line.StartsWith("ok    functions|", StringComparison.Ordinal) || line.StartsWith("FAIL  functions|", StringComparison.Ordinal));
 
     private enum Query
     {
@@ -463,6 +525,10 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         ForgetLatestScript,
         PlantAsMigrationLogin,
         PlantAsSuperuser,
+        AlterSystem,
+        Subscription,
+        HijackSearchPath,
+        MigrationLoginIsSuperuser,
         GiveMigrationLoginReplication,
         RevokePurgeFromPublic,
         ForgePurgeBody
@@ -516,12 +582,49 @@ public sealed class BackupRestoreTests : IAsyncLifetime
             GRANT EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) TO PUBLIC;
             CREATE ROLE it_extra_member NOLOGIN;
             GRANT ariva_runtime TO it_extra_member;
+            CREATE FUNCTION public.it_plain() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$;
+            CREATE RULE it_rule AS ON INSERT TO public.site DO ALSO NOTHING;
+            CREATE OR REPLACE FUNCTION public.validation_row_immutable() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+            CREATE PUBLICATION it_pub FOR TABLE public.site;
             """,
         Query.PlantAsSuperuser => """
             CREATE FUNCTION public.it_c_function() RETURNS language_handler AS '$libdir/plpgsql', 'plpgsql_call_handler' LANGUAGE c;
             CREATE FUNCTION public.it_event_function() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN END $$;
             CREATE EVENT TRIGGER it_event ON ddl_command_start EXECUTE FUNCTION public.it_event_function();
+            CREATE ROLE it_privileged LOGIN CREATEROLE;
+            CREATE FUNCTION pg_catalog.it_shadow() RETURNS int LANGUAGE sql AS 'SELECT 1';
+            CREATE EXTENSION pg_stat_statements;
+            CREATE ROLE it_super NOLOGIN SUPERUSER;
+            CREATE ROLE it_back LOGIN IN ROLE it_super;
+            CREATE ROLE it_repl LOGIN REPLICATION;
+            CREATE ROLE it_bypass LOGIN BYPASSRLS;
+            GRANT pg_execute_server_program TO ariva_runtime;
+            ALTER ROLE it_back SET work_mem = '16MB';
+            CREATE FUNCTION public.zone_profile_immutable(integer) RETURNS int LANGUAGE sql AS 'SELECT 1';
+            CREATE FUNCTION pg_catalog.it_hidden() RETURNS int LANGUAGE sql AS 'SELECT 1';
+            ALTER EXTENSION plpgsql ADD FUNCTION pg_catalog.it_hidden();
+            CREATE OR REPLACE FUNCTION pg_catalog.reverse(text) RETURNS text LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT $1 $$;
             """,
+        Query.AlterSystem => "ALTER SYSTEM SET work_mem = '8MB'",
+        Query.Subscription => "CREATE SUBSCRIPTION it_sub CONNECTION 'host=127.0.0.1 dbname=ariva' PUBLICATION it_pub WITH (connect = false)",
+        Query.HijackSearchPath => """
+            CREATE SCHEMA it_evil;
+            CREATE FUNCTION it_evil.it_escalate() RETURNS boolean LANGUAGE plpgsql AS $$
+            BEGIN
+                IF (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user) THEN
+                    EXECUTE 'ALTER ROLE ariva SUPERUSER';
+                END IF;
+                RETURN true;
+            END $$;
+            CREATE FUNCTION it_evil.it_like(text, text) RETURNS boolean LANGUAGE sql AS 'SELECT it_evil.it_escalate()';
+            CREATE OPERATOR it_evil.~~ (LEFTARG = text, RIGHTARG = text, FUNCTION = it_evil.it_like);
+            CREATE FUNCTION it_evil.it_step(text, text, text) RETURNS text LANGUAGE sql AS 'SELECT CASE WHEN it_evil.it_escalate() THEN $2 END';
+            CREATE AGGREGATE it_evil.string_agg(text, text) (SFUNC = it_evil.it_step, STYPE = text);
+            CREATE FUNCTION it_evil.it_zero(bigint) RETURNS bigint LANGUAGE sql AS 'SELECT 0::bigint';
+            CREATE AGGREGATE it_evil.count(*) (SFUNC = it_evil.it_zero, STYPE = bigint, INITCOND = '0');
+            ALTER DATABASE ariva SET search_path = it_evil, pg_catalog, public;
+            """,
+        Query.MigrationLoginIsSuperuser => "SELECT rolsuper FROM pg_roles WHERE rolname = 'ariva'",
         Query.GiveMigrationLoginReplication => "ALTER ROLE ariva REPLICATION",
         Query.RevokePurgeFromPublic => "REVOKE EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) FROM PUBLIC",
         // CREATE OR REPLACE keeps the function's grants; the settings are the shipped ones, so only the body differs.

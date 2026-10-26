@@ -6,14 +6,18 @@
 //   node scripts/ops/ariva-ops.mjs backup --namespace <ns> --out <dir> --recipient-file <age recipients> --signing-key <ssh key> [--files]
 //   node scripts/ops/ariva-ops.mjs restore --namespace <ns> --in <file.dump.age> --identity <age identity>
 //        (--manifest <set.manifest.json> --allowed-signers <file> | --sha256 <hex from your own operations log>)
+//        [--force-namespace] [--allow-signer-patterns] [--allow-extension <name>]... [--allow-login <name>]... [--allow-setting <name>]...
+//   (files-restore takes the same --in, --identity and verification options)
 //   node scripts/ops/ariva-ops.mjs files-restore (the same options, with the .files.tar.age file)
 //   node scripts/ops/ariva-ops.mjs keyring --namespace <ns> --certificate <tls.crt> [--certificate <previous.crt>]
-//   node scripts/ops/ariva-ops.mjs check --namespace <ns> [--runtime-login <name>] [--reader-login <name>]
+//   node scripts/ops/ariva-ops.mjs check --namespace <ns> [--runtime-login <name>] [--reader-login <name>] [--allow-extension <name>]...
+//        [--allow-login <name>]... [--allow-setting <name>]...
 //   node scripts/ops/ariva-ops.mjs after-kafka-loss --namespace <ns> --confirm-stream-stopped [--dry-run]
 //   node scripts/ops/ariva-ops.mjs update-extensions --namespace <ns>   (after the database pod restarted on a newer image)
 //   node scripts/ops/ariva-ops.mjs --self-test
 // Options for every command: --context <kube context>, --pod <database pod> (timescaledb-0), --container <name>
-// (timescaledb), --plan (print the commands without running them).
+// (timescaledb), --plan (print the commands without running them; for a restore from a signed manifest it also verifies the
+// manifest here and prints what the set is, touching no cluster: run it first, ARV-183).
 //
 // What it guarantees:
 // - The database work runs in the TimescaleDB pod through scripts/ops/ariva-db.sh (copied to the pod's /tmp), as the
@@ -24,7 +28,13 @@
 // - A restore runs the dump's SQL as the database superuser, so the archive's origin is the gate. age is encryption to a
 //   public recipient: it proves a file was not altered after it was encrypted, not who encrypted it. The origin comes from
 //   the manifest's signature, verified against an allowed-signers file the operator keeps outside the backup store, before
-//   any hash in the manifest is used; the only alternative is a SHA-256 the operator passes from their own log. The file is
+//   any hash in the manifest is used; the only alternative is a SHA-256 the operator passes from their own log. ARV-183: the
+//   allowed-signers file is read by one strict grammar (printable ASCII; plain names, the namespaces, valid-after,
+//   valid-before and cert-authority options, a key type and its key) and any other line is refused; one holding a principal
+//   pattern (*, ? or !) or a cert-authority line is refused unless --allow-signer-patterns says it is intended (ssh-keygen
+//   would let such a line verify for any name tried), the verifying
+//   key's fingerprint is printed, and the signed manifest's namespace, time and database are printed before anything else
+//   happens; a set of another namespace than --namespace (or one that names none) is refused unless --force-namespace. The file is
 //   then copied into a private folder (0700), the copy is hashed, and both decryption passes read that copy only, so the
 //   file cannot be swapped between the check and the restore; the folder is removed afterwards, also on failure. Every
 //   refusal comes before any kubectl step (CWE-269, CWE-345, CWE-367).
@@ -70,7 +80,9 @@ export const PATTERNS = {
   login: /^[a-z_][a-z0-9_]{0,62}$/,
   filesRoot: /^\/[A-Za-z0-9._/-]{1,200}$/,
   sha256: /^[0-9a-f]{64}$/,
-  principal: /^[A-Za-z0-9._@+-]{1,128}$/
+  principal: /^[A-Za-z0-9._@+-]{1,128}$/,
+  extension: /^[a-z_][a-z0-9_]{0,62}$/,
+  setting: /^[a-z_][a-z0-9_]{0,62}(\.[a-z_][a-z0-9_]{0,62})?$/
 };
 
 export class UsageError extends Error {}
@@ -94,18 +106,21 @@ const DEFAULTS = { pod: 'timescaledb-0', container: 'timescaledb', filesTarget: 
 
 const VALUE_OPTIONS = new Set(['--namespace', '--context', '--pod', '--container', '--out', '--recipient-file', '--signing-key', '--in', '--identity',
   '--sha256', '--manifest', '--signature', '--allowed-signers', '--certificate', '--runtime-login', '--reader-login', '--files-target',
-  '--files-container', '--files-root']);
-const FLAG_OPTIONS = new Set(['--files', '--confirm-stream-stopped', '--dry-run', '--plan']);
+  '--files-container', '--files-root', '--allow-extension', '--allow-login', '--allow-setting']);
+const FLAG_OPTIONS = new Set(['--files', '--confirm-stream-stopped', '--dry-run', '--plan', '--force-namespace', '--allow-signer-patterns']);
 
 export function parse(argv) {
   const [command, ...rest] = argv;
-  const options = { command, certificates: [] };
+  const options = { command, certificates: [], extensions: [], allowLogins: [], allowSettings: [] };
   for (let i = 0; i < rest.length; i++) {
     const name = rest[i];
     if (FLAG_OPTIONS.has(name)) { options[camel(name)] = true; continue; }
     if (!VALUE_OPTIONS.has(name) || i + 1 >= rest.length) throw new UsageError(`unknown or incomplete option ${String(name).slice(0, 40)}`);
     const value = rest[++i];
     if (name === '--certificate') options.certificates.push(value);
+    else if (name === '--allow-extension') options.extensions.push(value);
+    else if (name === '--allow-login') options.allowLogins.push(value);
+    else if (name === '--allow-setting') options.allowSettings.push(value);
     else options[camel(name)] = value;
   }
   return options;
@@ -140,11 +155,29 @@ function inFilesPod(o, interactive, tarArgs) {
     '-c', check('container', o.filesContainer ?? DEFAULTS.filesContainer), '--', 'tar', '-C', check('filesRoot', o.filesRoot ?? DEFAULTS.filesRoot), ...tarArgs]];
 }
 
-function logins(o) {
+// ARV-183: an extension a DBA-provided server carries besides TimescaleDB's, which the dump check and the check let pass.
+function allowedExtensions(o) {
+  return (o.extensions ?? []).flatMap(name => ['--allow-extension', check('extension', name)]);
+}
+
+// The check's options: this deployment's logins, and what a DBA-provided server carries on purpose (ARV-183).
+function checkOptions(o) {
   return [
     ...(o.runtimeLogin === undefined ? [] : ['--runtime-login', check('login', o.runtimeLogin)]),
-    ...(o.readerLogin === undefined ? [] : ['--reader-login', check('login', o.readerLogin)])
+    ...(o.readerLogin === undefined ? [] : ['--reader-login', check('login', o.readerLogin)]),
+    ...allowedExtensions(o),
+    ...(o.allowLogins ?? []).flatMap(name => ['--allow-login', check('login', name)]),
+    ...(o.allowSettings ?? []).flatMap(name => ['--allow-setting', check('setting', name)])
   ];
+}
+
+// ARV-183 review: an option a command would not use is refused rather than ignored.
+function refuseUnused(o) {
+  const forCheck = o.runtimeLogin !== undefined || o.readerLogin !== undefined || o.extensions.length > 0 || o.allowLogins.length > 0 || o.allowSettings.length > 0;
+  if (forCheck && o.command !== 'restore' && o.command !== 'check')
+    throw new UsageError('--runtime-login, --reader-login, --allow-extension, --allow-login and --allow-setting apply to restore and check only');
+  if ((o.forceNamespace || o.allowSignerPatterns) && o.command !== 'restore' && o.command !== 'files-restore')
+    throw new UsageError('--force-namespace and --allow-signer-patterns apply to restore and files-restore only');
 }
 
 function stamp(now) {
@@ -157,16 +190,24 @@ function secureStep(o, label) {
   const signed = o.manifest !== undefined || o.allowedSigners !== undefined || o.signature !== undefined;
   if (signed === (o.sha256 !== undefined))
     throw new UsageError('give --manifest and --allowed-signers (the backup\'s signed manifest), or --sha256 from your own operations log; exactly one of the two');
-  if (!signed) return { kind: 'secure', file, label, sha256: check('sha256', String(o.sha256).toLowerCase()) };
+  if (!signed) {
+    if (o.forceNamespace || o.allowSignerPatterns)
+      throw new UsageError('--force-namespace and --allow-signer-patterns apply to a signed manifest; --sha256 from your own log checks neither a namespace nor a signer');
+    return { kind: 'secure', file, label, sha256: check('sha256', String(o.sha256).toLowerCase()) };
+  }
   const manifest = localPath(o.manifest, '--manifest');
   return {
     kind: 'secure', file, label, manifest,
     signature: o.signature === undefined ? `${manifest}.sig` : localPath(o.signature, '--signature'),
-    allowedSigners: localPath(o.allowedSigners, '--allowed-signers')
+    allowedSigners: localPath(o.allowedSigners, '--allowed-signers'),
+    namespace: check('namespace', o.namespace),
+    forceNamespace: o.forceNamespace === true,
+    allowSignerPatterns: o.allowSignerPatterns === true
   };
 }
 
 export function plan(o, now = new Date()) {
+  refuseUnused(o);
   switch (o.command) {
     case 'backup': {
       const out = localPath(o.out, '--out');
@@ -181,7 +222,7 @@ export function plan(o, now = new Date()) {
       ];
       if (o.files)
         steps.push({ kind: 'encrypt', from: inFilesPod(o, false, ['-cf', '-', '.']), recipients, to: path.join(out, `${name}.files.tar.age`), label: 'files' });
-      steps.push({ kind: 'manifest', to: manifest }, { kind: 'sign', file: manifest, key: signingKey });
+      steps.push({ kind: 'manifest', to: manifest, namespace: check('namespace', o.namespace) }, { kind: 'sign', file: manifest, key: signingKey });
       return { out, recipients, signingKey, steps };
     }
     case 'restore': {
@@ -190,8 +231,8 @@ export function plan(o, now = new Date()) {
         steps: [
           secureStep(o, 'database'),
           { kind: 'run', ...copyScript(o) },
-          { kind: 'decrypt', identity, file: VERIFIED_COPY, into: inPod(o, true, ['check-dump', '--input', '-']), label: 'check' },
-          { kind: 'decrypt', identity, file: VERIFIED_COPY, into: inPod(o, true, ['restore', '--input', '-', '--dump-checked', ...logins(o)]), label: 'restore' }
+          { kind: 'decrypt', identity, file: VERIFIED_COPY, into: inPod(o, true, ['check-dump', '--input', '-', ...allowedExtensions(o)]), label: 'check' },
+          { kind: 'decrypt', identity, file: VERIFIED_COPY, into: inPod(o, true, ['restore', '--input', '-', '--dump-checked', ...checkOptions(o)]), label: 'restore' }
         ]
       };
     }
@@ -210,7 +251,7 @@ export function plan(o, now = new Date()) {
       return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['keyring', ...thumbprints.flatMap(t => ['--certificate-sha256', t])]) }] };
     }
     case 'check':
-      return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['check', ...logins(o)]) }] };
+      return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['check', ...checkOptions(o)]) }] };
     case 'after-kafka-loss': {
       if (!o.confirmStreamStopped) throw new UsageError('scale api-stream to 0 first, then pass --confirm-stream-stopped');
       return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['after-kafka-loss', '--confirm-stream-stopped', ...(o.dryRun ? ['--dry-run'] : [])]) }] };
@@ -272,15 +313,54 @@ function sshKeygen(args, options = {}) {
   return result;
 }
 
-// The principals the allowed-signers file names (first field, comma-separated); patterns are not used as identities.
-export function principals(allowedSignersText) {
-  const names = new Set();
-  for (const line of allowedSignersText.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed === '' || trimmed.startsWith('#')) continue;
-    for (const name of trimmed.split(/\s+/)[0].split(',')) if (PATTERNS.principal.test(name)) names.add(name);
-  }
-  return [...names];
+// The key types an allowed-signers line may name, the options it may carry and the shape of its key (ARV-183 review).
+const SIGNER_KEY_TYPES = new Set(['ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521',
+  'sk-ssh-ed25519@openssh.com', 'sk-ecdsa-sha2-nistp256@openssh.com']);
+const SIGNER_OPTION = 'cert-authority|namespaces="[A-Za-z0-9._@,-]{1,256}"|valid-(?:after|before)="[0-9]{8,14}Z?"';
+const SIGNER_OPTIONS = new RegExp(`^(?:${SIGNER_OPTION})(?:,(?:${SIGNER_OPTION}))*$`, 'i');
+const SIGNER_NAMES = /^[A-Za-z0-9._@+*?!-]{1,128}(?:,[A-Za-z0-9._@+*?!-]{1,128})*$/;
+const SIGNER_KEY = /^[A-Za-z0-9+/]{4,8192}={0,2}$/;
+
+// Reads an allowed-signers file by one strict grammar (ARV-183, CWE-345). A line is blank, a comment (# after spaces or tabs),
+// or: principals (plain names, comma-separated), optionally options (namespaces, valid-after, valid-before, cert-authority,
+// comma-separated), a key type and its key, then an optional comment; fields are separated by spaces or tabs. Anything else,
+// and any character outside printable ASCII, space and tab (a byte order mark, a vertical tab, a no-break space), is refused
+// outright: ssh-keygen splits and unquotes lines in ways a looser reading would not see (a quoted principals field, an
+// escaped quote inside an option, other white space), so a line it would read differently is never accepted. Returns the
+// plain principals (a name with a pattern is never tried as an identity), the lines that widen who may sign (ssh-keygen
+// matches the principals as patterns, *, ? and ! included, against the name it is given, and a cert-authority line trusts
+// every certificate its key signs, so either can make a signature verify for a name the operator never listed), and the
+// lines refused.
+export function readAllowedSigners(text) {
+  const principals = new Set();
+  const problems = [];
+  const refused = [];
+  text.split('\n').forEach((raw, index) => {
+    const n = index + 1;
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (/[^\x20-\x7e\t]/.test(line)) { refused.push(`line ${n} holds a character other than printable ASCII, a space or a tab`); return; }
+    const body = line.replace(/^[ \t]+/, '');
+    if (body === '' || body.startsWith('#')) return;
+    const fields = body.split(/[ \t]+/).filter(field => field !== '');
+    const options = SIGNER_KEY_TYPES.has(fields[1]) ? '' : fields[1] ?? '';
+    const [type, key] = fields.slice(options === '' ? 1 : 2);
+    if (!SIGNER_NAMES.test(fields[0]) || (options !== '' && !SIGNER_OPTIONS.test(options)) || !SIGNER_KEY_TYPES.has(type) || !SIGNER_KEY.test(key ?? '')) {
+      refused.push(`line ${n} is not principals, options, a key type and its key`);
+      return;
+    }
+    const names = fields[0].split(',');
+    if (names.some(name => /[*?!]/.test(name))) problems.push(`line ${n} names its principals with a pattern (*, ? or !)`);
+    for (const name of names) if (PATTERNS.principal.test(name)) principals.add(name);
+    // The options field is checked whole above, so each option is a name, or a name and a quoted value without a quote.
+    if ((options.match(/[A-Za-z-]+(?:="[^"]*")?/g) ?? []).some(option => option.toLowerCase() === 'cert-authority'))
+      problems.push(`line ${n} is a cert-authority line`);
+  });
+  return { principals: [...principals], problems, refused };
+}
+
+// A value of the signed manifest as printed: printable ASCII only, else marked as not given.
+function shown(value) {
+  return typeof value === 'string' && /^[\x20-\x7e]{1,200}$/.test(value) ? value : '(not given)';
 }
 
 // Verifies the manifest's signature against the allowed signers, on private copies of what was read, so the bytes that
@@ -293,8 +373,21 @@ function verifiedSha256(step, folder) {
   const allowedCopy = path.join(folder, 'allowed_signers');
   fs.writeFileSync(signatureCopy, signature, { mode: 0o600 });
   fs.writeFileSync(allowedCopy, allowed, { mode: 0o600 });
-  const signer = principals(allowed.toString('utf8')).find(name =>
-    sshKeygen(['-Y', 'verify', '-f', allowedCopy, '-I', name, '-n', SIGNATURE_NAMESPACE, '-s', signatureCopy], { input: manifest, stdio: ['pipe', 'pipe', 'pipe'] }).status === 0);
+  const signers = readAllowedSigners(allowed.toString('latin1'));
+  if (signers.refused.length > 0)
+    throw new Refused(`${step.allowedSigners} has lines a restore does not read (${signers.refused.join('; ')}): write each signer as name[,name] [namespaces="${SIGNATURE_NAMESPACE}"] <key type> <key> in printable ASCII: refused`);
+  if (signers.problems.length > 0 && !step.allowSignerPatterns)
+    throw new Refused(`${step.allowedSigners} widens who may sign a restore (${signers.problems.join('; ')}): list each signer by name with its own key, or pass --allow-signer-patterns if this is intended: refused`);
+  if (signers.problems.length > 0) OUT.log(`--allow-signer-patterns: ${signers.problems.join('; ')}`);
+  let signer;
+  let fingerprint;
+  for (const name of signers.principals) {
+    const result = sshKeygen(['-Y', 'verify', '-f', allowedCopy, '-I', name, '-n', SIGNATURE_NAMESPACE, '-s', signatureCopy], { input: manifest, stdio: ['pipe', 'pipe', 'pipe'] });
+    if (result.status !== 0) continue;
+    signer = name;
+    fingerprint = /\b(SHA256:[A-Za-z0-9+/]{43})\b/.exec(`${result.stdout ?? ''}${result.stderr ?? ''}`)?.[1];
+    break;
+  }
   if (!signer) throw new Refused(`the manifest's signature does not verify against ${step.allowedSigners} (namespace ${SIGNATURE_NAMESPACE}): refused`);
 
   let set;
@@ -308,7 +401,15 @@ function verifiedSha256(step, folder) {
   if (!entry) throw new Refused(`the signed manifest does not name ${path.basename(step.file)}: refused`);
   if (entry.label !== step.label) throw new Refused(`the signed manifest names ${entry.file} as ${entry.label}, not ${step.label}: refused`);
   if (typeof entry.sha256 !== 'string' || !PATTERNS.sha256.test(entry.sha256)) throw new Refused('the signed manifest has no valid SHA-256 for the file: refused');
-  OUT.log(`manifest signature verified: signed by ${signer}`);
+  OUT.log(`manifest signature verified: signed by ${signer} with the key ${fingerprint ?? '(its fingerprint was not reported by ssh-keygen)'}`);
+  OUT.log(`backup set: namespace ${shown(set.namespace)}, taken ${shown(set.database?.takenUtc)} (UTC), database ${shown(set.database?.database)}; this restores its ${shown(entry.label)} file ${shown(entry.file)}`);
+  if (set.namespace !== step.namespace) {
+    if (!step.forceNamespace)
+      throw new Refused(set.namespace === undefined
+        ? `the signed manifest names no namespace (a set from before ARV-183); pass --force-namespace to restore it into ${step.namespace}: refused`
+        : `the signed manifest is a backup of the namespace ${shown(set.namespace)}, not ${step.namespace}; pass --force-namespace to restore it here: refused`);
+    OUT.log(`--force-namespace: a set of ${shown(set.namespace)} goes into ${step.namespace}`);
+  }
   return entry.sha256;
 }
 
@@ -369,7 +470,7 @@ async function runStep(step, state) {
       return;
     }
     case 'manifest': {
-      const manifest = { format: MANIFEST_FORMAT, database: state.manifest, files: state.files };
+      const manifest = { format: MANIFEST_FORMAT, namespace: step.namespace, database: state.manifest, files: state.files };
       fs.writeFileSync(step.to, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
       OUT.log(`manifest: ${step.to}`);
       return;
@@ -430,6 +531,16 @@ export async function main(argv) {
   const o = parse(argv);
   const p = plan(o);
   if (o.plan) {
+    // ARV-183 review: a restore from a signed manifest verifies it here first (a private folder, no cluster) and prints the
+    // verifying key and what the set is, or refuses as the restore would; nothing is decrypted or sent.
+    for (const step of p.steps.filter(s => s.kind === 'secure' && s.manifest !== undefined)) {
+      const folder = privateFolder();
+      try {
+        verifiedSha256(step, folder);
+      } finally {
+        removeFolder(folder);
+      }
+    }
     for (const step of p.steps) OUT.log(JSON.stringify(step));
     return 0;
   }
@@ -458,7 +569,7 @@ if (remote[0] === 'dd') {
   await readAll();
   if (process.env.ARIVA_OPS_FAKE_SWAP) fs.writeFileSync(process.env.ARIVA_OPS_FAKE_SWAP, 'a file put in place of the verified one');
 } else if (remote[0] === 'bash' && remote[2] === 'manifest') {
-  process.stdout.write(JSON.stringify({ format: 'ariva-backup-manifest/1', takenUtc: '2026-10-15T03:04:05Z' }));
+  process.stdout.write(JSON.stringify({ format: 'ariva-backup-manifest/1', database: 'ariva', takenUtc: '2026-10-15T03:04:05Z' }));
 } else if (remote[0] === 'bash' && remote[2] === 'backup') {
   process.stdout.write('pg_dump custom archive');
 } else if (remote[0] === 'tar' && remote.includes('-cf')) {
@@ -502,7 +613,62 @@ async function selfTest() {
     for (const value of good) ok(check(kind, value) === value, `${kind} accepts ${value}`);
     for (const value of bad) refuses(() => check(kind, value), `${kind} refuses ${value}`);
   }
-  assert.deepEqual(principals('ops-a,ops-b namespaces="ariva-backup" ssh-ed25519 AAAA\n# note\n*.example ssh-ed25519 BBBB\n'), ['ops-a', 'ops-b']); checks++;
+  // ARV-183 and its review: the allowed-signers grammar, the lines that widen who may sign, and the lines refused outright.
+  assert.deepEqual(readAllowedSigners('ops-a,ops-b namespaces="ariva-backup" ssh-ed25519 AAAA\n# note\n*.example ssh-ed25519 BBBB\n').principals, ['ops-a', 'ops-b']); checks++;
+  const pattern = n => `line ${n} names its principals with a pattern (*, ? or !)`;
+  const authority = n => `line ${n} is a cert-authority line`;
+  const grammar = n => `line ${n} is not principals, options, a key type and its key`;
+  const ascii = n => `line ${n} holds a character other than printable ASCII, a space or a tab`;
+  for (const [text, problems, refusedLines] of [
+    ['ops-a namespaces="ariva-backup" ssh-ed25519 AAAA\n\n# * cert-authority\n \t# an indented comment\r\n', [], []],
+    ['ops-a namespaces="ariva-backup,other" ssh-ed25519 AAAA', [], []],
+    ['ops-a ssh-ed25519 AAAA comment with cert-authority', [], []],
+    ['ops-a valid-after="20260101",valid-before="20271231Z" ecdsa-sha2-nistp256 AAAA==', [], []],
+    ['ops-a namespaces="a,cert-authority" ssh-ed25519 AAAA', [], []],
+    ['* ssh-ed25519 AAAA', [pattern(1)], []],
+    ['ops-a ssh-ed25519 AAAA\nops-? ssh-ed25519 BBBB', [pattern(2)], []],
+    ['ops-a,!ops-b ssh-ed25519 AAAA', [pattern(1)], []],
+    ['ops-a cert-authority ssh-ed25519 AAAA', [authority(1)], []],
+    ['ops-a namespaces="ariva-backup",CERT-AUTHORITY ssh-ed25519 AAAA', [authority(1)], []],
+    ['ops-* cert-authority,namespaces="a,b" ssh-ed25519 AAAA', [pattern(1), authority(1)], []],
+    // What ssh-keygen reads otherwise than a looser parser (the review's cases): refused whatever the options say.
+    ['"ops-*" ssh-ed25519 AAAA', [], [grammar(1)]],
+    ['ops-a\v,* namespaces="ariva-backup" ssh-ed25519 AAAA', [], [ascii(1)]],
+    ['ops-a\f,* ssh-ed25519 AAAA', [], [ascii(1)]],
+    ['ops-a\u00a0,* ssh-ed25519 AAAA', [], [ascii(1)]],
+    ['\ufeff#,* ssh-ed25519 AAAA', [], [ascii(1)]],
+    ['\f#,* ssh-ed25519 AAAA', [], [ascii(1)]],
+    ['ops-a ssh-ed25519 AAAA\rops-b ssh-ed25519 BBBB', [], [ascii(1)]],
+    ['ops-a namespaces="ariva-backup,\\" x",cert-authority ssh-ed25519 AAAA', [], [grammar(1)]],
+    ['ops-a namespaces="ariva backup" ssh-ed25519 AAAA', [], [grammar(1)]],
+    ['"', [], [grammar(1)]],
+    ['ops-a', [], [grammar(1)]],
+    ['ops-a,,ops-b ssh-ed25519 AAAA', [], [grammar(1)]],
+    ['ops-a ssh-dss AAAA', [], [grammar(1)]],
+    ['ops-a no-touch-required ssh-ed25519 AAAA', [], [grammar(1)]],
+    ['ops-a ssh-ed25519 AA$A', [], [grammar(1)]]
+  ]) {
+    const read = readAllowedSigners(text);
+    assert.deepEqual([read.problems, read.refused], [problems, refusedLines], JSON.stringify(text)); checks++;
+  }
+  for (const name of ['work_mem', 'pg_stat_statements.max']) { assert.equal(check('setting', name), name); checks++; }
+  for (const name of ['Work_Mem', 'a.b.c', 'a-b', '.x', "x';--", '']) refuses(() => check('setting', name), `the setting name ${name}`);
+  assert.deepEqual(plan(parse(['check', '--namespace', 'ariva', '--allow-login', 'replicator', '--allow-setting', 'pg_stat_statements.max'])).steps[1].cmd[1].slice(-5),
+    ['check', '--allow-login', 'replicator', '--allow-setting', 'pg_stat_statements.max']); checks++;
+  refuses(() => plan(parse(['check', '--namespace', 'ariva', '--allow-login', 'Replicator'])), 'a login name that is not a plain identifier');
+  // ARV-183 review: an option the command would not use is refused, not ignored.
+  refuses(() => plan(parse(['files-restore', '--namespace', 'ariva', '--in', 'x', '--identity', 'y', '--sha256', 'a'.repeat(64), '--allow-extension', 'postgis'])),
+    '--allow-extension with files-restore');
+  refuses(() => plan(parse(['keyring', '--namespace', 'ariva', '--certificate', 'c', '--runtime-login', 'ariva_app'])), '--runtime-login with keyring');
+  refuses(() => plan(parse(['check', '--namespace', 'ariva', '--force-namespace'])), '--force-namespace with check');
+  refuses(() => plan(parse(['restore', '--namespace', 'ariva', '--in', 'x', '--identity', 'y', '--sha256', 'a'.repeat(64), '--force-namespace'])),
+    '--force-namespace with --sha256, which checks no namespace');
+  refuses(() => plan(parse(['restore', '--namespace', 'ariva', '--in', 'x', '--identity', 'y', '--sha256', 'a'.repeat(64), '--allow-signer-patterns'])),
+    '--allow-signer-patterns with --sha256, which reads no signer');
+  for (const name of ['pg_stat_statements', 'postgis']) { assert.equal(check('extension', name), name); checks++; }
+  for (const name of ['uuid-ossp', 'Pg', "x';--", '', 'a'.repeat(64)]) refuses(() => check('extension', name), `the extension name ${name}`);
+  assert.deepEqual(plan(parse(['check', '--namespace', 'ariva', '--allow-extension', 'pg_stat_statements', '--allow-extension', 'postgis'])).steps[1].cmd[1].slice(-5),
+    ['check', '--allow-extension', 'pg_stat_statements', '--allow-extension', 'postgis']); checks++;
   refuses(() => localPath('a\nb', 'x'), 'a path with a control character');
   refuses(() => parse(['backup', '--namespace']), 'an option without its value');
   refuses(() => parse(['backup', '--shell', 'x']), 'an unknown option');
@@ -576,7 +742,8 @@ async function selfTest() {
     fs.writeFileSync(path.join(temp, 'fake-kubectl.mjs'), FAKE_KUBECTL);
     fs.writeFileSync(path.join(temp, 'fake-age.mjs'), FAKE_AGE);
     Object.assign(TOOLS, { kubectl: [process.execPath, path.join(temp, 'fake-kubectl.mjs')], age: [process.execPath, path.join(temp, 'fake-age.mjs')] });
-    OUT.log = () => {};
+    const logged = [];
+    OUT.log = (...lines) => logged.push(lines.join(' '));
     OUT.interactive = false;
     const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
     const clear = () => fs.rmSync(log, { force: true });
@@ -606,8 +773,18 @@ async function selfTest() {
     const restore = extra => ['restore', '--namespace', 'ariva', '--in', dump, '--identity', identity, ...extra];
     const signed = (m = manifest, a = allowed) => ['--manifest', m, '--allowed-signers', a];
 
+    const fingerprintOf = name => {
+      const r = sshKeygen(['-l', '-E', 'sha256', '-f', path.join(temp, `key-${name}.pub`)], { stdio: ['ignore', 'pipe', 'pipe'] });
+      return /SHA256:[A-Za-z0-9+/]{43}/.exec(String(r.stdout))[0];
+    };
+    ok(JSON.parse(fs.readFileSync(manifest, 'utf8')).namespace === 'ariva', 'the signed manifest names its namespace (ARV-183)');
+
     clear();
+    logged.length = 0;
     await main(restore(signed()));
+    ok(logged.some(line => line === `manifest signature verified: signed by ops-a with the key ${fingerprintOf('a')}`), 'the verifying key\'s fingerprint is printed');
+    ok(logged.some(line => line.startsWith('backup set: namespace ariva, taken 2026-10-15T03:04:05Z (UTC), database ariva; this restores its database file ')),
+      'the set\'s namespace, time and database are printed before the restore');
     const restored = calls();
     const ages = restored.filter(c => c.tool === 'age');
     ok(ages.length === 2 && ages.every(c => c.file !== dump && c.file.startsWith(tmpRoot)), 'both passes decrypt a private copy, never the file given');
@@ -650,6 +827,62 @@ async function selfTest() {
     await refused(restore(signed(manifest, otherNamespace)), /does not verify/, 'an allowed signer limited to another namespace');
     await refused(['restore', '--namespace', 'ariva', '--in', tarFile, '--identity', identity, ...signed()], /as files, not database/,
       'the files archive given to the database restore');
+
+    // ARV-183: allowed signers that widen who may sign; another namespace's set, or one that names none.
+    const widened = path.join(temp, 'allowed_signers_widened');
+    fs.writeFileSync(widened, `ops-a namespaces="${SIGNATURE_NAMESPACE}" ${publicKey('a')}\n* namespaces="${SIGNATURE_NAMESPACE}" ${publicKey('b')}\n`);
+    await refused(restore(signed(manifest, widened)), /widens who may sign a restore \(line 2 names its principals with a pattern/, 'a principal pattern in the allowed signers');
+    const authority = path.join(temp, 'allowed_signers_authority');
+    fs.writeFileSync(authority, `ops-a cert-authority,namespaces="${SIGNATURE_NAMESPACE}" ${publicKey('b')}\nops-a namespaces="${SIGNATURE_NAMESPACE}" ${publicKey('a')}\n`);
+    await refused(restore(signed(manifest, authority)), /line 1 is a cert-authority line/, 'a cert-authority line in the allowed signers');
+    clear();
+    await main(restore([...signed(manifest, widened), '--allow-signer-patterns']));
+    ok(calls().some(c => c.received === 'restore'), '--allow-signer-patterns lets an intended pattern through');
+    await refused(['restore', '--namespace', 'ariva-other', '--in', dump, '--identity', identity, ...signed()], /a backup of the namespace ariva, not ariva-other/,
+      'a set of another namespace');
+    clear();
+    await main(['restore', '--namespace', 'ariva-other', '--in', dump, '--identity', identity, ...signed(), '--force-namespace']);
+    ok(calls().some(c => c.received === 'restore'), '--force-namespace restores a set into another namespace');
+    const parsed = JSON.parse(text);
+    delete parsed.namespace;
+    const older = elsewhere('older-manifest', { 'm.json': JSON.stringify(parsed, null, 2) + '\n' });
+    keygen(['-Y', 'sign', '-f', path.join(temp, 'key-a'), '-n', SIGNATURE_NAMESPACE, path.join(older, 'm.json')]);
+    await refused(restore(signed(path.join(older, 'm.json'))), /names no namespace \(a set from before ARV-183\)/, 'a set that names no namespace');
+    clear();
+    await main(restore([...signed(path.join(older, 'm.json')), '--force-namespace']));
+    ok(calls().some(c => c.received === 'restore'), '--force-namespace restores a set from before ARV-183');
+    const restorePlan183 = plan(parse(['restore', '--namespace', 'ariva', '--in', 'x.dump.age', '--identity', 'id', '--sha256', 'a'.repeat(64),
+      '--allow-extension', 'pg_stat_statements', '--allow-login', 'replicator', '--allow-setting', 'work_mem']));
+    assert.deepEqual(restorePlan183.steps.at(-1).into[1].slice(-10), ['restore', '--input', '-', '--dump-checked', '--allow-extension', 'pg_stat_statements',
+      '--allow-login', 'replicator', '--allow-setting', 'work_mem'], 'the restore\'s own check lets what is allowed pass'); checks++;
+    assert.deepEqual(restorePlan183.steps.at(-2).into[1].slice(-5), ['check-dump', '--input', '-', '--allow-extension', 'pg_stat_statements'],
+      'the dump\'s check lets the allowed extension\'s entries pass (ARV-183 review)'); checks++;
+    await refused(['files-restore', '--namespace', 'ariva', '--in', tarFile, '--identity', identity, ...signed(path.join(older, 'm.json'))],
+      /names no namespace/, 'a files archive of a set that names no namespace');
+
+    // ARV-183 review: allowed-signers lines ssh-keygen reads as a pattern (or a certificate authority) for ops-a, though a looser
+    // reading saw a plain name or a comment, so a manifest signed by the foreign key b would verify as ops-a; refused whatever
+    // the options say (the vertical tab and the byte order mark verify for real without the refusal).
+    for (const [name, line] of [
+      ['vtab', `ops-a\v,* namespaces="${SIGNATURE_NAMESPACE}" ${publicKey('b')}`],
+      ['bom', `\ufeff#,* namespaces="${SIGNATURE_NAMESPACE}" ${publicKey('b')}`],
+      ['escaped', `ops-a namespaces="${SIGNATURE_NAMESPACE},\\" x",cert-authority ${publicKey('b')}`]
+    ]) {
+      const file = path.join(temp, `allowed_signers_${name}`);
+      fs.writeFileSync(file, `${line}\nops-a namespaces="${SIGNATURE_NAMESPACE}" ${publicKey('a')}\n`);
+      await refused([...restore(signed(path.join(foreign, 'm.json'), file)), '--allow-signer-patterns'], /has lines a restore does not read \(line 1 /,
+        `an allowed-signers line ssh-keygen reads otherwise (${name})`);
+    }
+
+    // ARV-183 review: --plan verifies a signed manifest here and prints the preview, touching no cluster; it refuses as the restore would.
+    clear();
+    logged.length = 0;
+    await main([...restore(signed()), '--plan']);
+    ok(logged.some(line => line === `manifest signature verified: signed by ops-a with the key ${fingerprintOf('a')}`)
+      && logged.some(line => line.startsWith('backup set: namespace ariva, taken 2026-10-15T03:04:05Z (UTC), database ariva;')), '--plan prints the verified preview');
+    ok(calls().length === 0 && fs.readdirSync(tmpRoot).length === 0, '--plan starts nothing and leaves no private folder');
+    await refused(['restore', '--namespace', 'ariva-other', '--in', dump, '--identity', identity, ...signed(), '--plan'], /a backup of the namespace ariva, not ariva-other/,
+      '--plan of another namespace\'s set');
 
     // A file swapped after the check: the restore goes on with the verified copy, never the new file.
     clear();
