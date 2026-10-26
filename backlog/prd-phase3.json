@@ -336,7 +336,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Split from ARV-177 on 2026-10-25 (backlog/progress.md). The first design's code and its integration test (DisposalAtStopTests: a 20 s attempt, a bus stop wait of 11 s, the second host on the direct broker address while the first host's proxy is cut) are described in the 2026-10-25 ARV-177 entry of backlog/progress.md.",
       "dependsOn": [
         "ARV-177",
@@ -1311,6 +1311,26 @@
       "notes": "Size S. Phase 3. Lows of the ARV-253 review (backlog/progress.md, 2026-10-25); 1 and 2 first.",
       "dependsOn": [
         "ARV-253"
+      ]
+    },
+    {
+      "id": "ARV-255",
+      "title": "[E6] MassTransit's cancel sites recorded, and the pipeline stop test waits on a condition",
+      "description": "From the ARV-177a security review (2026-10-25, Lows 1 and 5). (1) DeadLetterFilter.IsTheStops takes any failure after the message's own token was cancelled for the stop's (no dead letter, the record left for the restart). That rests on MassTransit 8.5.11 cancelling a Kafka receive context only when its consumer stops (ConsumerAgent.CancelPendingConsumers at the bus's stop wait's end, or a consumer agent ending on a broker error), where nothing later of the partition completes. Whether ConsumerLockContext.OnUnAssigned or OnPartitionLost (a rebalance) also cancels a record in hand while the consumer keeps other partitions is not recorded; if a revoke can cancel a record while the consumer goes on to complete a later record of the same partition, the cancelled record could be passed. (2) ConsumePipelineTests' ARV-177a theory waits a fixed 100 ms after the bus's Stopping event for the endpoint's own EndpointStopping to have seen it (it can fail falsely, never pass falsely); ARV-156 asks for waits on a condition. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "MassTransit 8.5.11's cancel sites for a Kafka receive context are established from its decompiled source (or a test on a real broker with a rebalance during a slow record) and recorded in an ADR-0018 note; if a revoke can cancel a record while its consumer keeps the partition or completes a later record of it, IsTheStops is narrowed to the endpoint stopping (a duplicate letter rather than a loss) with a test",
+        "The ARV-177a pipeline test waits on a condition (the endpoint's own EndpointStopping, or an observer connected to that endpoint) instead of a fixed delay",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3. Lows of the ARV-177a review (backlog/progress.md, 2026-10-25).",
+      "dependsOn": [
+        "ARV-177a"
       ]
     }
   ]

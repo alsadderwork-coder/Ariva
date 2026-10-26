@@ -23,6 +23,12 @@ public sealed class PipelineProbe : EventBase
     /// <summary>The first attempts that wait on their token until it is cancelled (a stalled handler, ARV-096e).</summary>
     public int StallTimes { get; set; }
 
+    /// <summary>
+    /// The first attempt waits for the test's gate and then fails (ARV-177a): "disposed" as on a service the host disposed
+    /// meanwhile, "failure" as on an ordinary error.
+    /// </summary>
+    public string AfterGate { get; set; }
+
     public override string GetPartitionKey() => ZoneId;
 }
 
@@ -351,6 +357,146 @@ public sealed class ConsumePipelineTests
         (await harness.Published.Any<Fault<PipelineProbe>>(TestContext.Current.CancellationToken)).Should().BeFalse();
     }
 
+    /// <summary>
+    /// ARV-177a: a failure the stop caused is not dead-lettered. The message's attempt runs on past the endpoint's stop and
+    /// then fails on a service the host disposed meanwhile (an <see cref="ObjectDisposedException"/> in its chain): its record
+    /// is not committed (one lane per consumer, ARV-253) and the next host gets it again, so a dead letter would only be a
+    /// second copy of a valid message. It is left unacknowledged instead, as the message's own cancellation. An ordinary
+    /// failure at the same moment is still the message's own: dead-lettered, and kept in the outbox since the endpoint is
+    /// stopping (ARV-171).
+    /// </summary>
+    [Theory]
+    [InlineData("disposed", 0, false)]
+    [InlineData("disposed", 1, false)] // not the last attempt: the cancellation is not retried either
+    [InlineData("failure", 0, true)]
+    public async Task Pipe_Should_LeaveTheMessageUnacknowledgedWithoutADeadLetter_When_ItFailsOnADisposedServiceWhileItsEndpointStops(string afterGate, int retries,
+        bool deadLettered)
+    {
+        var store = new KeptLetters();
+        var (provider, harness, ledger) = await StartAsync(new ConsumerSettings { RetryCount = retries, RetryMinMilliseconds = 1, RetryMaxMilliseconds = 5 }, store);
+        await using var _ = provider;
+        var receive = new ReceiveOutcome();
+        harness.Bus.ConnectReceiveObserver(receive);
+        var stopping = new StoppingSeen();
+        harness.Bus.ConnectReceiveEndpointObserver(stopping);
+        var probe = new PipelineProbe { AfterGate = afterGate };
+
+        await harness.Bus.Publish(probe, TestContext.Current.CancellationToken);
+        await ledger.Started.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var stop = provider.GetRequiredService<IBusControl>().StopAsync(TestContext.Current.CancellationToken);
+        await stopping.Seen.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await Task.Delay(100, TestContext.Current.CancellationToken); // the endpoint's own EndpointStopping has seen it as well
+        ledger.Gate.TrySetResult();
+
+        var outcome = await receive.Ended.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await stop.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        ledger.Attempts[probe.Id].Should().Be(1, "a failure the stop caused is not tried again");
+        ledger.Letters.Should().BeEmpty("the endpoint was stopping, so Kafka is not asked");
+        (await harness.Published.Any<Fault<PipelineProbe>>(TestContext.Current.CancellationToken)).Should().BeFalse();
+        if (deadLettered)
+        {
+            outcome.Should().BeNull("an ordinary failure is the message's own: its letter is kept and the message completes");
+            store.Letters.Should().ContainSingle().Which.ErrorMessage.Should().Be("probe failure after the gate");
+        }
+        else
+        {
+            outcome.Should().BeAssignableTo<OperationCanceledException>("the receive faults as a cancellation, so the record is delivered again after restart");
+            store.Letters.Should().BeEmpty("a failure the stop caused is not dead-lettered");
+        }
+    }
+
+    /// <summary>
+    /// ARV-177a: once MassTransit has cancelled the message's own token (the bus's stop wait ended with the message in hand),
+    /// any failure of the attempt that ran on is the stop's: the filter throws the message's cancellation, sends no dead
+    /// letter and keeps none, whatever the attempt (the last one here).
+    /// </summary>
+    [Fact]
+    public async Task Send_Should_ThrowTheMessagesCancellationWithoutADeadLetter_When_TheMessagesTokenWasCancelledBeforeItFailed()
+    {
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+        var context = new Moq.Mock<ConsumeContext>();
+        context.SetupGet(c => c.CancellationToken).Returns(cancelled.Token);
+        var next = new Moq.Mock<IPipe<ConsumeContext>>();
+        next.Setup(n => n.Send(Moq.It.IsAny<ConsumeContext>())).Returns(Task.FromException(new TimeoutException("the database did not answer")));
+        var sink = new Ledger();
+        var store = new KeptLetters();
+        var filter = new DeadLetterFilter(0, sink, TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeadLetterFilter>.Instance,
+            new EndpointStopping(), store);
+
+        var send = () => filter.Send(context.Object, next.Object);
+
+        var thrown = (await send.Should().ThrowAsync<OperationCanceledException>()).Which;
+        thrown.CancellationToken.Should().Be(cancelled.Token, "MassTransit passes on only a cancellation of the message's own token");
+        thrown.InnerException.Should().BeOfType<TimeoutException>();
+        sink.Letters.Should().BeEmpty();
+        store.Letters.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void IsTheStops_Should_TakeADisposedServiceForTheStop_When_TheEndpointIsStoppingAndOnlyThen()
+    {
+        var context = new Moq.Mock<ConsumeContext>();
+        context.SetupGet(c => c.CancellationToken).Returns(CancellationToken.None);
+        var stopping = new EndpointStopping();
+        var filter = new DeadLetterFilter(0, new Ledger(), TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<DeadLetterFilter>.Instance, stopping);
+        var disposed = new InvalidOperationException("wrapped", new ObjectDisposedException("IServiceProvider"));
+
+        filter.IsTheStops(context.Object, disposed).Should().BeFalse("a disposed service before any stop is the message's failure, dead-lettered as any");
+        stopping.Signal();
+        filter.IsTheStops(context.Object, disposed).Should().BeTrue();
+        filter.IsTheStops(context.Object, new TimeoutException("the database did not answer")).Should().BeFalse(
+            "an ordinary failure while the endpoint stops is still the message's own (ARV-171)");
+    }
+
+    [Fact]
+    public void IsDisposal_Should_FindADisposedService_When_ItIsInTheChainWithinItsDepth()
+    {
+        DeadLetterFilter.IsDisposal(new ObjectDisposedException("IServiceProvider")).Should().BeTrue();
+        DeadLetterFilter.IsDisposal(new InvalidOperationException("wrapped", new ObjectDisposedException("ISession"))).Should().BeTrue();
+        DeadLetterFilter.IsDisposal(new AggregateException(new TimeoutException(), new InvalidOperationException("w", new ObjectDisposedException("x"))))
+            .Should().BeTrue();
+        DeadLetterFilter.IsDisposal(new InvalidOperationException("plain", new TimeoutException())).Should().BeFalse();
+        DeadLetterFilter.IsDisposal(Wrapped(16)).Should().BeTrue("the search reaches a depth of 16");
+        DeadLetterFilter.IsDisposal(Wrapped(17)).Should().BeFalse("the search is bounded; past it the failure is dead-lettered, a copy rather than a loss");
+        DeadLetterFilter.IsDisposal(Wide(300, disposedLast: true)).Should().BeFalse("at most 256 exceptions are looked at");
+        DeadLetterFilter.IsDisposal(Wide(300, disposedLast: false)).Should().BeTrue();
+
+        static Exception Wrapped(int depth)
+        {
+            Exception error = new ObjectDisposedException("x");
+            for (var i = 0; i < depth; i++)
+                error = new InvalidOperationException("w" + i, error);
+            return error;
+        }
+
+        // An aggregate of many failures, the disposed one first or last of those looked at (the search takes the last pushed first).
+        static Exception Wide(int count, bool disposedLast)
+        {
+            var errors = Enumerable.Range(0, count).Select(i => (Exception)new TimeoutException("t" + i)).ToList();
+            errors.Insert(disposedLast ? 0 : count, new ObjectDisposedException("x"));
+            return new AggregateException(errors);
+        }
+    }
+
+    /// <summary>The moment the probe's endpoint begins to stop.</summary>
+    private sealed class StoppingSeen : IReceiveEndpointObserver
+    {
+        public TaskCompletionSource Seen { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Ready(ReceiveEndpointReady ready) => Task.CompletedTask;
+
+        public Task Stopping(ReceiveEndpointStopping stopping)
+        {
+            Seen.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        public Task Completed(ReceiveEndpointCompleted completed) => Task.CompletedTask;
+
+        public Task Faulted(ReceiveEndpointFaulted faulted) => Task.CompletedTask;
+    }
+
     /// <summary>The outbox for dead letters, in memory.</summary>
     private sealed class KeptLetters : IDeadLetterStore
     {
@@ -400,6 +546,16 @@ public sealed class ConsumePipelineTests
         public async Task Consume(ConsumeContext<PipelineProbe> context)
         {
             var attempt = ledger.Attempts.AddOrUpdate(context.Message.Id, 1, (_, n) => n + 1);
+            if (attempt == 1 && context.Message.AfterGate is { } afterGate)
+            {
+                ledger.Started.TrySetResult();
+                // Not the message's token: an attempt that runs on past the stop does not end with it.
+                await ledger.Gate.Task.WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+                throw afterGate == "disposed"
+                    ? new InvalidOperationException("probe failure on a disposed service", new ObjectDisposedException("IServiceProvider"))
+                    : new InvalidOperationException("probe failure after the gate");
+            }
+
             if (attempt <= context.Message.StallTimes)
             {
                 try
@@ -433,6 +589,8 @@ public sealed class ConsumePipelineTests
         public int Cut;
         public int RefuseLetters;
         public int Refused;
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task SendAsync(DeadLetter letter, CancellationToken ct)
         {

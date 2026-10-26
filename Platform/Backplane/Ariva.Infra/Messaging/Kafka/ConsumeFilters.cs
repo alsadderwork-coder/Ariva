@@ -51,9 +51,14 @@ public sealed class InboxFilter<T>(IInbox inbox, IUnitOfWork unitOfWork, ILogger
 /// The dead-letter filter (ADR-0018). When the last attempt of a message fails, the message goes to the dead-letter
 /// topic with its key, body, headers, source topic, partition, offset and the error, and the filter returns so the
 /// offset commits and the partition moves on. Earlier attempts rethrow, so the retry around it tries again.
-/// Shutdown (cancellation) is not a failure: it rethrows and the message is delivered again after restart. A dead letter
-/// the broker refuses is retried until accepted or until the endpoint stops (<paramref name="stopping"/>, ARV-166), so
-/// nothing is lost silently and nothing keeps a stopping host alive.
+/// Shutdown (cancellation) is not a failure: it rethrows and the message is delivered again after restart. Nor is a failure
+/// the stop caused (ARV-177a): one after the message's own token was cancelled (MassTransit cancels it, with the record's
+/// confirmation, when the bus's stop wait ends with the message still in hand, so an attempt that ran on fails into a host
+/// being disposed), or an <see cref="ObjectDisposedException"/> while the endpoint stops. Such a record is not committed
+/// (one lane per consumer, ARV-253: nothing after it completes) and the next host gets it again, so a dead letter would
+/// only be a second copy of a valid message: it is left unacknowledged instead, as the message's own cancellation. A dead
+/// letter the broker refuses is retried until accepted or until the endpoint stops (<paramref name="stopping"/>, ARV-166),
+/// so nothing is lost silently and nothing keeps a stopping host alive.
 /// <para>
 /// MassTransit always places <c>UseMessageRetry</c> first in the message pipe, whatever the configuration order
 /// (proven by the pipe probe in ConsumePipelineTests), so this filter cannot wrap the retry. It runs inside it and
@@ -75,6 +80,10 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (Exception error) when (IsTheStops(context, error))
+        {
+            throw LeftForTheRestart(context, error);
         }
         catch (Exception) when (context.GetRetryAttempt() < retryLimit)
         {
@@ -99,6 +108,54 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
     /// </summary>
     private Task SendUntilAcceptedAsync(DeadLetter letter, CancellationToken messageToken) =>
         DeadLetterRetry.SendUntilAcceptedAsync(sink, letter, timeProvider, logger, messageToken, stopping?.Token ?? CancellationToken.None, store, metrics);
+
+    /// <summary>
+    /// ARV-177a: whether a failure is the stop's rather than the message's: the message's own token is cancelled, or its
+    /// endpoint is stopping and the failure comes from a disposed service (the host's container, a connection or a session
+    /// it held).
+    /// </summary>
+    internal bool IsTheStops(ConsumeContext context, Exception error) =>
+        context.CancellationToken.IsCancellationRequested || (stopping is { IsStopping: true } && IsDisposal(error));
+
+    /// <summary>
+    /// An <see cref="ObjectDisposedException"/> anywhere in the failure's chain, aggregates included, to a depth of 16 and at
+    /// most 256 exceptions; past either bound the failure is not taken for the stop's (dead-lettered: a copy, not a loss).
+    /// </summary>
+    internal static bool IsDisposal(Exception error)
+    {
+        var pending = new Stack<(Exception Error, int Depth)>();
+        pending.Push((error, 0));
+        var visited = 0;
+        while (pending.Count > 0 && visited < 256)
+        {
+            var (current, depth) = pending.Pop();
+            if (current is null || depth > 16)
+                continue;
+            visited++;
+            if (current is ObjectDisposedException)
+                return true;
+            if (current is AggregateException aggregate)
+            {
+                foreach (var inner in aggregate.InnerExceptions)
+                    pending.Push((inner, depth + 1));
+            }
+            else
+            {
+                pending.Push((current.InnerException, depth + 1));
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The message is left unacknowledged, as its own cancellation, which MassTransit neither retries nor rescues.</summary>
+    private OperationCanceledException LeftForTheRestart(ConsumeContext context, Exception error)
+    {
+        context.TryGetPayload(out KafkaConsumeContext kafka);
+        logger.LogWarning(error, "Message from {Topic} partition {Partition} offset {Offset} failed after its endpoint began to stop past it; not dead-lettered, it is delivered again after restart (ARV-177a)",
+            kafka?.Topic, kafka?.Partition, kafka?.Offset);
+        return new OperationCanceledException("The message failed after its endpoint stopped; it was left unacknowledged for the restart (ARV-177a).", error, context.CancellationToken);
+    }
 
     public void Probe(ProbeContext context) => context?.CreateFilterScope("ariva-dead-letter");
 }

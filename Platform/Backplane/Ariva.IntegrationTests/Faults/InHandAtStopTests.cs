@@ -76,9 +76,11 @@ public sealed class InHandProbeConsumer : IConsumer<InHandProbe>
 /// waiting behind it. MassTransit cancels the record in hand at the stop wait's end and the waiting one when the consumer
 /// closes, and its checkpointer passes both as it passes a faulted record; with lanes by key a later record that had
 /// completed in another lane was then committed past them. With one lane per consumer nothing after the record in hand
-/// completes, so the committed offset stays at that record, and the next host consumes it and the record behind it. What
-/// the slow attempt's failure leaves once its host is gone (today a dead letter of a valid event, kept in the outbox) is
-/// ARV-177a's; this test asserts only that no record is passed.
+/// completes, so the committed offset stays at that record, and the next host consumes it and the record behind it. The
+/// slow attempt's failure, which comes after the stop wait into a host being disposed, is the stop's, not the message's
+/// (ARV-177a): with no retry after it (the second case) it used to be dead-lettered, a valid event kept in the outbox and
+/// sent to the dead-letter topic by the next host's relay while that host processed the record as well; now no dead
+/// letter is kept or sent in either case.
 /// <para>
 /// Every wait is for a condition within one budget (ARV-156).
 /// </para>
@@ -103,7 +105,7 @@ public sealed class InHandAtStopTests(FaultsFixture faults)
     /// A host with a stop budget a slow attempt outlasts: the bus waits 11 s (26 less 15), which covers the retry schedule
     /// (one retry, 200 ms) and the dead letter's keep (10 s), as the host's start check requires, but not a 20 s attempt.
     /// </summary>
-    private async Task<IHost> StartHostAsync()
+    private async Task<IHost> StartHostAsync(int retryCount)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string>
@@ -121,7 +123,7 @@ public sealed class InHandAtStopTests(FaultsFixture faults)
             ["Kafka:Topics:ReplicationFactor"] = "1",
             ["Kafka:Topics:MinInSyncReplicas"] = "1",
             ["Kafka:Outbox:PollMilliseconds"] = "200",
-            ["Kafka:Consumers:RetryCount"] = "1",
+            ["Kafka:Consumers:RetryCount"] = retryCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["Kafka:Consumers:RetryMinMilliseconds"] = "200",
             ["Kafka:Consumers:RetryMaxMilliseconds"] = "200",
             ["Kafka:Consumers:CheckpointSeconds"] = "1",
@@ -155,7 +157,7 @@ public sealed class InHandAtStopTests(FaultsFixture faults)
         return (latest.ResultInfos.Single().TopicPartitionOffsetError.Offset.Value, committed.Single().Partitions.Single().Offset.Value);
     }
 
-    /// <summary>The outbox rows of kept dead letters for a key (reported, not asserted: ARV-177a's).</summary>
+    /// <summary>The outbox rows of kept dead letters for a key.</summary>
     private async Task<int> KeptRowsAsync(string key)
     {
         await using var sql = new NpgsqlConnection(faults.DirectConnectionString);
@@ -207,15 +209,47 @@ public sealed class InHandAtStopTests(FaultsFixture faults)
         throw new InvalidOperationException($"No key for {prefix} in 10,000 tries.");
     }
 
-    [Fact(Timeout = 300_000)]
-    public async Task Stop_Should_PassNeitherTheRecordInHandNorTheOneBehindIt_When_AnAttemptOutlastsTheBusStopWait()
+    /// <summary>Records on the dead-letter topic for a key, up to the topic's end as it was when the read began (failing if it is not reached).</summary>
+    private int LettersFor(string key)
+    {
+        using var consumer = new Confluent.Kafka.ConsumerBuilder<string, string>(new Confluent.Kafka.ConsumerConfig
+        {
+            BootstrapServers = faults.KafkaDirectBootstrap,
+            GroupId = "it-dead-letter-reader-" + Guid.NewGuid().ToString("N")[..8],
+            AutoOffsetReset = Confluent.Kafka.AutoOffsetReset.Earliest,
+            EnableAutoCommit = false
+        }).Build();
+        var partition = new Confluent.Kafka.TopicPartition(DeadLetterTopic, new Confluent.Kafka.Partition(0));
+        var end = consumer.QueryWatermarkOffsets(partition, TimeSpan.FromSeconds(10)).High.Value;
+        consumer.Assign(new Confluent.Kafka.TopicPartitionOffset(partition, Confluent.Kafka.Offset.Beginning));
+        var count = 0;
+        var reached = end == 0;
+        var until = DateTime.UtcNow.AddSeconds(10);
+        while (!reached && DateTime.UtcNow < until)
+        {
+            if (consumer.Consume(TimeSpan.FromMilliseconds(500)) is not { } record)
+                continue;
+            if (record.Message.Key == key)
+                count++;
+            reached = record.Offset.Value >= end - 1;
+        }
+
+        consumer.Close();
+        reached.Should().BeTrue("the dead-letter topic is read to its end");
+        return count;
+    }
+
+    [Theory(Timeout = 300_000)]
+    [InlineData(1)] // the slow attempt has a retry after it
+    [InlineData(0)] // the slow attempt is the last one (ARV-177a): before it, its failure was dead-lettered
+    public async Task Stop_Should_PassNeitherTheRecordInHandNorTheOneBehindIt_When_AnAttemptOutlastsTheBusStopWait(int retryCount)
     {
         var run = Guid.NewGuid().ToString("N")[..8];
         var slow = "S-" + run;
         // Outside the slow record's old lane, so that with lanes it would have completed while the slow one was in hand.
         var later = KeyOutside("L", run, slow);
         InHandProbeConsumer.SlowOnce(slow);
-        var first = await StartHostAsync();
+        var first = await StartHostAsync(retryCount);
         IHost next = null;
         var firstDisposed = false;
         try
@@ -251,11 +285,14 @@ public sealed class InHandAtStopTests(FaultsFixture faults)
             Count(later).Should().Be(0, "the stopping host never handled the later record");
             Done($"after the first host: slow {Count(slow)}, later {Count(later)}, kept dead letters {await KeptRowsAsync(slow)}");
 
-            next = await StartHostAsync();
+            next = await StartHostAsync(retryCount);
             await WaitForAsync(() => Count(slow) >= 2 && Count(later) >= 1, "both records delivered again to the next host");
             await WaitForAsync(async () => await OffsetsAsync() is var o && o.Committed == o.End, "every record committed");
             Count(slow).Should().Be(2, "delivered once more, after the restart, and completed there");
             Count(later).Should().Be(1, "the next host processes the later record, once");
+            await Task.Delay(TimeSpan.FromSeconds(2), Ct); // the next host's relay polls every 200 ms
+            (await KeptRowsAsync(slow)).Should().Be(0, "a failure after the stop wait is the stop's, not the message's: no dead letter is kept (ARV-177a)");
+            LettersFor(slow).Should().Be(0, "and none reaches the dead-letter topic");
         }
         finally
         {
