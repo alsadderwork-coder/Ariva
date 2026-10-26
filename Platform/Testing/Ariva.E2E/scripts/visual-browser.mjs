@@ -5,6 +5,7 @@
 // the baseline update workflow and on a developer machine). The app's own fonts (DM Sans, Noto Sans Arabic) are bundled
 // in Ariva.Web through package-lock.json; the image only supplies the fallbacks.
 //
+//   node scripts/visual-browser.mjs ensure  the pinned image: reused when this machine has it, pulled otherwise (exit 3 with the reason when neither works)
 //   node scripts/visual-browser.mjs start   starts the server on 127.0.0.1:3123 (a random path) and prints the ARIVA_E2E_VISUAL_WS value
 //   node scripts/visual-browser.mjs stop
 //
@@ -72,6 +73,37 @@ async function start() {
 	throw new Error(`the visual browser did not listen on ${endpoint}:\n${docker(['logs', name])}`);
 }
 
+// The first line Docker wrote for a failed command (its error), or the error's own message, as at most 300 printable ASCII
+// characters: the text can come from a registry or a mirror, so any other character is shown escaped, never interpreted.
+function reason(error) {
+	const line = (error.stderr?.toString() || error.message || '').trim().split(/\r?\n/)[0].slice(0, 300);
+	return line.replace(/[^\x20-\x7E]/gu, (c) => `\\u{${c.codePointAt(0).toString(16)}}`);
+}
+
+// ARV-188: the gates need no manual pull. The image is about 1.2 GB to download (3.5 GB on disk) and is reused afterwards.
+function ensure() {
+	try {
+		docker(['version', '--format', '{{.Server.Version}}']);
+	} catch (error) {
+		console.error(`Docker is not available, and the visual suite renders only in the pinned Playwright image: start Docker and run again (${reason(error)})`);
+		process.exit(3);
+	}
+	try {
+		docker(['image', 'inspect', '--format', '{{.Id}}', image]);
+		console.log(`the pinned Playwright image is on this machine: ${image}`);
+		return;
+	} catch {
+		// not on this machine: pull it
+	}
+	try {
+		docker(['pull', '--quiet', image], { timeout: 30 * 60 * 1000 });
+		console.log(`pulled the pinned Playwright image: ${image}`);
+	} catch (error) {
+		console.error(`the pinned Playwright image ${image} is not on this machine and could not be pulled (check the network and the registry, then run again): ${reason(error)}`);
+		process.exit(3);
+	}
+}
+
 function stop() {
 	try {
 		docker(['rm', '-f', name]);
@@ -81,9 +113,10 @@ function stop() {
 }
 
 const command = process.argv[2];
-if (command === 'start') await start();
+if (command === 'ensure') ensure();
+else if (command === 'start') await start();
 else if (command === 'stop') stop();
 else if (command) {
-	console.error('usage: node scripts/visual-browser.mjs start|stop');
+	console.error('usage: node scripts/visual-browser.mjs ensure|start|stop');
 	process.exit(2);
 }

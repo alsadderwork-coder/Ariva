@@ -295,6 +295,10 @@ const PERSISTENCE = /^Platform\/Backplane\/(Ariva\.Infra|Ariva\.IntegrationTests
 const NEW_SCRIPT = /^Platform\/Backplane\/Ariva\.Infra\/Timescale\/(Scripts\/|checksums\.lock$)/;
 const E2E_RELEVANT = /^(Platform\/(Backplane|Business|Simulation|Frontplane|Testing\/Ariva\.E2E)\/|Directory\.)/;
 const WEB_CHANGED = /^Platform\/Frontplane\/Ariva\.Web\//;
+// ARV-188: a change that can move a screenshot of the visual suite or stop it from running: the web app, the suite and its
+// baselines, its browser, the E2E configuration that declares the project, the Playwright pin the image must match, and the
+// support code the suite imports.
+const VISUAL_RELEVANT = /^Platform\/(Frontplane\/Ariva\.Web\/|Testing\/Ariva\.E2E\/(tests\/(visual|support)\/|scripts\/visual-browser\.mjs$|playwright\.config\.ts$|package(-lock)?\.json$))/;
 // Always run with a story's own specs: sign-in, the security baseline and the permission matrix (authorization is where
 // cross-site and missing-permission defects show), and the shell screen.
 const E2E_SMOKE = [
@@ -381,6 +385,10 @@ function storyGate() {
   if (wide.length || newScript || (persistence && filter === undefined)) steps.integration();
   else if (persistence) steps.integration(filter);
   else results.push({ name: 'integration tests (no persistence change)', ok: true, skipped: true });
+
+  // ARV-188: the visual baselines when a screen may have changed, before E2E as at a checkpoint (they expect the demo seed).
+  if (files.some(f => VISUAL_RELEVANT.test(f))) steps.visual();
+  else results.push({ name: 'visual regression (no web change)', ok: true, skipped: true });
 
   if (wide.length) steps.e2e();
   else if (e2eRelevant) {
@@ -509,8 +517,25 @@ const steps = {
   visual: () => {
     if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);
     if (!fs.existsSync(path.join(E2E, 'node_modules'))) run('e2e npm ci', 'npm', ['ci'], E2E);
+    // ARV-188: the pinned image, reused when this machine has it and pulled otherwise; when neither works, the step fails
+    // with the reason (Docker not running, or the pull refused) and nothing renders in another browser.
+    if (!run('visual browser image (the pinned Playwright image, reused or pulled)', 'node', ['scripts/visual-browser.mjs', 'ensure'], E2E)) return;
     if (PLAN) { playwright('visual regression (pinned image)', ['--project=visual'], ['playwright-report', 'test-results-visual']); return; }
-    const endpoint = execFileSync('node', ['scripts/visual-browser.mjs', 'start'], { cwd: E2E, encoding: 'utf8' }).trim();
+    let endpoint;
+    try {
+      endpoint = execFileSync('node', ['scripts/visual-browser.mjs', 'start'], { cwd: E2E, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    } catch (error) {
+      // One printable line of the reason (Docker's text can come from a registry), and no server left behind: a container
+      // that started but missed the listen window would otherwise serve its unauthenticated endpoint while E2E runs.
+      process.stdout.write(`${printablePath((error.stderr || error.message || '').trim().split(/\r?\n/)[0].slice(0, 300))}\n`);
+      try {
+        execFileSync('node', ['scripts/visual-browser.mjs', 'stop'], { cwd: E2E, stdio: 'ignore' });
+      } catch {
+        // not running
+      }
+      results.push({ name: 'visual browser start (the pinned Playwright image)', ok: false });
+      return;
+    }
     process.env.ARIVA_E2E_VISUAL_WS = endpoint;
     try {
       playwright('visual regression (pinned image)', ['--project=visual', '--output=test-results-visual', ...(args.includes('--update') ? ['--update-snapshots'] : [])],

@@ -547,7 +547,7 @@
         "node scripts/verify.mjs docs passes"
       ],
       "priority": 42,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3 (the owner rule of 2026-10-14). Cost: the visual step takes about 4 minutes and needs the 1.2 GB pinned image.",
       "dependsOn": []
     },
