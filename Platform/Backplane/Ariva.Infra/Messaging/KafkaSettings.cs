@@ -168,7 +168,23 @@ public sealed class ConsumerSettings
     public const int MaxRetryCount = 10;
 
     public int RetryCount { get; init; } = 3;
+
+    /// <summary>The largest <see cref="RetryMinMilliseconds"/> and <see cref="RetryMaxMilliseconds"/> (ARV-266): a minute.</summary>
+    public const int MaxRetryMilliseconds = 60_000;
+
+    /// <summary>
+    /// The base of the waits between two attempts of a message (MassTransit 8.5.11's exponential retry): the n-th wait, counting
+    /// from 0, is this and 2^n times a random 0.8 to 1.2 times it, capped at <see cref="RetryMaxMilliseconds"/>, then multiplied by a random
+    /// 0.75 to 1.25. So the first wait is about 270 to 550 ms at the defaults, a wait can reach about 1.25 times the cap (just
+    /// under 75 s at the bound), and a base of 0 or 1 means no backoff at all (every wait about 0 ms, whatever the cap): a failing
+    /// message is then dead-lettered within its attempts, each up to its handler timeout, during a database outage too. Both settings from 0 to
+    /// <see cref="MaxRetryMilliseconds"/>, this one no more than the cap, or the host does not start (ARV-266: MassTransit took
+    /// them as they were, and a negative value made it fail its first retry or wait for ever). The waits count in how long a
+    /// message holds its consumer (<see cref="LongestHold"/>, which counts the cap, not the jitter above it: ARV-268).
+    /// </summary>
     public int RetryMinMilliseconds { get; init; } = 200;
+
+    /// <summary>The cap on each wait between two attempts, before MassTransit's jitter; see <see cref="RetryMinMilliseconds"/>.</summary>
     public int RetryMaxMilliseconds { get; init; } = 5_000;
     public int CheckpointSeconds { get; init; } = 5;
     public ushort CheckpointMessageCount { get; init; } = 500;

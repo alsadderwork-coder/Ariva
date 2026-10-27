@@ -186,28 +186,23 @@ public sealed class ConsumerHoldTests
         ConsumerSettings.MaxPollIntervalLimit.Should().Be(TimeSpan.FromMilliseconds(86_400_000));
     }
 
-    [Theory]
-    [InlineData("8490500", false)]
-    [InlineData("8490501", true)]
-    public void AddArivaMessaging_Should_RefuseToStart_When_ThePollIntervalWouldPassADay(string retryMaxMilliseconds, bool refused)
+    [Fact]
+    public void MaxPollInterval_Should_StayWithinADay_When_EverySettingIsAtItsLargest()
     {
-        // Ten retries at the largest handler timeout: 11 x 120 s, the dead letter's 115 s and the minute come to 1,495 s, so ten
-        // waits of 8,490.5 s reach the day exactly and a millisecond more passes it. Such waits fail the stop budget as well
-        // (checked after this, unless the grace period is above a day), so the case below the day is refused for that alone.
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        // ARV-266 holds RetryMaxMilliseconds to a minute (refused at start beyond it), so the day ARV-254 checks at start can no
+        // longer be reached through the settings: ten retries at the largest handler timeout, ten waits counted at the 60,000 ms
+        // cap (MassTransit's jitter can take a wait to 1.25 times it; ARV-268), the dead letter's 115 s and the minute come to
+        // 2,095 s. The start check stays, should a bound move.
+        var largest = new ConsumerSettings
         {
-            ["Kafka:Enabled"] = "true",
-            ["Kafka:Consumers:RetryCount"] = "10",
-            ["Kafka:Consumers:HandlerTimeoutSeconds"] = "120",
-            ["Kafka:Consumers:RetryMaxMilliseconds"] = retryMaxMilliseconds
-        }).Build();
+            RetryCount = ConsumerSettings.MaxRetryCount,
+            HandlerTimeoutSeconds = ConsumerSettings.MaxHandlerTimeoutSeconds,
+            RetryMinMilliseconds = ConsumerSettings.MaxRetryMilliseconds,
+            RetryMaxMilliseconds = ConsumerSettings.MaxRetryMilliseconds
+        };
 
-        var thrown = Record.Exception(() => MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration));
-
-        if (refused)
-            thrown.Should().BeOfType<InvalidOperationException>().Which.Message.Should().Contain("at most a day, librdkafka's largest max.poll.interval.ms (ARV-254)");
-        else
-            (thrown?.Message ?? string.Empty).Should().NotContain("max.poll.interval.ms", "the day is reached, not passed");
+        largest.MaxPollInterval.Should().Be(TimeSpan.FromSeconds(11 * 120 + 10 * 60 + 60 + 45 + 10 + 60));
+        largest.MaxPollInterval.Should().BeLessThan(ConsumerSettings.MaxPollIntervalLimit, "librdkafka's own bound on max.poll.interval.ms");
     }
 
     [Theory]

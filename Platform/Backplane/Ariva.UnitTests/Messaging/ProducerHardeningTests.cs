@@ -433,6 +433,39 @@ public sealed class ProducerHardeningTests
     }
 
     [Theory]
+    [InlineData("200", "5000", false)]
+    [InlineData("0", "0", false)]
+    [InlineData("0", "60000", false)]
+    [InlineData("60000", "60000", false)]
+    [InlineData("5000", "5000", false)]
+    [InlineData("-1", "5000", true)]
+    [InlineData("200", "-1", true)]
+    [InlineData("-200", "-100", true)]
+    [InlineData("200", "60001", true)]
+    [InlineData("60001", "60001", true)]
+    [InlineData("5001", "5000", true)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_TheConsumersRetryWaitsAreOutOfRangeOrInverted(string min, string max, bool refused)
+    {
+        // ARV-266 (from the ARV-254 review): MassTransit's exponential retry takes the waits as they are, and the stop budget alone
+        // let a negative pair through, so each setting is held to 0 to a minute and the base to no more than the cap. No retry
+        // here, so the stop budget (the retries times the cap) does not refuse the largest caps first.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Kafka:Enabled"] = "true",
+            ["Kafka:Consumers:RetryCount"] = "0",
+            ["Kafka:Consumers:RetryMinMilliseconds"] = min,
+            ["Kafka:Consumers:RetryMaxMilliseconds"] = max
+        }).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (refused)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Consumers:RetryMinMilliseconds and RetryMaxMilliseconds*");
+        else
+            add.Should().NotThrow();
+    }
+
+    [Theory]
     [InlineData("0", true)]
     [InlineData("9", true)]
     [InlineData("10", false)]

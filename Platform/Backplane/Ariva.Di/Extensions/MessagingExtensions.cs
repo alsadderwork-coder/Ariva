@@ -157,11 +157,19 @@ public static partial class MessagingExtensions
         if (retries is < 0 or > ConsumerSettings.MaxRetryCount)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
                 $"Kafka:Consumers:RetryCount must be from 0 to {ConsumerSettings.MaxRetryCount} (ARV-254)."));
+        // ARV-266: MassTransit's exponential retry takes the waits as they are; a negative or inverted pair is a misconfiguration.
+        var retryMin = settings.Consumers?.RetryMinMilliseconds ?? 0;
+        var retryMax = settings.Consumers?.RetryMaxMilliseconds ?? 0;
+        if (retryMin is < 0 or > ConsumerSettings.MaxRetryMilliseconds || retryMax is < 0 or > ConsumerSettings.MaxRetryMilliseconds || retryMin > retryMax)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Consumers:RetryMinMilliseconds and RetryMaxMilliseconds must each be from 0 to {ConsumerSettings.MaxRetryMilliseconds}, the minimum no more than the maximum (ARV-266)."));
         var handler = settings.Consumers?.HandlerTimeoutSeconds ?? 0;
         if (handler is < ConsumerSettings.MinHandlerTimeoutSeconds or > ConsumerSettings.MaxHandlerTimeoutSeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
                 $"Kafka:Consumers:HandlerTimeoutSeconds must be from {ConsumerSettings.MinHandlerTimeoutSeconds} to {ConsumerSettings.MaxHandlerTimeoutSeconds} (ARV-096e)."));
-        // ARV-254: the rider consumers' poll interval is the longest hold and a minute, and librdkafka takes at most a day.
+        // ARV-254: the rider consumers' poll interval is the longest hold and a minute, and librdkafka takes at most a day. Since
+        // ARV-266 the bounds above keep it within 2,095 s, so this cannot fire through the settings; it stays should a bound move
+        // (ConsumerHoldTests.MaxPollInterval_Should_StayWithinADay_When_EverySettingIsAtItsLargest pins the largest).
         if (settings.Consumers is { } held && held.MaxPollInterval > ConsumerSettings.MaxPollIntervalLimit)
             throw new InvalidOperationException(
                 "Kafka:Consumers: the longest hold that RetryCount, HandlerTimeoutSeconds and RetryMaxMilliseconds allow, with a minute added, must be at most a day, librdkafka's largest max.poll.interval.ms (ARV-254).");

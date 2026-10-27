@@ -1614,7 +1614,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size XS. Phase 3. Filed 2026-10-26 by ARV-254 from its security review (round 2, informational; it predates ARV-254). No sign-in code.",
       "dependsOn": [
         "ARV-254"
@@ -1637,6 +1637,25 @@
       "notes": "Size S. Phase 3. Filed from the ARV-259 security review's advisory 8 (backlog/progress.md, 2026-10-27). Part waits on the auth freeze.",
       "dependsOn": [
         "ARV-259"
+      ]
+    },
+    {
+      "id": "ARV-268",
+      "title": "[E17] Consumer hold and stop budget count MassTransit's retry jitter",
+      "description": "From the ARV-266 security review (2026-10-27, fix 3). MassTransit 8.5.11's exponential retry multiplies each wait, capped at Kafka:Consumers:RetryMaxMilliseconds, by a random 0.75 to 1.25 (ExponentialRetryPolicy.GetRetryInterval), so a wait can reach 1.25 times the cap. ConsumerSettings.LongestHold (and so the rider consumers' max.poll.interval.ms, the hold's minute of margin) and MessagingExtensions.CleanStop (the stop budget) count RetryCount times RetryMaxMilliseconds, not the jitter above it: with the waits at the cap (a base near the cap) a hold can run up to a quarter of its waits past LongestHold, which passes the poll interval when that quarter is more than its minute, so a consumer could leave its group mid-hold at the largest settings (which need Hosting:GracePeriodSeconds raised, since the chart's 60 s holds RetryCount times RetryMaxMilliseconds to 30 s through the stop budget), and a stop at the stop budget's edge can run up to a quarter of the waits past the bus's share (the record is delivered again, not lost). Count the 1.25 factor in both, with the ARV-165 and ARV-254 tests and the 410 s and 470 s figures (wiki 04, wiki 10 section 3.1's consumerHeld holdLimit, cwe-controls CWE-400, costly-operations) moved with them. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "ConsumerSettings.LongestHold and MessagingExtensions.CleanStop count each retry wait at 1.25 times RetryMaxMilliseconds (MassTransit's jitter), with unit tests at the defaults and at the stop budget's edge",
+        "The figures that follow from them (the 410 s hold and 470 s poll interval at the defaults, the consumerHeld rule's holdLimit, the stop budget's boundary) are updated in the chart, its render tests and the docs (wiki 04, wiki 10 section 3.1, cwe-controls CWE-400, costly-operations)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-10-27 by ARV-266 from its security review (fix 3, option b; the jitter predates ARV-266). No sign-in code.",
+      "dependsOn": [
+        "ARV-266"
       ]
     }
   ]
