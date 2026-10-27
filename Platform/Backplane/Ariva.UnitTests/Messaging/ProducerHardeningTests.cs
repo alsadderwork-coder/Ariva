@@ -172,6 +172,8 @@ public sealed class ProducerHardeningTests
     [InlineData(ErrorCode.Local_QueueFull, true)]
     [InlineData(ErrorCode.Local_Destroy, true)]
     [InlineData(ErrorCode.Local_TimedOut, true)]
+    [InlineData(ErrorCode.Local_PurgeQueue, true)]
+    [InlineData(ErrorCode.Local_PurgeInflight, true)]
     [InlineData(ErrorCode.TopicAuthorizationFailed, false)]
     [InlineData(ErrorCode.UnknownTopicOrPart, false)]
     [InlineData(ErrorCode.MsgSizeTooLarge, false)]
@@ -182,6 +184,35 @@ public sealed class ProducerHardeningTests
         // missing permission, a message too large) still do, with their backoff.
         KafkaProduce.IsBrokerUnavailable(new KafkaException(new Error(code))).Should().Be(unavailable);
         KafkaProduce.IsBrokerUnavailable(new ProduceException<string, byte[]>(new Error(code), null)).Should().Be(unavailable);
+    }
+
+    [Theory]
+    [InlineData(ErrorCode.Local_Destroy, false, true)]
+    [InlineData(ErrorCode.Local_PurgeQueue, false, true)]
+    [InlineData(ErrorCode.Local_PurgeInflight, false, true)]
+    [InlineData(ErrorCode.Local_Fatal, true, true)]
+    [InlineData(ErrorCode.OutOfOrderSequenceNumber, true, true)]
+    [InlineData(ErrorCode.Local_MsgTimedOut, false, false)]
+    [InlineData(ErrorCode.Local_AllBrokersDown, false, false)]
+    [InlineData(ErrorCode.Local_Transport, false, false)]
+    [InlineData(ErrorCode.Local_QueueFull, false, false)]
+    [InlineData(ErrorCode.Local_TimedOut, false, false)]
+    [InlineData(ErrorCode.TopicAuthorizationFailed, false, false)]
+    public void IsProducerUnavailable_Should_NameOnlyThisHostsProducersOwnConditions(ErrorCode code, bool fatal, bool own)
+    {
+        // ARV-246: a producer stopping or retired (Local_Destroy), disposed, after a fatal client error, or a message it purged at
+        // that error (librdkafka purges its queue then; Ariva never purges) is the producer's, not the topic's; the broker's absence
+        // is not, nor is a refusal. Each of the producer's own conditions is also a broker unavailability, so the row counts no
+        // attempt.
+        var error = new Error(code, "probe", fatal);
+
+        KafkaProduce.IsProducerUnavailable(new KafkaException(error)).Should().Be(own);
+        KafkaProduce.IsProducerUnavailable(new ProduceException<string, byte[]>(error, null)).Should().Be(own);
+        if (own)
+            KafkaProduce.IsBrokerUnavailable(new KafkaException(error)).Should().BeTrue();
+        KafkaProduce.IsProducerUnavailable(new ObjectDisposedException(nameof(KafkaProduce))).Should().BeTrue();
+        KafkaProduce.IsProducerUnavailable(new KafkaProduceTimeoutException("ariva.flow.nowcast.v1", KafkaProduce.SendTimeout)).Should().BeFalse();
+        KafkaProduce.IsProducerUnavailable(new InvalidOperationException("Outbox row 1 has an empty payload.")).Should().BeFalse();
     }
 
     [Theory]

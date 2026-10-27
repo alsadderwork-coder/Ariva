@@ -223,14 +223,29 @@ public sealed class KafkaProduce : IDisposable
     /// <summary>
     /// Whether a send's failure says the broker or the producer is unavailable rather than that the message is wrong
     /// (ARV-165): librdkafka's message timeout, all brokers down, a transport error, a full queue, the producer's own bound,
-    /// a client in its fatal gap, retired or stopping, or a report that never came. The relay does not count these against
-    /// the row.
+    /// a client in its fatal gap, retired or stopping, a message the client purged (librdkafka purges its queue at a fatal
+    /// error; Ariva never purges, ARV-246), or a report that never came. The relay does not count these against the row.
     /// </summary>
     public static bool IsBrokerUnavailable(Exception error) => error switch
     {
         KafkaProduceTimeoutException => true,
         KafkaException kafka => kafka.Error.IsFatal || kafka.Error.Code is ErrorCode.Local_MsgTimedOut or ErrorCode.Local_AllBrokersDown
-            or ErrorCode.Local_Transport or ErrorCode.Local_QueueFull or ErrorCode.Local_Destroy or ErrorCode.Local_TimedOut,
+            or ErrorCode.Local_Transport or ErrorCode.Local_QueueFull or ErrorCode.Local_Destroy or ErrorCode.Local_TimedOut
+            or ErrorCode.Local_PurgeQueue or ErrorCode.Local_PurgeInflight,
+        ObjectDisposedException => true,
+        _ => false
+    };
+
+    /// <summary>
+    /// Whether a send's failure is this host's producer's own condition rather than the broker's (ARV-246): disposed, retired
+    /// or stopping (<c>Local_Destroy</c>), a fatal client error, or a message the client purged at that error
+    /// (<c>Local_PurgeQueue</c>, <c>Local_PurgeInflight</c>: librdkafka purges its queue when it raises a fatal error, and
+    /// Ariva never purges). A subset of <see cref="IsBrokerUnavailable"/>: the row is not at fault, and the client cannot send
+    /// until it is recreated, so holding the row's topic would cure nothing.
+    /// </summary>
+    public static bool IsProducerUnavailable(Exception error) => error switch
+    {
+        KafkaException kafka => kafka.Error.IsFatal || kafka.Error.Code is ErrorCode.Local_Destroy or ErrorCode.Local_PurgeQueue or ErrorCode.Local_PurgeInflight,
         ObjectDisposedException => true,
         _ => false
     };
@@ -737,6 +752,8 @@ internal sealed class KafkaOutboxTransport(KafkaProduce produce, EventCatalog ca
     public bool IsTopicRefused(Exception error) => KafkaProduce.IsTopicRefused(error);
 
     public bool IsPartitionUnavailable(Exception error) => KafkaProduce.IsPartitionUnavailable(error);
+
+    public bool IsProducerUnavailable(Exception error) => KafkaProduce.IsProducerUnavailable(error);
 
     /// <summary>
     /// The producer's cached probe, as the readiness check asks it (ARV-245): within <see cref="KafkaReadiness.ProbeTimeout"/>

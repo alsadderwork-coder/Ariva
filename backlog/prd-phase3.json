@@ -1224,7 +1224,7 @@
         "docs and wiki pages affected by the change are updated (wiki 10, the relay's warning entry; overview section 5; node scripts/verify.mjs docs passes)"
       ],
       "priority": 41,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-23 by ARV-175 from its round 3 security review (N1, N2). Low, so Phase 3 by the owner's rule of 2026-10-14. Size S. Until then wiki 10 states N1.",
       "dependsOn": [
         "ARV-175"
@@ -1656,6 +1656,26 @@
       "notes": "Size S. Phase 3. Filed 2026-10-27 by ARV-266 from its security review (fix 3, option b; the jitter predates ARV-266). No sign-in code.",
       "dependsOn": [
         "ARV-266"
+      ]
+    },
+    {
+      "id": "ARV-269",
+      "title": "[E6] Outbox relay poll interval and batch bounded at start, and a producer's own failure reported as its own",
+      "description": "From the ARV-246 security review (2026-10-27, advice 4 and 5). (1) Kafka:Outbox:PollMilliseconds and BatchSize have no start-up bounds: EnsureProducerSettings checks PassSeconds, BrokerRetrySeconds and BrokerStreakMinutes but not these two, so a PollMilliseconds of 0 or below makes the relay's wait a no-op (ARV-246's wait after a pass that sent nothing included) and an empty outbox loops on the database without a pause, and a BatchSize of 0 or a very large one claims nothing or holds a transaction over too many rows. Bound both at start as ARV-264 bounded PassSeconds. (2) A failure of the host's own producer (IsProducerUnavailable: a fatal client error, a message purged at it, Local_Destroy at its retirement, disposed) is still logged as 'not sent: the broker is unavailable' and grows the ARV-245 broker streak, so a fatal loop that lasts (a missing IdempotentWrite ACL) is eventually reported as 'the topic's partition may have no leader'. Report it as the producer's and keep it out of the broker streak. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "Kafka:Outbox:PollMilliseconds and BatchSize are refused at start outside documented bounds (EnsureProducerSettings), with unit tests at each edge",
+        "A send failure IsProducerUnavailable names is logged as the producer's own (not the broker's absence) and does not count toward the broker streak, with integration tests in OutboxRelayTests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (wiki 04 Kafka:Outbox rows, wiki 10 relay entries, costly-operations; node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 313,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-10-27 by ARV-246 from its security review (advice 4 and 5). No sign-in code.",
+      "dependsOn": [
+        "ARV-246"
       ]
     }
   ]

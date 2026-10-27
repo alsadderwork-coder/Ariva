@@ -280,6 +280,118 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE message_type = 'RenamedProbe'")).Should().Be(0, "not the row's fault: no attempts, no backoff");
     }
 
+    /// <summary>
+    /// ARV-246: a full batch held back without a failure (rows of an event type this build does not know, as an older leader
+    /// reads them during a rolling deploy) sends nothing, so the relay waits its poll interval before its next pass. Before, a
+    /// full batch with no failure skipped the wait, and the leader ran back-to-back transactions on the same rows, taking the
+    /// leader lock again before the pods that know the type could.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_WaitThePollInterval_When_AFullBatchIsHeldBackWithoutAFailure()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("U", 1), Probe("V", 1));
+        await _host.ReadAsync<object>("UPDATE outbox_message SET message_type = 'RenamedProbe'");
+        var tried = new List<TimeSpan>();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        // Two keys, so each pass tries two sends: the first of each pair starts a pass.
+        var transport = new RecordingTransport
+        {
+            Catalog = _catalog,
+            OnSend = _ =>
+            {
+                lock (tried)
+                    tried.Add(elapsed.Elapsed);
+            }
+        };
+        var poll = TimeSpan.FromSeconds(1);
+        using var relay = new OutboxRelay(_host.Provider.GetRequiredService<DatabaseSettings>(),
+            new KafkaSettings { Outbox = new OutboxRelaySettings { BatchSize = 2, PollMilliseconds = (int)poll.TotalMilliseconds } },
+            transport, _host.Clock, NullLogger<OutboxRelay>.Instance);
+
+        await relay.StartAsync(Ct);
+        try
+        {
+            var until = DateTime.UtcNow.AddSeconds(30);
+            while (Tried() < 6 && DateTime.UtcNow < until)
+                await Task.Delay(50, Ct);
+        }
+        finally
+        {
+            await relay.StopAsync(Ct);
+        }
+
+        List<TimeSpan> starts;
+        lock (tried)
+            starts = [.. tried.Where((_, i) => i % 2 == 0)];
+        starts.Should().HaveCountGreaterThanOrEqualTo(3, "three passes within 30 s");
+        starts.Zip(starts.Skip(1), (first, next) => next - first).Should().OnlyContain(gap => gap >= poll * 0.9,
+            "a pass that sent nothing waits the poll interval, however full its batch");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE sent_on IS NULL")).Should().Be(2, "held back, never dropped");
+
+        int Tried()
+        {
+            lock (tried)
+                return tried.Count;
+        }
+    }
+
+    /// <summary>
+    /// ARV-246, the other side of the loop's condition: a full batch with a row sent and no failure still passes again at once,
+    /// though a row of it is held back (an unknown type ahead of three known keys, a batch of two): the three passes that each
+    /// send one known row follow each other well within the poll interval, and only the pass that claims the unknown row alone
+    /// waits.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_PassAgainAtOnce_When_AFullBatchSentARowThoughAnotherWasHeldBack()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("U", 1), Probe("A", 1), Probe("B", 1), Probe("C", 1));
+        await _host.ReadAsync<object>("UPDATE outbox_message SET message_type = 'RenamedProbe' WHERE message_key = 'U'");
+        var sent = new List<TimeSpan>();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var transport = new RecordingTransport
+        {
+            Catalog = _catalog,
+            OnSend = message =>
+            {
+                if (message.Key == "U")
+                    return;
+                lock (sent)
+                    sent.Add(elapsed.Elapsed);
+            }
+        };
+        var poll = TimeSpan.FromSeconds(10);
+        using var relay = new OutboxRelay(_host.Provider.GetRequiredService<DatabaseSettings>(),
+            new KafkaSettings { Outbox = new OutboxRelaySettings { BatchSize = 2, PollMilliseconds = (int)poll.TotalMilliseconds } },
+            transport, _host.Clock, NullLogger<OutboxRelay>.Instance);
+
+        await relay.StartAsync(Ct);
+        try
+        {
+            var until = DateTime.UtcNow.AddSeconds(30);
+            while (Sent() < 3 && DateTime.UtcNow < until)
+                await Task.Delay(50, Ct);
+        }
+        finally
+        {
+            await relay.StopAsync(Ct);
+        }
+
+        List<TimeSpan> times;
+        lock (sent)
+            times = [.. sent];
+        times.Should().HaveCount(3, "A, B and C, one a pass");
+        (times[2] - times[0]).Should().BeLessThan(poll / 2, "a pass that sent a row is followed by the next at once, not after the poll");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE sent_on IS NULL")).Should().Be(1, "the unknown row waits");
+
+        int Sent()
+        {
+            lock (sent)
+                return sent.Count;
+        }
+    }
+
     [Fact]
     public async Task Inbox_Should_ClaimOnceAndForgetAFailedClaim_When_TheTransactionRollsBack()
     {
@@ -539,6 +651,91 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
 
         (await Relay(refused).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 3, 0, 1, 2), "the first event's failure ends the pass");
         refused.Sent.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// ARV-246: a dead letter whose send fails on this host's own producer (disposed, Local_Destroy when it is retired, a message
+    /// it purged at a fatal error, the fatal client error itself) holds back no topic: the failure is the producer's, not the
+    /// topic's, so a hold would cure nothing. The pass ends as for an event's failure (this producer cannot send the rest
+    /// either), the letter counts no attempt and waits the broker retry, and the topic's other letter goes at the next pass, of
+    /// this relay or another, without a minute's hold. The broker's own absence still holds the topic
+    /// (<see cref="Relay_Should_HoldBackOnlyTheDeadLetterTopic_When_ItsBrokerIsAway"/>).
+    /// </summary>
+    [Theory]
+    [InlineData("disposed")]
+    [InlineData("destroyed")]
+    [InlineData("purged")]
+    [InlineData("fatal")]
+    public async Task Relay_Should_EndThePassWithoutHoldingTheTopic_When_ADeadLetterFailsOnThisHostsProducer(string failure)
+    {
+        await ResetAsync();
+        var store = new OutboxDeadLetterStore(_host.Provider.GetRequiredService<DatabaseSettings>(), _host.Clock);
+        var first = Letter(KafkaTopics.SlaDisputeChanged, 1);
+        await store.KeepAsync(first, Ct);
+        await store.KeepAsync(Letter(KafkaTopics.SlaDisputeChanged, 2), Ct);
+        await store.KeepAsync(Letter(KafkaTopics.AlertStateChanged, 3), Ct);
+        await WriteAsync(true, Probe("D", 1), Probe("D", 2));
+        var topic = KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged);
+        var transport = new RecordingTransport
+        {
+            ProducerGoneFor = topic,
+            ProducerGone = failure switch
+            {
+                "disposed" => () => new ObjectDisposedException(nameof(KafkaProduce)),
+                "destroyed" => () => new Confluent.Kafka.KafkaException(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_Destroy,
+                    "The producer was replaced after a fatal error before Kafka reported on the message.")),
+                "purged" => () => new Confluent.Kafka.KafkaException(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_PurgeQueue, "Local: Purged in queue")),
+                _ => () => new Confluent.Kafka.KafkaException(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_Fatal, "fatal", true))
+            }
+        };
+        var relay = Relay(transport);
+
+        var pass = await relay.RunOnceAsync(Ct);
+
+        pass.Should().Be(new RelayPass(true, 5, 2, 1, 2), "the events sent; the letter's failure ends the pass, the other two letters untouched");
+        transport.Sent.Select(m => m.Topic).Should().Equal(KafkaTopics.AlertStateChanged, KafkaTopics.AlertStateChanged);
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE id = @id", DeadLetters.IdOf(first))).Should().Be(0,
+            "not the letter's failure (ARV-165)");
+        (await ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE topic = @topic AND sent_on IS NULL AND next_attempt_on = @at",
+            topic, (_host.Clock.GetUtcNow() + OutboxRelay.DeadLetterTopicHold).UtcDateTime)).Should().Be(0, "no letter of the topic is held");
+
+        // The next pass of this relay (its own holds) sends the topic's other letter and the other topic's at once; another
+        // relay (the rows) sends the failed letter after its broker retry.
+        transport.ProducerGoneFor = null;
+        (await relay.RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 2, 2, 0, 0), "nothing of the topic is held");
+        transport.Sent.Skip(2).Select(m => m.Topic).Should().Equal(topic, KafkaTopics.DeadLetter(KafkaTopics.AlertStateChanged));
+        _host.Clock.Advance(BrokerRetry + TimeSpan.FromSeconds(1));
+        (await Relay(transport).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 1, 1, 0, 0), "the failed letter after its broker retry");
+    }
+
+    /// <summary>
+    /// ARV-246: with a transport that keeps <see cref="IOutboxTransport"/>'s defaults (no failure is the broker's), a disposed
+    /// transport's failure reaches the relay's last catch: it counts an attempt, as any failure there does, but ends the pass
+    /// without holding the dead letter's topic, since <see cref="IOutboxTransport.IsProducerUnavailable"/> names it the producer's.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_HoldNoTopic_When_ADisposedTransportWithTheDefaultsFailsADeadLetter()
+    {
+        await ResetAsync();
+        var store = new OutboxDeadLetterStore(_host.Provider.GetRequiredService<DatabaseSettings>(), _host.Clock);
+        var first = Letter(KafkaTopics.SlaDisputeChanged, 1);
+        await store.KeepAsync(first, Ct);
+        await store.KeepAsync(Letter(KafkaTopics.SlaDisputeChanged, 2), Ct);
+        await WriteAsync(true, Probe("D", 1));
+        var topic = KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged);
+        var transport = new DefaultsTransport { DisposedFor = topic };
+
+        var pass = await Relay(transport).RunOnceAsync(Ct);
+
+        pass.Should().Be(new RelayPass(true, 3, 1, 1, 1), "the event sent; the letter's failure ends the pass, the other letter untouched");
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE id = @id", DeadLetters.IdOf(first))).Should().Be(1,
+            "not the broker's absence by these defaults, so it counts");
+        (await ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE topic = @topic AND sent_on IS NULL AND next_attempt_on = @at",
+            topic, (_host.Clock.GetUtcNow() + OutboxRelay.DeadLetterTopicHold).UtcDateTime)).Should().Be(0, "no letter of the topic is held");
+
+        transport.DisposedFor = null;
+        (await Relay(transport).RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 1, 1, 0, 0), "the topic's other letter goes at once");
+        transport.Sent.Should().Equal(KafkaTopics.AlertStateChanged, topic);
     }
 
     /// <summary>
@@ -1036,6 +1233,26 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         public Task SendAsync(OutboxEnvelope message, CancellationToken ct) => throw new InvalidOperationException("The producer is not started.");
     }
 
+    /// <summary>
+    /// A transport that keeps <see cref="IOutboxTransport"/>'s defaults (ARV-246): no failure is the broker's, and only a disposed
+    /// transport's is the producer's own. Its sends of <see cref="DisposedFor"/> fail as a disposed producer's would.
+    /// </summary>
+    private sealed class DefaultsTransport : IOutboxTransport
+    {
+        public string DisposedFor { get; set; }
+
+        /// <summary>The topics of the rows sent.</summary>
+        public List<string> Sent { get; } = [];
+
+        public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
+        {
+            if (string.Equals(message.Topic, DisposedFor, StringComparison.Ordinal))
+                throw new ObjectDisposedException(nameof(KafkaProduce));
+            Sent.Add(message.Topic);
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class RecordingTransport : IOutboxTransport
     {
         public List<OutboxEnvelope> Sent { get; } = [];
@@ -1057,6 +1274,12 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
 
         /// <summary>Every send refused by the cluster's authorization: a failure of no topic in particular.</summary>
         public bool ClusterRefused { get; set; }
+
+        /// <summary>A topic whose sends fail on this host's producer (ARV-246), with <see cref="ProducerGone"/>'s failure.</summary>
+        public string ProducerGoneFor { get; set; }
+
+        /// <summary>This host's producer's own failure (ARV-246): disposed, Local_Destroy, a message purged at a fatal error, or the fatal client error itself.</summary>
+        public Func<Exception> ProducerGone { get; set; }
 
         /// <summary>A topic whose sends never end and ignore their token (ARV-175: its partition leader is away).</summary>
         public string HangFor { get; set; }
@@ -1093,6 +1316,9 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         /// <summary>The client's message timeout, as the Kafka transport classifies it (ARV-264).</summary>
         public bool IsPartitionUnavailable(Exception error) => KafkaProduce.IsPartitionUnavailable(error);
 
+        /// <summary>This host's producer's own condition, as the Kafka transport classifies it (ARV-246).</summary>
+        public bool IsProducerUnavailable(Exception error) => KafkaProduce.IsProducerUnavailable(error);
+
         public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
         {
             Attempts++;
@@ -1103,6 +1329,8 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
                 throw new Confluent.Kafka.ProduceException<string, byte[]>(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_MsgTimedOut), null);
             if (BrokerDown || string.Equals(message.Topic, BrokerDownFor, StringComparison.Ordinal))
                 throw new TimeoutException("Local: Message timed out");
+            if (string.Equals(message.Topic, ProducerGoneFor, StringComparison.Ordinal))
+                throw ProducerGone();
             if (string.Equals(message.Topic, RefusedFor, StringComparison.Ordinal))
                 throw new Confluent.Kafka.KafkaException(Confluent.Kafka.ErrorCode.TopicAuthorizationFailed);
             if (string.Equals(message.Topic, UnknownTopicFor, StringComparison.Ordinal))

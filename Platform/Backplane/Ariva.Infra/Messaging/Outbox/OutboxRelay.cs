@@ -49,6 +49,14 @@ public interface IOutboxTransport
     bool IsPartitionUnavailable(Exception error) => false;
 
     /// <summary>
+    /// Whether <paramref name="error"/> from <see cref="SendAsync"/> is this host's producer's own condition (ARV-246): disposed,
+    /// <c>Local_Destroy</c> (stopping, or retired after a fatal error), a fatal client error, or a message the client purged at
+    /// that error. The failure is the producer's, not the topic's, so holding the topic would cure nothing: a dead letter's such
+    /// failure holds no topic, and the pass ends as for an event's.
+    /// </summary>
+    bool IsProducerUnavailable(Exception error) => error is ObjectDisposedException;
+
+    /// <summary>
     /// Whether the brokers answer now (ARV-245): the producer's cached probe (<c>KafkaProduce.BrokersAnswerAsync</c>), which
     /// asks the cluster at most once a second and never throws. After a pass met the broker's absence the relay asks this
     /// before each pass and skips the pass while it is false.
@@ -106,8 +114,16 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// whichever leads, also after a restart. The other dead-letter topics carry on. So a dead-letter topic that cannot be reached
 /// delays the events written meanwhile by at most <see cref="DeadLetterPassBound"/> once per <see cref="DeadLetterTopicHold"/>,
 /// and once more on another relay for a letter kept after the hold began (at a host's stop). A dead-letter send cut short by the
-/// pass's own time is not the topic's fault: the pass ends without holding it. An event row's broker failure ends the pass,
-/// unless its topic is held for a partition without a leader (ARV-264).
+/// pass's own time is not the topic's fault: the pass ends without holding it, and so does a failure of this host's own
+/// producer (<see cref="IOutboxTransport.IsProducerUnavailable"/>: a fatal client error, a message purged at it,
+/// <c>Local_Destroy</c>, disposed; ARV-246), which a hold would not cure. An event row's broker failure ends the pass, unless its
+/// topic is held for a partition without a leader (ARV-264).
+/// </para>
+/// <para>
+/// ARV-246: the relay passes again at once only after a full batch with a row sent and no failure (more rows wait); a pass that
+/// sent nothing, however full its batch (rows of an event type this build does not know, held back without a failure), waits
+/// <see cref="OutboxRelaySettings.PollMilliseconds"/> like any other, so an older leader does not run back-to-back
+/// transactions on rows it cannot send and keep the leader lock from the pods that can.
 /// </para>
 /// <para>
 /// ARV-245: a row the broker keeps refusing for <see cref="OutboxRelaySettings.BrokerStreakMinutes"/> without a break (a
@@ -235,7 +251,10 @@ public sealed class OutboxRelay(
             try
             {
                 var pass = await RunOnceAsync(stoppingToken);
-                if (pass.Leader && pass.Claimed >= settings.BatchSize && pass.Failed == 0)
+                // A full batch with no failure means more rows wait, unless none of it was sent (ARV-246): rows of an event type
+                // this build does not know (a rolling deploy's older leader) are held back without a failure, and passing again
+                // at once would only claim them again, holding the leader lock against the pods that know them.
+                if (pass.Leader && pass.Claimed >= settings.BatchSize && pass.Failed == 0 && pass.Sent > 0)
                     delay = TimeSpan.Zero;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -402,11 +421,15 @@ public sealed class OutboxRelay(
                 // A send cut short by the pass's own time is not its topic's fault: the pass ends, as for an event (ARV-175).
                 var passTimeUsed = e is OutboxPassTimeoutException && !shareBound;
                 deadLettersSpent |= e is OutboxPassTimeoutException && shareBound;
+                // ARV-246: this host's producer failing (a fatal client error, a message it purged at that error, Local_Destroy
+                // when it is retired, disposed) is not the topic's either: a dead letter's ends the pass as an event's does, and
+                // holds the topic for no relay.
+                var producersOwn = transport.IsProducerUnavailable(e);
                 // ARV-264: an event row timed out in the client while the brokers answer: a partition of its topic has no
                 // leader. Only that topic waits, so the other topics are not held behind it at every pass.
                 var partitionHeld = !passTimeUsed && !deadLetter && transport.IsPartitionUnavailable(e) && await BrokersAnswerAsync(ct);
-                ReportBrokerUnavailable(row, e, now, topicHeld: partitionHeld || (!passTimeUsed && deadLetter));
-                if (!passTimeUsed && await HoldTopicAsync(connection, transaction, row, heldTopics, ct))
+                ReportBrokerUnavailable(row, e, now, topicHeld: partitionHeld || (!passTimeUsed && !producersOwn && deadLetter));
+                if (!passTimeUsed && !producersOwn && await HoldTopicAsync(connection, transaction, row, heldTopics, ct))
                     continue;
                 if (partitionHeld)
                 {
@@ -450,10 +473,11 @@ public sealed class OutboxRelay(
                 // A row that cannot be read (unknown type, bad payload) only holds back its key. Anything else is the
                 // broker or the network (a send past the pass's time included, and a transport already disposed): the rest
                 // of the batch would fail the same way after the produce timeout, so the pass ends here and the remaining
-                // rows wait untouched for the next one; a dead letter's holds back only its topic (ARV-175).
+                // rows wait untouched for the next one; a dead letter's holds back only its topic (ARV-175), unless the failure is
+                // this host's producer's own (ARV-246: a disposed transport), which ends the pass and holds nothing.
                 if (e is not (InvalidOperationException or JsonException) || e is ObjectDisposedException)
                 {
-                    if (await HoldTopicAsync(connection, transaction, row, heldTopics, ct))
+                    if (!transport.IsProducerUnavailable(e) && await HoldTopicAsync(connection, transaction, row, heldTopics, ct))
                         continue;
                     heldBack += rows.Count - rows.IndexOf(row) - 1;
                     break;
