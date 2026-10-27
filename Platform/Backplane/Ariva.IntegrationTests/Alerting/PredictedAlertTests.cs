@@ -217,15 +217,112 @@ public sealed class PredictedAlertTests(PostgresFixture fixture) : IAsyncDisposa
         var warnings = Warnings.Of(rule.Code);
         warnings.Should().HaveCount(before + 1, "one warning for two ticks of the same values");
         warnings[^1].Should().Be($"Alert evaluation of site DMO rule {rule.Code}: not evaluated, it fails the rule checks of its border metric");
+        // ARV-190 (CWE-778): the first sighting is audited once, in the tick's own unit of work, with the alert it withdrew.
+        var audits = await NotEvaluatedAuditsAsync(rule.Id);
+        audits.Should().ContainSingle("one entry for two ticks of the same values");
+        audits[0].Name.Should().Be($"DMO:{rule.Code}");
+        audits[0].User.Should().Be(AlertEvaluation.SystemUserName);
+        Withdrawn(audits[0].After).Should().Be(1, "the open alert it withdrew");
+        using (var summary = System.Text.Json.JsonDocument.Parse(audits[0].After))
+        {
+            summary.RootElement.GetProperty("reason").GetString().Should().Be("it fails the rule checks of its border metric");
+            summary.RootElement.GetProperty("valuesHash").GetString().Should().NotBeNullOrEmpty();
+        }
 
         (await _host.ReadAsync<int>("UPDATE alert_rule SET threshold = 21 WHERE id = @id RETURNING 1", rule.Id)).Should().Be(1);
         (await TickAsync(start.AddMinutes(5).AddSeconds(5))).Failed.Should().Be(0);
         (await TickAsync(start.AddMinutes(6).AddSeconds(5))).Failed.Should().Be(0);
         Warnings.Of(rule.Code).Should().HaveCount(before + 2, "its values changed and it still fails the checks");
+        var reaudited = await NotEvaluatedAuditsAsync(rule.Id);
+        reaudited.Should().HaveCount(2, "audited again for the new values version");
+        Withdrawn(reaudited[1].After).Should().Be(0, "nothing left open to withdraw");
         (await AlertsOfAsync(rule.Id)).Should().ContainSingle("still not evaluated");
 
         (await _host.AsCallerAsync(c.Duty, s => Rules(s).GetAsync(rule.Id, Ct))).ErrorMessages.Should().Equal([TopologyErrors.NotFound],
             "even owned by the duty manager, a predicted rule is border data");
+    }
+
+    /// <summary>
+    /// ARV-190 (CWE-778): the audit entry and the withdrawal it records commit together, and the warning is recorded only once
+    /// that commit has succeeded. A planted trigger refusing the entry fails the rule's tick: its open alert stays open (the
+    /// withdrawal rolled back with the entry), no entry, no warning. The next tick, the trigger gone, withdraws, audits once
+    /// with the alert withdrawn and warns once, the failed tick having recorded nothing. Then each tick forgets the rules it did
+    /// not find enabled: the rule disabled for a tick and enabled again with the same values is warned and audited once more.
+    /// </summary>
+    [Fact]
+    public async Task Tick_Should_AuditTheWithdrawalInItsCommitAndWarnAgain_When_TheFirstCommitFails()
+    {
+        var c = await CaseAsync();
+        var start = new DateTime(2026, 9, 30, 18, 0, 0, DateTimeKind.Utc);
+        var rule = (await _host.AsCallerAsync(c.Border, s => Rules(s).CreateAsync(Predicted("Citizens wave ahead, a failed commit", "A-CIT"), Ct))).Data;
+        await PlantMinutesAsync("A-CIT", start, 8);
+        (await TickAsync(start.AddMinutes(1).AddSeconds(5))).Failed.Should().Be(0);
+        (await TickAsync(start.AddMinutes(2).AddSeconds(5))).Failed.Should().Be(0);
+        (await AlertsOfAsync(rule.Id)).Should().ContainSingle().Which.State.Should().Be("Raised", "evaluated while it belongs to the supervisor");
+        (await _host.ReadAsync<int>("UPDATE alert_rule SET owner_role = NULL WHERE id = @id RETURNING 1", rule.Id)).Should().Be(1);
+        var before = Warnings.Of(rule.Code).Count;
+
+        await _host.ReadAsync<object>("""
+            CREATE OR REPLACE FUNCTION it_audit_refused() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                IF NEW.action = 'AlertRule.NotEvaluated' THEN
+                    RAISE EXCEPTION 'planted failure';
+                END IF;
+                RETURN NEW;
+            END
+            $$;
+            CREATE TRIGGER it_audit_refused BEFORE INSERT ON audit_entry FOR EACH ROW EXECUTE FUNCTION it_audit_refused();
+            """);
+        AlertTickResult refused;
+        try
+        {
+            refused = await TickAsync(start.AddMinutes(3).AddSeconds(5));
+        }
+        finally
+        {
+            await _host.ReadAsync<object>("DROP TRIGGER IF EXISTS it_audit_refused ON audit_entry; DROP FUNCTION IF EXISTS it_audit_refused();");
+        }
+
+        refused.Failed.Should().Be(1, "the rule's unit of work failed on its audit entry");
+        (await AlertsOfAsync(rule.Id)).Should().ContainSingle().Which.State.Should().Be("Raised", "the withdrawal rolled back with its entry");
+        (await NotEvaluatedAuditsAsync(rule.Id)).Should().BeEmpty();
+        Warnings.Of(rule.Code).Should().HaveCount(before, "nothing is warned for a tick that did not commit");
+
+        var retried = await TickAsync(start.AddMinutes(4).AddSeconds(5));
+        retried.Failed.Should().Be(0);
+        (await AlertsOfAsync(rule.Id)).Should().ContainSingle().Which.State.Should().Be("Resolved", "withdrawn now");
+        var audits = await NotEvaluatedAuditsAsync(rule.Id);
+        audits.Should().ContainSingle("the failed tick recorded nothing, so this one audits");
+        Withdrawn(audits[0].After).Should().Be(1, "with the alert it withdrew");
+        Warnings.Of(rule.Code).Should().HaveCount(before + 1, "and warns once");
+        (await TickAsync(start.AddMinutes(5).AddSeconds(5))).Failed.Should().Be(0);
+        (await NotEvaluatedAuditsAsync(rule.Id)).Should().ContainSingle("the same values again");
+
+        (await _host.ReadAsync<int>("UPDATE alert_rule SET enabled = false WHERE id = @id RETURNING 1", rule.Id)).Should().Be(1);
+        (await TickAsync(start.AddMinutes(6).AddSeconds(5))).Failed.Should().Be(0);
+        (await _host.ReadAsync<int>("UPDATE alert_rule SET enabled = true WHERE id = @id RETURNING 1", rule.Id)).Should().Be(1);
+        (await TickAsync(start.AddMinutes(7).AddSeconds(5))).Failed.Should().Be(0);
+        var again = await NotEvaluatedAuditsAsync(rule.Id);
+        again.Should().HaveCount(2, "the tick that did not find it enabled forgot it, so its return is warned and audited");
+        Withdrawn(again[1].After).Should().Be(0, "nothing left open to withdraw");
+        Warnings.Of(rule.Code).Should().HaveCount(before + 2);
+    }
+
+    /// <summary>The number of alerts an <c>AlertRule.NotEvaluated</c> entry says it withdrew (ARV-190).</summary>
+    private static int Withdrawn(string after)
+    {
+        using var summary = System.Text.Json.JsonDocument.Parse(after);
+        return summary.RootElement.GetProperty("withdrawn").GetInt32();
+    }
+
+    /// <summary>The <c>AlertRule.NotEvaluated</c> audit entries of a rule, oldest first (ARV-190).</summary>
+    private async Task<List<(string Name, string User, string After)>> NotEvaluatedAuditsAsync(Guid ruleId)
+    {
+        var rows = await _host.ReadAsync<string>("""
+            SELECT string_agg(target_name || chr(31) || actor_name || chr(31) || after_summary, chr(30) ORDER BY occurred_on, id)
+            FROM audit_entry WHERE target_id = @id AND action = 'AlertRule.NotEvaluated'
+            """, ruleId);
+        return rows is null ? [] : [.. rows.Split('\u001e').Select(r => r.Split('\u001f')).Select(f => (f[0], f[1], f[2]))];
     }
 
     /// <summary>Plants an alert row as an older release or a hand in the database could have left it.</summary>

@@ -581,7 +581,7 @@
         "node scripts/verify.mjs docs passes"
       ],
       "priority": 44,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Memory is bounded by the number of rules (at most 500 per site) meanwhile.",
       "dependsOn": [
         "ARV-187"

@@ -109,6 +109,8 @@ public sealed class AlertEvaluation(IServiceScopeFactory scopes, AlertEvaluation
                 }
             }
 
+            // ARV-190: the warnings of rules deleted or disabled since are forgotten, as an evaluated rule's are.
+            lockScope.ServiceProvider.GetRequiredService<NotEvaluatedWarnings>().Keep(ruleIds);
             if (raised + cleared + withdrawn + escalated + failed > 0)
                 logger.LogInformation(
                     "Alert evaluation: {Raised} raised, {Cleared} cleared, {Withdrawn} withdrawn, {Escalated} escalated, {Failed} failed over {Targets} targets of {Rules} rules",
@@ -431,7 +433,8 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
     /// withdrawn with the rule (lead decision P4: left open, housekeeping would escalate them) and its targets' states
     /// dropped, so it starts at the present once it is repaired. One warning per rule and values version in this host
     /// (lead decision P3, <see cref="NotEvaluatedWarnings"/>) names the site, the rule code and a fixed reason only
-    /// (CWE-117: no value of the rule is logged).
+    /// (CWE-117: no value of the rule is logged), and since ARV-190 one <c>AlertRule.NotEvaluated</c> audit entry in the same
+    /// unit of work names them with the values version and the number of alerts withdrawn, the warning logged after the commit.
     /// </summary>
     private async Task<AlertRuleTickResult> NotEvaluatedAsync(Guid ruleId, AlertRule rule, DateTime now, string reason, CancellationToken ct)
     {
@@ -449,8 +452,22 @@ internal sealed class AlertRuleTick(IUnitOfWork unitOfWork, ICurrentUser current
         foreach (var state in await Storage.Query<AlertRuleState>().Where(s => s.RuleId == ruleId).ToListAsync(ct))
             await Storage.DeleteAsync(state, ct);
         await Storage.FlushAsync(ct);
-        if (warnings.ShouldWarn(ruleId, rule.ValuesHash()))
-            logger.LogWarning("Alert evaluation of site {Site} rule {Rule}: not evaluated, {Reason}", rule.SiteCode, rule.Code, reason);
+        var version = rule.ValuesHash();
+        if (warnings.ShouldWarn(ruleId, version))
+        {
+            // ARV-190 (CWE-778): the first sighting per values version is audited in this unit of work, with the number of alerts it
+            // withdrew (as JSON, so no value reads as another field); the version is recorded and the warning logged once the
+            // commit has succeeded, so a failed commit warns and audits again at the next tick.
+            await audit.RecordAsync("AlertRule.NotEvaluated", "AlertRule", ruleId, $"{rule.SiteCode}:{rule.Code}", null,
+                System.Text.Json.JsonSerializer.Serialize(new { valuesHash = version, reason, withdrawn, by = "evaluation" }), ct);
+            unitOfWork.RegisterPostCommitAction(() =>
+            {
+                warnings.Warned(ruleId, version);
+                logger.LogWarning("Alert evaluation of site {Site} rule {Rule}: not evaluated, {Reason}", rule.SiteCode, rule.Code, reason);
+                return Task.CompletedTask;
+            });
+        }
+
         Announce(now);
         unitOfWork.PromiseToCommit();
         return new AlertRuleTickResult(0, 0, 0, withdrawn);
