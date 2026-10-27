@@ -374,7 +374,11 @@ public sealed class BoundedProduceTests
         message.Key.Should().Be("zone-7");
         message.Value.Should().Equal(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes((CatalogProbe)probe, EventCatalog.Json),
             "the value is the runtime type's JSON, as JsonValueSerializer<T> wrote it");
-        message.Headers.Select(h => (h.Key, System.Text.Encoding.UTF8.GetString(h.GetValueBytes()))).Should().Equal(
+        // A send span, and with it MT-Activity-Id before MessageId, exists only while something in the process listens to
+        // Ariva.Kafka: every host's tracing does, and other test classes' hosts run beside this one (a gate run met one), so that
+        // header is left out here; the traced send is Produce_Should_CarryTheSendSpanAndLeaveTheCallersSpan_When_Traced's.
+        message.Headers.Where(h => h.Key != KafkaProduce.ActivityIdHeader)
+            .Select(h => (h.Key, System.Text.Encoding.UTF8.GetString(h.GetValueBytes()))).Should().Equal(
             (OutboxHeaders.EventType, nameof(CatalogProbe)),
             (OutboxHeaders.EventVersion, "1"),
             (OutboxHeaders.CorrelationId, "corr-7"),
