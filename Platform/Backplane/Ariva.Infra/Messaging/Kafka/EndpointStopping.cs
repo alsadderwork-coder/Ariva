@@ -112,6 +112,9 @@ public sealed class KafkaEndpoints
         _endpoints.Enqueue(endpoint);
     }
 
+    /// <summary>Whether every endpoint added here has begun to stop: what a test waits on instead of a fixed delay (ARV-255).</summary>
+    internal bool AllStopping => !_endpoints.IsEmpty && _endpoints.All(e => e.IsStopping);
+
     /// <summary>
     /// Stops every endpoint that has not begun to stop, within <see cref="StopTimeout"/> and <paramref name="ct"/>;
     /// returns how many it stopped and whether all of them ended in time.

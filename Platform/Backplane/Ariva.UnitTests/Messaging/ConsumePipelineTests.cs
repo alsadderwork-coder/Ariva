@@ -57,6 +57,8 @@ public sealed class ConsumePipelineTests
             services.AddSingleton(store);
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton<IDeadLetterSink>(ledger);
+        // ARV-255: collects the endpoint's own EndpointStopping, so a test can wait until it has seen the stop.
+        services.AddSingleton<KafkaEndpoints>();
         services.AddScoped<FakeUnitOfWork>();
         services.AddScoped<IUnitOfWork>(s => s.GetRequiredService<FakeUnitOfWork>());
         services.AddScoped<IInbox, FakeInbox>();
@@ -74,6 +76,14 @@ public sealed class ConsumePipelineTests
         var harness = provider.GetRequiredService<ITestHarness>();
         await harness.Start();
         return (provider, harness, ledger);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var until = DateTime.UtcNow.AddSeconds(10);
+        while (!condition() && DateTime.UtcNow < until)
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        condition().Should().BeTrue("the condition held within 10 seconds");
     }
 
     private static async Task SettleAsync(ITestHarness harness, Func<bool> done)
@@ -377,15 +387,14 @@ public sealed class ConsumePipelineTests
         await using var _ = provider;
         var receive = new ReceiveOutcome();
         harness.Bus.ConnectReceiveObserver(receive);
-        var stopping = new StoppingSeen();
-        harness.Bus.ConnectReceiveEndpointObserver(stopping);
+        var endpoints = provider.GetRequiredService<KafkaEndpoints>();
         var probe = new PipelineProbe { AfterGate = afterGate };
 
         await harness.Bus.Publish(probe, TestContext.Current.CancellationToken);
         await ledger.Started.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         var stop = provider.GetRequiredService<IBusControl>().StopAsync(TestContext.Current.CancellationToken);
-        await stopping.Seen.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
-        await Task.Delay(100, TestContext.Current.CancellationToken); // the endpoint's own EndpointStopping has seen it as well
+        // ARV-255: until the endpoint's own EndpointStopping, the one its filters read, has seen the stop (no fixed delay).
+        await WaitUntilAsync(() => endpoints.AllStopping);
         ledger.Gate.TrySetResult();
 
         var outcome = await receive.Ended.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
@@ -477,24 +486,6 @@ public sealed class ConsumePipelineTests
             errors.Insert(disposedLast ? 0 : count, new ObjectDisposedException("x"));
             return new AggregateException(errors);
         }
-    }
-
-    /// <summary>The moment the probe's endpoint begins to stop.</summary>
-    private sealed class StoppingSeen : IReceiveEndpointObserver
-    {
-        public TaskCompletionSource Seen { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public Task Ready(ReceiveEndpointReady ready) => Task.CompletedTask;
-
-        public Task Stopping(ReceiveEndpointStopping stopping)
-        {
-            Seen.TrySetResult();
-            return Task.CompletedTask;
-        }
-
-        public Task Completed(ReceiveEndpointCompleted completed) => Task.CompletedTask;
-
-        public Task Faulted(ReceiveEndpointFaulted faulted) => Task.CompletedTask;
     }
 
     /// <summary>The outbox for dead letters, in memory.</summary>

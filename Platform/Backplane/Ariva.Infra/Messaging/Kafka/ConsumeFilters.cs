@@ -114,7 +114,11 @@ public sealed class DeadLetterFilter(int retryLimit, IDeadLetterSink sink, TimeP
     /// <summary>
     /// ARV-177a: whether a failure is the stop's rather than the message's: the message's own token is cancelled, or its
     /// endpoint is stopping and the failure comes from a disposed service (the host's container, a connection or a session
-    /// it held).
+    /// it held). A cancelled token means the consumer is stopping (ARV-255): MassTransit 8.5.11 cancels a Kafka receive
+    /// context only in <c>ConsumerAgent.CancelPendingConsumers</c>, on any stop of its consumer agent (the bus's stop, a
+    /// restart after a broker error, a sibling consumer's stop, Ariva's stop of a skipped endpoint), and never on a revoke
+    /// or a lost partition, which close only that partition's checkpointer (ADR-0018, note of 2026-10-26 on ARV-255;
+    /// RevokedInHandTests). So nothing later of the partition completes in that consumer, and the record is left for the next.
     /// </summary>
     internal bool IsTheStops(ConsumeContext context, Exception error) =>
         context.CancellationToken.IsCancellationRequested || (stopping is { IsStopping: true } && IsDisposal(error));
