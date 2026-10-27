@@ -64,6 +64,7 @@
     "0061_display_advertising_pause.sql": "19947de2d034f51b0596e0f33aaf48eaf4a1e6e8dc977478fca90cbd30c2b870",
     "0062_advertising_play.sql": "c861acb3b177ff91fe06a4b075b44572f216416af9ced954babaff7a976c53e2",
     "0063_runtime_statement_timeout.sql": "f246fb38516fcba60bdb300d01d95566e76907fd935775744489e165183b97d1",
-    "0064_database_environment.sql": "dd5bb77768498e7c4ff01fcdd791425a4b4bf6198ab2597e2df3731e63de1292"
+    "0064_database_environment.sql": "dd5bb77768498e7c4ff01fcdd791425a4b4bf6198ab2597e2df3731e63de1292",
+    "0065_desk_feed_heartbeat.sql": "9f18676a2c0d370a94cfcfd1cdf22da4671ee395a33e1234480d1728187b535f"
   }
 }

@@ -503,7 +503,11 @@ monitoring:
     # cert-manager is not scraped). namespaceLabel is the label that carries the certificate's namespace in SigNoz:
     # namespace as cert-manager exports it, or exported_namespace when the scrape adds a namespace label of its own.
     ingressCertificateExpiry: { enabled: true, warningDays: 30, criticalDays: 7, namespaces: [], namespaceLabel: namespace }
-    # No AMAN record other than refused ones for T_stale (2 minutes). Border deployments only: turn it on there.
+    # A border site's AMAN feed unheard for T_stale (2 minutes), per site (ariva.border.feed_age_seconds, ARV-257), or no
+    # feed age reported at all. Border deployments only: turn it on there. Keep minutes times 60 above 60 s plus AMAN's
+    # delivery interval (the pull transport's poll, 30 s at least; about none over Kafka or REST) plus twice
+    # Border:DeskFeed:PollSeconds (30 s by default): 2 suits Kafka and REST, 3 the pull transport (wiki 10, 3.1). The chart
+    # refuses less than 2.
     amanFeedStale: { enabled: false, minutes: 2, severity: critical }
     # The share of monitored devices Offline above share for the whole window.
     devicesOffline: { enabled: true, minutes: 5, share: 0.2, severity: warning }

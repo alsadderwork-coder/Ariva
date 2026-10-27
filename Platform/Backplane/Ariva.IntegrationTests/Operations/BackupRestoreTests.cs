@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.InputModels;
@@ -45,7 +46,7 @@ namespace Ariva.IntegrationTests.Operations;
 /// migration login given replication). The operator wrapper's signed path (the manifest's signature, the private copy and
 /// every refusal before kubectl) is proven by <c>node scripts/ops/ariva-ops.mjs --self-test</c>.
 /// </summary>
-public sealed class BackupRestoreTests : IAsyncLifetime
+public sealed partial class BackupRestoreTests : IAsyncLifetime
 {
     private const string RuntimeLogin = "ariva_app";
     private const string AdminUserName = "it.restore.admin";
@@ -368,10 +369,13 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         (await ScalarAsync<long>(owner, Query.StreamOffsets)).Should().Be(0);
     }
 
-    /// <summary>The start check is on: a database that lacks a shipped script stops a host at its start.</summary>
+    /// <summary>
+    /// The start check is on: a database that lacks shipped scripts (here every one from the script ariva-db.sh check compares
+    /// the runtime role's privileges from, <see cref="PrivilegesAt"/>) stops a host at its start.
+    /// </summary>
     private async Task AssertHostsVerifySchemaVersionAsync()
     {
-        await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.ForgetLatestScript);
+        await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.ForgetScriptsFromPrivilegesAt);
         await using var main = new DeployedHost<Ariva.Api.Main._IAssemblyMark>(HostSettings(_target, RestoredRuntimePassword));
         var start = () => main.Services;
         start.Should().Throw<SchemaBehindException>();
@@ -433,10 +437,11 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         check.Stdout.Should().Contain("FAIL  system functions|reverse differ from template1's");
         check.Stdout.Should().Contain("FAIL  replication|publication it_pub, subscription it_sub");
         // ARV-189: a lost revoke (report_delivery's table-wide UPDATE back, which script 0054 takes to four columns) and a grant on
-        // a chunk, which reaches the append-only sensing events by the chunk's name. The database lacks its latest script here
-        // (AssertHostsVerifySchemaVersionAsync forgot it), so the runtime role's privileges and the views are not compared until
-        // the script is recorded again, and a plain check fails on that (only restore's own check, whose migration job follows,
-        // passes it); what lies outside public is checked either way.
+        // a chunk, which reaches the append-only sensing events by the chunk's name. Here the database lacks every script from the
+        // one the privilege list is taken at (AssertHostsVerifySchemaVersionAsync forgot them; ARV-257: a later script may change no
+        // privilege, so forgetting the latest alone is not enough), so the runtime role's privileges and the views are not compared
+        // until the scripts are recorded again, and a plain check fails on that (only restore's own check, whose migration job
+        // follows, passes it); what lies outside public is checked either way.
         check.Stdout.Should().Contain("FAIL  runtime privileges|not compared: the database is at ", check.Stdout)
             .And.Contain("FAIL  views|not compared: the database is behind the list");
         Line(check, "FAIL  internal privileges|").Should().Contain("_timescaledb_internal._hyper_")
@@ -467,7 +472,7 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         Line(check, "FAIL  runtime grants|").Should().Contain($"public.integration_call to {RuntimeLogin}")
             .And.Contain("public.audit_entry to ariva_runtime with grant option").And.Contain("public.site to PUBLIC");
         Line(check, "FAIL  runtime role|may create objects: ").Should().Contain("ariva_runtime in the database").And.Contain("ariva_app in schema it_side");
-        await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.RememberLatestScript);
+        await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.RememberForgottenScripts);
         var compared = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         compared.Stdout.Should().Contain("FAIL  runtime privileges|", compared.Stdout);
         Line(compared, "FAIL  runtime privileges|").Should().Contain(
@@ -604,8 +609,8 @@ public sealed class BackupRestoreTests : IAsyncLifetime
         UnsentSeqs,
         NewestCompacted,
         StreamOffsets,
-        ForgetLatestScript,
-        RememberLatestScript,
+        ForgetScriptsFromPrivilegesAt,
+        RememberForgottenScripts,
         PlantAsMigrationLogin,
         PlantAsSuperuser,
         AlterSystem,
@@ -665,9 +670,9 @@ public sealed class BackupRestoreTests : IAsyncLifetime
                  ORDER BY topic, message_key, seq DESC) newest
             """,
         Query.StreamOffsets => "SELECT count(*) FROM stream_offset",
-        Query.ForgetLatestScript => "DELETE FROM schema_version WHERE script_name = (SELECT max(script_name) FROM schema_version)",
-        // The latest shipped script recorded again as the runner records it (its name and checksum are bound below).
-        Query.RememberLatestScript => "INSERT INTO schema_version (script_name, checksum, execution_ms) VALUES (@name, @checksum, 0)",
+        Query.ForgetScriptsFromPrivilegesAt => "DELETE FROM schema_version WHERE script_name COLLATE \"C\" >= @at COLLATE \"C\"",
+        // Each script forgotten above recorded again as the runner records it (its name and checksum are bound below).
+        Query.RememberForgottenScripts => "INSERT INTO schema_version (script_name, checksum, execution_ms) VALUES (@name, @checksum, 0)",
         Query.PlantAsMigrationLogin => """
             CREATE FUNCTION public.it_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
             GRANT EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) TO PUBLIC;
@@ -805,15 +810,41 @@ public sealed class BackupRestoreTests : IAsyncLifetime
 #pragma warning disable CA2100 // every command text is a literal from Sql(Query) above
         await using var command = new NpgsqlCommand(sql, connection);
 #pragma warning restore CA2100
-        if (query == Query.RememberLatestScript)
+        if (query == Query.ForgetScriptsFromPrivilegesAt)
+            command.Parameters.AddWithValue("at", PrivilegesAt);
+        if (query != Query.RememberForgottenScripts)
         {
-            var latest = SqlScriptCatalog.Embedded()[^1];
-            command.Parameters.AddWithValue("name", latest.Name);
-            command.Parameters.AddWithValue("checksum", latest.Checksum);
+            await command.ExecuteNonQueryAsync(Ct);
+            return;
         }
 
-        await command.ExecuteNonQueryAsync(Ct);
+        // The scripts forgotten above, each with its shipped checksum.
+        foreach (var script in SqlScriptCatalog.Embedded().Where(script => string.CompareOrdinal(script.Name, PrivilegesAt) >= 0))
+        {
+            command.Parameters.Clear();
+            command.Parameters.AddWithValue("name", script.Name);
+            command.Parameters.AddWithValue("checksum", script.Checksum);
+            await command.ExecuteNonQueryAsync(Ct);
+        }
     }
+
+    /// <summary>
+    /// The script ariva-db.sh check compares the runtime role's privileges and the views of public from
+    /// (<c>ARIVA_RUNTIME_PRIVILEGES_AT</c>): the last script that changes them, which a later script that changes neither leaves
+    /// behind the latest (ARV-257).
+    /// </summary>
+    private static string PrivilegesAt
+    {
+        get
+        {
+            var at = PrivilegesAtLine().Match(File.ReadAllText(Ariva.UnitTests.Setup.RepositoryPaths.Resolve("scripts/ops/ariva-db.sh")));
+            at.Success.Should().BeTrue("ariva-db.sh names the script its privilege list is taken at");
+            return at.Groups["script"].Value;
+        }
+    }
+
+    [GeneratedRegex(@"^readonly ARIVA_RUNTIME_PRIVILEGES_AT=""(?<script>[0-9]{4}_[a-z0-9_]+\.sql)""$", RegexOptions.Multiline)]
+    private static partial Regex PrivilegesAtLine();
 
     #endregion
 }

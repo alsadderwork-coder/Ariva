@@ -1,7 +1,7 @@
 {
   "alert": "AMAN feed stopped (${environment})",
   "alertType": "METRIC_BASED_ALERT",
-  "description": "No AMAN record applied or unchanged for T_stale: border desk states and service rates go stale (ARV-125b; border deployments).",
+  "description": "A border site's AMAN feed unheard for T_stale (the heartbeat the desk feed stores per site, ARV-257): its desk states and service rates go stale. Also fires, naming no site, when no Stream replica reports any site's feed age (border deployments; ARV-125b).",
   "ruleType": "threshold_rule",
   "version": "v5",
   "schemaVersion": "v2alpha1",
@@ -18,18 +18,25 @@
             "stepInterval": 60,
             "aggregations": [
               {
-                "metricName": "ariva.border.feed.records",
-                "timeAggregation": "increase",
-                "spaceAggregation": "sum"
+                "metricName": "ariva.border.feed_age_seconds",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
               }
             ],
             "filter": {
-              "expression": "deployment.environment = '${environment}' AND outcome != 'refused'"
+              "expression": "deployment.environment = '${environment}'"
             },
-            "groupBy": []
+            "groupBy": [
+              {
+                "name": "site",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ]
           }
         }
-      ]
+      ],
+      "unit": "s"
     },
     "alertOnAbsent": true,
     "absentFor": "${amanFeedStale.minutes}",
@@ -39,9 +46,9 @@
       "spec": [
         {
           "name": "${amanFeedStale.severity}",
-          "op": "below_or_equal",
-          "matchType": "in_total",
-          "target": 0,
+          "op": "above",
+          "matchType": "last",
+          "target": "${amanFeedStale.seconds}",
           "channels": "${channels}"
         }
       ]
@@ -55,7 +62,9 @@
     }
   },
   "notificationSettings": {
-    "groupBy": [],
+    "groupBy": [
+      "site"
+    ],
     "renotify": {
       "enabled": true,
       "interval": "4h",
@@ -73,8 +82,8 @@
     "severity": "${amanFeedStale.severity}"
   },
   "annotations": {
-    "summary": "AMAN feed stopped",
-    "description": "No AMAN record other than refused ones has arrived for ${amanFeedStale.minutes} minutes.",
+    "summary": "AMAN feed stopped at site {{$site}} (no site named: no Stream replica reports the feed age)",
+    "description": "The AMAN feed of site {{$site}} has not been heard for {{$value}} seconds, more than ${amanFeedStale.minutes} minutes. With no site named, no Stream replica has reported any site's feed age for ${amanFeedStale.minutes} minutes: Stream down, its desk feed off, or the database out of its reach.",
     "runbook": "wiki/10-Operations-Runbook.md#44-aman-feed-stopped-border-deployments"
   },
   "disabled": false

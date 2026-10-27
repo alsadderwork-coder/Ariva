@@ -203,7 +203,11 @@ public sealed partial class ImmigrationIntakeTests
         // XS4 has no AMAN desk at all: it is one of the sites the feed reads, for its sensor-only counter. (The test reads its
         // own sites only: DMO's and XS2's feed states are shared with the other tests of this database. XS2 exists only once
         // the arrival wave tests have built their probe site, so it is not expected here: the order of tests is not fixed.)
-        (await feed.SitesAsync(Ct)).Should().Contain(["DMO", "XS3", "XS4"]);
+        var sites = await feed.SitesAsync(Ct);
+        sites.Select(s => s.Code).Should().Contain(["DMO", "XS3", "XS4"]);
+        // ARV-257: XS4 has no AMAN desk code mapping, so no AMAN feed to watch, and AMAN is never heard there.
+        sites.Should().Contain(new Ariva.Infra.Border.DeskFeedSite("XS4", false, null));
+        sites.Single(s => s.Code == "DMO").Aman.Should().BeTrue();
         _host.Clock.Advance(t0.AddMinutes(20).AddSeconds(5) - Now);
         (await feed.SiteAsync("XS4", Ct)).Should().BeTrue();
         await WriteReadingsAsync(Now, ("XS4", "XS4/CI/C01", DeskSource.StaffZone, t0.AddMinutes(20), 1));

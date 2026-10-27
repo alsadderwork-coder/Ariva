@@ -74,6 +74,7 @@ public sealed partial class MetricTagTests
             var border = (BorderMetrics)m;
             border.Record("desk-interval-stats", "kafka", "applied");
             border.Unmapped(Site);
+            border.ObserveFeedAges(() => [(Site, 30.0)]);
         },
         [typeof(FlightMetrics)] = m =>
         {

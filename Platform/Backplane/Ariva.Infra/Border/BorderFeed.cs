@@ -24,12 +24,17 @@ public sealed record BorderFeedSettings
 
 /// <summary>
 /// The immigration feed's metrics (meter Ariva.Border): records by contract, transport and outcome, and records of
-/// unmapped codes per site. Exported since ARV-125a; the AMAN feed alert (ARV-125b) watches <c>ariva.border.feed.records</c>
-/// whose outcome is not refused.
+/// unmapped codes per site. Exported since ARV-125a. Since ARV-257 also <see cref="FeedAgeName"/>, the seconds since each
+/// border site's AMAN feed was last heard (<see cref="AmanFeedAges"/>), tagged with the site only, which the AMAN feed alert
+/// reads per site (before, it watched <c>ariva.border.feed.records</c>, which names no site, so one site's feed could stop
+/// unnoticed while another's flowed).
 /// </summary>
 public sealed class BorderMetrics : IDisposable
 {
     public const string MeterName = "Ariva.Border";
+
+    public const string FeedAgeName = "ariva.border.feed_age_seconds";
+
     private readonly Meter _meter;
     private readonly Counter<long> _records;
     private readonly Counter<long> _unmapped;
@@ -48,6 +53,19 @@ public sealed class BorderMetrics : IDisposable
         _records.Add(1, new("contract", contract), new("feed_kind", feedKind), new("outcome", outcome));
 
     public void Unmapped(string site) => _unmapped.Add(1, new KeyValuePair<string, object>("site", site));
+
+    /// <summary>
+    /// Observes the AMAN feed's age per border site (ARV-257): <paramref name="ages"/> gives each site this host reports and
+    /// the seconds since its feed was last heard, read when the gauge is collected. Called once, by <see cref="AmanFeedAges"/>.
+    /// </summary>
+    public void ObserveFeedAges(Func<IEnumerable<(string Site, double Seconds)>> ages)
+    {
+        ArgumentNullException.ThrowIfNull(ages);
+        _meter.CreateObservableGauge(FeedAgeName,
+            () => ages().Select(a => new Measurement<double>(a.Seconds, new KeyValuePair<string, object>("site", a.Site))),
+            unit: "s",
+            description: "Seconds since the border site's AMAN feed was last heard (the desk feed's heartbeat), reported by the Stream replica that read the site lately");
+    }
 
     public void Dispose() => _meter.Dispose();
 }

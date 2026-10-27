@@ -104,6 +104,12 @@ public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeed
 }
 
 /// <summary>
+/// A site the desk feed reads (<see cref="DeskFeed.SitesAsync"/>): its code, whether it has AMAN desk code mappings (e-gates
+/// included), and the heartbeat the feed stores for it (ARV-257, script 0065; null until AMAN is heard there).
+/// </summary>
+public sealed record DeskFeedSite(string Code, bool Aman, DateTime? HeartbeatUtc);
+
+/// <summary>
 /// The desk feed of Ariva.Api.Stream (ARV-049): for each site with AMAN desk code mappings, AMAN's stored records
 /// (ARV-048, read by receipt time from <see cref="AmanFeedCursor"/>) become desk state signals at their F10 rank
 /// (<see cref="AmanDeskFeed"/>) for the site's <see cref="DeskStateEngine"/> (one per site, AMAN desks with a session and
@@ -121,11 +127,13 @@ public sealed record DeskFeedState(int Version, DeskEngineState Engine, AmanFeed
 /// matches them) from AMAN's intervals of the last <see cref="DeskFeedSettings.RhythmWindowMinutes"/>, and the people in
 /// those zones from their latest live minute (<c>queue_minute</c>), so its state follows the transaction rhythm.
 /// Each site is one transaction holding a per-site advisory lock (class 49), so replicas share the sites and none is read
-/// twice; both engines' snapshots, the read positions and the heartbeat are saved with the rows.
+/// twice; both engines' snapshots, the read positions and the heartbeat are saved with the rows. Since ARV-257 the heartbeat
+/// is also kept in its own column (script 0065), and each read starts by listing the sites with it, for each site's AMAN feed
+/// age (<see cref="AmanFeedAges"/>).
 /// Keys are site, checkpoint and desk code (<see cref="AmanDeskFeed.Key"/>). Parameterised SQL only.
 /// </summary>
 public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvider, DeskFeedSettings settings, ILogger<DeskFeed> logger,
-    StreamSettings stream = null)
+    StreamSettings stream = null, AmanFeedAges ages = null)
 {
     /// <summary>A saved state larger than this is refused (CWE-120).</summary>
     public const int MaxStateBytes = 64 * 1024 * 1024;
@@ -227,7 +235,7 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
     {
         var sites = await SitesAsync(ct);
         var read = 0;
-        foreach (var site in sites)
+        foreach (var site in sites.Select(s => s.Code))
         {
             try
             {
@@ -250,21 +258,29 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
     }
 
     /// <summary>
-    /// The sites the feed reads: those with AMAN desk code mappings, and (ARV-116) those whose published zone profile has a
-    /// staff or service zone naming a desk that is not an e-gate.
+    /// The sites the feed reads: those with AMAN desk code mappings (e-gates included), and (ARV-116) those whose published
+    /// zone profile has a staff or service zone naming a desk that is not an e-gate; each with whether it has AMAN desk code
+    /// mappings and its stored heartbeat (ARV-257, script 0065). The sites with AMAN mappings and their heartbeats are noted
+    /// for the AMAN feed age gauge (<see cref="AmanFeedAges"/>), as of now.
     /// </summary>
-    public async Task<IReadOnlyList<string>> SitesAsync(CancellationToken ct)
+    public async Task<IReadOnlyList<DeskFeedSite>> SitesAsync(CancellationToken ct)
     {
+        var listedUtc = timeProvider.GetUtcNow().UtcDateTime;
         await using var connection = await OpenAsync(ct);
-        return await ReadAsync(connection, null, """
-            SELECT m.site_code FROM desk_code_mapping m JOIN desk d ON d.id = m.desk_id AND d.site_code = m.site_code
-             WHERE m.system = 'Aman' AND m.deleted_on IS NULL AND d.deleted_on IS NULL
-            UNION
-            SELECT p.site_code FROM zone_profile p JOIN zone z ON z.profile_id = p.id
-              JOIN desk d ON d.id = z.desk_id AND d.site_code = p.site_code AND d.deleted_on IS NULL AND d.kind <> 'EGate'
-             WHERE p.status = 'Published' AND z.kind IN ('Staff', 'Service')
-            ORDER BY 1
-            """, [], r => r.GetString(0), ct);
+        var sites = await ReadAsync(connection, null, """
+            SELECT s.site_code, bool_or(s.aman), max(f.heartbeat_utc)
+              FROM (SELECT m.site_code, true AS aman FROM desk_code_mapping m JOIN desk d ON d.id = m.desk_id AND d.site_code = m.site_code
+                     WHERE m.system = 'Aman' AND m.deleted_on IS NULL AND d.deleted_on IS NULL
+                    UNION ALL
+                    SELECT p.site_code, false FROM zone_profile p JOIN zone z ON z.profile_id = p.id
+                      JOIN desk d ON d.id = z.desk_id AND d.site_code = p.site_code AND d.deleted_on IS NULL AND d.kind <> 'EGate'
+                     WHERE p.status = 'Published' AND z.kind IN ('Staff', 'Service')) s
+              LEFT JOIN desk_feed_state f ON f.site_code = s.site_code
+             GROUP BY s.site_code
+             ORDER BY 1
+            """, [], r => new DeskFeedSite(r.GetString(0), r.GetBoolean(1), r.IsDBNull(2) ? null : DateTime.SpecifyKind(r.GetDateTime(2), DateTimeKind.Utc)), ct);
+        ages?.Listed(sites.Where(s => s.Aman).Select(s => (s.Code, s.HeartbeatUtc)), listedUtc);
+        return sites;
     }
 
     /// <summary>Reads one site's new records into its engine and minutes; false when another replica holds the site.</summary>
@@ -472,13 +488,19 @@ public sealed class DeskFeed(DatabaseSettings database, TimeProvider timeProvide
         }
 
         await using (var upsert = new NpgsqlCommand("""
-            INSERT INTO desk_feed_state (site_code, state, updated_on) VALUES (@site, CAST(@state AS jsonb), @now)
-            ON CONFLICT (site_code) DO UPDATE SET state = EXCLUDED.state, updated_on = EXCLUDED.updated_on
+            INSERT INTO desk_feed_state (site_code, state, updated_on, heartbeat_utc) VALUES (@site, CAST(@state AS jsonb), @now, @heartbeat)
+            ON CONFLICT (site_code) DO UPDATE SET state = EXCLUDED.state, updated_on = EXCLUDED.updated_on,
+                heartbeat_utc = LEAST(GREATEST(EXCLUDED.heartbeat_utc, desk_feed_state.heartbeat_utc), date_trunc('minute', @now))
             """, connection, transaction))
         {
             upsert.Parameters.Add(new NpgsqlParameter("site", siteCode));
             upsert.Parameters.Add(new NpgsqlParameter("state", json));
             upsert.Parameters.Add(new NpgsqlParameter("now", NpgsqlDbType.TimestampTz) { Value = now });
+            // ARV-257: the heartbeat in its own column too (script 0065), for the AMAN feed age every replica lists. It never moves
+            // back (GREATEST ignores a read that brings none, and one that brings an older minute: a refused state rereads its
+            // overlap), and never stays ahead of the writer's minute (LEAST, as Step clamps the state's): a pod whose clock ran ahead
+            // cannot hide a stalled feed once a pod with the right time reads the site.
+            upsert.Parameters.Add(new NpgsqlParameter("heartbeat", NpgsqlDbType.TimestampTz) { Value = step.HeartbeatUtc is { } heartbeat ? heartbeat : DBNull.Value });
             await upsert.ExecuteNonQueryAsync(ct);
         }
 

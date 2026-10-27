@@ -1397,7 +1397,7 @@
       "title": "[E17] A per-site AMAN feed age gauge, before a second border site",
       "description": "From ARV-179 (2026-10-26; the ARV-125a engineer's finding 3). The AMAN feed alert watches ariva.border.feed.records, which has no site tag, so with several border sites a feed that stops at one site while another's flows raises no alert (wiki 10 section 2a, known gaps). One border site (the pilot) is not affected. A per-site gauge of the AMAN feed's age, from the desk feed's heartbeat (DeskFeedState.HeartbeatUtc, read per site by Ariva.Api.Stream's DeskFeed), with no desk or officer data, lets the alert name the site. CWEs to review: CWE-400, CWE-532.",
       "acceptanceCriteria": [
-        "A gauge of the seconds since each border site's AMAN feed was last heard (the desk feed's heartbeat), tagged with the site only, reported by the replica that read the site lately (bounded by the configured border sites), with MetricTagTests and MeterExportTests covering it",
+        "A gauge of the seconds since each border site's AMAN feed was last heard (the desk feed's heartbeat), tagged with the site only, reported by each Stream replica that listed the sites lately from the heartbeat the desk feed stores per site (bounded by the configured border sites; amended by the round 1 review: a read cut at its run timeout, a failing read and a restart must not silence a site), with MetricTagTests and MeterExportTests covering it",
         "The AMAN feed alert rule (section 3.1) reads it per site, with its chart render test; wiki 10 sections 2a, 3.1 and 4.4 updated, and the known gap removed",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
@@ -1406,7 +1406,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3; needed before a second border site goes live. Split from ARV-179, whose criterion allowed the residual stated in wiki 10 section 2a.",
       "dependsOn": [
         "ARV-179"

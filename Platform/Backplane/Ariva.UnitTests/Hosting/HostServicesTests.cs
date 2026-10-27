@@ -106,6 +106,22 @@ public sealed class HostServicesTests
     }
 
     [Fact]
+    public async Task Stream_Should_ReportEachSitesAmanFeedAgeOnTheBorderMeter_When_ItBuildsTheFeed()
+    {
+        // ARV-257: the desk feed takes its optional feed ages from the container, so they must be registered there (else the feed
+        // is built without them and no site's age is ever reported), once, on the host's Ariva.Border meter.
+        await using var app = ArivaHosts.Create(ArivaHosts.Stream);
+        var ages = app.Services.GetService<Ariva.Infra.Border.AmanFeedAges>();
+        using var reader = new InstrumentReader(app.Services.GetRequiredService<Ariva.Infra.Border.BorderMetrics>().Meter);
+
+        ages.Should().NotBeNull("the desk feed's ages are registered with it (AddArivaDeskFeed)");
+        app.Services.GetRequiredService<Ariva.Infra.Border.DeskFeed>().Should().NotBeNull();
+        var now = app.Services.GetRequiredService<TimeProvider>().GetUtcNow().UtcDateTime;
+        ages.Listed([("XS1", now.AddMinutes(-4))], now);
+        reader.Observe(Ariva.Infra.Border.BorderMetrics.FeedAgeName).Should().ContainSingle().Which.Value.Should().Be(240);
+    }
+
+    [Fact]
     public async Task Ingest_Should_ResolveTheDeviceGateway_When_ADeviceAuthenticates()
     {
         await using var app = ArivaHosts.Create(ArivaHosts.Ingest);

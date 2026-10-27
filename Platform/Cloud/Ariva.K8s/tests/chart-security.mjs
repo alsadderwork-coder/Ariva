@@ -1565,6 +1565,8 @@ for (const [label, file, sets, message, annotation] of [
 	['a consumer hold limit over a day', 'values-k8s-dev.yaml', ['monitoring.alerts.consumerHeld.holdLimit=86401'], 'must be a whole number of seconds from 60 to 86400'],
 	['a consumer hold limit in part seconds', 'values-k8s-dev.yaml', ['monitoring.alerts.consumerHeld.holdLimit=420.5'], 'must be a whole number of seconds from 60 to 86400'],
 	['a rule window of 0 minutes', 'values-k8s-dev.yaml', ['monitoring.alerts.hostDown.minutes=0']],
+	// ARV-257: the AMAN feed rule's window is 2 minutes at least, above a healthy feed's age.
+	['an AMAN feed rule window of 1 minute', 'values-k8s-dev.yaml', ['monitoring.alerts.amanFeedStale.minutes=1'], 'monitoring.alerts.amanFeedStale.minutes must be 2 or more'],
 	['a rule window that is not a whole number', 'values-k8s-dev.yaml', ['monitoring.alerts.streamConsumerLag.minutes=2.5']],
 	['a severity that is not warning or critical', 'values-k8s-dev.yaml', ['monitoring.alerts.busDegraded.severity=page']],
 	['a values entry for a rule that does not exist', 'values-k8s-dev.yaml', ['monitoring.alerts.unknownRule.minutes=5']],
@@ -2430,6 +2432,20 @@ for (const [label, file, sets, message, annotation] of [
 			for (const threshold of JSON.parse(text).condition?.thresholds?.spec ?? []) {
 				if (JSON.stringify(threshold.channels) !== JSON.stringify(['ops-pager', 'site it'])) findings.push(`${key}: a threshold does not notify monitoring.channels`);
 			}
+		}
+		// ARV-257: the rule reads each border site's feed age and names the site, so one site's feed stopping is seen while
+		// another's flows; it fires at T_stale (2 minutes by default) and when no age is reported at all.
+		const text = Object.entries(alerts?.data ?? {}).find(([key]) => key.startsWith('amanFeedStale'))?.[1];
+		const rule = text ? JSON.parse(text) : null;
+		const spec = rule?.condition?.compositeQuery?.queries?.[0]?.spec;
+		const threshold = rule?.condition?.thresholds?.spec?.[0];
+		if (!rule) findings.push('the AMAN feed rule is not rendered');
+		else {
+			if (spec?.aggregations?.[0]?.metricName !== 'ariva.border.feed_age_seconds') findings.push('the AMAN feed rule does not read ariva.border.feed_age_seconds');
+			if (JSON.stringify(spec?.groupBy?.map((g) => g.name)) !== JSON.stringify(['site'])) findings.push('the AMAN feed rule is not grouped by site');
+			if (JSON.stringify(rule.notificationSettings?.groupBy) !== JSON.stringify(['site'])) findings.push('the AMAN feed rule does not notify per site');
+			if (threshold?.op !== 'above' || threshold?.matchType !== 'last' || threshold?.target !== 120) findings.push(`the AMAN feed rule's threshold is not an age above 120 s: ${JSON.stringify(threshold)}`);
+			if (rule.condition?.alertOnAbsent !== true) findings.push('the AMAN feed rule does not fire when no feed age is reported');
 		}
 	}
 	// The default scopes: the release's environment and namespace.

@@ -693,6 +693,10 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- fail (printf "monitoring.alerts.%s.namespaceLabel must be namespace or exported_namespace" $key) }}
 {{- end }}
 {{- end }}
+{{- /* ARV-257: a healthy AMAN feed reads up to about 90 seconds, and Stream lists the sites up to about 135 seconds apart. */}}
+{{- if and (eq $key "amanFeedStale") (hasKey $settings "minutes") (lt (float64 $settings.minutes) 2.0) }}
+{{- fail "monitoring.alerts.amanFeedStale.minutes must be 2 or more: a healthy AMAN feed reads up to about 90 seconds (wiki 10, section 3.1)" }}
+{{- end }}
 {{- if and (hasKey $settings "warningDays") (hasKey $settings "criticalDays") }}
 {{- if ge (float64 $settings.criticalDays) (float64 $settings.warningDays) }}
 {{- fail (printf "monitoring.alerts.%s.criticalDays must be below warningDays" $key) }}

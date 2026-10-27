@@ -47,6 +47,9 @@ public static class BorderExtensions
             throw new InvalidOperationException(string.Join(" ", problems));
         services.TryAddSingleton(settings);
         services.TryAddSingleton(TimeProvider.System);
+        // ARV-257: each border site's AMAN feed age, on the Ariva.Border meter.
+        services.TryAddSingleton<BorderMetrics>();
+        services.TryAddSingleton<AmanFeedAges>();
         services.TryAddSingleton<DeskFeed>();
         if (settings.Enabled)
             services.AddHostedService<DeskFeedWorker>();

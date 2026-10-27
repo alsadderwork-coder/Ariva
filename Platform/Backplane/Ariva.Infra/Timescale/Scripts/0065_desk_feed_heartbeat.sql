@@ -1,0 +1,12 @@
+-- 0065 The desk feed's AMAN heartbeat per site, in a column (ARV-257; CWE-400).
+--
+-- The desk feed (0031) keeps each border site's heartbeat (the minute of AMAN's latest record) inside its saved state, a
+-- jsonb value that can reach 64 MB. The gauge ariva.border.feed_age_seconds needs every site's heartbeat at the start of
+-- each read, on every Stream replica, after a restart as well; reading it out of each state would load each state twice.
+-- The feed writes the heartbeat here too, in the transaction that saves the state, as the later of the stored one and the
+-- read's (GREATEST ignores a null), so a read that brings none, or an older minute after a refused state, never moves it back;
+-- but never past the writing pod's minute (LEAST), so a pod whose clock ran ahead cannot leave a minute in the future.
+--
+--   heartbeat_utc   the minute of AMAN's latest record at the site, never ahead of Ariva's clock at the read; null until
+--                   AMAN is heard at the site, and for a state saved before this script until the feed's next read of it.
+ALTER TABLE desk_feed_state ADD COLUMN heartbeat_utc timestamptz;

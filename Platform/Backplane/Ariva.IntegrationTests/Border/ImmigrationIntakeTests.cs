@@ -613,8 +613,11 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         // Each test of the shared database projects its own day, so the order the tests run in never mixes their flights.
         _host.Clock.Advance(TimeSpan.FromDays(4));
         await ProbeSiteAsync();
+        // ARV-257: the AMAN feed's age per site, from the heartbeat each read stores and each listing of the sites reads back.
+        var ages = new Ariva.Infra.Border.AmanFeedAges(_host.Clock, new Ariva.Infra.Border.DeskFeedSettings());
         var feed = new Ariva.Infra.Border.DeskFeed(_host.Provider.GetRequiredService<Ariva.Infra.Settings.DatabaseSettings>(), _host.Clock,
-            new Ariva.Infra.Border.DeskFeedSettings(), Microsoft.Extensions.Logging.Abstractions.NullLogger<Ariva.Infra.Border.DeskFeed>.Instance);
+            new Ariva.Infra.Border.DeskFeedSettings(), Microsoft.Extensions.Logging.Abstractions.NullLogger<Ariva.Infra.Border.DeskFeed>.Instance, ages: ages);
+        double Age(string site) => ages.Ages().Single(a => a.Site == site).Seconds;
         var t0 = new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc).AddMinutes(1);
         _host.Clock.Advance(t0 - Now);
         (await feed.SiteAsync("XS2", Ct)).Should().BeTrue("the engine starts now");
@@ -653,6 +656,11 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
             await Minute(m, Desk(m, 2), Gate(m));
         // A replay of the same read changes nothing: each record is taken once.
         (await feed.SiteAsync("XS2", Ct)).Should().BeTrue();
+        var sites = await feed.SitesAsync(Ct);
+        sites.Should().Contain(new Ariva.Infra.Border.DeskFeedSite("XS2", true, t0.AddMinutes(8)), "the minute of AMAN's latest record at XS2, stored by the read");
+        sites.Should().Contain(s => s.Code == "DMO" && s.Aman && s.HeartbeatUtc != null, "DMO has AMAN desks too (other tests feed DMO, so its heartbeat is theirs as well)");
+        Age("XS2").Should().Be(5, "listed 5 s after the minute of AMAN's latest record");
+        ages.Ages().Should().Contain(a => a.Site == "DMO");
 
         async Task<Dictionary<string, (double Idle, double Closed, double Unknown, long Transactions)>> Desks(int fromMinute, int toMinute) =>
             await RowsAsync("""
@@ -666,9 +674,11 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         settled["XS2/IMM/C1"].Closed.Should().Be(5 * 60, "a desk AMAN reports no session for, while its feed is alive, is not logged in (F10 row 9)");
         (await _host.ReadAsync<long>("SELECT count(*) FROM egate_minute WHERE gate_code = 'XS2/IMM/G1' AND processed = 10 AND rejected = 3")).Should().Be(8);
 
-        // AMAN stops: its desks turn unknown after T_stale.
+        // AMAN stops: its desks turn unknown after T_stale, and the site's feed age grows past the alert's 2 minutes.
         _host.Clock.Advance(t0.AddMinutes(20) - Now);
         (await feed.SiteAsync("XS2", Ct)).Should().BeTrue();
+        await feed.SitesAsync(Ct);
+        Age("XS2").Should().Be(12 * 60, "the stored heartbeat stays at AMAN's latest record, 12 minutes before this listing");
         (await Desks(14, 18))["XS2/IMM/V2"].Unknown.Should().Be(4 * 60);
         (await Desks(0, 18))["XS2/IMM/V1"].Transactions.Should().Be(2 * 8, "each interval's transactions counted once, and none of DMO's");
         (await feed.SiteAsync("DMO", Ct)).Should().BeTrue();
@@ -714,6 +724,12 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
         for (var k = 0; k < 4; k++)
             (await burst.SiteAsync("XS2", Ct)).Should().BeTrue();
         (await _host.ReadAsync<long>("SELECT count(*) FROM egate_minute WHERE gate_code = 'XS2/IMM/G1' AND processed = 4")).Should().Be(250);
+
+        // ARV-257: a saved state refused (here its version) starts the desks again and rereads the overlap, whose latest records (the
+        // burst's, dated before t0) are older than the stored heartbeat: the column keeps the later minute, so the age never drops back.
+        await ExecuteAsMigrationAsync("UPDATE desk_feed_state SET state = jsonb_set(state, '{version}', '0') WHERE site_code = 'XS2'");
+        (await feed.SiteAsync("XS2", Ct)).Should().BeTrue();
+        (await feed.SitesAsync(Ct)).Should().Contain(new Ariva.Infra.Border.DeskFeedSite("XS2", true, t0.AddMinutes(8)));
     }
 
     private async Task<Dictionary<string, T>> RowsAsync<T>([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, Func<NpgsqlDataReader, (string, T)> map,
