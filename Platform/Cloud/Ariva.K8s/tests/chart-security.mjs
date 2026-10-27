@@ -2447,6 +2447,19 @@ for (const [label, file, sets, message, annotation] of [
 			if (threshold?.op !== 'above' || threshold?.matchType !== 'last' || threshold?.target !== 120) findings.push(`the AMAN feed rule's threshold is not an age above 120 s: ${JSON.stringify(threshold)}`);
 			if (rule.condition?.alertOnAbsent !== true) findings.push('the AMAN feed rule does not fire when no feed age is reported');
 		}
+		// ARV-258: the queue engine's checkpoint age per group, at 2 minutes by default.
+		const stale = JSON.parse(monitoringRule(docs, 'streamCheckpointStale.json') || 'null');
+		const staleSpec = stale?.condition?.compositeQuery?.queries?.[0]?.spec;
+		const staleThreshold = stale?.condition?.thresholds?.spec?.[0];
+		if (!stale) findings.push('the stream checkpoint rule is not rendered');
+		else {
+			if (staleSpec?.aggregations?.[0]?.metricName !== 'ariva.stream.checkpoint_age_seconds' || staleSpec?.aggregations?.[0]?.spaceAggregation !== 'max')
+				findings.push('the stream checkpoint rule does not read the largest ariva.stream.checkpoint_age_seconds');
+			if (JSON.stringify(staleSpec?.groupBy?.map((g) => g.name)) !== JSON.stringify(['group'])) findings.push('the stream checkpoint rule is not grouped by group');
+			if (staleThreshold?.op !== 'above' || staleThreshold?.matchType !== 'last' || staleThreshold?.target !== 120 || staleThreshold?.name !== 'critical')
+				findings.push(`the stream checkpoint rule's threshold is not an age above 120 s, critical: ${JSON.stringify(staleThreshold)}`);
+			if (stale.evaluation?.spec?.evalWindow !== '2m') findings.push('the stream checkpoint rule does not evaluate over its minutes');
+		}
 	}
 	// The default scopes: the release's environment and namespace.
 	const own = render('values-k8s-dev.yaml', [], 'ariva-site');

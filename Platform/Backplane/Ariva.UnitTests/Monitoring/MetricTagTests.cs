@@ -112,6 +112,7 @@ public sealed partial class MetricTagTests
         {
             ((StreamMetrics)m).Report("ariva-stream.queue-engine", new Dictionary<string, long> { [KafkaTopics.DeviceZoneOccupancy] = 5 }, TimeSpan.FromMinutes(1));
             ((StreamMetrics)m).Refused("AUH-TA", nameof(Ariva.Core.Queueing.QueueRejections.BufferFull), 3);
+            ((StreamMetrics)m).Checkpointed("ariva-stream.queue-engine");
         },
         [typeof(UploadScanMetrics)] = m => ((UploadScanMetrics)m).Report(
             new Ariva.Core.Services.Storage.MalwareSignatures("1.4.3", 27927, DateTime.UtcNow.AddHours(-3)), TimeSpan.FromMinutes(30)),
@@ -303,6 +304,61 @@ public sealed partial class MetricTagTests
         reader.Sum("ariva.flights.items").Should().Be(2);
         reader.Sum("ariva.flights.items", ("feed", Ariva.Core.Integration.IntegrationBatches.FeedOf(Client))).Should().Be(2,
             "every series is the client's own feed, whatever name the request tried");
+    }
+
+    [Fact]
+    public async Task AidxItems_Should_BeTaggedWithTheClientsOwnFeed_When_TheMessageNamesAnotherOriginator()
+    {
+        // ARV-258 (Low 6 of the ARV-179 review): AidxController passes the caller's own feed on its own path, not through
+        // BatchCall, so it is pinned here as the batch endpoints are above: the message's originator names no feed.
+        using var metrics = new FlightMetrics();
+        using var reader = new Setup.InstrumentReader(metrics.Meter);
+        var feeds = new List<string>();
+        var aidx = new Moq.Mock<Ariva.Core.Services.Flights.ISvcAidxIntake>();
+        aidx.Setup(i => i.ApplyAsync(Moq.It.IsAny<string>(), Moq.It.IsAny<string>(), Moq.It.IsAny<AidxMessage>(), Moq.It.IsAny<CancellationToken>()))
+            .Returns((string site, string feed, AidxMessage message, CancellationToken _) =>
+            {
+                // As SvcAidxIntake ends every call (through SvcFlightIntake): the legs counted under the call's feed.
+                feeds.Add(feed);
+                IReadOnlyList<FlightItemResult> results = [.. message.Legs.Select((l, i) => new FlightItemResult(i, $"{l.Airline}{l.FlightNumber}", true, [], []))];
+                metrics.Items("legs", site, feed, results);
+                return Task.FromResult(results);
+            });
+        var controller = new Ariva.Api.Integration.Controllers.AidxController(aidx.Object,
+            Moq.Mock.Of<Ariva.Core.Services.Integration.ISvcIntegrationIdempotency>(), new Setup.ManualClock(new DateTimeOffset(2026, 10, 3, 9, 1, 0, TimeSpan.Zero)));
+
+        foreach (var originator in new[] { "AODB", "another-feed", "api-ic_otherclientotherclientoth" })
+            (await PostAidxAsync(controller, Flights.AidxTests.Message(Flights.AidxTests.Leg())
+                .Replace("CompanyShortName=\"AODB\"", $"CompanyShortName=\"{originator}\"", StringComparison.Ordinal))).Should().Be(200);
+
+        feeds.Should().Equal(Enumerable.Repeat(Ariva.Core.Integration.IntegrationBatches.FeedOf(Client), 3), "the intake is called with the client's own feed");
+        reader.Sum("ariva.flights.items").Should().Be(3);
+        reader.Sum("ariva.flights.items", ("feed", Ariva.Core.Integration.IntegrationBatches.FeedOf(Client))).Should().Be(3,
+            "every series is the client's own feed, whatever originator the message names");
+    }
+
+    /// <summary>An AIDX message pushed as the client <see cref="Client"/>, through the real controller.</summary>
+    private static async Task<int> PostAidxAsync(Ariva.Api.Integration.Controllers.AidxController controller, string xml)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddControllers();
+        var http = new Microsoft.AspNetCore.Http.DefaultHttpContext { RequestServices = services.BuildServiceProvider() };
+        http.Items[Ariva.Api.Common.Security.IntegrationAuthentication.CallerItem] =
+            new Ariva.Core.Domain.ViewModels.IntegrationCallerViewModel(Client, "AODB", ["flights:write"], [Site], false);
+        http.Request.Method = "POST";
+        http.Request.ContentType = "application/xml";
+        var bytes = System.Text.Encoding.UTF8.GetBytes(xml);
+        http.Request.Body = new MemoryStream(bytes);
+        http.Request.ContentLength = bytes.Length;
+        controller.ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext { HttpContext = http };
+        var result = await controller.Push(Site, TestContext.Current.CancellationToken);
+        return result switch
+        {
+            Microsoft.AspNetCore.Mvc.ContentResult content => content.StatusCode ?? 200,
+            Microsoft.AspNetCore.Mvc.ObjectResult problem => problem.StatusCode ?? 0,
+            _ => 0
+        };
     }
 
     // Keys that would name a person, a credential, a document or a network address.

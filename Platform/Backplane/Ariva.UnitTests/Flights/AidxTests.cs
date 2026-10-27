@@ -17,7 +17,7 @@ public sealed class AidxTests
     private const string Ns = "http://www.iata.org/IATA/2007/00";
     private static readonly IReadOnlySet<string> Dmo = AidxReader.Airports(["DMO", "ODMO"]);
 
-    private static string Leg(string from = "AMM", string to = "DMO", string number = "111", string extra = "", string legData = "") => $"""
+    internal static string Leg(string from = "AMM", string to = "DMO", string number = "111", string extra = "", string legData = "") => $"""
         <FlightLeg>
           <LegIdentifier>
             <Airline CodeContext="3">RJ</Airline>
@@ -52,7 +52,7 @@ public sealed class AidxTests
         </FlightLeg>
         """;
 
-    private static string Message(string legs, string rootAttributes = "Version=\"22.1\" TimeStamp=\"2026-10-03T09:00:00Z\" TransactionIdentifier=\"T-42\"", string prolog = "") =>
+    internal static string Message(string legs, string rootAttributes = "Version=\"22.1\" TimeStamp=\"2026-10-03T09:00:00Z\" TransactionIdentifier=\"T-42\"", string prolog = "") =>
         $"""<?xml version="1.0" encoding="UTF-8"?>{prolog}<IATA_AIDX_FlightLegNotifRQ xmlns="{Ns}" {rootAttributes}><Originator CompanyShortName="AODB"/>{legs}</IATA_AIDX_FlightLegNotifRQ>""";
 
     private static (AidxMessage Message, string Error) Read(string xml) => AidxReader.Read(Encoding.UTF8.GetBytes(xml));

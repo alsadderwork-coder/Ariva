@@ -187,11 +187,12 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         return ends;
     }
 
-    private IHost Host(string database, string service)
+    private IHost Host(string database, string service, int commandTimeoutSeconds = 30)
     {
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string>
         {
+            ["Database:CommandTimeoutSeconds"] = commandTimeoutSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["Database:Host"] = postgres.Hostname,
             ["Database:Port"] = postgres.Port.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["Database:Name"] = database,
@@ -1338,6 +1339,85 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
 
         int.Parse((await RowsAsync(database, "SELECT count(*) FROM queue_minute WHERE zone_key = 'DMO/Q1mp'"))[0], System.Globalization.CultureInfo.InvariantCulture)
             .Should().BeGreaterThan(95, "the stray record is dead-lettered and the zone's own records are applied");
+    }
+
+    [Fact]
+    public async Task Worker_Should_ReportItsCheckpointAgeGrowing_When_ItsCheckpointsFailWhileTheDatabaseAnswers()
+    {
+        // ARV-258: a lock held on stream_offset makes every checkpoint time out (5 s) while the database answers: neither
+        // databaseUnavailable nor the lag says so, the checkpoint age grows; once the lock goes, the next checkpoint writes
+        // everything and the age starts again.
+        await ProduceAsync("ca", toMinute: 10);
+        var database = await DatabaseAsync(TestDatabase.StreamCheckpointAge);
+        using var host = Host(database, "it-checkpoint-age", commandTimeoutSeconds: 5);
+        using var age = new InstrumentReader(host.Services.GetRequiredService<StreamMetrics>().Meter);
+        double Age() => age.Observe(StreamMetrics.CheckpointAgeName).Should().ContainSingle().Which.Value;
+        await host.StartAsync(Ct);
+        await WaitForAsync(database, "ariva-it-checkpoint-age.queue-engine");
+        Age().Should().BeLessThan(10, "the worker checkpoints every second while it reads");
+        age.Observe(StreamMetrics.CheckpointAgeName).Single().Tags["group"].Should().Be("ariva-it-checkpoint-age.queue-engine");
+
+        await using (var holder = new NpgsqlConnection(postgres.ConnectionString(database)))
+        {
+            await holder.OpenAsync(Ct);
+            await using var hold = await holder.BeginTransactionAsync(Ct);
+            await using (var lockTable = new NpgsqlCommand("LOCK TABLE stream_offset IN ACCESS EXCLUSIVE MODE", holder, hold))
+                await lockTable.ExecuteNonQueryAsync(Ct);
+            var until = DateTime.UtcNow.AddSeconds(60);
+            while (Age() <= 20 && DateTime.UtcNow < until)
+                await Task.Delay(500, Ct);
+            Age().Should().BeGreaterThan(20, "every checkpoint times out on the lock while the database answers");
+            await hold.RollbackAsync(Ct);
+        }
+
+        var back = DateTime.UtcNow.AddSeconds(60);
+        while (Age() > 10 && DateTime.UtcNow < back)
+            await Task.Delay(500, Ct);
+        Age().Should().BeLessThan(10, "the first checkpoint after the lock writes everything owed");
+        await host.StopAsync(Ct);
+        age.Observe(StreamMetrics.CheckpointAgeName).Should().BeEmpty("a stopped worker reports no checkpoint age");
+    }
+
+    [Fact]
+    public async Task Worker_Should_KeepItsCheckpointAgeFresh_When_ItHasNothingToRead()
+    {
+        // ARV-258 (Low 1 of its review): a worker whose saved positions are at the end of every partition reads nothing, so it
+        // owes nothing; its age must stay within a checkpoint interval or two, or an instance started before any sensor pushes
+        // would raise streamCheckpointStale.
+        await ProduceAsync("idle", toMinute: 1);
+        var database = await DatabaseAsync(TestDatabase.StreamIdle);
+        const string group = "ariva-it-idle.queue-engine";
+        await using (var connection = new NpgsqlConnection(postgres.ConnectionString(database)))
+        {
+            await connection.OpenAsync(Ct);
+            foreach (var ((topic, partition), end) in Ends())
+            {
+                await using var save = new NpgsqlCommand(
+                    "INSERT INTO stream_offset (consumer_group, topic, partition_no, next_offset, updated_on) VALUES (@group, @topic, @partition, @next, now())", connection);
+                save.Parameters.AddWithValue("group", group);
+                save.Parameters.AddWithValue("topic", topic);
+                save.Parameters.AddWithValue("partition", partition);
+                save.Parameters.AddWithValue("next", end);
+                await save.ExecuteNonQueryAsync(Ct);
+            }
+        }
+
+        using var host = Host(database, "it-idle");
+        using var age = new InstrumentReader(host.Services.GetRequiredService<StreamMetrics>().Meter);
+        await host.StartAsync(Ct);
+        var start = DateTime.UtcNow.AddSeconds(30);
+        while (!age.Observe(StreamMetrics.CheckpointAgeName).Any() && DateTime.UtcNow < start)
+            await Task.Delay(250, Ct);
+        var oldest = 0d;
+        var until = DateTime.UtcNow.AddSeconds(8);
+        while (DateTime.UtcNow < until)
+        {
+            oldest = Math.Max(oldest, age.Observe(StreamMetrics.CheckpointAgeName).Should().ContainSingle().Which.Value);
+            await Task.Delay(250, Ct);
+        }
+
+        oldest.Should().BeLessThan(3, "nothing read, nothing owed: the age is marked every checkpoint interval (1 s here), not left to grow");
+        await host.StopAsync(Ct);
     }
 
     [Fact]

@@ -11,13 +11,18 @@ namespace Ariva.Infra.Streaming;
 /// group add up; a measurement older than its freshness window, or one from a worker that stopped, is not reported.
 /// <see cref="QueueRefusedName"/> (ARV-231) counts the events each zone's queue engine refused or applied early, tagged with the
 /// <c>kind</c> (a <c>QueueRejections</c> property: BufferFull, DeviceShareFull, ForcedAdvances, Late and the others) and the
-/// <c>site</c> code, added once a checkpoint has written the zone's outputs.
+/// <c>site</c> code, added once a checkpoint has written the zone's outputs. <see cref="CheckpointAgeName"/> (ARV-258) is the
+/// seconds since this instance's queue engine last wrote everything it owed (a checkpoint, or nothing to write), tagged with the
+/// consumer <c>group</c>: a checkpoint that keeps failing while the database answers (a statement timeout, a lock wait, a
+/// zone's state above its bound) makes it grow, which the lag cannot show once reading pauses. Reported from the worker's
+/// start until it stops.
 /// </summary>
 public sealed class StreamMetrics : IDisposable
 {
     public const string MeterName = "Ariva.Stream";
     public const string ConsumerLagName = "ariva.stream.consumer_lag";
     public const string QueueRefusedName = "ariva.stream.queue_refused";
+    public const string CheckpointAgeName = "ariva.stream.checkpoint_age_seconds";
 
     #region Fields
 
@@ -25,10 +30,13 @@ public sealed class StreamMetrics : IDisposable
     private readonly Counter<long> _refused;
     private readonly TimeProvider _time;
     private volatile Snapshot _last;
+    private volatile CheckpointState _checkpoint;
 
     #endregion
 
     private sealed record Snapshot(string Group, IReadOnlyList<(string Topic, long Lag)> Lags, DateTimeOffset At, TimeSpan FreshFor);
+
+    private sealed record CheckpointState(string Group, DateTimeOffset At);
 
     #region Constructors
 
@@ -40,6 +48,8 @@ public sealed class StreamMetrics : IDisposable
             description: "Records behind the end of each sensing topic for the partitions this Stream instance owns");
         _refused = _meter.CreateCounter<long>(QueueRefusedName, unit: "{event}",
             description: "Events a zone's queue engine refused or applied early, by kind and site");
+        _meter.CreateObservableGauge(CheckpointAgeName, ObserveCheckpointAge, unit: "s",
+            description: "Seconds since this Stream instance's queue engine last wrote everything it owed (a checkpoint, or nothing to write)");
     }
 
     #endregion
@@ -68,8 +78,22 @@ public sealed class StreamMetrics : IDisposable
             _refused.Add(count, new KeyValuePair<string, object>("kind", kind), new KeyValuePair<string, object>("site", site));
     }
 
+    /// <summary>
+    /// ARV-258: <paramref name="group"/>'s queue engine has written everything it owed now (a checkpoint that succeeded, or
+    /// nothing read since the partitions were assigned); the checkpoint age counts from here.
+    /// </summary>
+    public void Checkpointed(string group)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(group);
+        _checkpoint = new CheckpointState(group, _time.GetUtcNow());
+    }
+
     /// <summary>Nothing more to report (the worker stopped).</summary>
-    public void Clear() => _last = null;
+    public void Clear()
+    {
+        _last = null;
+        _checkpoint = null;
+    }
 
     /// <summary>
     /// The lag per topic of the given partitions: the high watermark less the next offset to read, at least 0, summed over
@@ -97,6 +121,14 @@ public sealed class StreamMetrics : IDisposable
             return [];
         return last.Lags.Select(l => new Measurement<long>(l.Lag, new KeyValuePair<string, object>("topic", l.Topic),
             new KeyValuePair<string, object>("group", last.Group)));
+    }
+
+    private IEnumerable<Measurement<double>> ObserveCheckpointAge()
+    {
+        var checkpoint = _checkpoint;
+        if (checkpoint is null)
+            return [];
+        return [new Measurement<double>(Math.Max(0, (_time.GetUtcNow() - checkpoint.At).TotalSeconds), new KeyValuePair<string, object>("group", checkpoint.Group))];
     }
 
     public void Dispose() => _meter.Dispose();

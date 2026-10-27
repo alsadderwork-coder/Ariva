@@ -1,0 +1,88 @@
+{
+  "alert": "Ariva stream checkpoint stale (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The queue engine has written no checkpoint for longer than the window (ARV-258): its checkpoints fail, possibly while the database answers (a statement timeout, a lock wait, a zone's state above 64 MiB), or a slow database or a dead letter the broker will not take holds the worker; its outputs wait in memory and, while a zone is at its bound, its reading stops.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.stream.checkpoint_age_seconds",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "group",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{group}}"
+          }
+        }
+      ],
+      "unit": "s"
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${streamCheckpointStale.severity}",
+          "op": "above",
+          "matchType": "last",
+          "target": "${streamCheckpointStale.seconds}",
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${streamCheckpointStale.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "group"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "streamCheckpointStale",
+    "environment": "${environment}",
+    "severity": "${streamCheckpointStale.severity}"
+  },
+  "annotations": {
+    "summary": "Stream checkpoints failing ({{$group}})",
+    "description": "The queue engine ({{$group}}) has written no checkpoint for {{$value}} seconds, more than ${streamCheckpointStale.minutes} minutes: its checkpoints fail (the Stream log \"Queue stream checkpoint failed\" gives the reason), a slow database holds it, or a dead letter waits for the broker (\"Dead letter ... not accepted\").",
+    "runbook": "wiki/10-Operations-Runbook.md#45b-queue-stream-worker-arv-034"
+  },
+  "disabled": false
+}

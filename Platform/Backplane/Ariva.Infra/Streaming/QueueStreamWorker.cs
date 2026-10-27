@@ -188,7 +188,9 @@ public sealed class StreamSiteSettings
 /// from the offsets saved with the snapshots, so no record is applied twice to a saved state, and the records after them
 /// are replayed into the same rows. A lost partition drops its zones without saving. A record that is not a readable
 /// batch of its topic, or whose key is not its zone, goes to the dead-letter topic (CWE-501). A failure stops the worker
-/// without committing; the host's restart replays from the last checkpoint.
+/// without committing; the host's restart replays from the last checkpoint. Since ARV-258 the seconds since the worker last
+/// wrote everything it owed (a checkpoint, or nothing read since the assignment) are the gauge
+/// <see cref="StreamMetrics.CheckpointAgeName"/>, so checkpoints that keep failing while the database answers are seen.
 /// </para>
 /// </summary>
 public sealed class QueueStreamWorker(
@@ -297,6 +299,8 @@ public sealed class QueueStreamWorker(
         await CheckCoPartitionedAsync(ct);
         consumer.Subscribe(Topics);
         logger.LogInformation("Queue stream worker {GroupId} subscribed to {Topics}", GroupId, string.Join(", ", Topics));
+        // ARV-258: the checkpoint age counts from the start, so a worker that never manages a checkpoint shows it growing.
+        metrics?.Checkpointed(GroupId);
         var every = TimeSpan.FromSeconds(Math.Max(1, kafka.Consumers.CheckpointSeconds));
         var paused = new List<TopicPartition>();
         var next = timeProvider.GetUtcNow() + every;
@@ -335,6 +339,7 @@ public sealed class QueueStreamWorker(
                     try
                     {
                         await Checkpoint(consumer, ct);
+                        metrics?.Checkpointed(GroupId);
                         if (paused.Count > 0)
                         {
                             consumer.Resume(paused);
@@ -352,6 +357,12 @@ public sealed class QueueStreamWorker(
                             consumer.Pause(paused);
                         }
                     }
+                }
+                else if (_positions.Count == 0 && timeProvider.GetUtcNow() >= next)
+                {
+                    // ARV-258: nothing read since the assignment, so nothing is owed: the checkpoint age stays fresh.
+                    next = timeProvider.GetUtcNow() + every;
+                    metrics?.Checkpointed(GroupId);
                 }
             }
         }

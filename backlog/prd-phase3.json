@@ -1427,7 +1427,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Lows 3 and 6 of the ARV-179 review (backlog/progress.md, 2026-10-26).",
       "dependsOn": [
         "ARV-179"

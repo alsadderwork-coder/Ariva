@@ -482,6 +482,11 @@ monitoring:
     databaseUnavailable: { enabled: true, minutes: 2, severity: critical }
     # The queue engine more than records behind a sensing topic for the whole window ("lag growing for several minutes").
     streamConsumerLag: { enabled: true, minutes: 5, records: 1000, severity: critical }
+    # No queue engine checkpoint for the window (ARV-258): ariva.stream.checkpoint_age_seconds above minutes times 60, from
+    # checkpoints that fail (possibly while the database answers), a slow database or a dead letter waiting for the broker.
+    # Each statement of a checkpoint may take up to Database:CommandTimeoutSeconds (30 s), so a checkpoint of many zones on
+    # a slow database can pass the window: raise minutes with it or with Kafka:Consumers:CheckpointSeconds (5 s).
+    streamCheckpointStale: { enabled: true, minutes: 2, severity: critical }
     # The oldest unsent outbox row older than minutes.
     outboxBacklog: { enabled: true, minutes: 5, severity: critical }
     # An outbox row whose sends failed with the broker unavailable for Kafka:Outbox:BrokerStreakMinutes without a break

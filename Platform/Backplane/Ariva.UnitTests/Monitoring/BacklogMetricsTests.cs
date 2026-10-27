@@ -59,6 +59,29 @@ public sealed class BacklogMetricsTests
     }
 
     [Fact]
+    public void CheckpointAge_Should_GrowFromTheLastCheckpointWithItsGroup_When_TheWorkerRuns()
+    {
+        // ARV-258: checkpoints that keep failing while the database answers leave the lag flat once reading pauses; the age grows.
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        using var metrics = new StreamMetrics(timeProvider: clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        reader.Observe(StreamMetrics.CheckpointAgeName).Should().BeEmpty("nothing before the worker starts");
+
+        metrics.Checkpointed(Group);
+        clock.Advance(TimeSpan.FromSeconds(95));
+
+        var age = reader.Observe(StreamMetrics.CheckpointAgeName).Should().ContainSingle().Subject;
+        age.Value.Should().Be(95, "no checkpoint has written what is owed since");
+        age.Tags.Should().Equal(new Dictionary<string, string> { ["group"] = Group });
+        metrics.Checkpointed(Group);
+        clock.Advance(TimeSpan.FromSeconds(2));
+        reader.Observe(StreamMetrics.CheckpointAgeName).Should().ContainSingle().Which.Value.Should().Be(2, "a checkpoint that succeeds starts it again");
+        metrics.Clear();
+        reader.Observe(StreamMetrics.CheckpointAgeName).Should().BeEmpty("the worker stopped");
+        FluentActions.Invoking(() => metrics.Checkpointed(" ")).Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public void Outbox_Should_ReportTheUnsentRowsAndTheOldestAge_When_ItWasMeasured()
     {
         var clock = new ManualClock(new DateTimeOffset(2026, 10, 14, 12, 0, 0, TimeSpan.Zero));
