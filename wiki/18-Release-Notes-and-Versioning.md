@@ -146,6 +146,14 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-257 to ARV-259: per-site AMAN feed age, the queue engine's checkpoint age and new alert rules (2026-10-27)
+
+- Script 0065 adds `desk_feed_state.heartbeat_utc` (the migration job applies it); Stream fills it at its next read of each site.
+- New metrics: `ariva.border.feed_age_seconds` (by `site`, ARV-257) and `ariva.stream.checkpoint_age_seconds` (by `group`, ARV-258).
+- Changed rule: `amanFeedStale` reads the per-site age and names the site; the chart refuses a window under 2 minutes.
+- New rules: `streamCheckpointStale` (ARV-258), `devicesDegraded`, `zonesDegraded`, `aodbFeedStale`, `integrationLockout` and, off by default, `amanCodesUnmapped` (ARV-259). Border deployments turn on `amanFeedStale` and `amanCodesUnmapped` (wiki 04).
+- Import the rules ConfigMap into SigNoz again after the upgrade (wiki 10 section 1.1).
+
 ### ARV-185: one lane rule for the staffing recommendation and the predicted nowcast, and the shared queue's demand (2026-10-26)
 
 Changed (owner decisions of 2026-10-26): the predicted nowcast's arrival-wave projection takes a queue's lane from the queue zone's own lane category, as the immigration screen, the nowcast desk term and the staffing recommendation do, and the same arrivals hall as the recommendation (formulas F14 and F16). The shared lane `ALL` (one queue for every manual category) now has demand: the manual categories (CIT, RES, VIS, CRW) without a queue of their own at the site. No database script, setting or API change.

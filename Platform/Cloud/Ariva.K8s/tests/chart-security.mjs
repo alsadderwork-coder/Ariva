@@ -2418,15 +2418,16 @@ for (const [label, file, sets, message, annotation] of [
 	}
 }
 
-// ARV-125b: the AMAN feed rule renders where it is turned on (border deployments), channels reach every threshold, and
+// ARV-125b: the border rules (the AMAN feed, ARV-259's AMAN codes) render where they are turned on, channels reach every threshold, and
 // monitoring off renders no monitoring object.
 {
 	const findings = [];
-	const aman = render('values-k8s-dev.yaml', ['monitoring.alerts.amanFeedStale.enabled=true', 'monitoring.channels={ops-pager,site it}']);
+	const aman = render('values-k8s-dev.yaml', ['monitoring.alerts.amanFeedStale.enabled=true', 'monitoring.alerts.amanCodesUnmapped.enabled=true',
+		'monitoring.channels={ops-pager,site it}']);
 	if (aman.status !== 0) findings.push(`the AMAN feed rule turned on: template failed\n${aman.stderr}`);
 	else {
 		const docs = parse(aman.stdout);
-		findings.push(...checkManifests(docs, { environment: 'k8s-dev' }), ...missingMonitoringRules(docs, { amanFeedStale: true }));
+		findings.push(...checkManifests(docs, { environment: 'k8s-dev' }), ...missingMonitoringRules(docs, { border: true }));
 		const alerts = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-alerts');
 		for (const [key, text] of Object.entries(alerts?.data ?? {})) {
 			for (const threshold of JSON.parse(text).condition?.thresholds?.spec ?? []) {
@@ -2460,6 +2461,30 @@ for (const [label, file, sets, message, annotation] of [
 				findings.push(`the stream checkpoint rule's threshold is not an age above 120 s, critical: ${JSON.stringify(staleThreshold)}`);
 			if (stale.evaluation?.spec?.evalWindow !== '2m') findings.push('the stream checkpoint rule does not evaluate over its minutes');
 		}
+		// ARV-259: the rules over metrics that already existed: each reads its metric as its kind allows (a gauge's largest copy,
+		// a counter's increase summed), fires above 0 over its window at its severity; the AMAN codes rule per site.
+		const existing = {
+			devicesDegraded: ['ariva.devices.degraded', 'max', 'all_the_times', '5m', 'warning', []],
+			zonesDegraded: ['ariva.zones.degraded_now', 'max', 'all_the_times', '5m', 'warning', []],
+			aodbFeedStale: ['ariva.feeds.stale', 'max', 'all_the_times', '5m', 'warning', []],
+			amanCodesUnmapped: ['ariva.border.feed.unmapped', 'sum', 'in_total', '15m', 'warning', ['site']],
+			integrationLockout: ['ariva.integration.lockouts', 'sum', 'in_total', '15m', 'warning', []]
+		};
+		for (const [key, [metric, space, match, window, severity, groups]] of Object.entries(existing)) {
+			const rule = JSON.parse(monitoringRule(docs, `${key}.json`) || 'null');
+			const query = rule?.condition?.compositeQuery?.queries?.[0]?.spec;
+			const threshold = rule?.condition?.thresholds?.spec?.[0];
+			if (!rule) {
+				findings.push(`${key} is not rendered`);
+				continue;
+			}
+			if (query?.aggregations?.[0]?.metricName !== metric || query?.aggregations?.[0]?.spaceAggregation !== space) findings.push(`${key} does not read ${metric} as ${space}`);
+			if (JSON.stringify((query?.groupBy ?? []).map((g) => g.name)) !== JSON.stringify(groups) || JSON.stringify(rule.notificationSettings?.groupBy ?? []) !== JSON.stringify(groups))
+				findings.push(`${key} is not grouped and notified by ${groups.join(', ') || 'nothing'}`);
+			if (threshold?.op !== 'above' || threshold?.matchType !== match || threshold?.target !== 0 || threshold?.name !== severity)
+				findings.push(`${key}'s threshold is not above 0, ${match}, ${severity}: ${JSON.stringify(threshold)}`);
+			if (rule.evaluation?.spec?.evalWindow !== window) findings.push(`${key} does not evaluate over ${window}`);
+		}
 	}
 	// The default scopes: the release's environment and namespace.
 	const own = render('values-k8s-dev.yaml', [], 'ariva-site');
@@ -2487,7 +2512,7 @@ for (const [label, file, sets, message, annotation] of [
 		failed = true;
 		console.error(`FAIL monitoring switches:\n  ${findings.join('\n  ')}`);
 	} else {
-		console.log('PASS monitoring switches: the AMAN feed rule where turned on, channels on every threshold, the release\'s environment and namespace by default and the scopes set, nothing when monitoring is off');
+		console.log('PASS monitoring switches: the border rules (AMAN feed and AMAN codes) where turned on, the rules over existing metrics (ARV-259) and the stream checkpoint rule (ARV-258) as their values say, channels on every threshold, the release\'s environment and namespace by default and the scopes set, nothing when monitoring is off');
 	}
 }
 

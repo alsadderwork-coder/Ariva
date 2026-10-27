@@ -1,0 +1,77 @@
+{
+  "alert": "Integration client locked out (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "An integration client locked out in the window (ARV-259): its token exchanges are refused until the lock ends (15 minutes) or an administrator unlocks it; tokens it already holds work until they expire, so stopping a suspected attack at once means disabling the client (4.8d).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.integration.lockouts",
+                "timeAggregation": "increase",
+                "spaceAggregation": "sum"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            }
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${integrationLockout.severity}",
+          "op": "above",
+          "matchType": "in_total",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${integrationLockout.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "integrationLockout",
+    "environment": "${environment}",
+    "severity": "${integrationLockout.severity}"
+  },
+  "annotations": {
+    "summary": "Integration client locked out",
+    "description": "{{$value}} integration client lockouts in the last ${integrationLockout.minutes} minutes: the client's token exchanges are refused until the lock ends; tokens it already holds work until they expire. Failures not the integrator's: disable the client (4.8d).",
+    "runbook": "wiki/10-Operations-Runbook.md#48d-integration-client-locked-out-arv-042"
+  },
+  "disabled": false
+}

@@ -1,0 +1,87 @@
+{
+  "alert": "AMAN codes without a mapping (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "AMAN records whose desk or gate code has no mapping at a site, in the window (ARV-259): they are kept apart and reach no desk (border deployments).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.border.feed.unmapped",
+                "timeAggregation": "increase",
+                "spaceAggregation": "sum"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "site",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{site}}"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${amanCodesUnmapped.severity}",
+          "op": "above",
+          "matchType": "in_total",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${amanCodesUnmapped.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "site"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "amanCodesUnmapped",
+    "environment": "${environment}",
+    "severity": "${amanCodesUnmapped.severity}"
+  },
+  "annotations": {
+    "summary": "AMAN codes without a mapping at {{$site}}",
+    "description": "{{$value}} AMAN records at site {{$site}} named a desk or gate code without a mapping in the last ${amanCodesUnmapped.minutes} minutes; add the AMAN desk code mapping (Administration guide, desk code mappings; 4.8h).",
+    "runbook": "wiki/10-Operations-Runbook.md#48h-aman-feed-or-immigration-records-refused-or-kept-apart-arv-048"
+  },
+  "disabled": false
+}

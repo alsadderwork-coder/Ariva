@@ -817,19 +817,23 @@ function monitoringFindings(doc, id) {
 	return findings;
 }
 
+/** The rules off unless a border deployment turns them on (ARV-125b, ARV-259). */
+export const BORDER_RULES = ['amanFeedStale', 'amanCodesUnmapped'];
+
 /**
  * ARV-125b: the criterion rules a render lacks. Every rule of tests/monitoring.json must be a key of ariva-monitoring-alerts
- * (hostDown once per host, as hostDown-<host>), but for amanFeedStale, which is off unless the render turns it on.
+ * (hostDown once per host, as hostDown-<host>), but for the border rules, which are off unless the render turns them on.
  */
-export function missingMonitoringRules(docs, { amanFeedStale = false } = {}) {
+export function missingMonitoringRules(docs, { border = false } = {}) {
 	const alerts = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-alerts');
 	if (!alerts) return ['ConfigMap/ariva-monitoring-alerts: not rendered'];
 	const keys = Object.keys(alerts.data ?? {}).map((key) => key.replace(/\.json$/, ''));
 	const missing = MONITORING.criterionRules
-		.filter((rule) => rule !== 'amanFeedStale' || amanFeedStale)
+		.filter((rule) => !BORDER_RULES.includes(rule) || border)
 		.filter((rule) => !keys.some((key) => key === rule || key.startsWith(`${rule}-`)))
 		.map((rule) => `ConfigMap/ariva-monitoring-alerts: rule ${rule} is missing`);
-	if (!amanFeedStale && keys.includes('amanFeedStale')) missing.push('ConfigMap/ariva-monitoring-alerts: amanFeedStale is rendered although it is off');
+	for (const rule of BORDER_RULES.filter((rule) => !border && keys.includes(rule)))
+		missing.push(`ConfigMap/ariva-monitoring-alerts: ${rule} is rendered although it is off`);
 	if (!docs.some((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-dashboards')) missing.push('ConfigMap/ariva-monitoring-dashboards: not rendered');
 	return missing;
 }

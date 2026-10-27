@@ -1,0 +1,77 @@
+{
+  "alert": "Ariva queue zones degraded (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "Queue zones Degraded for the whole window (ARV-259; wiki 10 section 2, the degraded count above normal): a device of each is offline or degraded, so its numbers are flagged. Device-driven: one device out in a zone is enough, overlapping sensors or not; a zone whose entry or exit line has no coverage (the alarm zone Unknown) has no rule yet (ARV-259a).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.zones.degraded_now",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            }
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${zonesDegraded.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${zonesDegraded.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "zonesDegraded",
+    "environment": "${environment}",
+    "severity": "${zonesDegraded.severity}"
+  },
+  "annotations": {
+    "summary": "Queue zones degraded",
+    "description": "{{$value}} queue zones have been Degraded for ${zonesDegraded.minutes} minutes: a device of each is offline or degraded (see the devices rules), so their numbers are flagged.",
+    "runbook": "wiki/10-Operations-Runbook.md#41-sensor-offline"
+  },
+  "disabled": false
+}

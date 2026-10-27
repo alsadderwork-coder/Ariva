@@ -1,0 +1,77 @@
+{
+  "alert": "Ariva flight feed stale (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "Flight feeds stale for the whole window (ARV-259): no message within their cadence while flights are due, so arrival waves and staffing read old flights.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.feeds.stale",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            }
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${aodbFeedStale.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${aodbFeedStale.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "aodbFeedStale",
+    "environment": "${environment}",
+    "severity": "${aodbFeedStale.severity}"
+  },
+  "annotations": {
+    "summary": "Flight feed stale",
+    "description": "{{$value}} flight feeds have been stale for ${aodbFeedStale.minutes} minutes: no message within their cadence while flights are due.",
+    "runbook": "wiki/10-Operations-Runbook.md#43-stale-aodb-feed"
+  },
+  "disabled": false
+}

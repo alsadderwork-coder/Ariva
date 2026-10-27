@@ -126,20 +126,20 @@ Known gaps (ARV-179), and what covers each:
 
 ## 3. Alerts on the system itself
 
-| Alarm | Severity (proposal) | Goes to |
-|---|---|---|
-| Sensor offline, sensor degraded | Warning | Site administrator, local partner (ticket) |
-| Zone `Unknown` (entry or exit line without coverage) | Critical | Site administrator, Dalil support |
-| Clock drift unstable | Warning | Local partner, site IT |
-| Stale AODB feed | Warning | Airport IT |
-| AMAN feed stopped | Critical (border) | Border authority IT, Dalil support |
-| Unknown AMAN desk or gate code | Warning | Site administrator |
-| Kafka consumer lag growing, outbox backlog | Critical | Dalil support |
-| Bin maturity backlog | Warning | Dalil support |
-| Database disk filling, retention job failed (TimescaleDB's policies, or the Cronz `RelationalRetention` job's error and warnings, section 4.8m) | Critical | Site IT, Dalil support |
-| Display stale | Warning | Terminal or border operations |
-| Certificate expiring | Warning at 30 days, critical at 7 | Site IT |
-| Integration client locked out | Warning | Site administrator |
+| Alarm | Severity (proposal) | Goes to | Rule (section 3.1) |
+|---|---|---|---|
+| Sensor offline, sensor degraded | Warning | Site administrator, local partner (ticket) | `devicesOffline`, `devicesDegraded`; the zones they leave Degraded, `zonesDegraded` |
+| Zone `Unknown` (entry or exit line without coverage) | Critical | Site administrator, Dalil support | None yet (ARV-259a): it needs a metric of its own |
+| Clock drift unstable | Warning | Local partner, site IT | None yet (ARV-259a) |
+| Stale AODB feed | Warning | Airport IT | `aodbFeedStale` |
+| AMAN feed stopped | Critical (border) | Border authority IT, Dalil support | `amanFeedStale` (border) |
+| Unknown AMAN desk or gate code | Warning | Site administrator | `amanCodesUnmapped` (border) |
+| Kafka consumer lag growing, outbox backlog | Critical | Dalil support | `streamConsumerLag`, `streamCheckpointStale`, `outboxBacklog`, `consumerHeld` |
+| Bin maturity backlog | Warning | Dalil support | None yet (ARV-259a) |
+| Database disk filling, retention job failed (TimescaleDB's policies, or the Cronz `RelationalRetention` job's error and warnings, section 4.8m) | Critical | Site IT, Dalil support | `disk`; the failed jobs none yet (ARV-259a) |
+| Display stale | Warning | Terminal or border operations | None yet (ARV-259a) |
+| Certificate expiring | Warning at 30 days, critical at 7 | Site IT | `certificateExpiry`, `ingressCertificateExpiry` |
+| Integration client locked out | Warning | Site administrator | `integrationLockout` |
 
 ### 3.1 The alert rules the chart ships (ARV-125b)
 
@@ -175,10 +175,15 @@ Every rule reads its own release only (section 1.1): the Ariva metrics for `depl
 | `ingressCertificateExpiry` | The certificate cert-manager manages in `namespaces` (empty: the release's) that ends soonest ends within those days (cert-manager's metric, its namespace read from the label `namespaceLabel`: `namespace` or `exported_namespace`) | 30 and 7 days, the release's namespace, `namespace` | Warning, critical | 4.9 |
 | `amanFeedStale` (off by default; turn it on in border deployments) | A border site's AMAN feed unheard for longer than T_stale (`ariva.border.feed_age_seconds` by `site`, the alert naming the site; ARV-257), or no Stream replica reporting any site's feed age for the window (the alert then names no site) | 2 minutes (T_stale, formulas F10). Keep `minutes` times 60 above 60 seconds, plus AMAN's delivery interval (the pull transport's poll, 30 seconds at least; about none over Kafka or REST), plus twice `Border:DeskFeed:PollSeconds` (30 seconds by default), with room for AMAN's own publishing delay: 2 suits Kafka and REST, 3 the pull transport; the chart refuses less than 2 | Critical | 4.4 |
 | `devicesOffline` | The share of monitored devices Offline above `share` for the whole window | 0.2 for 5 minutes (Proposed) | Warning | 4.1 |
+| `devicesDegraded` (ARV-259) | Any commissioned device reporting itself Degraded for the whole window (`ariva.devices.degraded`, the largest copy: only the Api.Main replica that wins a sweep reports it) | 5 minutes (Proposed) | Warning | 4.1 |
+| `zonesDegraded` (ARV-259; section 2's degraded count) | Any queue zone Degraded for the whole window (`ariva.zones.degraded_now`): a device of the zone is offline or degraded, so its numbers are flagged. Device-driven: one device out is enough, whether or not other sensors cover its lines; it is not section 3's zone `Unknown` (a line without coverage), which has no rule yet | 5 minutes (Proposed) | Warning | 4.1 |
+| `aodbFeedStale` (ARV-259) | Any flight feed stale for the whole window (`ariva.feeds.stale`, the largest copy: only the Integration replica that wins a sweep reports it): no message within its cadence while flights are due | 5 minutes (Proposed) | Warning | 4.3 |
+| `amanCodesUnmapped` (ARV-259; off by default, turn it on in border deployments) | Any AMAN record whose desk or gate code has no mapping at a site, in the window (`ariva.border.feed.unmapped` by `site`, the alert naming the site) | 15 minutes (Proposed) | Warning | 4.8h |
+| `integrationLockout` (ARV-259) | Any integration client locked out in the window (`ariva.integration.lockouts`) | 15 minutes (Proposed) | Warning | 4.8d |
 | `scannerSignaturesStale` (ARV-092c) | The largest `ariva.uploads.scanner.signature_age` over the api-main pods above `maxAgeHours` for the whole window | 48 hours for 15 minutes (Proposed) | Warning | 4.18, Signatures stale |
 | `scannerNotAnswering` (ARV-092c) | The smallest `ariva.uploads.scanner.answered` below 1 for the whole window: a pod's clamd gives no answer, and that pod refuses every upload | 20 minutes (Proposed) | Critical | 4.18, Scanner not answering |
 
-The alarms of the table above that are not rules yet (sensor degraded, zone `Unknown`, clock drift, stale AODB feed, unknown AMAN codes, bin maturity backlog, a failed retention job, display stale, a client locked out) are read from the dashboards and the log until rules are added for them.
+The alarms of section 3 that are not rules yet need a metric each first (ARV-259a): zone `Unknown` (an entry or exit line without coverage, the queue engine's Unknown wait; `zonesDegraded` fires on any device out, which is broader), clock drift unstable, bin maturity backlog, a failed retention job (the Cronz `RelationalRetention` job's error and warnings, and TimescaleDB's own retention and compression jobs) and display stale. Until then they are read from the dashboards and the log: the live screens' Unknown waits (4.2), the device clock estimates (4.5), the stream's bins (4.5b), the Cronz job's log (4.8m) and `timescaledb_information.job_stats` (4.7; a filling disk is `disk`'s), and the display boards (4.8).
 
 Operational alerts for queues (for example R-001 "Nowcast above 15 min") are configured by users; see [Administration guide](11-Administration-Guide.md).
 
@@ -189,6 +194,7 @@ Each procedure lists symptoms, the effect on numbers, checks and actions. Record
 ### 4.1 Sensor offline
 
 - **Symptoms**: device status `Offline`; rule R-003 "Sensor offline" fires; its zone turns `Degraded`; the floor plan shows a gap.
+- **Degraded, not Offline** (ARV-259, `devicesDegraded`): the device is heard but reports itself not online (its own status report); its zone turns `Degraded` and `zonesDegraded` fires with it. An unstable clock offset does not mark a device Degraded today: it flags the device's events `ClockUnreliable` only, and has no rule yet (4.5, ARV-259a). Read the device's last status and clock estimate on the devices screen, then the vendor's own health page; a device that stays Degraded is serviced as an offline one.
 - **Effect**: bins for the zone flagged `Degraded`; the nowcast falls back to desk-event throughput and neighbouring sensors and is shown as a band; if an entry or exit line loses coverage, the wait becomes `Unknown` and screens show a neutral message.
 - **Checks**:
   1. Is it one sensor or a whole switch? Look at neighbouring devices on the same switch.

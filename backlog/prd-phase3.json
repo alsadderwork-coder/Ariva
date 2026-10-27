@@ -1436,9 +1436,9 @@
     {
       "id": "ARV-259",
       "title": "[E17] Alert rules for the wiki 10 section 3 alarms not built yet",
-      "description": "From ARV-179 (2026-10-26; the ARV-179 review's Low 7, from the ARV-125b work). Wiki 10 section 3 lists the alarms on the system itself; section 3.1 lists the rules the chart ships. These have no rule yet: sensor degraded, zone Unknown (an entry or exit line without coverage), clock drift unstable, stale AODB feed, unknown AMAN desk or gate code, bin maturity backlog, retention job failed (the database disk part ships), display stale, and integration client locked out. Most have a metric already (ariva.devices.degraded, ariva.zones.degraded_now, ariva.feeds.stale, ariva.border.feed.unmapped, ariva.integration.lockouts); the others need one first. The list was carried in ARV-179's notes and belonged to no story. CWEs to review: CWE-400, CWE-532.",
+      "description": "From ARV-179 (2026-10-26; the ARV-179 review's Low 7, from the ARV-125b work). Wiki 10 section 3 lists the alarms on the system itself; section 3.1 lists the rules the chart ships. These have no rule yet: sensor degraded, zone Unknown (an entry or exit line without coverage), clock drift unstable, stale AODB feed, unknown AMAN desk or gate code, bin maturity backlog, retention job failed (the database disk part ships), display stale, and integration client locked out. Most have a metric already (ariva.devices.degraded, ariva.zones.degraded_now, ariva.feeds.stale, ariva.border.feed.unmapped, ariva.integration.lockouts); the others need one first. The list was carried in ARV-179's notes and belonged to no story. Split 2026-10-27: this story ships the rules over the metrics that exist (sensor degraded and the zones it leaves Degraded, stale AODB feed, unknown AMAN codes, integration client locked out); zone Unknown, clock drift, bin maturity, retention failures (Cronz's and TimescaleDB's jobs) and stale displays need a metric each in another host and moved to ARV-259a. CWEs to review: CWE-400, CWE-532.",
       "acceptanceCriteria": [
-        "Each alarm of wiki 10 section 3 has a chart rule (off by default where it fits only some deployments) or a stated reason in section 3.1 why it has none, with a metric for each rule that needs one (bounded tags, MetricTagTests and MeterExportTests covering it)",
+        "Each alarm of wiki 10 section 3 whose metric exists has a chart rule (off by default where it fits only some deployments) or a stated reason in section 3.1 why it has none; the five without a metric (zone Unknown, clock drift, bin maturity, retention failures, stale displays) are named in section 3.1 as ARV-259a's",
         "Each rule has a chart render test (its expression, its for duration and severity from values), as the ARV-125b rules have",
         "Wiki 10 sections 3 and 3.1 updated: what each rule watches and what to do when it fires",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
@@ -1448,10 +1448,31 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3. Split from ARV-179's notes by its review (Low 7, backlog/progress.md, 2026-10-26).",
       "dependsOn": [
         "ARV-179"
+      ]
+    },
+    {
+      "id": "ARV-259a",
+      "title": "[E17] Metrics and alert rules for zone Unknown, clock drift, bin maturity, retention failures and stale displays",
+      "description": "Split from ARV-259 (2026-10-27): five of the wiki 10 section 3 alarms have no metric yet, each in another host, so they did not fit ARV-259 (which ships the rules over the existing metrics): zone Unknown (an entry or exit line without coverage: the queue engine's Unknown wait, Ariva.Api.Stream; ARV-259's zonesDegraded counts zones with any device out, which is broader, as its review found), clock drift unstable (the device clock estimates of F19, Ariva.Api.Stream; wiki 10 section 4.5 says an unstable offset marks the sensor Degraded, which no code does: an unreliable clock only flags its events ClockUnreliable, so either implement it, which devicesDegraded then fires on, or correct 4.5), bin maturity backlog (bins not final past their maturity, Ariva.Api.Cronz), retention job failed (the Cronz RelationalRetention job's error and warnings, and TimescaleDB's own retention and compression jobs, timescaledb_information.job_stats) and display stale (Ariva.Api.Main's display heartbeats). Each needs a bounded metric first, then its rule. With the zone Unknown rule, consider a tunable count for zonesDegraded (wiki 10 section 2's 'degraded count above normal'; it fires on any degraded zone today, so a site with a zone known to be degraded can only turn it off; ARV-259 review round 2, advisory 2). CWEs to review: CWE-400, CWE-532.",
+      "acceptanceCriteria": [
+        "Each of the five alarms has a metric with bounded tags (MetricTagTests and MeterExportTests covering it) and a chart rule (off by default where it fits only some deployments), or a stated reason in wiki 10 section 3.1 why it has none",
+        "Each rule has a chart render test (its expression, its window and severity from values), as the ARV-125b rules have",
+        "Wiki 10 sections 2a, 3 and 3.1 updated: what each metric and rule watches and what to do when it fires",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M. Phase 3. Split from ARV-259 because each metric lives in another host (backlog/progress.md, 2026-10-27).",
+      "dependsOn": [
+        "ARV-259"
       ]
     },
     {
@@ -1595,6 +1616,25 @@
       "notes": "Size XS. Phase 3. Filed 2026-10-26 by ARV-254 from its security review (round 2, informational; it predates ARV-254). No sign-in code.",
       "dependsOn": [
         "ARV-254"
+      ]
+    },
+    {
+      "id": "ARV-267",
+      "title": "[E17] Counters an increase rule reads are seen from their first increment",
+      "description": "From the ARV-259 security review (2026-10-27, advisory 8). The hosts export counters cumulatively over OTLP, and a counter has no series until its first Add, so under a Prometheus-style increase the first increment of a new series is often dropped: the first dead letter, producer fatal error, broker streak or integration client lockout after a pod starts may not fire deadLetters, kafkaProducerFatal, outboxBrokerStreak or integrationLockout. Not verified against SigNoz v0.146 (no SigNoz in the harness). Verify first; if it holds, prime each such counter at 0 for its bounded tag values at start (or switch those instruments to delta temporality), with a test. The integration lockout counter lives in SvcIntegrationAuth.cs, under the owner's sign-in and auth freeze: its part waits for the freeze to lift. CWEs to review: CWE-400, CWE-778.",
+      "acceptanceCriteria": [
+        "How SigNoz evaluates increase over a counter's first data point is checked and recorded (wiki 10 section 3.1), with the source or a run against a SigNoz instance",
+        "If the first increment is dropped: every counter an increase rule reads (deadLetters, kafkaProducerFatal, outboxBrokerStreak, amanCodesUnmapped, integrationLockout and any later one) is primed at 0 for its tag values at start, or exported as delta, with MetricTagTests covering it; the integration lockout counter only once the auth freeze is lifted",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed from the ARV-259 security review's advisory 8 (backlog/progress.md, 2026-10-27). Part waits on the auth freeze.",
+      "dependsOn": [
+        "ARV-259"
       ]
     }
   ]

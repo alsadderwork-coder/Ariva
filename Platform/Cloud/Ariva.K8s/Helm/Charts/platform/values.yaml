@@ -516,6 +516,18 @@ monitoring:
     amanFeedStale: { enabled: false, minutes: 2, severity: critical }
     # The share of monitored devices Offline above share for the whole window.
     devicesOffline: { enabled: true, minutes: 5, share: 0.2, severity: warning }
+    # Commissioned devices reporting themselves Degraded, any, for the whole window (ARV-259).
+    devicesDegraded: { enabled: true, minutes: 5, severity: warning }
+    # Queue zones Degraded, any, for the whole window (ARV-259; wiki 10 section 2, the degraded count): a device of the zone
+    # is offline or degraded. A line without coverage (zone Unknown) has no rule yet (ARV-259a).
+    zonesDegraded: { enabled: true, minutes: 5, severity: warning }
+    # Flight feeds stale (no message within their cadence while flights are due), any, for the whole window (ARV-259).
+    aodbFeedStale: { enabled: true, minutes: 5, severity: warning }
+    # AMAN records whose desk or gate code has no mapping, any in the window, per site (ARV-259). Border deployments only:
+    # turn it on there.
+    amanCodesUnmapped: { enabled: false, minutes: 15, severity: warning }
+    # An integration client locked out, any in the window (ARV-259).
+    integrationLockout: { enabled: true, minutes: 15, severity: warning }
     # A Kafka producer fatal error or recreation (ARV-167) in the window.
     kafkaProducerFatal: { enabled: true, minutes: 5, severity: critical }
     # A consumed topic missing (ARV-176) for the whole window.

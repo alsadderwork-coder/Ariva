@@ -1,0 +1,77 @@
+{
+  "alert": "Ariva sensors degraded (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "Commissioned devices reporting themselves Degraded for the whole window (ARV-259): their zones' numbers are flagged, never guessed.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.devices.degraded",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            }
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${devicesDegraded.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${devicesDegraded.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "devicesDegraded",
+    "environment": "${environment}",
+    "severity": "${devicesDegraded.severity}"
+  },
+  "annotations": {
+    "summary": "Sensors degraded",
+    "description": "{{$value}} commissioned devices have reported themselves Degraded for ${devicesDegraded.minutes} minutes; their zones are Degraded and their numbers flagged.",
+    "runbook": "wiki/10-Operations-Runbook.md#41-sensor-offline"
+  },
+  "disabled": false
+}
