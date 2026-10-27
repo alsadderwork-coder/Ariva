@@ -297,6 +297,135 @@ public sealed class DeclarativeConformanceTests
         allocated.Should().BeLessThan(500_000, "the name (1 MB as a string) is measured as written and refused before any copy of it");
     }
 
+    /// <summary>
+    /// ARV-256: a filter and a direction compared against a value of the payload ($) or the group (^). Before, the value
+    /// was copied for every item (a 250,000 character value under 8,000 items, about 4 GB of short-lived copies); now one
+    /// longer than any value a mapping may name matches none and is never copied.
+    /// </summary>
+    private static readonly DeclarativeMapping SharedFilter = DeclarativeMapping.Parse(Encoding.UTF8.GetBytes("""
+        { "name": "shared-filter-v1", "title": "A filter and a direction shared by the items",
+          "crossings": { "items": "$.events[*]", "where": [{ "path": "$.kind", "equals": ["people"] }], "line": "@.line",
+                         "direction": { "path": "$.d", "in": ["in"], "out": ["out"] }, "time": { "path": "@.s", "unit": "s" } } }
+        """), "shared-filter-v1");
+
+    /// <summary>The same, read from the group (^): the items of one batch share its kind and direction.</summary>
+    private static readonly DeclarativeMapping GroupFilter = DeclarativeMapping.Parse(Encoding.UTF8.GetBytes("""
+        { "name": "group-filter-v1", "title": "A filter and a direction shared by a group's items",
+          "crossings": { "groups": "$.batches[*]", "items": "^.events[*]", "where": [{ "path": "^.kind", "equals": ["people"] }], "line": "@.line",
+                         "direction": { "path": "^.d", "in": ["in"], "out": ["out"] }, "time": { "path": "@.s", "unit": "s" } } }
+        """), "group-filter-v1");
+
+    [Theory]
+    [InlineData("filter", "$")]
+    [InlineData("direction", "$")]
+    [InlineData("filter", "^")]
+    [InlineData("direction", "^")]
+    public void Map_Should_NotCopyAHugeSharedFilterOrDirectionValue_When_EveryItemIsComparedWithIt(string which, string level)
+    {
+        // Against the same 8,000 items with a short value that matches nothing either: the walk's own allocations (the item
+        // list, a filter's closure per item) are the same in both, so the difference is what the huge value cost.
+        var huge = Allocated(which, level, new string('x', 250_000), out var hugeIgnored);
+        var plain = Allocated(which, level, "other", out var plainIgnored);
+
+        hugeIgnored.Should().Be(8_000, "a value longer than any the mapping names matches no filter and no direction");
+        plainIgnored.Should().Be(8_000);
+        (huge - plain).Should().BeLessThan(250_000, "the value (500 KB as a string) is measured as written and never copied, not even once");
+    }
+
+    /// <summary>
+    /// The bytes one mapping of 8,000 items allocates with <paramref name="value"/> as the filter or direction value they
+    /// share, read from the payload ($) or from their one group (^).
+    /// </summary>
+    private static long Allocated(string which, string level, string value, out int ignored)
+    {
+        var (kind, direction) = which == "filter" ? (value, "in") : ("people", value);
+        var shared = "\"kind\": " + JsonSerializer.Serialize(kind) + ", \"d\": " + JsonSerializer.Serialize(direction) + ", \"events\": [" +
+            string.Join(',', Enumerable.Repeat("{ \"line\": \"Entry A\", \"s\": 1790949899 }", 8_000)) + "]";
+        var root = Parse(level == "$" ? "{ " + shared + " }" : "{ \"batches\": [{ " + shared + " }] }");
+        var mapping = level == "$" ? SharedFilter : GroupFilter;
+        MappedPush Map() => DeclarativeMapper.Map(root, mapping, new DevicePose(0, 0, 0), 2_000, Received);
+
+        // Measured on a second call, so that loading and compiling the code on the way are not counted.
+        Map();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        ignored = Map().Ignored;
+        return GC.GetAllocatedBytesForCurrentThread() - before;
+    }
+
+    [Theory]
+    [InlineData("\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"", 64)]
+    [InlineData("\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"", null)]
+    [InlineData("1234567890123456789012345678901234567890123456789012345678901234", 64)]
+    [InlineData("12345678901234567890123456789012345678901234567890123456789012345", null)]
+    [InlineData("true", 4)]
+    [InlineData("{}", null)]
+    public void Scalar_Should_MatchNone_When_TheValueIsLongerThanAnyAMappingMayName(string json, int? length)
+    {
+        var value = DeclarativeMapper.Scalar(Parse(json));
+
+        if (length is null)
+            value.Should().BeNull();
+        else
+            value.Should().HaveLength(length.Value);
+    }
+
+    [Theory]
+    [InlineData(64, true)]
+    [InlineData(65, false)]
+    public void Scalar_Should_CountAnEscapedCharacterOnce_When_ItMeasuresAValue(int length, bool kept)
+    {
+        // Six bytes a character as written, the most there is: 64 of them are read, 65 are refused without a copy.
+        var value = DeclarativeMapper.Scalar(Parse("\"" + string.Concat(Enumerable.Repeat("\\u00e9", length)) + "\""));
+
+        if (kept)
+            value.Should().Be(new string('\u00e9', length));
+        else
+            value.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(32, true)]
+    [InlineData(33, false)]
+    public void Scalar_Should_CountASurrogatePairAsTwo_When_ItMeasuresAValue(int pairs, bool kept)
+    {
+        // A pair is two UTF-16 code units and 12 bytes escaped: 32 pairs are 64 units in 384 bytes, read; 33 are past both.
+        var value = DeclarativeMapper.Scalar(Parse("\"" + string.Concat(Enumerable.Repeat("\\uD83D\\uDE00", pairs)) + "\""));
+
+        if (kept)
+            value.Should().Be(string.Concat(Enumerable.Repeat("\U0001F600", pairs)));
+        else
+            value.Should().BeNull();
+    }
+
+    /// <summary>
+    /// ARV-256: values read from the group (^) are decoded once per group and values read from the payload ($) once per
+    /// message, not once per item: three groups of five samples read the zone and the count from their group and the time
+    /// and a filter's value from the payload, which is 3 x 2 + 2 decodes, where every item decoding them would be 60.
+    /// </summary>
+    [Fact]
+    public void Map_Should_DecodeAGroupValueOncePerGroupAndAPayloadValueOncePerMessage_When_ItemsReadThem()
+    {
+        var mapping = DeclarativeMapping.Parse(Encoding.UTF8.GetBytes("""
+            { "name": "shared-decode-v1", "title": "Values shared by the items",
+              "occupancy": { "groups": "$.zones[*]", "items": "^.samples[*]", "where": [{ "path": "$.site", "equals": ["T1"] }],
+                             "zone": "^.name", "count": "^.n", "time": { "path": "$.s", "unit": "s" } } }
+            """), "shared-decode-v1");
+        var group = (string name, int n) => "{ \"name\": \"" + name + "\", \"n\": " + n + ", \"samples\": [{}, {}, {}, {}, {}] }";
+        var payload = "{ \"site\": \"T1\", \"s\": 1790949899, \"zones\": [" + group("Snake A", 4) + ", " + group("Snake B", 7) + ", " + group("Snake C", 9) + "] }";
+        var root = Parse(payload);
+
+        DeclarativeMapper.SharedDecodes = 0;
+        var mapped = DeclarativeMapper.Map(root, mapping, new DevicePose(0, 0, 0), 2_000, Received);
+        var decodes = DeclarativeMapper.SharedDecodes;
+
+        mapped.Occupancy.Should().HaveCount(15);
+        mapped.Occupancy.Select(o => (o.ZoneName, o.Count)).Distinct().Should().Equal(("Snake A", 4), ("Snake B", 7), ("Snake C", 9));
+        mapped.Occupancy.Select(o => o.TimeUtc).Distinct().Should().ContainSingle();
+        decodes.Should().Be(8, "the zone and the count once for each of the three groups, the time and the filter's value once for the message");
+        mapped.Occupancy.Chunk(5).Should().OnlyContain(samples => samples.All(o => ReferenceEquals(o.ZoneName, samples[0].ZoneName)),
+            "the five samples of a group share the one name decoded for it");
+    }
+
     [Fact]
     public void Map_Should_HoldTheEventAndWorkLimits()
     {

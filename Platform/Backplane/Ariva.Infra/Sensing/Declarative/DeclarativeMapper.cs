@@ -13,7 +13,9 @@ namespace Ariva.Infra.Sensing.Declarative;
 /// looked at, and at most the event limit become events. Names and ids are at most the canonical lengths
 /// (<see cref="CanonicalEventRules.MaxNameLength"/>, <see cref="CanonicalEventRules.MaxTrackIdLength"/>), measured before they
 /// are copied (ARV-178): a mapping that reads one from the group (^) or the payload ($) reads it for every item, so an
-/// unbounded value would be copied as many times.
+/// unbounded value would be copied as many times. Since ARV-256 a value read from the group or the payload is decoded once
+/// per group (a payload one once per message) and kept for its items, and a filter or direction value longer than any a
+/// mapping may name (<see cref="DeclarativeMapping.MaxFilterValueLength"/>) matches none without being copied.
 /// </summary>
 public static class DeclarativeMapper
 {
@@ -61,7 +63,7 @@ public static class DeclarativeMapper
         {
             state.Each(crossings, "crossings", (group, item, i) =>
             {
-                var direction = Scalar(state.Value(crossings.Direction, group, item));
+                var direction = state.Scalar(crossings.Direction, group, item);
                 CrossingDirection? mapped = direction is null ? null
                     : crossings.In.Contains(direction) ? CrossingDirection.In
                     : crossings.Out.Contains(direction) ? CrossingDirection.Out
@@ -104,15 +106,37 @@ public static class DeclarativeMapper
             ReceiptTimed: receiptTimed);
     }
 
-    /// <summary>A string as written, a number as written, true or false; null for anything else.</summary>
-    internal static string Scalar(JsonElement? value) => value switch
+    /// <summary>
+    /// A string as written, a number as written, true or false; null for anything else, and for a value longer than any a
+    /// mapping may name in a filter or a direction (<see cref="DeclarativeMapping.MaxFilterValueLength"/>), which matches
+    /// none (ARV-256). Its written length is looked at first, as in names (ARV-178): a string of more than six bytes a
+    /// character of the limit, or a number written longer than the limit, is not copied at all.
+    /// </summary>
+    internal static string Scalar(JsonElement? value)
     {
-        { ValueKind: JsonValueKind.String } v => v.GetString(),
-        { ValueKind: JsonValueKind.Number } v => v.GetRawText(),
-        { ValueKind: JsonValueKind.True } => "true",
-        { ValueKind: JsonValueKind.False } => "false",
-        _ => null
-    };
+        const int max = DeclarativeMapping.MaxFilterValueLength;
+        switch (value)
+        {
+            case { ValueKind: JsonValueKind.String } text:
+                var written = System.Runtime.InteropServices.JsonMarshal.GetRawUtf8Value(text).Length - 2;
+                return written <= 6 * max && text.GetString() is { Length: <= max } kept ? kept : null;
+            case { ValueKind: JsonValueKind.Number } number:
+                return System.Runtime.InteropServices.JsonMarshal.GetRawUtf8Value(number).Length <= max ? number.GetRawText() : null;
+            case { ValueKind: JsonValueKind.True }:
+                return "true";
+            case { ValueKind: JsonValueKind.False }:
+                return "false";
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// How many values read from a group (^) or the payload ($) this thread has decoded (ARV-256): the tests read it to
+    /// show that each is decoded once per group (a payload one once per message), not once per item.
+    /// </summary>
+    [ThreadStatic]
+    internal static int SharedDecodes;
 
     /// <summary>A time in the mapping's unit, between 2000 and 2100.</summary>
     internal static DateTime ToTime(JsonElement value, DeclarativeMapping.TimeUnit unit, string what)
@@ -176,22 +200,59 @@ public static class DeclarativeMapper
     private sealed class State(JsonElement root, DeclarativeMapping mapping, DevicePose pose, int maxEvents, DateTime receivedUtc)
     {
         private readonly HashSet<string> _notes = new(StringComparer.Ordinal);
+        private readonly Dictionary<RestrictedPath, JsonElement?> _perMessage = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<RestrictedPath, JsonElement?> _perGroup = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<(RestrictedPath Path, Decoding As), object> _decodedPerMessage = [];
+        private readonly Dictionary<(RestrictedPath Path, Decoding As), object> _decodedPerGroup = [];
         private int _looked;
 
+        /// <summary>What a shared value was decoded as; a time per unit, since two fields may read one path in two units.</summary>
+        private enum Decoding
+        {
+            Scalar, Id, Name, Integer, Number,
+            TimeRfc3339, TimeSeconds, TimeMilliseconds, TimeMicroseconds, TimeNanoseconds
+        }
+
         /// <summary>
-        /// The value at a path for this item. Values from the group (^) or the payload (<c>$</c>) are read once per group:
-        /// looking a member up walks the object's members, so re-reading a wide group object for every item would cost
-        /// items times members.
+        /// The value at a path for this item. Values from the group (^) are read once per group and values from the payload
+        /// (<c>$</c>) once per message: looking a member up walks the object's members, so re-reading a wide object for every
+        /// item would cost items times members.
         /// </summary>
         public JsonElement? Value(RestrictedPath path, JsonElement group, JsonElement item)
         {
             if (path.Root == '@')
                 return path.Single(root, group, item);
-            if (!_perGroup.TryGetValue(path, out var value))
-                _perGroup[path] = value = path.Single(root, group, item);
+            var read = path.Root == '$' ? _perMessage : _perGroup;
+            if (!read.TryGetValue(path, out var value))
+                read[path] = value = path.Single(root, group, item);
             return value;
         }
+
+        /// <summary>
+        /// A group (^) or payload (<c>$</c>) value already decoded as <paramref name="as"/> for this group or message (ARV-256);
+        /// an item's own (@) is never kept. A value that fails to decode refuses the message, so only decoded ones are kept.
+        /// </summary>
+        private bool TryDecoded<T>(RestrictedPath path, Decoding @as, out T value)
+        {
+            value = default;
+            if (path.Root == '@' || !(path.Root == '$' ? _decodedPerMessage : _decodedPerGroup).TryGetValue((path, @as), out var known))
+                return false;
+            value = (T)known;
+            return true;
+        }
+
+        private T Decoded<T>(RestrictedPath path, Decoding @as, T value)
+        {
+            if (path.Root == '@')
+                return value;
+            (path.Root == '$' ? _decodedPerMessage : _decodedPerGroup)[(path, @as)] = value;
+            SharedDecodes++;
+            return value;
+        }
+
+        /// <summary>A filter's or a direction's value (<see cref="DeclarativeMapper.Scalar"/>), decoded once when shared.</summary>
+        public string Scalar(RestrictedPath path, JsonElement group, JsonElement item) =>
+            TryDecoded(path, Decoding.Scalar, out string known) ? known : Decoded(path, Decoding.Scalar, DeclarativeMapper.Scalar(Value(path, group, item)));
 
         public List<TrackPosition> Tracks { get; } = [];
         public List<LineCrossing> Crossings { get; } = [];
@@ -220,13 +281,14 @@ public static class DeclarativeMapper
             foreach (var group in groups)
             {
                 _perGroup.Clear();
+                _decodedPerGroup.Clear();
                 var items = section.Items.Many(root, group, budget - _looked);
                 _looked += items.Count;
                 if (_looked > budget)
                     throw new PushFormatException($"At most {budget} items per message.");
                 foreach (var item in items)
                 {
-                    if (!section.Where.All(f => Scalar(Value(f.Path, group, item)) is { } value && f.Values.Contains(value)))
+                    if (!section.Where.All(f => Scalar(f.Path, group, item) is { } value && f.Values.Contains(value)))
                     {
                         Ignore($"{kind}: items the mapping's filters leave out");
                         continue;
@@ -248,13 +310,15 @@ public static class DeclarativeMapper
         /// <summary>An id: a string of at most <see cref="CanonicalEventRules.MaxTrackIdLength"/> characters, or an integer written as a number.</summary>
         public string Id(RestrictedPath path, JsonElement group, JsonElement item, string what)
         {
+            if (TryDecoded(path, Decoding.Id, out string known))
+                return known;
             var value = Need(path, group, item, what);
-            return value.ValueKind switch
+            return Decoded(path, Decoding.Id, value.ValueKind switch
             {
                 JsonValueKind.String => Bounded(value, CanonicalEventRules.MaxTrackIdLength, path, what),
                 JsonValueKind.Number when value.TryGetInt64(out var number) => number.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 _ => throw new PushFormatException($"{what} is not a string or an integer ({path}).")
-            };
+            });
         }
 
         public string OptionalId(RestrictedPath path, JsonElement group, JsonElement item, string what) =>
@@ -266,10 +330,12 @@ public static class DeclarativeMapper
         /// </summary>
         public string Name(RestrictedPath path, JsonElement group, JsonElement item, string what)
         {
+            if (TryDecoded(path, Decoding.Name, out string known))
+                return known;
             var value = Need(path, group, item, what);
-            return value.ValueKind == JsonValueKind.String
+            return Decoded(path, Decoding.Name, value.ValueKind == JsonValueKind.String
                 ? Bounded(value, CanonicalEventRules.MaxNameLength, path, what)
-                : throw new PushFormatException($"{what} is not a string ({path}).");
+                : throw new PushFormatException($"{what} is not a string ({path})."));
         }
 
         /// <summary>
@@ -289,19 +355,25 @@ public static class DeclarativeMapper
 
         public int Integer(RestrictedPath path, JsonElement group, JsonElement item, string what)
         {
+            if (TryDecoded(path, Decoding.Integer, out int known))
+                return known;
             var value = Need(path, group, item, what);
-            return value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)
+            return Decoded(path, Decoding.Integer, value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)
                 ? number
-                : throw new PushFormatException($"{what} is not an integer ({path}).");
+                : throw new PushFormatException($"{what} is not an integer ({path})."));
         }
 
         private double Number(RestrictedPath path, JsonElement group, JsonElement item, string what) =>
-            PushJson.Number(Need(path, group, item, what)) ?? throw new PushFormatException($"{what} is not a finite number ({path}).");
+            OptionalNumber(path, group, item, what) ?? throw new PushFormatException($"{what} is missing ({path}).");
 
-        public double? OptionalNumber(RestrictedPath path, JsonElement group, JsonElement item, string what) =>
-            Value(path, group, item) is { } value
+        public double? OptionalNumber(RestrictedPath path, JsonElement group, JsonElement item, string what)
+        {
+            if (TryDecoded(path, Decoding.Number, out double? known))
+                return known;
+            return Decoded<double?>(path, Decoding.Number, Value(path, group, item) is { } value
                 ? PushJson.Number(value) ?? throw new PushFormatException($"{what} is not a finite number ({path}).")
-                : null;
+                : null);
+        }
 
         /// <summary>A position in metres on the device's level: scaled, and placed with the device's pose when given in its own frame.</summary>
         public (double X, double Y) Position(RestrictedPath x, RestrictedPath y, JsonElement group, JsonElement item, int i)
@@ -310,7 +382,21 @@ public static class DeclarativeMapper
             return mapping.DeviceFrame ? pose.ToFloor(localX, localY) : (localX, localY);
         }
 
-        public DateTime Time(DeclarativeMapping.TimeField field, JsonElement group, JsonElement item, string what) =>
-            field.Received ? receivedUtc : ToTime(Need(field.Path, group, item, what), field.Unit, what);
+        public DateTime Time(DeclarativeMapping.TimeField field, JsonElement group, JsonElement item, string what)
+        {
+            if (field.Received)
+                return receivedUtc;
+            var @as = field.Unit switch
+            {
+                DeclarativeMapping.TimeUnit.Rfc3339 => Decoding.TimeRfc3339,
+                DeclarativeMapping.TimeUnit.Seconds => Decoding.TimeSeconds,
+                DeclarativeMapping.TimeUnit.Milliseconds => Decoding.TimeMilliseconds,
+                DeclarativeMapping.TimeUnit.Microseconds => Decoding.TimeMicroseconds,
+                _ => Decoding.TimeNanoseconds
+            };
+            return TryDecoded(field.Path, @as, out DateTime known)
+                ? known
+                : Decoded(field.Path, @as, ToTime(Need(field.Path, group, item, what), field.Unit, what));
+        }
     }
 }
