@@ -1,37 +1,37 @@
 {
-  "commit": "6c07ea5defec5eddd917da77212b459591abe6f8",
-  "at": "2026-10-26",
-  "stories": 6,
+  "commit": "477c5dffef7b2d063d8f70567f2d8eff0ba070e6",
+  "at": "2026-10-27",
+  "stories": 5,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 158
+      "seconds": 153
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 9
+      "seconds": 12
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 579
+      "seconds": 685
     },
     {
       "name": "test count guard self-test",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "unit test count guard (every listed case has its results)",
       "ok": true,
-      "seconds": 3
+      "seconds": 4
     },
     {
       "name": "security scanner self-test",
       "ok": true,
-      "seconds": 1
+      "seconds": 0
     },
     {
       "name": "security scan",
@@ -96,22 +96,22 @@
     {
       "name": "offline bundle verifier self-test",
       "ok": true,
-      "seconds": 8
+      "seconds": 9
     },
     {
       "name": "offline bundle builder self-test",
       "ok": true,
-      "seconds": 8
+      "seconds": 9
     },
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "seconds": 49
+      "seconds": 54
     },
     {
       "name": "nuget vulnerability audit (fails on high or critical)",
       "ok": true,
-      "seconds": 23
+      "seconds": 24
     },
     {
       "name": "npm audit (web)",
@@ -144,17 +144,17 @@
     {
       "name": "web lint",
       "ok": true,
-      "seconds": 10
+      "seconds": 11
     },
     {
       "name": "web build",
       "ok": true,
-      "seconds": 34
+      "seconds": 35
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 1196
+      "seconds": 1420
     },
     {
       "name": "integration test count guard (every listed case has its results)",
@@ -169,7 +169,7 @@
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 216
+      "seconds": 222
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
@@ -178,26 +178,16 @@
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 1263
+      "seconds": 1422
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
       "ok": true
     },
     {
-      "name": "mutation log check self-test",
+      "name": "mutation tests (no engine change since 6c07ea5def)",
       "ok": true,
-      "seconds": 0
-    },
-    {
-      "name": "dotnet tool restore (dotnet-stryker)",
-      "ok": true,
-      "seconds": 0
-    },
-    {
-      "name": "mutation tests (Stryker.NET in a worktree of 6c07ea5def, 3 engine files changed since 1f382c4184; fails on safe mode, no score or tests left out)",
-      "ok": true,
-      "seconds": 5020
+      "skipped": true
     }
   ]
 }
