@@ -65,6 +65,19 @@ public sealed class ProducerHardeningTests
         public void Advance(TimeSpan by) => Interlocked.Add(ref _ticks, by.Ticks);
     }
 
+    /// <summary>The relay's log lines with their level (ARV-264).</summary>
+    private sealed class RelayLines : ILogger<OutboxRelay>
+    {
+        public ConcurrentQueue<(LogLevel Level, string Text)> Logged { get; } = new();
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter) =>
+            Logged.Enqueue((logLevel, formatter(state, exception)));
+    }
+
     /// <summary>Records log lines with their level.</summary>
     private sealed class Lines : ILogger
     {
@@ -184,6 +197,26 @@ public sealed class ProducerHardeningTests
         KafkaProduce.IsTopicRefused(new ProduceException<string, byte[]>(new Error(code), null)).Should().Be(refused);
         KafkaProduce.IsTopicRefused(new InvalidOperationException("Outbox row 1 has an empty payload.")).Should().BeFalse();
         KafkaProduce.IsTopicRefused(new ObjectDisposedException(nameof(KafkaProduce))).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(ErrorCode.Local_MsgTimedOut, true)]
+    [InlineData(ErrorCode.Local_AllBrokersDown, false)]
+    [InlineData(ErrorCode.Local_Transport, false)]
+    [InlineData(ErrorCode.Local_QueueFull, false)]
+    [InlineData(ErrorCode.Local_TimedOut, false)]
+    [InlineData(ErrorCode.UnknownTopicOrPart, false)]
+    [InlineData(ErrorCode.MsgSizeTooLarge, false)]
+    public void IsPartitionUnavailable_Should_NameTheClientsMessageTimeoutAlone(ErrorCode code, bool partition)
+    {
+        // ARV-264: only a message that waited out the client's message timeout may be a partition without a leader (the relay
+        // then asks the probe whether the brokers answer); the cluster's absence, the producer's own states and the row's or
+        // topic's own failures are not.
+        KafkaProduce.IsPartitionUnavailable(new KafkaException(new Error(code))).Should().Be(partition);
+        KafkaProduce.IsPartitionUnavailable(new ProduceException<string, byte[]>(new Error(code), null)).Should().Be(partition);
+        KafkaProduce.IsPartitionUnavailable(new KafkaProduceTimeoutException("ariva.flow.nowcast.v1", KafkaProduce.SendTimeout)).Should().BeFalse();
+        KafkaProduce.IsPartitionUnavailable(new ObjectDisposedException(nameof(KafkaProduce))).Should().BeFalse();
+        KafkaProduce.IsPartitionUnavailable(new KafkaException(new Error(ErrorCode.Local_Fatal, "fatal", true))).Should().BeFalse();
     }
 
     [Fact]
@@ -397,6 +430,62 @@ public sealed class ProducerHardeningTests
             add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Outbox:BrokerRetrySeconds*");
         else
             add.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("0", true)]
+    [InlineData("9", true)]
+    [InlineData("10", false)]
+    [InlineData("60", false)]
+    [InlineData("120", false)]
+    [InlineData("121", true)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_TheRelaysPassTimeIsOutOfBounds(string seconds, bool refused)
+    {
+        // ARV-264 (its security review's L2): the pass's time decides how long a pass holds its transaction and leader lock, and
+        // whether a topic with a partition without a leader can be held, so it is bounded, or the host does not start.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Kafka:Enabled"] = "true",
+            ["Kafka:Outbox:PassSeconds"] = seconds
+        }).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (refused)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Outbox:PassSeconds*");
+        else
+            add.Should().NotThrow();
+    }
+
+    [Fact]
+    public void MinPassSecondsForTopicHolds_Should_BeTheProducersBoundAndASecond_When_ItIsChecked() =>
+        // ARV-264: the client's message timeout (30 s) is reported within the producer's bound, so a pass this long or longer
+        // has seen the report before its own bound cuts the send.
+        OutboxRelaySettings.MinPassSecondsForTopicHolds.Should().Be((int)KafkaProduce.SendTimeout.TotalSeconds + 1);
+
+    [Theory]
+    [InlineData(20, true)]
+    [InlineData(45, true)]
+    [InlineData(46, false)]
+    [InlineData(60, false)]
+    public async Task Relay_Should_WarnAtStart_When_ItsPassLeavesNoRoomForTheProducersReport(int passSeconds, bool warned)
+    {
+        // ARV-264 (its security review's L2): below 46 s a pass cuts a send that waited for a partition without a leader before
+        // the producer reports it, so such a topic is never held and ends each pass at its row; the relay says so at start.
+        var lines = new RelayLines();
+        var transport = new Mock<IOutboxTransport>();
+        transport.SetupGet(t => t.IsReady).Returns(false);
+        using var relay = new OutboxRelay(new Ariva.Infra.Settings.DatabaseSettings(),
+            new KafkaSettings { Outbox = new OutboxRelaySettings { PassSeconds = passSeconds, PollMilliseconds = 20 } }, transport.Object, TimeProvider.System, lines);
+
+        await relay.StartAsync(Ct);
+        // .NET 10 runs ExecuteAsync on a task of its own: the start's lines are written once it runs, and a stop before then
+        // would end it unstarted.
+        await UntilAsync(() => lines.Logged.Any(l => l.Text.StartsWith("Outbox relay started", StringComparison.Ordinal)), "the relay's start");
+        using (var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            await relay.StopAsync(stop.Token);
+
+        lines.Logged.Any(l => l.Level == LogLevel.Warning && l.Text.Contains("Kafka:Outbox:PassSeconds", StringComparison.Ordinal)).Should().Be(warned);
     }
 
     [Theory]

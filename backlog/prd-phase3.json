@@ -1575,7 +1575,7 @@
         "docs and wiki pages affected by the change are updated (wiki 10 section 4.5a, docs/security/cwe-controls.md CWE-400 row; node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3 (the owner's rule of 2026-10-14). Filed 2026-10-26 by ARV-245 from its security review.",
       "dependsOn": [
         "ARV-245"

@@ -42,6 +42,13 @@ public interface IOutboxTransport
     bool IsTopicRefused(Exception error) => false;
 
     /// <summary>
+    /// Whether <paramref name="error"/> from <see cref="SendAsync"/> says the row was not delivered within the client's message
+    /// timeout (ARV-264): a partition of its topic without a leader, or no broker at all, which the producer's probe
+    /// (<see cref="BrokersAnswerAsync"/>) tells apart. While the brokers answer, the relay holds that topic alone.
+    /// </summary>
+    bool IsPartitionUnavailable(Exception error) => false;
+
+    /// <summary>
     /// Whether the brokers answer now (ARV-245): the producer's cached probe (<c>KafkaProduce.BrokersAnswerAsync</c>), which
     /// asks the cluster at most once a second and never throws. After a pass met the broker's absence the relay asks this
     /// before each pass and skips the pass while it is false.
@@ -94,12 +101,13 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// order changes). The dead letters get at most <see cref="DeadLetterPassBound"/> of the pass: each send is bounded by what is
 /// left of it, and when it is used (or a send was cut at the share's end, ARV-164b) the rest wait untouched for the next pass. A dead-letter row that fails for a reason that is
 /// not its own (the broker unavailable, the dead letters' share, or any failure that is not the row's) holds back its topic for
-/// <see cref="DeadLetterTopicHold"/>: the rest of the pass skips the topic's rows, and every unsent row of the topic is due no
-/// earlier than the hold's end, so no relay claims them meanwhile, whichever leads, also after a restart. The other dead-letter
-/// topics carry on. So a dead-letter topic that cannot be reached delays the events written meanwhile by at most
-/// <see cref="DeadLetterPassBound"/>, once per <see cref="DeadLetterTopicHold"/>, and once more each time a letter for it is kept
-/// meanwhile (at a host's stop; the try holds the topic again). A dead-letter send cut short by the pass's own time is not the
-/// topic's fault: the pass ends without holding it. An event row's broker failure still ends the pass.
+/// <see cref="DeadLetterTopicHold"/>, as every topic hold does (ARV-264, below): the relay claims none of the topic's rows until
+/// the hold's end, and each key's earliest unsent row is due no earlier, so no relay claims the rows there were meanwhile,
+/// whichever leads, also after a restart. The other dead-letter topics carry on. So a dead-letter topic that cannot be reached
+/// delays the events written meanwhile by at most <see cref="DeadLetterPassBound"/> once per <see cref="DeadLetterTopicHold"/>,
+/// and once more on another relay for a letter kept after the hold began (at a host's stop). A dead-letter send cut short by the
+/// pass's own time is not the topic's fault: the pass ends without holding it. An event row's broker failure ends the pass,
+/// unless its topic is held for a partition without a leader (ARV-264).
 /// </para>
 /// <para>
 /// ARV-245: a row the broker keeps refusing for <see cref="OutboxRelaySettings.BrokerStreakMinutes"/> without a break (a
@@ -109,6 +117,26 @@ public sealed record RelayPass(bool Leader, int Claimed, int Sent, int Failed, i
 /// not answer: no connection, no lock, no claim, so a full outage no longer holds a pass for its produce bound at each poll.
 /// The backlog is still measured. Once the probe answers, passes resume, and every row is due within the broker retry. While
 /// passes are skipped no streak grows; a row still refused once they resume is reported then if its streak has passed.
+/// </para>
+/// <para>
+/// ARV-264: an event row whose send timed out in the client (<see cref="IOutboxTransport.IsPartitionUnavailable"/>) while the
+/// producer's probe says the brokers answer is a partition of its topic without a leader, not the cluster's absence: the relay
+/// holds that topic alone for <see cref="EventTopicHold"/> and the pass carries on with the other topics, so one leaderless
+/// partition no longer starts and ends every pass. A hold (this one, a missing topic's and a dead-letter topic's) applies to
+/// the topic: this relay claims none of its rows until the hold ends, a row written meanwhile under a key of its own included,
+/// and each key's earliest unsent row is due no earlier than the end, so another relay (another pod, or this one after a
+/// restart) claims none of the rows there were and tries the topic once more at most, for a row written after the hold began.
+/// The relay cannot tell which partition a row goes to, so every row of the topic waits for as long as its partition has no
+/// leader, on every partition, and each key keeps its order. The topic's oldest row tries it again when the hold ends, which
+/// costs a pass up to the client's message timeout (30 seconds, reported within about 40) once per hold, so about once every
+/// 90 seconds for each such topic: with two of them the relay spends about two thirds of its time in those tries and with
+/// three or more nearly all of it, the other topics' rows going between them, and every pass still produces for at most
+/// <c>Kafka:Outbox:PassSeconds</c>, its probe of the brokers adding at most 4 seconds (a second such try cut by the pass's
+/// end holds nothing: the pass ends there, and the next one tries that topic and holds it). The oldest row's broker streak (ARV-245) grows at each of its tries, so it is reported
+/// once it has lasted. When the probe says the brokers do not answer, the pass ends as before and the next ones are skipped.
+/// Every topic hold is counted by its kind (<see cref="OutboxMetrics.TopicHoldsName"/>) and logged. A <c>PassSeconds</c>
+/// below <see cref="OutboxRelaySettings.MinPassSecondsForTopicHolds"/> leaves no room for the client's timeout, so no such
+/// hold is taken (the pass ends at the row, as before); the relay warns at start.
 /// </para>
 /// <para>
 /// ARV-125a: every relay, leader or not, measures the backlog (<see cref="MeasureAsync"/>) every <see cref="MeasureEvery"/>
@@ -151,6 +179,13 @@ public sealed class OutboxRelay(
     /// </summary>
     public static readonly TimeSpan DeadLetterTopicHold = TimeSpan.FromMinutes(1);
 
+    /// <summary>
+    /// How long an event topic is held back after a send to it timed out in the client while the brokers answered (ARV-264).
+    /// Its oldest row tries it again when the hold ends, so a partition that stays without a leader costs a pass one client
+    /// message timeout per hold; every row of the topic waits while that lasts (the relay does not know a row's partition).
+    /// </summary>
+    public static readonly TimeSpan EventTopicHold = TimeSpan.FromMinutes(1);
+
     private const int MaxErrorLength = 2000;
     private static readonly TimeSpan HousekeepingEvery = TimeSpan.FromHours(1);
     private DateTimeOffset _lastHousekeeping = DateTimeOffset.MinValue;
@@ -158,6 +193,14 @@ public sealed class OutboxRelay(
 
     /// <summary>Set when a pass met the broker's absence (ARV-245): the next pass asks the brokers first.</summary>
     private bool _brokersAway;
+
+    /// <summary>
+    /// The topics this relay holds back and until when (ARV-264, from its security review): a claim skips them, so a row written
+    /// to a held topic under a key of its own is not tried either, which the rows' due times alone did not ensure. One entry a
+    /// topic the outbox holds rows for, each dropped once its hold has ended. Set before the pass commits and kept if it rolls
+    /// back, which only makes this relay wait for the topic a little longer (at most the hold), never sends out of order.
+    /// </summary>
+    private readonly Dictionary<string, DateTime> _topicHolds = new(StringComparer.Ordinal);
 
     /// <summary>Set while passes are skipped for the brokers, so the wait and the resumption are each logged once.</summary>
     private bool _waitingForBrokers;
@@ -169,6 +212,9 @@ public sealed class OutboxRelay(
     {
         var settings = kafka.Outbox;
         logger.LogInformation("Outbox relay started: batch {BatchSize}, poll {PollMilliseconds} ms", settings.BatchSize, settings.PollMilliseconds);
+        if (settings.PassSeconds < OutboxRelaySettings.MinPassSecondsForTopicHolds)
+            logger.LogWarning("Kafka:Outbox:PassSeconds {PassSeconds} is below {Minimum}: the pass ends before the producer reports a send that waited for a partition without a leader, so such a topic ends each pass at its row instead of being held (ARV-264)",
+                settings.PassSeconds, OutboxRelaySettings.MinPassSecondsForTopicHolds);
         // ARV-179: on a task of its own, so that neither its first connection nor a slow count runs on the passes' path.
         var measuring = metrics is null ? Task.CompletedTask : Task.Run(() => MeasureLoopAsync(stoppingToken), CancellationToken.None);
         try
@@ -289,11 +335,12 @@ public sealed class OutboxRelay(
         }
 
         var now = timeProvider.GetUtcNow().UtcDateTime;
-        // ARV-175: a batch of events, then a batch of dead letters (a held topic's rows are not due); events are sent first.
+        var topicsHeld = TopicsHeldAt(now);
+        // ARV-175: a batch of events, then a batch of dead letters (a held topic's rows are not claimed); events are sent first.
         List<OutboxEnvelope> rows =
         [
-            .. await ClaimAsync(connection, transaction, now, kafka.Outbox.BatchSize, deadLetters: false, ct),
-            .. await ClaimAsync(connection, transaction, now, kafka.Outbox.BatchSize, deadLetters: true, ct),
+            .. await ClaimAsync(connection, transaction, now, kafka.Outbox.BatchSize, deadLetters: false, topicsHeld, ct),
+            .. await ClaimAsync(connection, transaction, now, kafka.Outbox.BatchSize, deadLetters: true, topicsHeld, ct),
         ];
         var held = new HashSet<(string Topic, string Key)>();
         var heldTopics = new HashSet<string>(StringComparer.Ordinal);
@@ -352,24 +399,25 @@ public sealed class OutboxRelay(
                 held.Add((row.Topic, row.Key));
                 _brokersAway = true;
                 await MarkBrokerUnavailableAsync(connection, transaction, row.Seq, now, BrokerRetry, e, ct);
-                if (_streaks.BrokerUnavailable(row.Seq, now) is { } streak)
-                {
-                    // ARV-245: no attempt counts against such a row, so this, once per row, is what raises a partition
-                    // that stays without a leader while the brokers answer.
-                    logger.LogError(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) has failed with the broker unavailable for {Minutes:F0} minutes without a break (Kafka:Outbox:BrokerStreakMinutes {StreakMinutes}); the topic's partition may have no leader. Trying again every {Seconds} s",
-                        row.Seq, row.MessageType, row.Id, row.Topic, streak.TotalMinutes, kafka.Outbox.BrokerStreakMinutes, BrokerRetry.TotalSeconds);
-                    metrics?.BrokerStreak(row.Topic);
-                }
-                else
-                {
-                    logger.LogWarning(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) not sent: the broker is unavailable; trying again in {Seconds} s",
-                        row.Seq, row.MessageType, row.Id, row.Topic, BrokerRetry.TotalSeconds);
-                }
                 // A send cut short by the pass's own time is not its topic's fault: the pass ends, as for an event (ARV-175).
                 var passTimeUsed = e is OutboxPassTimeoutException && !shareBound;
                 deadLettersSpent |= e is OutboxPassTimeoutException && shareBound;
+                // ARV-264: an event row timed out in the client while the brokers answer: a partition of its topic has no
+                // leader. Only that topic waits, so the other topics are not held behind it at every pass.
+                var partitionHeld = !passTimeUsed && !deadLetter && transport.IsPartitionUnavailable(e) && await BrokersAnswerAsync(ct);
+                ReportBrokerUnavailable(row, e, now, topicHeld: partitionHeld || (!passTimeUsed && deadLetter));
                 if (!passTimeUsed && await HoldTopicAsync(connection, transaction, row, heldTopics, ct))
                     continue;
+                if (partitionHeld)
+                {
+                    var until = (timeProvider.GetUtcNow() + EventTopicHold).UtcDateTime;
+                    await HoldTopicUntilAsync(connection, transaction, row.Topic, until, heldTopics, ct);
+                    metrics?.TopicHeld(row.Topic, OutboxMetrics.PartitionUnavailableHold);
+                    logger.LogWarning("Topic {Topic} held back until {Until:O}: row {Seq} ({MessageType} {EventId}) timed out while the brokers answer (a partition of the topic may have no leader); the other topics carry on, and the topic's oldest row tries it again then",
+                        row.Topic, until, row.Seq, row.MessageType, row.Id);
+                    continue;
+                }
+
                 heldBack += rows.Count - rows.IndexOf(row) - 1;
                 break;
             }
@@ -393,6 +441,7 @@ public sealed class OutboxRelay(
                 {
                     var until = now + Backoff(row.Attempts + 1);
                     await HoldTopicUntilAsync(connection, transaction, row.Topic, until, heldTopics, ct);
+                    metrics?.TopicHeld(row.Topic, OutboxMetrics.TopicRefusedHold);
                     logger.LogWarning("Topic {Topic} is missing or refused to this principal; its rows wait until {Until:O} (the failed row's backoff) while the other topics carry on",
                         row.Topic, until);
                     continue;
@@ -454,14 +503,46 @@ public sealed class OutboxRelay(
         return true;
     }
 
+    /// <summary>
+    /// Logs a row the broker did not take (ARV-165) and, once, a row whose streak has lasted <c>Kafka:Outbox:BrokerStreakMinutes</c>
+    /// as an Error, counted by its topic (ARV-245: no attempt counts against such a row, so this is what raises a partition that
+    /// stays without a leader while the brokers answer). A row whose topic is held now (ARV-175, ARV-264) is not tried again after
+    /// the broker retry but when the hold ends, which the hold's own Warning says, so it adds no Warning of its own.
+    /// </summary>
+    private void ReportBrokerUnavailable(OutboxEnvelope row, Exception e, DateTime now, bool topicHeld)
+    {
+        if (_streaks.BrokerUnavailable(row.Seq, now) is { } streak)
+        {
+            if (topicHeld)
+                logger.LogError(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) has failed with the broker unavailable for {Minutes:F0} minutes without a break (Kafka:Outbox:BrokerStreakMinutes {StreakMinutes}); the topic's partition may have no leader. Its topic is held back and the row tries it again when the hold ends",
+                    row.Seq, row.MessageType, row.Id, row.Topic, streak.TotalMinutes, kafka.Outbox.BrokerStreakMinutes);
+            else
+                logger.LogError(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) has failed with the broker unavailable for {Minutes:F0} minutes without a break (Kafka:Outbox:BrokerStreakMinutes {StreakMinutes}); the topic's partition may have no leader. Trying again every {Seconds} s",
+                    row.Seq, row.MessageType, row.Id, row.Topic, streak.TotalMinutes, kafka.Outbox.BrokerStreakMinutes, BrokerRetry.TotalSeconds);
+            metrics?.BrokerStreak(row.Topic);
+        }
+        else if (!topicHeld)
+        {
+            logger.LogWarning(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) not sent: the broker is unavailable; trying again in {Seconds} s",
+                row.Seq, row.MessageType, row.Id, row.Topic, BrokerRetry.TotalSeconds);
+        }
+    }
+
+    /// <summary>The topics held at <paramref name="now"/> (ARV-264); the holds that have ended are dropped.</summary>
+    private string[] TopicsHeldAt(DateTime now)
+    {
+        foreach (var ended in _topicHolds.Where(hold => hold.Value <= now).Select(hold => hold.Key).ToList())
+            _topicHolds.Remove(ended);
+        return [.. _topicHolds.Keys];
+    }
+
     /// <summary>A dead-letter topic (<c>.dlq.v1</c>, ARV-175).</summary>
     internal static bool IsDeadLetterTopic(string topic) => topic is not null && topic.EndsWith(KafkaTopics.DeadLetterSuffix, StringComparison.Ordinal);
 
     /// <summary>
     /// After a failure that is not the row's own: a dead-letter row holds back its topic and the pass goes on (ARV-175); an
-    /// event row's failure ends the pass. The topic is skipped for the rest of the pass, and every unsent row of it is due no
-    /// earlier than <see cref="DeadLetterTopicHold"/> from now (one constant statement, in the pass's transaction), so every
-    /// relay leaves it alone until then. Returns whether the pass goes on.
+    /// event row's failure ends the pass unless its topic is held for a partition without a leader (ARV-264). The topic is
+    /// held for <see cref="DeadLetterTopicHold"/> from now (<see cref="HoldTopicUntilAsync"/>). Returns whether the pass goes on.
     /// </summary>
     private async Task<bool> HoldTopicAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, OutboxEnvelope row, HashSet<string> heldTopics,
         CancellationToken ct)
@@ -469,24 +550,31 @@ public sealed class OutboxRelay(
         if (!IsDeadLetterTopic(row.Topic))
             return false;
         await HoldTopicUntilAsync(connection, transaction, row.Topic, (timeProvider.GetUtcNow() + DeadLetterTopicHold).UtcDateTime, heldTopics, ct);
+        metrics?.TopicHeld(row.Topic, OutboxMetrics.DeadLetterHold);
         logger.LogWarning("Dead-letter topic {Topic} held back for {Seconds} s after a failure that is not its letter's own; events and the other topics carry on",
             row.Topic, DeadLetterTopicHold.TotalSeconds);
         return true;
     }
 
     /// <summary>
-    /// Skips <paramref name="topic"/> for the rest of the pass and keeps every unsent row of it due no earlier than
-    /// <paramref name="until"/> (one constant statement, in the pass's transaction), so every relay leaves it alone until then.
+    /// Holds <paramref name="topic"/> until <paramref name="until"/>: skipped for the rest of the pass, and claimed by none of
+    /// this relay's passes until then (ARV-264), a row written meanwhile included; and each key's earliest unsent row is due no
+    /// earlier (one constant statement, in the pass's transaction), so another relay claims none of the rows there were either:
+    /// the claim leaves every later row of a key behind its earliest one. One write a key, not a row (ARV-264, from its security
+    /// review: the statement runs at each hold, and a held topic's backlog grows).
     /// </summary>
-    private static async Task HoldTopicUntilAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string topic, DateTime until,
+    private async Task HoldTopicUntilAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string topic, DateTime until,
         HashSet<string> heldTopics, CancellationToken ct)
     {
         heldTopics.Add(topic);
+        _topicHolds[topic] = _topicHolds.TryGetValue(topic, out var holding) && holding > until ? holding : until;
         await using var command = new NpgsqlCommand(
             """
-            UPDATE outbox_message
-               SET next_attempt_on = GREATEST(COALESCE(next_attempt_on, @until), @until)
-             WHERE topic = @topic AND sent_on IS NULL
+            UPDATE outbox_message o
+               SET next_attempt_on = GREATEST(COALESCE(o.next_attempt_on, @until), @until)
+             WHERE o.topic = @topic AND o.sent_on IS NULL
+               AND NOT EXISTS (SELECT 1 FROM outbox_message e
+                                WHERE e.sent_on IS NULL AND e.topic = o.topic AND e.message_key = o.message_key AND e.seq < o.seq)
             """,
             connection,
             transaction);
@@ -536,11 +624,11 @@ public sealed class OutboxRelay(
     }
 
     /// <summary>
-    /// Claims up to <paramref name="batch"/> due rows in <c>seq</c> order: event rows, or dead-letter rows (ARV-175). One
-    /// constant statement; the kind is a parameter.
+    /// Claims up to <paramref name="batch"/> due rows in <c>seq</c> order: event rows, or dead-letter rows (ARV-175), none of a
+    /// topic this relay holds (ARV-264). One constant statement; the kind and the held topics are parameters.
     /// </summary>
     private static async Task<List<OutboxEnvelope>> ClaimAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, DateTime now, int batch,
-        bool deadLetters, CancellationToken ct)
+        bool deadLetters, string[] heldTopics, CancellationToken ct)
     {
         // A row waits while an earlier row of its key is waiting for its retry time, so order per key holds across passes.
         await using var command = new NpgsqlCommand(
@@ -550,6 +638,7 @@ public sealed class OutboxRelay(
              WHERE o.sent_on IS NULL
                AND (o.next_attempt_on IS NULL OR o.next_attempt_on <= @now)
                AND (o.topic LIKE @deadLetterTopics) = @deadLetters
+               AND NOT (o.topic = ANY(@heldTopics))
                AND NOT EXISTS (SELECT 1 FROM outbox_message e
                                 WHERE e.sent_on IS NULL AND e.topic = o.topic AND e.message_key = o.message_key
                                   AND e.seq < o.seq AND e.next_attempt_on > @now)
@@ -563,6 +652,7 @@ public sealed class OutboxRelay(
         command.Parameters.AddWithValue("batch", batch);
         command.Parameters.AddWithValue("deadLetterTopics", "%" + KafkaTopics.DeadLetterSuffix);
         command.Parameters.AddWithValue("deadLetters", deadLetters);
+        command.Parameters.AddWithValue("heldTopics", heldTopics);
 
         var rows = new List<OutboxEnvelope>();
         await using var reader = await command.ExecuteReaderAsync(ct);

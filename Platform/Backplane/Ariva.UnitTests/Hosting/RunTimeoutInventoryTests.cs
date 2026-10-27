@@ -28,7 +28,7 @@ public sealed class RunTimeoutInventoryTests
     /// <summary>The hosted services that are not loops of runs, or bound their runs another way, and why.</summary>
     private static readonly IReadOnlyDictionary<string, string> Exempt = new Dictionary<string, string>
     {
-        ["Ariva.Infra.Messaging.Outbox.OutboxRelay"] = "a pass's sends end within Kafka:Outbox:PassSeconds (ARV-166) and its statements within the database command timeout",
+        ["Ariva.Infra.Messaging.Outbox.OutboxRelay"] = "a pass's sends end within Kafka:Outbox:PassSeconds (ARV-166), its probe of the brokers within 4 s (ARV-245, ARV-264) and its statements within the database command timeout",
         ["Ariva.Infra.Streaming.QueueStreamWorker"] = "the stream engine's consume loop: each record is bounded by the engine's merge bounds and each read and write by the database command timeout (ARV-230 reworks its checkpoint)",
         ["Ariva.Api.Main.Hubs.LiveRelay"] = "renews a Redis lease every 5 s, each call within the Redis client's own timeout; the snapshots it forwards are callbacks",
         ["Ariva.Infra.Messaging.Kafka.KafkaConsumerEndpoints"] = "connects the consumers at start within Kafka:Consumers:StartWaitSeconds and watches for missing topics with metadata requests within the admin client's timeout",

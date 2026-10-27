@@ -123,10 +123,15 @@ public static partial class MessagingExtensions
 
     /// <summary>
     /// ARV-167 and ARV-165: the producer's recreation interval and the relay's retry after a broker failure are bounded, or
-    /// the host does not start; since ARV-245 so is the streak after which a row the broker keeps refusing is reported.
+    /// the host does not start; since ARV-245 so is the streak after which a row the broker keeps refusing is reported, and
+    /// since ARV-264 the relay pass's time, which decides how long a pass holds its transaction and leader lock.
     /// </summary>
     internal static void EnsureProducerSettings(KafkaSettings settings)
     {
+        var pass = settings.Outbox?.PassSeconds ?? 0;
+        if (pass is < OutboxRelaySettings.MinPassSeconds or > OutboxRelaySettings.MaxPassSeconds)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Outbox:PassSeconds must be from {OutboxRelaySettings.MinPassSeconds} to {OutboxRelaySettings.MaxPassSeconds} (ARV-264; {OutboxRelaySettings.MinPassSecondsForTopicHolds} or more for a topic with a partition without a leader to be held)."));
         var retry = settings.Outbox?.BrokerRetrySeconds ?? 0;
         if (retry is < OutboxRelaySettings.MinBrokerRetrySeconds or > OutboxRelaySettings.MaxBrokerRetrySeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,

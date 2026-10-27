@@ -102,9 +102,21 @@ public sealed class OutboxRelaySettings
     /// <summary>
     /// The longest a relay pass produces while it holds its transaction, its leader lock and its claimed rows (ARV-166):
     /// a send still waiting then fails as a broker failure and the pass ends and commits. Each produce ends within 45
-    /// seconds anyway (<c>KafkaProduce.SendTimeout</c>); this also bounds a pass of many slow sends.
+    /// seconds anyway (<c>KafkaProduce.SendTimeout</c>); this also bounds a pass of many slow sends. From
+    /// <see cref="MinPassSeconds"/> to <see cref="MaxPassSeconds"/> (ARV-264), a host with another value does not start; below
+    /// <see cref="MinPassSecondsForTopicHolds"/> a topic with a partition without a leader is never held, and ends each pass.
     /// </summary>
     public int PassSeconds { get; init; } = 60;
+
+    public const int MinPassSeconds = 10;
+    public const int MaxPassSeconds = 120;
+
+    /// <summary>
+    /// The shortest pass that leaves room for the producer to report a send that waited for a partition without a leader
+    /// (ARV-264): its 45 second bound (<c>KafkaProduce.SendTimeout</c>, which the client's 30 second message timeout reports
+    /// within) and a second more. A shorter pass cuts such a send first, which holds nothing.
+    /// </summary>
+    public const int MinPassSecondsForTopicHolds = 46;
 
     public const int MinBrokerRetrySeconds = 1;
     public const int MaxBrokerRetrySeconds = 30;

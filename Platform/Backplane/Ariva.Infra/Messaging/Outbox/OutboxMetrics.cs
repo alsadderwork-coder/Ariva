@@ -22,6 +22,12 @@ public sealed record OutboxBacklog(long Unsent, DateTime? OldestUtc);
 /// <see cref="UnknownTopic"/> (<see cref="TopicTag"/>), never another value from the row. Any increase is the signal: a
 /// partition with no leader, which the brokers' readiness does not show.
 /// </para>
+/// <para>
+/// ARV-264: <see cref="TopicHoldsName"/>, a counter of the topics the relay held back, tagged with the <c>topic</c> (as above)
+/// and the hold's <c>kind</c>: <see cref="PartitionUnavailableHold"/> (an event's send timed out while the brokers answered),
+/// <see cref="TopicRefusedHold"/> (the topic missing or refused, ARV-177) or <see cref="DeadLetterHold"/> (a dead letter's
+/// failure that was not its own, ARV-175); any other kind is <see cref="OtherHold"/>.
+/// </para>
 /// </summary>
 public sealed class OutboxMetrics : IDisposable
 {
@@ -29,6 +35,13 @@ public sealed class OutboxMetrics : IDisposable
     public const string UnsentName = "ariva.outbox.unsent";
     public const string OldestUnsentAgeName = "ariva.outbox.oldest_unsent_age";
     public const string BrokerStreaksName = "ariva.outbox.broker_streaks";
+    public const string TopicHoldsName = "ariva.outbox.topic_holds";
+
+    /// <summary>The <c>kind</c> of a topic hold (ARV-264).</summary>
+    public const string PartitionUnavailableHold = "partition_unavailable";
+    public const string TopicRefusedHold = "topic_refused";
+    public const string DeadLetterHold = "dead_letter";
+    public const string OtherHold = "other";
 
     /// <summary>The tag value of a topic that is not one of Ariva's.</summary>
     public const string UnknownTopic = "unknown";
@@ -37,6 +50,7 @@ public sealed class OutboxMetrics : IDisposable
 
     private readonly Meter _meter;
     private readonly Counter<long> _brokerStreaks;
+    private readonly Counter<long> _topicHolds;
     private readonly TimeProvider _time;
     private volatile Snapshot _last;
 
@@ -56,6 +70,8 @@ public sealed class OutboxMetrics : IDisposable
             unit: "s", description: "Age of the oldest outbox row not yet sent when measured, 0 when there is none");
         _brokerStreaks = _meter.CreateCounter<long>(BrokerStreaksName, unit: "{row}",
             description: "Outbox rows whose sends have failed with the broker unavailable for Kafka:Outbox:BrokerStreakMinutes without a break, by topic");
+        _topicHolds = _meter.CreateCounter<long>(TopicHoldsName, unit: "{hold}",
+            description: "Topics the outbox relay held back while the others carried on, by topic and kind of hold");
     }
 
     #endregion
@@ -80,6 +96,11 @@ public sealed class OutboxMetrics : IDisposable
 
     /// <summary>A row on <paramref name="topic"/> whose broker-unavailable streak passed the configured length (ARV-245).</summary>
     public void BrokerStreak(string topic) => _brokerStreaks.Add(1, new KeyValuePair<string, object>("topic", TopicTag(topic)));
+
+    /// <summary>A hold of <paramref name="topic"/> of the given <paramref name="kind"/> (ARV-264).</summary>
+    public void TopicHeld(string topic, string kind) =>
+        _topicHolds.Add(1, new KeyValuePair<string, object>("topic", TopicTag(topic)),
+            new KeyValuePair<string, object>("kind", kind is PartitionUnavailableHold or TopicRefusedHold or DeadLetterHold ? kind : OtherHold));
 
     /// <summary>A topic as a tag value: a <c>KafkaTopics</c> constant or the dead-letter topic of one, else <see cref="UnknownTopic"/>.</summary>
     public static string TopicTag(string topic) =>

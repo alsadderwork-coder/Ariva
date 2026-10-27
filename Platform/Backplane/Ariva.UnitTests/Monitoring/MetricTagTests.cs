@@ -107,6 +107,9 @@ public sealed partial class MetricTagTests
             outbox.Report(new OutboxBacklog(3, DateTime.UtcNow.AddMinutes(-1)), TimeSpan.FromMinutes(1));
             outbox.BrokerStreak(KafkaTopics.DeviceZoneOccupancy);
             outbox.BrokerStreak(KafkaTopics.DeadLetter(KafkaTopics.AmanEgateIntervalStats));
+            outbox.TopicHeld(KafkaTopics.FlowNowcast, OutboxMetrics.PartitionUnavailableHold);
+            outbox.TopicHeld(KafkaTopics.FlowNowcast, OutboxMetrics.TopicRefusedHold);
+            outbox.TopicHeld(KafkaTopics.DeadLetter(KafkaTopics.AmanEgateIntervalStats), OutboxMetrics.DeadLetterHold);
         },
         [typeof(StreamMetrics)] = m =>
         {
@@ -210,6 +213,20 @@ public sealed partial class MetricTagTests
     [InlineData(null, OutboxMetrics.UnknownTopic)]
     public void OutboxTopicTag_Should_BeATopicConstantItsDeadLetterTopicOrUnknown_When_ARowNamesItsTopic(string topic, string tag) =>
         OutboxMetrics.TopicTag(topic).Should().Be(tag);
+
+    [Fact]
+    public void TopicHolds_Should_BeTaggedWithTheTopicAndAKnownKind_When_TheRelayHoldsATopic()
+    {
+        // ARV-264: the hold's kind is one of the relay's constants, anything else "other"; the topic as every outbox tag.
+        using var metrics = new OutboxMetrics();
+        using var reader = new Setup.InstrumentReader(metrics.Meter);
+
+        metrics.TopicHeld(KafkaTopics.FlowNowcast, OutboxMetrics.PartitionUnavailableHold);
+        metrics.TopicHeld("passport 123", "a value from a row");
+
+        reader.Sum(OutboxMetrics.TopicHoldsName, ("topic", KafkaTopics.FlowNowcast), ("kind", OutboxMetrics.PartitionUnavailableHold)).Should().Be(1);
+        reader.Sum(OutboxMetrics.TopicHoldsName, ("topic", OutboxMetrics.UnknownTopic), ("kind", OutboxMetrics.OtherHold)).Should().Be(1);
+    }
 
     [Theory]
     [InlineData("ariva-stream.queue-engine", "ariva-stream.queue-engine")]

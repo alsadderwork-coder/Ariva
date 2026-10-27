@@ -865,6 +865,132 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         transport.Probes.Should().Be(probes, "a pass after the brokers answered asks no probe");
     }
 
+    /// <summary>
+    /// ARV-264: a topic whose send times out in the client while the brokers answer (a partition without a leader) holds only
+    /// itself. The pass asks the producer's probe once, holds the topic for <see cref="OutboxRelay.EventTopicHold"/> (none of
+    /// its rows goes meanwhile, so each key keeps its order), counts and logs the hold, and sends the other topic's rows in the
+    /// same pass and in the next ones without any time passing. The timed-out row counts no attempt, and its "trying again"
+    /// Warning gives way to the hold's. The hold is the topic's (the security review's M1): a row written to it meanwhile under
+    /// a key of its own is neither claimed nor tried, where the rows' due times alone let the next pass try it, holding the topic
+    /// again at each such row. On the rows, each key's earliest is due at the hold's end and the claim keeps the later ones
+    /// behind it (one write a key, the review's L3). Once the leader is back, the topic's rows go when the hold ends, in order.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_HoldOnlyTheTopicAndSendTheOthers_When_ASendTimesOutWhileTheBrokersAnswer()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("L", 1), Other("O", 1), Probe("K", 1), Other("O", 2), Probe("L", 2), Other("P", 1));
+        var transport = new RecordingTransport { Leaderless = { KafkaTopics.AlertStateChanged } };
+        var log = new RelayLog();
+        using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        var relay = StreakRelay(transport, log, metrics);
+
+        (await relay.RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 6, 3, 1, 2),
+            "the topic's first row timed out, its two other rows were skipped, and the other topic's three rows were sent");
+        transport.Sent.Select(Describe).Should().Equal("O1", "O2", "P1");
+        transport.Probes.Should().Be(1, "the probe tells a partition without a leader from the brokers' absence");
+        reader.Sum(OutboxMetrics.TopicHoldsName, ("topic", KafkaTopics.AlertStateChanged), ("kind", OutboxMetrics.PartitionUnavailableHold)).Should().Be(1);
+        log.Warnings.Should().Contain(w => w.Contains("held back until", StringComparison.Ordinal) && w.Contains(KafkaTopics.AlertStateChanged, StringComparison.Ordinal));
+        log.Warnings.Should().NotContain(w => w.Contains("trying again in", StringComparison.Ordinal), "the held row is tried again when the hold ends, not after the broker retry");
+        (await ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE topic = @topic AND attempts = 0 AND next_attempt_on = @at", KafkaTopics.AlertStateChanged,
+            (_host.Clock.GetUtcNow() + OutboxRelay.EventTopicHold).UtcDateTime)).Should().Be(2, "each key's earliest row (L1, K1) waits for the hold, L2 behind L1, and no attempt is counted");
+
+        // Without any time passing, the other topic's later rows go; the held topic is neither claimed nor tried, a row written to
+        // it meanwhile under a new key included.
+        await WriteAsync(true, Probe("N", 1), Other("O", 3));
+        (await relay.RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 1, 1, 0, 0), "only the other topic's row is claimed");
+        transport.Attempts.Should().Be(5, "the held topic was tried once, by its oldest row");
+
+        // Another relay (another pod, or this one after a restart) claims none of the rows there were: L2 waits behind L1.
+        (await Relay(new RecordingTransport()).RunOnceAsync(Ct)).Sent.Should().Be(1, "only the row written after the hold began, under a key of its own");
+
+        // The partition has its leader again: when the hold ends the topic's rows go, in order per key.
+        transport.Leaderless.Clear();
+        _host.Clock.Advance(OutboxRelay.EventTopicHold + TimeSpan.FromSeconds(1));
+        (await relay.RunOnceAsync(Ct)).Sent.Should().Be(3);
+        transport.Sent.Select(Describe).Should().Equal("O1", "O2", "P1", "O3", "L1", "K1", "L2");
+    }
+
+    /// <summary>
+    /// ARV-264, from the security review (L1): two topics without a partition leader. Each try costs the pass the client's
+    /// message timeout (here three quarters of a two-second pass, a step of the pass's clock, as 30 of 60 seconds in a host).
+    /// The first topic is held; the other's send, a row behind it, is cut at the pass's end, which is not its topic's fault, so
+    /// the pass ends there without holding that topic, within its bound. The next pass, once the broker retry has passed, tries
+    /// that topic and holds it; with both held, a pass claims neither. So each pass ends within <c>PassSeconds</c>, and each
+    /// held topic costs one try a hold.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_HoldEachTopicInTurnWithinThePassBound_When_TwoTopicsHaveAPartitionWithoutALeader()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("L", 1), Other("O", 1), Probe("L", 2));
+        var stepped = new SteppedClock(_host.Clock);
+        var transport = new RecordingTransport
+        {
+            Leaderless = { KafkaTopics.AlertStateChanged },
+            // The other topic's send waits for its partition's leader until the pass's own bound cuts it.
+            HangFor = KafkaTopics.FlowNowcast,
+            OnSend = m => { if (m.Topic == KafkaTopics.AlertStateChanged) stepped.Step(TimeSpan.FromMilliseconds(1500)); }
+        };
+        var log = new RelayLog();
+        using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        using var relay = new OutboxRelay(_host.Provider.GetRequiredService<DatabaseSettings>(),
+            new KafkaSettings { Outbox = new OutboxRelaySettings { BatchSize = 50, PassSeconds = 2 } }, transport, stepped, log, metrics);
+        var started = System.Diagnostics.Stopwatch.StartNew();
+
+        var first = await relay.RunOnceAsync(Ct).WaitAsync(TimeSpan.FromSeconds(30), Ct);
+
+        first.Should().Be(new RelayPass(true, 3, 0, 2, 1), "the first topic's row timed out and was held, the other's was cut at the pass's end, the pass ended");
+        started.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "the cut came at the pass's end: half a second left of it");
+        reader.Sum(OutboxMetrics.TopicHoldsName, ("topic", KafkaTopics.AlertStateChanged), ("kind", OutboxMetrics.PartitionUnavailableHold)).Should().Be(1);
+        reader.Sum(OutboxMetrics.TopicHoldsName, ("topic", KafkaTopics.FlowNowcast)).Should().Be(0, "a send cut by the pass's own time holds nothing");
+        (await _host.ReadAsync<DateTime>("SELECT next_attempt_on FROM outbox_message WHERE message_key = 'O'"))
+            .Should().Be((_host.Clock.GetUtcNow() + BrokerRetry).UtcDateTime, "the cut row is due again after the broker retry");
+
+        // The next pass, after the broker retry: the other topic's send now times out in the client, and that topic is held too.
+        transport.HangFor = null;
+        transport.Leaderless.Add(KafkaTopics.FlowNowcast);
+        transport.OnSend = _ => stepped.Step(TimeSpan.FromMilliseconds(1500));
+        _host.Clock.Advance(BrokerRetry);
+        (await relay.RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 1, 0, 1, 0), "the first topic is still held: only the other's row is claimed");
+        reader.Sum(OutboxMetrics.TopicHoldsName, ("topic", KafkaTopics.FlowNowcast), ("kind", OutboxMetrics.PartitionUnavailableHold)).Should().Be(1);
+
+        // Both held: a pass claims and tries neither.
+        (await relay.RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 0, 0, 0, 0));
+        transport.Attempts.Should().Be(3);
+    }
+
+    /// <summary>
+    /// ARV-264: the same timeout while the probe says the brokers do not answer is the cluster's absence, not a partition's:
+    /// the pass ends at the row as before (the other topic's row waits untouched, no topic is held or counted), and the next
+    /// pass is skipped until the brokers answer (ARV-245).
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_EndThePassAsBefore_When_ASendTimesOutAndTheBrokersDoNotAnswer()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("L", 1), Other("O", 1));
+        var transport = new RecordingTransport { Leaderless = { KafkaTopics.AlertStateChanged }, BrokersAnswer = false };
+        var log = new RelayLog();
+        using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        var relay = StreakRelay(transport, log, metrics);
+
+        (await relay.RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 2, 0, 1, 1), "the brokers do not answer: the pass ends at the row");
+        transport.Probes.Should().Be(1);
+        transport.Sent.Should().BeEmpty();
+        reader.Sum(OutboxMetrics.TopicHoldsName).Should().Be(0, "no topic was held");
+        (await _host.ReadAsync<string>("SELECT coalesce(next_attempt_on::text, '-') FROM outbox_message WHERE message_key = 'O'")).Should().Be("-", "the other topic's row was not touched");
+        (await _host.ReadAsync<DateTime>("SELECT next_attempt_on FROM outbox_message WHERE message_key = 'L'"))
+            .Should().Be((_host.Clock.GetUtcNow() + BrokerRetry).UtcDateTime, "the row is due again after the broker retry, as before");
+        log.Warnings.Should().Contain(w => w.Contains("do not answer", StringComparison.Ordinal));
+
+        _host.Clock.Advance(BrokerRetry);
+        (await relay.RunOnceAsync(Ct)).Should().Be(RelayPass.WaitingForBrokers);
+    }
+
     /// <summary>The relay's log by level (ARV-245).</summary>
     private sealed class RelayLog : ILogger<OutboxRelay>
     {
@@ -935,6 +1061,12 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         /// <summary>A topic whose sends never end and ignore their token (ARV-175: its partition leader is away).</summary>
         public string HangFor { get; set; }
 
+        /// <summary>
+        /// The topics with a partition without a leader (ARV-264): their sends fail as librdkafka fails them after its message
+        /// timeout, while the probe may still say the brokers answer.
+        /// </summary>
+        public HashSet<string> Leaderless { get; } = new(StringComparer.Ordinal);
+
         /// <summary>Called as each send starts (ARV-175: to move a test clock).</summary>
         public Action<OutboxEnvelope> OnSend { get; set; }
 
@@ -958,12 +1090,17 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         /// <summary>A topic missing or refused, as the Kafka transport classifies it (ARV-177).</summary>
         public bool IsTopicRefused(Exception error) => KafkaProduce.IsTopicRefused(error);
 
+        /// <summary>The client's message timeout, as the Kafka transport classifies it (ARV-264).</summary>
+        public bool IsPartitionUnavailable(Exception error) => KafkaProduce.IsPartitionUnavailable(error);
+
         public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
         {
             Attempts++;
             OnSend?.Invoke(message);
             if (Hang || string.Equals(message.Topic, HangFor, StringComparison.Ordinal))
                 return new TaskCompletionSource().Task;
+            if (Leaderless.Contains(message.Topic))
+                throw new Confluent.Kafka.ProduceException<string, byte[]>(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_MsgTimedOut), null);
             if (BrokerDown || string.Equals(message.Topic, BrokerDownFor, StringComparison.Ordinal))
                 throw new TimeoutException("Local: Message timed out");
             if (string.Equals(message.Topic, RefusedFor, StringComparison.Ordinal))

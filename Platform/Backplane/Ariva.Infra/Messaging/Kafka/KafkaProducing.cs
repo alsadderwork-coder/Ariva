@@ -244,6 +244,12 @@ public sealed class KafkaProduce : IDisposable
     public static bool IsTopicRefused(Exception error) =>
         error is KafkaException { Error.Code: ErrorCode.UnknownTopicOrPart or ErrorCode.Local_UnknownTopic or ErrorCode.TopicAuthorizationFailed };
 
+    /// <summary>
+    /// Whether a send's failure is librdkafka's message timeout (ARV-264): the message waited its 30 seconds for a partition
+    /// leader (or any broker) and was not delivered. The relay asks the producer's probe which of the two it is.
+    /// </summary>
+    public static bool IsPartitionUnavailable(Exception error) => error is KafkaException { Error.Code: ErrorCode.Local_MsgTimedOut };
+
     /// <summary>Whether Ariva may produce to <paramref name="topic"/>.</summary>
     public static bool IsProducible(string topic) => topic is not null && Producible.Contains(topic);
 
@@ -729,6 +735,8 @@ internal sealed class KafkaOutboxTransport(KafkaProduce produce, EventCatalog ca
     public bool IsBrokerUnavailable(Exception error) => KafkaProduce.IsBrokerUnavailable(error);
 
     public bool IsTopicRefused(Exception error) => KafkaProduce.IsTopicRefused(error);
+
+    public bool IsPartitionUnavailable(Exception error) => KafkaProduce.IsPartitionUnavailable(error);
 
     /// <summary>
     /// The producer's cached probe, as the readiness check asks it (ARV-245): within <see cref="KafkaReadiness.ProbeTimeout"/>
