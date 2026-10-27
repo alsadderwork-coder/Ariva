@@ -36,7 +36,7 @@ spec:
       labels:
         app: api-cronz
     spec:
-      # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 25 s), then disposes and exits
+      # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 28.75 s), then disposes and exits
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | default 60 }}
       imagePullSecrets:
         - name: dalilacr-secret

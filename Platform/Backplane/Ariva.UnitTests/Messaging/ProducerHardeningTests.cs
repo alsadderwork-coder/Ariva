@@ -23,6 +23,9 @@ namespace Ariva.UnitTests.Messaging;
 /// </summary>
 public sealed class ProducerHardeningTests
 {
+    private const string BusRefusal = "*leaves the message bus*";
+    private const string GraceRefusal = "*must be positive and at most Hosting:GracePeriodSeconds*";
+
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     /// <summary>A client that keeps what it is given and reports only when told; raising a fatal error refuses later produces.</summary>
@@ -369,7 +372,8 @@ public sealed class ProducerHardeningTests
     {
         // ARV-165: every host's shutdown timeout is Hosting:ShutdownSeconds (50 by default), and the bus's stop wait is that
         // less 15 s (the skipped endpoints' stop, the producer's flush and the rest): 35 s, so a stop during a message's
-        // retries (up to 3 x 5 s and the 10 s keep) fits, and the host stops in time while a consumer is held by a commit.
+        // retries (up to 3 x 5 s, 1.25 times that with MassTransit's jitter, and the 10 s keep) fits, and the host stops in time
+        // while a consumer is held by a commit.
         var settings = new Dictionary<string, string>();
         if (shutdown is not null)
             settings["Hosting:ShutdownSeconds"] = shutdown;
@@ -384,15 +388,17 @@ public sealed class ProducerHardeningTests
     }
 
     [Theory]
-    [InlineData("50", "60", "3", "5000", false)] // the defaults: the bus gets 35 s, the clean stop needs 25 s
-    [InlineData("40", "60", "3", "5000", false)] // the bus gets 25 s, exactly the clean stop
-    [InlineData("39", "60", "3", "5000", true)] // 24 s, less than the retry schedule and the keep
-    [InlineData("50", "60", "6", "5000", true)] // six retries of 5 s and the keep need 40 s, more than 35
-    [InlineData("55", "60", "3", "5000", false)] // ends 5 s before the grace period
-    [InlineData("56", "60", "3", "5000", true)] // leaves the dispose and the exit less than 5 s
-    [InlineData("50", "50", "3", "5000", true)] // a grace period no longer than the shutdown timeout
-    [InlineData("0", "60", "3", "5000", true)]
-    public void AddArivaMessaging_Should_RefuseAStopBudgetThatDoesNotFit(string shutdown, string grace, string retries, string retryMax, bool refused)
+    [InlineData("50", "60", "3", "5000", null)] // the defaults: the bus gets 35 s, the clean stop needs 28.75 s (ARV-268: 3 x 5 x 1.25 and 10)
+    [InlineData("44", "60", "3", "5000", null)] // the bus gets 29 s, just more than the clean stop
+    [InlineData("43", "60", "3", "5000", BusRefusal)] // 28 s, less than the retry schedule with its jitter and the keep
+    [InlineData("50", "60", "4", "5000", null)] // 4 x 5 x 1.25 and the keep: exactly the bus's 35 s
+    [InlineData("50", "60", "4", "5001", "*35 s to stop, less than the 35.01 s*")] // a millisecond more a wait passes it (30 s by the cap alone, which the jitter can overrun)
+    [InlineData("50", "60", "6", "5000", BusRefusal)] // six retries of 5 s with their jitter and the keep need 47.5 s, more than 35
+    [InlineData("55", "60", "3", "5000", null)] // ends 5 s before the grace period
+    [InlineData("56", "60", "3", "5000", GraceRefusal)] // leaves the dispose and the exit less than 5 s
+    [InlineData("50", "50", "3", "5000", GraceRefusal)] // a grace period no longer than the shutdown timeout
+    [InlineData("0", "60", "3", "5000", GraceRefusal)]
+    public void AddArivaMessaging_Should_RefuseAStopBudgetThatDoesNotFit(string shutdown, string grace, string retries, string retryMax, string refusal)
     {
         var settings = new Dictionary<string, string>
         {
@@ -404,8 +410,8 @@ public sealed class ProducerHardeningTests
 
         var add = () => Messaging(settings).Dispose();
 
-        if (refused)
-            add.Should().Throw<InvalidOperationException>().WithMessage("*Hosting:ShutdownSeconds*");
+        if (refusal is not null)
+            add.Should().Throw<InvalidOperationException>().WithMessage(refusal);
         else
             add.Should().NotThrow();
     }

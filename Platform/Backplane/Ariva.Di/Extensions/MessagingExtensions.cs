@@ -61,7 +61,8 @@ public static partial class MessagingExtensions
     /// <summary>
     /// ARV-165: the host's stop budget must fit, or the host does not start. The bus's share (the shutdown timeout less
     /// <see cref="StopReserve"/>) must cover a stop that comes during a message's retries: the rest of the retry schedule
-    /// (at most <c>RetryCount</c> times <c>RetryMaxMilliseconds</c>) and the dead letter's keep (10 s), the clean path of
+    /// (at most <c>RetryCount</c> times <c>RetryMaxMilliseconds</c>, each wait counted at 1.25 times it for MassTransit's jitter
+    /// since ARV-268) and the dead letter's keep (10 s), the clean path of
     /// ARV-171; and the shutdown timeout must end <see cref="HostingSettings.ExitMarginSeconds"/> before the pod's grace
     /// period, so the dispose and the exit happen before the kubelet kills the process.
     /// </summary>
@@ -77,7 +78,7 @@ public static partial class MessagingExtensions
         var cleanStop = CleanStop(settings.Consumers ?? new ConsumerSettings());
         if (settings.Enabled && BusStopTimeout(shutdown) < cleanStop)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
-                $"Hosting:ShutdownSeconds ({hosting.ShutdownSeconds}) leaves the message bus {BusStopTimeout(shutdown).TotalSeconds:F0} s to stop, less than the {cleanStop.TotalSeconds:F0} s a stop during a message's retries needs (the retry schedule and the dead letter's keep)."));
+                $"Hosting:ShutdownSeconds ({hosting.ShutdownSeconds}) leaves the message bus {BusStopTimeout(shutdown).TotalSeconds:0.##} s to stop, less than the {cleanStop.TotalSeconds:0.##} s a stop during a message's retries needs (the retry schedule and the dead letter's keep)."));
     }
 
     /// <summary>
@@ -103,7 +104,7 @@ public static partial class MessagingExtensions
 
     /// <summary>The longest clean stop of an endpoint with a message in hand: the rest of its retry schedule and the dead letter's keep.</summary>
     internal static TimeSpan CleanStop(ConsumerSettings consumers) =>
-        TimeSpan.FromMilliseconds((double)Math.Max(0, consumers.RetryCount) * Math.Max(0, consumers.RetryMaxMilliseconds)) + DeadLetterRetry.KeepTimeout;
+        ConsumerSettings.RetryWaits(consumers.RetryCount, consumers.RetryMaxMilliseconds) + DeadLetterRetry.KeepTimeout;
 
     /// <summary>
     /// What the host's stop keeps for the services that stop after the bus (ARV-165): the endpoints the bus skipped
@@ -168,7 +169,7 @@ public static partial class MessagingExtensions
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
                 $"Kafka:Consumers:HandlerTimeoutSeconds must be from {ConsumerSettings.MinHandlerTimeoutSeconds} to {ConsumerSettings.MaxHandlerTimeoutSeconds} (ARV-096e)."));
         // ARV-254: the rider consumers' poll interval is the longest hold and a minute, and librdkafka takes at most a day. Since
-        // ARV-266 the bounds above keep it within 2,095 s, so this cannot fire through the settings; it stays should a bound move
+        // ARV-266 the bounds above keep it within 2,245 s, so this cannot fire through the settings; it stays should a bound move
         // (ConsumerHoldTests.MaxPollInterval_Should_StayWithinADay_When_EverySettingIsAtItsLargest pins the largest).
         if (settings.Consumers is { } held && held.MaxPollInterval > ConsumerSettings.MaxPollIntervalLimit)
             throw new InvalidOperationException(

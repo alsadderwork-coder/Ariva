@@ -173,6 +173,13 @@ public sealed class ConsumerSettings
     public const int MaxRetryMilliseconds = 60_000;
 
     /// <summary>
+    /// The most a retry wait can be, as a multiple of <see cref="RetryMaxMilliseconds"/> (ARV-268): MassTransit 8.5.11 multiplies
+    /// each capped wait by 0.75 and a random part below 0.5 (<c>ExponentialRetryPolicy.GetRetryInterval</c>), so a wait stays
+    /// under 1.25 times the cap. <see cref="LongestHold"/> and the stop budget count every wait at this much.
+    /// </summary>
+    public const double RetryJitter = 1.25;
+
+    /// <summary>
     /// The base of the waits between two attempts of a message (MassTransit 8.5.11's exponential retry): the n-th wait, counting
     /// from 0, is this and 2^n times a random 0.8 to 1.2 times it, capped at <see cref="RetryMaxMilliseconds"/>, then multiplied by a random
     /// 0.75 to 1.25. So the first wait is about 270 to 550 ms at the defaults, a wait can reach about 1.25 times the cap (just
@@ -180,7 +187,7 @@ public sealed class ConsumerSettings
     /// message is then dead-lettered within its attempts, each up to its handler timeout, during a database outage too. Both settings from 0 to
     /// <see cref="MaxRetryMilliseconds"/>, this one no more than the cap, or the host does not start (ARV-266: MassTransit took
     /// them as they were, and a negative value made it fail its first retry or wait for ever). The waits count in how long a
-    /// message holds its consumer (<see cref="LongestHold"/>, which counts the cap, not the jitter above it: ARV-268).
+    /// message holds its consumer (<see cref="LongestHold"/>, which counts each at the cap and the jitter: ARV-268).
     /// </summary>
     public int RetryMinMilliseconds { get; init; } = 200;
 
@@ -231,9 +238,10 @@ public sealed class ConsumerSettings
 
     /// <summary>
     /// The longest one record can hold its consumer (ARV-254): every attempt at its handler timeout, the retry waits at their
-    /// longest, then its dead letter: refused sends for <see cref="Kafka.DeadLetterRetry.SendWindow"/> and one more send that
-    /// started by its end (<see cref="Kafka.KafkaProduce.SendTimeout"/>), then the outbox write
-    /// (<see cref="Kafka.DeadLetterRetry.KeepTimeout"/>). About 6 minutes 50 seconds at the defaults. Longer in three cases: the
+    /// longest (each <see cref="RetryJitter"/> times the cap since ARV-268: MassTransit's jitter), then its dead letter: refused
+    /// sends for <see cref="Kafka.DeadLetterRetry.SendWindow"/> and one more send that started by its end
+    /// (<see cref="Kafka.KafkaProduce.SendTimeout"/>), then the outbox write (<see cref="Kafka.DeadLetterRetry.KeepTimeout"/>).
+    /// 413.75 seconds (about 6 minutes 54 seconds) at the defaults. Longer in three cases: the
     /// broker refuses the dead letter and the database the outbox write too (the letter is tried again until one takes it); a
     /// handler ignores its cancellation (every Ariva consumer passes its token on; ARV-096e); and the inbox's rollback after
     /// an attempt is cut, which runs without the attempt's token and is bounded by the database client's own timeouts (the
@@ -241,8 +249,17 @@ public sealed class ConsumerSettings
     /// </summary>
     public TimeSpan LongestHold =>
         TimeSpan.FromSeconds((double)(Math.Max(0, RetryCount) + 1) * HandlerTimeoutSeconds)
-        + TimeSpan.FromMilliseconds((double)Math.Max(0, RetryCount) * Math.Max(0, RetryMaxMilliseconds))
+        + RetryWaits(RetryCount, RetryMaxMilliseconds)
         + Kafka.DeadLetterRetry.SendWindow + Kafka.KafkaProduce.SendTimeout + Kafka.DeadLetterRetry.KeepTimeout;
+
+    /// <summary>
+    /// The longest a message's retry waits can take together: each at <see cref="RetryJitter"/> times the cap (ARV-268). For
+    /// <see cref="LongestHold"/> and the stop budget.
+    /// </summary>
+    /// <param name="retries">The retries (<see cref="RetryCount"/>).</param>
+    /// <param name="capMilliseconds">The cap (<see cref="RetryMaxMilliseconds"/>).</param>
+    public static TimeSpan RetryWaits(int retries, int capMilliseconds) =>
+        TimeSpan.FromMilliseconds((double)Math.Max(0, retries) * Math.Max(0, capMilliseconds) * RetryJitter);
 
     /// <summary>
     /// librdkafka's <c>max.poll.interval.ms</c> for every rider consumer (ARV-254): <see cref="LongestHold"/> and a minute.
@@ -252,7 +269,7 @@ public sealed class ConsumerSettings
     /// the rebalance the records it had not committed were handled again (duplicates the inbox drops). Above the longest
     /// hold, a consumer leaves its group only when it is truly stuck. The cost: librdkafka also sends it as the group's rebalance
     /// timeout, so in a rebalance (a rolling update, a scale out, a pod lost) a member held with its prefetch full delays the
-    /// whole group for up to this long (470 seconds at the defaults, 300 before). At most <see cref="MaxPollIntervalLimit"/>,
+    /// whole group for up to this long (473.75 seconds at the defaults, 300 before). At most <see cref="MaxPollIntervalLimit"/>,
     /// or the host does not start.
     /// </summary>
     public TimeSpan MaxPollInterval => LongestHold + TimeSpan.FromMinutes(1);

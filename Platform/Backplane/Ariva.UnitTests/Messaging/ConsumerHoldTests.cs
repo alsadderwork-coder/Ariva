@@ -1,9 +1,12 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Messaging;
 using Ariva.Di.Extensions;
 using Ariva.Infra.Messaging;
 using Ariva.Infra.Messaging.Kafka;
+using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using MassTransit;
 using Microsoft.Extensions.Configuration;
@@ -21,7 +24,7 @@ namespace Ariva.UnitTests.Messaging;
 /// hold the settings allow (MassTransit 8.5.11 stops polling while a held record's followers fill its prefetch; the real
 /// broker's side is HeldConsumerTests in Ariva.IntegrationTests).
 /// </summary>
-public sealed class ConsumerHoldTests
+public sealed partial class ConsumerHoldTests
 {
     #region Fields
 
@@ -178,10 +181,11 @@ public sealed class ConsumerHoldTests
         var defaults = new ConsumerSettings();
         var most = new ConsumerSettings { RetryCount = ConsumerSettings.MaxRetryCount, HandlerTimeoutSeconds = ConsumerSettings.MaxHandlerTimeoutSeconds, RetryMaxMilliseconds = 5_000 };
 
-        defaults.LongestHold.Should().Be(TimeSpan.FromSeconds(4 * 70 + 3 * 5 + 60 + 45 + 10), "four attempts, three waits, the window, one more send, the keep");
+        defaults.LongestHold.Should().Be(TimeSpan.FromSeconds(4 * 70 + 3 * 5 * 1.25 + 60 + 45 + 10),
+            "four attempts, three waits at 1.25 times the cap (MassTransit's jitter, ARV-268), the window, one more send, the keep");
         defaults.MaxPollInterval.Should().Be(defaults.LongestHold + TimeSpan.FromMinutes(1));
         defaults.MaxPollInterval.Should().BeGreaterThan(TimeSpan.FromSeconds(300), "librdkafka's default was shorter than the hold");
-        most.LongestHold.Should().Be(TimeSpan.FromSeconds(11 * 120 + 10 * 5 + 60 + 45 + 10));
+        most.LongestHold.Should().Be(TimeSpan.FromSeconds(11 * 120 + 10 * 5 * 1.25 + 60 + 45 + 10));
         most.MaxPollInterval.Should().BeLessThan(ConsumerSettings.MaxPollIntervalLimit, "librdkafka's own bound on max.poll.interval.ms");
         ConsumerSettings.MaxPollIntervalLimit.Should().Be(TimeSpan.FromMilliseconds(86_400_000));
     }
@@ -190,9 +194,9 @@ public sealed class ConsumerHoldTests
     public void MaxPollInterval_Should_StayWithinADay_When_EverySettingIsAtItsLargest()
     {
         // ARV-266 holds RetryMaxMilliseconds to a minute (refused at start beyond it), so the day ARV-254 checks at start can no
-        // longer be reached through the settings: ten retries at the largest handler timeout, ten waits counted at the 60,000 ms
-        // cap (MassTransit's jitter can take a wait to 1.25 times it; ARV-268), the dead letter's 115 s and the minute come to
-        // 2,095 s. The start check stays, should a bound move.
+        // longer be reached through the settings: ten retries at the largest handler timeout, ten waits at 1.25 times the 60,000 ms
+        // cap (MassTransit's jitter, counted since ARV-268), the dead letter's 115 s and the minute come to 2,245 s. The start check
+        // stays, should a bound move.
         var largest = new ConsumerSettings
         {
             RetryCount = ConsumerSettings.MaxRetryCount,
@@ -201,8 +205,64 @@ public sealed class ConsumerHoldTests
             RetryMaxMilliseconds = ConsumerSettings.MaxRetryMilliseconds
         };
 
-        largest.MaxPollInterval.Should().Be(TimeSpan.FromSeconds(11 * 120 + 10 * 60 + 60 + 45 + 10 + 60));
+        largest.MaxPollInterval.Should().Be(TimeSpan.FromSeconds(11 * 120 + 10 * 60 * 1.25 + 60 + 45 + 10 + 60));
         largest.MaxPollInterval.Should().BeLessThan(ConsumerSettings.MaxPollIntervalLimit, "librdkafka's own bound on max.poll.interval.ms");
+    }
+
+    [Fact]
+    public void ConsumerHeldAlert_Should_LimitAboveTheLongestHold_When_TheHostsKeepTheirDefaults()
+    {
+        // ARV-268: the chart cannot read the hosts' Kafka:Consumers settings, so the alert's limit is held here to the longest
+        // hold the defaults allow (413.75 s with the retry jitter), rounded up, in every values file the chart has (listed from
+        // its folder, so a new one is read too); a file that sets none keeps values.yaml's, and one that names the rule in
+        // another form than values.yaml's one line fails rather than falling back unread.
+        var longest = (int)Math.Ceiling(new ConsumerSettings().LongestHold.TotalSeconds);
+        var files = Directory.GetFiles(RepositoryPaths.Resolve(ChartFolder), "values*.yaml").Select(Path.GetFileName).Order(StringComparer.Ordinal).ToList();
+
+        files.Should().Contain("values.yaml").And.HaveCountGreaterThanOrEqualTo(5, "values.yaml and the four environments");
+        var defaults = HoldLimit("values.yaml");
+        defaults.Should().NotBeNull("values.yaml sets monitoring.alerts.consumerHeld.holdLimit on one line");
+        foreach (var file in files)
+        {
+            var limit = HoldLimit(file);
+            if (limit is null)
+                File.ReadAllText(RepositoryPaths.Resolve($"{ChartFolder}/{file}")).Should().NotContain("consumerHeld",
+                    $"{file} names the rule in a form this test does not read; keep values.yaml's one-line form");
+            (limit ?? defaults).Should().BeGreaterThanOrEqualTo(longest, $"{file}: a held consumer alarms only past the longest hold its settings allow");
+        }
+    }
+
+    [Theory]
+    [InlineData(3, 200, 5_000)]
+    [InlineData(3, 5_000, 5_000)]
+    [InlineData(ConsumerSettings.MaxRetryCount, ConsumerSettings.MaxRetryMilliseconds, ConsumerSettings.MaxRetryMilliseconds)]
+    public void RetryJitter_Should_BoundEveryWait_When_TheRetryIsBuiltAsTheConsumePipelineBuildsIt(int retries, int min, int cap)
+    {
+        // ARV-268: MassTransit's own policy, built with ConsumePipeline's arguments and sampled (each policy draws its schedule
+        // once, each wait its jitter), so a MassTransit update that widens the jitter fails here before LongestHold and the stop
+        // budget undercount a wait. With the base at the cap every wait is the cap times the jitter, so one passes 1.2 times it.
+        var longest = TimeSpan.Zero;
+        for (var policies = 0; policies < 200; policies++)
+        {
+            var policy = (MassTransit.RetryPolicies.ExponentialRetryPolicy)Retry.Exponential(
+                retries,
+                TimeSpan.FromMilliseconds(min),
+                TimeSpan.FromMilliseconds(cap),
+                TimeSpan.FromMilliseconds(Math.Max(1, min)));
+            for (var retry = 0; retry < retries; retry++)
+            {
+                for (var sample = 0; sample < 20; sample++)
+                {
+                    var wait = policy.GetRetryInterval(retry);
+                    if (wait > longest)
+                        longest = wait;
+                }
+            }
+        }
+
+        longest.Should().BeLessThan(TimeSpan.FromMilliseconds(cap * ConsumerSettings.RetryJitter), "every wait LongestHold and the stop budget count");
+        if (min == cap)
+            longest.Should().BeGreaterThan(TimeSpan.FromMilliseconds(cap * 1.2), "the jitter is real and RetryJitter its tight bound");
     }
 
     [Theory]
@@ -397,6 +457,22 @@ public sealed class ConsumerHoldTests
             return Task.CompletedTask;
         }
     }
+
+    #endregion
+
+    #region Helm values
+
+    private const string ChartFolder = "Platform/Cloud/Ariva.K8s/Helm/Charts/platform";
+
+    /// <summary>The <c>holdLimit</c> of the <c>consumerHeld</c> rule in a values file, or null when the file sets none.</summary>
+    private static int? HoldLimit(string file)
+    {
+        var text = File.ReadAllText(RepositoryPaths.Resolve($"{ChartFolder}/{file}"));
+        return ConsumerHeldLimit().Match(text) is { Success: true } match ? int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) : null;
+    }
+
+    [GeneratedRegex(@"^\s+consumerHeld:\s*\{[^}\n]*\bholdLimit:\s*(\d+)", RegexOptions.Multiline | RegexOptions.CultureInvariant)]
+    private static partial Regex ConsumerHeldLimit();
 
     #endregion
 }

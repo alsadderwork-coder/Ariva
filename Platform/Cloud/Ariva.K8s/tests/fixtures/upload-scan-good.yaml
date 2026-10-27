@@ -114,7 +114,7 @@ spec:
       labels:
         app: api-ingest
     spec:
-      # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 25 s), then disposes and exits
+      # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 28.75 s), then disposes and exits
       terminationGracePeriodSeconds: 60
       imagePullSecrets:
         - name: dalilacr-secret
@@ -288,7 +288,7 @@ spec:
       labels:
         app: api-main
     spec:
-      # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 25 s), then disposes and exits
+      # ARV-165: the host stops within its 50 s shutdown timeout (the bus 35 s, a stop during retries needing up to 28.75 s), then disposes and exits
       terminationGracePeriodSeconds: 60
       # No container of this pod calls the Kubernetes API, and the scanner's containers (ARV-092c) are third-party code: none
       # gets the service account token

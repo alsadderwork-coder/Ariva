@@ -103,7 +103,8 @@ public sealed class InHandAtStopTests(FaultsFixture faults)
 
     /// <summary>
     /// A host with a stop budget a slow attempt outlasts: the bus waits 11 s (26 less 15), which covers the retry schedule
-    /// (one retry, 200 ms) and the dead letter's keep (10 s), as the host's start check requires, but not a 20 s attempt.
+    /// (one retry, 200 ms, up to 250 ms with MassTransit's jitter, ARV-268) and the dead letter's keep (10 s), as the host's
+    /// start check requires, but not a 20 s attempt.
     /// </summary>
     private async Task<IHost> StartHostAsync(int retryCount)
     {

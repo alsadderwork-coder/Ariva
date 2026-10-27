@@ -86,7 +86,7 @@ function envValueOf(container, docs, name) {
 
 /**
  * ARV-165: an API host stops within its 50 s shutdown timeout (the message bus gets 35 s, and a stop during a message's
- * retries needs up to 25 s), then disposes and exits, so its pod's grace period is at least 60 s, and the host is told the
+ * retries needs up to 28.75 s), then disposes and exits, so its pod's grace period is at least 60 s, and the host is told the
  * value (Hosting__GracePeriodSeconds) so it can refuse a shutdown timeout that would not fit. ARV-176: likewise its startup
  * probe's allowance (Hosting__StartupAllowanceSeconds), so it can refuse consumer waits at start that would not fit.
  */
