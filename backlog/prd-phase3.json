@@ -649,7 +649,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md"
       ],
       "priority": 58,
-      "passes": false,
+      "passes": true,
       "notes": "Size XS. Recorded 2026-10-17 with ARV-142b under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back).",
       "dependsOn": []
     },

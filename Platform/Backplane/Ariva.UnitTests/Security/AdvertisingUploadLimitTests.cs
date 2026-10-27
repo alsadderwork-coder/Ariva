@@ -4,6 +4,7 @@ using Ariva.Api.Main.Controllers.AdminArea.Advertising;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Services.Displays;
 using Ariva.Infra.Services.Displays;
+using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -75,15 +76,15 @@ public sealed class AdvertisingUploadLimitTests
     public async Task Filter_Should_CutOffASlowBody_When_TheUploadIsOverHttp1()
     {
         var (context, _) = Context(20, Form("advertiser", "Gulf Air"));
-        var rate = new BodyRate(refuses: false);
+        var rate = new BodyRateFeature(refuses: false);
         context.HttpContext.Features.Set<IHttpMinRequestBodyDataRateFeature>(rate);
         context.HttpContext.Request.Protocol = "HTTP/1.1";
 
         (await RunAsync(context)).Should().BeTrue();
 
-        rate.MinDataRate.Should().NotBeNull();
-        rate.MinDataRate.BytesPerSecond.Should().Be(AdvertisingUploadLimitAttribute.MinBytesPerSecond);
-        rate.MinDataRate.GracePeriod.Should().Be(TimeSpan.FromSeconds(10));
+        rate.Stored.Should().NotBeNull();
+        rate.Stored.BytesPerSecond.Should().Be(AdvertisingUploadLimitAttribute.MinBytesPerSecond);
+        rate.Stored.GracePeriod.Should().Be(TimeSpan.FromSeconds(10));
     }
 
     [Theory]
@@ -93,7 +94,7 @@ public sealed class AdvertisingUploadLimitTests
     {
         var (context, _) = Context(20, Form("advertiser", "Gulf Air"));
         // As Kestrel's: any rate but none is refused on HTTP/2 and HTTP/3.
-        context.HttpContext.Features.Set<IHttpMinRequestBodyDataRateFeature>(new BodyRate(refuses: true));
+        context.HttpContext.Features.Set<IHttpMinRequestBodyDataRateFeature>(new BodyRateFeature(refuses: true));
         context.HttpContext.Request.Protocol = protocol;
 
         (await RunAsync(context)).Should().BeTrue("the connection's own rate applies; nothing throws");
@@ -162,18 +163,6 @@ public sealed class AdvertisingUploadLimitTests
         http.Features.Set<IHttpMaxRequestBodySizeFeature>(size);
         var action = new ActionContext(http, new RouteData(), new ActionDescriptor());
         return (new ResourceExecutingContext(action, [], []), size);
-    }
-
-    /// <summary>A request's minimum body rate; Kestrel's refuses any rate but none on HTTP/2 and HTTP/3.</summary>
-    private sealed class BodyRate(bool refuses) : IHttpMinRequestBodyDataRateFeature
-    {
-        private Microsoft.AspNetCore.Server.Kestrel.Core.MinDataRate _rate;
-
-        public Microsoft.AspNetCore.Server.Kestrel.Core.MinDataRate MinDataRate
-        {
-            get => _rate;
-            set => _rate = refuses && value is not null ? throw new NotSupportedException("HTTP/2 and HTTP/3 take the connection's rate.") : value;
-        }
     }
 
     /// <summary>A body that Kestrel cut off for arriving too slowly.</summary>

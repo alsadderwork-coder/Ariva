@@ -24,7 +24,6 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
-using MinDataRate = Microsoft.AspNetCore.Server.Kestrel.Core.MinDataRate;
 
 namespace Ariva.UnitTests.Security;
 
@@ -126,7 +125,7 @@ public sealed class HostRequestPathTests
     public async Task SteadyIntegrationBodies_Should_SetTheUploadsRate_When_TheEndpointIsABatchOrAnAidxMessageOverHttp1(string policy, string protocol, bool set)
     {
         var context = new DefaultHttpContext { Request = { Protocol = protocol } };
-        var rate = new BodyRate(refuses: protocol != "HTTP/1.1");
+        var rate = new BodyRateFeature(refuses: protocol != "HTTP/1.1");
         context.Features.Set<IHttpMinRequestBodyDataRateFeature>(rate);
         var metadata = policy is null ? new EndpointMetadataCollection() : new EndpointMetadataCollection(new EnableRateLimitingAttribute(policy));
         context.SetEndpoint(new Endpoint(_ => Task.CompletedTask, metadata, "probe"));
@@ -138,7 +137,7 @@ public sealed class HostRequestPathTests
         await app.Build()(context);
 
         reached.Should().BeTrue();
-        rate.MinDataRate.Should().Be(set ? SteadyUploadAttribute.MinimumRate : null);
+        rate.Stored.Should().Be(set ? SteadyUploadAttribute.MinimumRate : null);
     }
 
     [Theory]
@@ -150,13 +149,13 @@ public sealed class HostRequestPathTests
     {
         // Kestrel refuses a per-request rate on HTTP/2 and HTTP/3 (the fake throws as it does); the push set it on any protocol.
         var context = new DefaultHttpContext { Request = { Protocol = protocol } };
-        var rate = new BodyRate(refuses: !set);
+        var rate = new BodyRateFeature(refuses: !set);
         context.Features.Set<IHttpMinRequestBodyDataRateFeature>(rate);
 
         var push = () => SteadyUploadAttribute.RequireRate(context, Ariva.Api.Ingest.Controllers.PushController.PushRate);
 
         push.Should().NotThrow();
-        rate.MinDataRate.Should().Be(set ? Ariva.Api.Ingest.Controllers.PushController.PushRate : null);
+        rate.Stored.Should().Be(set ? Ariva.Api.Ingest.Controllers.PushController.PushRate : null);
         Ariva.Api.Ingest.Controllers.PushController.PushRate.BytesPerSecond.Should().Be(1024);
     }
 
@@ -197,18 +196,6 @@ public sealed class HostRequestPathTests
                 : new IntegrationCallCheck(null, "unknown client"));
 
         public Task RecordCallAsync(IntegrationCallRecord call, CancellationToken ct = default) => Task.CompletedTask;
-    }
-
-    /// <summary>A request's minimum body rate; Kestrel's refuses any rate but none on HTTP/2 and HTTP/3.</summary>
-    private sealed class BodyRate(bool refuses) : IHttpMinRequestBodyDataRateFeature
-    {
-        private MinDataRate _rate;
-
-        public MinDataRate MinDataRate
-        {
-            get => _rate;
-            set => _rate = refuses && value is not null ? throw new NotSupportedException("HTTP/2 and HTTP/3 take the connection's rate.") : value;
-        }
     }
 
     #endregion

@@ -153,14 +153,14 @@ public sealed class SteadyUploadTests
     public async Task Filter_Should_SetTheMinimumRate_When_TheUploadIsOverHttp1()
     {
         var context = Context(Form("file", "a,b"));
-        var rate = new BodyRate(refuses: false);
+        var rate = new BodyRateFeature(refuses: false);
         context.HttpContext.Features.Set<IHttpMinRequestBodyDataRateFeature>(rate);
         context.HttpContext.Request.Protocol = "HTTP/1.1";
 
         (await RunAsync(context)).Should().BeTrue();
 
-        rate.MinDataRate.BytesPerSecond.Should().Be(32 * 1024);
-        rate.MinDataRate.GracePeriod.Should().Be(TimeSpan.FromSeconds(10));
+        rate.Stored.BytesPerSecond.Should().Be(32 * 1024);
+        rate.Stored.GracePeriod.Should().Be(TimeSpan.FromSeconds(10));
     }
 
     [Theory]
@@ -169,7 +169,7 @@ public sealed class SteadyUploadTests
     public async Task Filter_Should_LeaveTheRateAlone_When_TheUploadIsOverHttp2Or3(string protocol)
     {
         var context = Context(Form("file", "a,b"));
-        context.HttpContext.Features.Set<IHttpMinRequestBodyDataRateFeature>(new BodyRate(refuses: true));
+        context.HttpContext.Features.Set<IHttpMinRequestBodyDataRateFeature>(new BodyRateFeature(refuses: true));
         context.HttpContext.Request.Protocol = protocol;
 
         (await RunAsync(context)).Should().BeTrue("the connection's own rate applies; nothing throws");
@@ -593,18 +593,6 @@ public sealed class SteadyUploadTests
     private sealed class EverySiteScope : ISiteScope
     {
         public Task<SiteAccess> GetAsync(CancellationToken ct = default) => Task.FromResult(SiteAccess.Everything);
-    }
-
-    /// <summary>A request's minimum body rate; Kestrel's refuses any rate but none on HTTP/2 and HTTP/3.</summary>
-    private sealed class BodyRate(bool refuses) : IHttpMinRequestBodyDataRateFeature
-    {
-        private Microsoft.AspNetCore.Server.Kestrel.Core.MinDataRate _rate;
-
-        public Microsoft.AspNetCore.Server.Kestrel.Core.MinDataRate MinDataRate
-        {
-            get => _rate;
-            set => _rate = refuses && value is not null ? throw new NotSupportedException("HTTP/2 and HTTP/3 take the connection's rate.") : value;
-        }
     }
 
     private sealed class BodySize : IHttpMaxRequestBodySizeFeature
