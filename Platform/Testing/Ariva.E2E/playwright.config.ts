@@ -222,6 +222,9 @@ function dotnetHost(projectPath: string, healthUrl: string, buildFirst = false, 
 			// ARV-250: likewise every other upload (floor plans, SSIM files, site configuration transfers, advertisements); the
 			// limit itself is tested in UploadLimitTests.
 			Security__RateLimiting__Uploads__PermitLimit: '10000',
+			// ARV-265: the suite's workers upload in parallel with the same accounts, so one user may hold every upload place, as
+			// before the share (each user's share of the host's places is tested in UploadLimitTests and SteadyUploadTests).
+			Security__RateLimiting__UploadShare__PermitLimit: '3',
 			...emailEnvironment(),
 			...extraEnvironment
 		}

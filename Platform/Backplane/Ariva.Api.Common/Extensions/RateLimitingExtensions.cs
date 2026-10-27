@@ -26,10 +26,20 @@ public static class RateLimitingExtensions
     public const string AuthPolicy = "auth";
 
     /// <summary>
-    /// Named policy for large uploads (floor plans, ARV-018): one at a time per host process and two waiting, so
-    /// concurrent 20 MB bodies cannot exhaust memory or the temporary volume (CWE-400). The rest get 429.
+    /// Named policy for large uploads (floor plans, ARV-018) and the site configuration export: <see cref="UploadPermits"/> at a
+    /// time per host process and <see cref="UploadQueue"/> waiting, so concurrent 20 MB bodies cannot exhaust memory or the
+    /// temporary volume (CWE-400); the rest get 429. Since ARV-265 the rate limiting middleware, which runs before authentication,
+    /// takes nothing for it (one user could hold the permit and every waiting place there): the places, and each user's share of
+    /// them (<c>Security:RateLimiting:UploadShare</c>), are taken once the caller is authorized and before the body is read, by the
+    /// <c>UploadLimitAttribute</c> every endpoint of the policy carries (Ariva.Api.Main).
     /// </summary>
     public const string UploadPolicy = "upload";
+
+    /// <summary>The uploads a host process takes at once under <see cref="UploadPolicy"/> (ARV-018).</summary>
+    public const int UploadPermits = 1;
+
+    /// <summary>The uploads that may wait for one of <see cref="UploadPermits"/>, oldest first (ARV-018).</summary>
+    public const int UploadQueue = 2;
 
     /// <summary>
     /// Named policy for alert rule backtests (ARV-038): each reads up to a day of minutes and bins of up to 64 zones, so
@@ -89,8 +99,9 @@ public static class RateLimitingExtensions
     public const int ConcurrencyRetryAfterSeconds = 10;
 
     /// <summary>
-    /// ARV-096b: the partition of a request to a user's concurrency policy (<see cref="UploadPolicy"/>, <see cref="BacktestPolicy"/>,
-    /// <see cref="ValidationResultsPolicy"/>, <see cref="ReportsPolicy"/>) that sends no credentials at all: no limit. The policies run
+    /// ARV-096b: the partition of a request to a user's concurrency policy (<see cref="BacktestPolicy"/>,
+    /// <see cref="ValidationResultsPolicy"/>, <see cref="ReportsPolicy"/>; since ARV-265 <see cref="UploadPolicy"/>'s places are
+    /// taken after authorization) that sends no credentials at all: no limit. The policies run
     /// before authentication, and such a request ends 401 there at once, so it must neither take a slot nor wait for one.
     /// </summary>
     public const string WithoutCredentialsPartition = "without-credentials";
@@ -120,8 +131,9 @@ public static class RateLimitingExtensions
             .Bind(configuration.GetSection(RateLimitingSettings.SectionName))
             .Validate(settings => settings.Global.IsValid && settings.Auth.IsValid && settings.Device.IsValid && settings.DisplayPlays.IsValid && settings.IntegrationAuth.IsValid &&
                                 settings.IntegrationBatch.IsValid && settings.IntegrationAidx.IsValid && settings.IntegrationClient.IsValid &&
-                                settings.ValidationResults.IsValid && settings.Reports.IsValid && settings.CsvImports.IsValid && settings.Uploads.IsValid,
-                $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds, a QueueLimit of zero or more and, for a sliding window, at most 86,400 WindowSeconds in 1 to 600 SegmentsPerWindow (no more than WindowSeconds).")
+                                settings.ValidationResults.IsValid && settings.Reports.IsValid && settings.CsvImports.IsValid && settings.Uploads.IsValid &&
+                                settings.UploadShare.IsValid,
+                $"{RateLimitingSettings.SectionName} limits need a positive PermitLimit and WindowSeconds, a QueueLimit of zero or more and, for a sliding window, at most 86,400 WindowSeconds in 1 to 600 SegmentsPerWindow (no more than WindowSeconds); UploadShare's PermitLimit is 1 to {UploadPermits + UploadQueue} (the host's uploads running and waiting).")
             .ValidateOnStart();
 
         services.AddRateLimiter(_ => { });
@@ -147,7 +159,8 @@ public static class RateLimitingExtensions
                 options.AddPolicy(DisplayPlaysPolicy, Logged(DisplayPlaysPolicy, DisplayKind, context =>
                     RateLimitPartition.GetFixedWindowLimiter(Ariva.Api.Common.Security.DisplayAuthentication.RateLimitPartition(context),
                         _ => ToLimiterOptions(limits.DisplayPlays))));
-                options.AddPolicy(UploadPolicy, Logged(UploadPolicy, HostKind, context => SessionConcurrency(context, UploadPolicy, 1, 2)));
+                // ARV-265: nothing before authentication; UploadLimitAttribute takes the upload places once the caller is known.
+                options.AddPolicy(UploadPolicy, _ => RateLimitPartition.GetNoLimiter(UploadPolicy));
                 options.AddPolicy(IntegrationBatchPolicy, Logged(IntegrationBatchPolicy, HostKind, _ =>
                     RateLimitPartition.GetConcurrencyLimiter(IntegrationBatchPolicy, _ => new ConcurrencyLimiterOptions
                     {

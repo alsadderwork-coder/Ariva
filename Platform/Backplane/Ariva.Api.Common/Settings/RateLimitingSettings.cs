@@ -1,3 +1,5 @@
+using Ariva.Api.Common.Extensions;
+
 namespace Ariva.Api.Common.Settings;
 
 /// <summary>
@@ -80,12 +82,32 @@ public sealed class RateLimitingSettings
     /// Every other upload per user and kind (ARV-250): floor plans, SSIM previews and, apart, imports, site configuration
     /// exports and, apart, imports, advertisement images and videos. Each holds the host's one upload permit while its body
     /// arrives (a 20 MB file up to about 11 minutes at the slowest rate allowed) and while it is checked and stored, so one user
-    /// starting them in a loop would turn every other upload away (429). This caps the transfers a user starts, not how long slow
-    /// ones hold the permit (docs/security/costly-operations.md section 15, item 17). A sliding window per user and kind in this host process, counted
-    /// after authorization and before the body is read; with N replicas a user may reach N times the limit. Default 10 of a kind
-    /// in any 10 minutes less one segment (10 seconds). A refused upload is answered at once.
+    /// starting them in a loop would turn every other upload away (429). This caps the transfers a user starts; how many places
+    /// they hold at once is <see cref="UploadShare"/>'s (ARV-265). A sliding window per user and kind in this host process,
+    /// counted once the request holds the permit, after authorization and before the body is read; with N replicas a user may
+    /// reach N times the limit. Default 10 of a kind in any 10 minutes less one segment (10 seconds). A refused upload is
+    /// answered at once.
     /// </summary>
     public SlidingWindowSettings Uploads { get; set; } = new() { PermitLimit = 10, WindowSeconds = 600, SegmentsPerWindow = 60 };
+
+    /// <summary>
+    /// Each user's share of the host's upload places (ARV-265): how many uploads and transfers of the <c>upload</c> policy one
+    /// user may have running or waiting at once in this host process, of its one running and two waiting. Taken once the caller
+    /// is authorized and before the body is read; one beyond it is refused 429 at once. Default 1, so one user's slow transfers
+    /// hold one place and another user finds the permit or a waiting place unless three other users hold them. 1 to 3, refused at
+    /// start otherwise; 3 shares nothing (the E2E suite's, whose workers upload in parallel with the same accounts).
+    /// </summary>
+    public UploadShareSettings UploadShare { get; set; } = new() { PermitLimit = 1 };
+}
+
+/// <summary>Each user's share of the host's upload places (ARV-265): <see cref="PermitLimit"/> running or waiting at once.</summary>
+public sealed class UploadShareSettings
+{
+    /// <summary>The places one user may hold at once, running or waiting.</summary>
+    public int PermitLimit { get; set; }
+
+    /// <summary>True from 1 to the host's places (<see cref="RateLimitingExtensions.UploadPermits"/> and <see cref="RateLimitingExtensions.UploadQueue"/>).</summary>
+    public bool IsValid => PermitLimit is > 0 and <= RateLimitingExtensions.UploadPermits + RateLimitingExtensions.UploadQueue;
 }
 
 /// <summary>A concurrency limiter: <see cref="PermitLimit"/> requests at once and <see cref="QueueLimit"/> waiting.</summary>

@@ -145,6 +145,9 @@ public static class SecurityEvents
     /// <summary>One partition for the whole host process (the concurrency policies).</summary>
     public const string HostPartition = "host";
 
+    /// <summary>One partition per signed-in user: a user's share of the host's upload places (ARV-265, after authorization).</summary>
+    public const string UserPartition = "user";
+
     /// <summary>The policy name of the global limiter, which has none of its own.</summary>
     public const string GlobalPolicy = "global";
 

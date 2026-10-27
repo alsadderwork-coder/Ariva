@@ -300,6 +300,71 @@ public sealed class SecurityEventLogTests : IDisposable
 
     #endregion
 
+    #region Uploads on Ariva.Api.Main
+
+    /// <summary>
+    /// ARV-265 (its security review): the upload places are refused after authorization, by <c>UploadLimitAttribute</c>, and each
+    /// refusal writes one 9116 with the <c>upload</c> policy and the kind of partition only: <c>user</c> while the caller's own
+    /// upload holds their share, <c>host</c> while the permit and both waiting places are taken. No 9129 for the same request,
+    /// and the log never holds the partition's key.
+    /// </summary>
+    [Fact]
+    public async Task UploadRefusals_Should_NameThePolicyAndTheKindOfPartition_When_TheUsersShareOrTheHostsPlacesAreTaken()
+    {
+        var log = Path.Combine(_folder, "uploads.log");
+        var admin = new Mock<Ariva.Core.Services.ICurrentUser>();
+        admin.SetupGet(u => u.Id).Returns(AdminId);
+        var key = Ariva.Api.Main.Controllers.AdminArea.Uploads.UploadLimitAttribute.CallerOf(admin.Object);
+        await using (var app = MainHost(log))
+        {
+            using var client = app.CreateClient();
+            var token = Token(app, "admin", secondFactor: true);
+            var limiter = app.Services.GetRequiredService<Ariva.Api.Main.Controllers.AdminArea.Uploads.UploadRateLimiter>();
+
+            HttpStatusCode share;
+            using (var held = limiter.TakeShare(key))
+            {
+                held.IsAcquired.Should().BeTrue();
+                using var refused = await client.SendAsync(Preview(token), Ct);
+                share = refused.StatusCode;
+            }
+
+            HttpStatusCode host;
+            using (var permit = await limiter.TakePlaceAsync(Ct))
+            {
+                var waiting = new[] { limiter.TakePlaceAsync(Ct), limiter.TakePlaceAsync(Ct) };
+                using var refused = await client.SendAsync(Preview(token), Ct);
+                host = refused.StatusCode;
+                permit.Dispose();
+                foreach (var place in waiting)
+                    (await place).Dispose();
+            }
+
+            (share, host).Should().Be((HttpStatusCode.TooManyRequests, HttpStatusCode.TooManyRequests));
+        }
+
+        var limited = Events(log, SecurityEvents.RateLimitRejectedId).Select(e => e.GetProperty("Properties")).ToList();
+        limited.Select(p => (p.GetProperty("Policy").GetString(), p.GetProperty("Partition").GetString())).Should()
+            .Equal(("upload", SecurityEvents.UserPartition), ("upload", SecurityEvents.HostPartition));
+        Events(log, SecurityEvents.RequestRefusedId).Should().BeEmpty("the refusal's own event, not a second one");
+        File.ReadAllText(log).Should().NotContain(key, "the log never holds the partition's key");
+    }
+
+    /// <summary>A whole SSIM preview as the admin sends it: the upload filter refuses it before reading the file.</summary>
+    private static HttpRequestMessage Preview(string token)
+    {
+        const string boundary = "arivaplace";
+        var body = $"--{boundary}\r\nContent-Disposition: form-data; name=\"horizonDays\"\r\n\r\n7\r\n" +
+                   $"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"schedule.ssim\"\r\nContent-Type: application/octet-stream\r\n\r\nx\r\n" +
+                   $"--{boundary}--\r\n";
+        var request = Request(HttpMethod.Post, "/api/v1/admin/sites/DMO/flight-schedules/preview", token);
+        request.Content = new ByteArrayContent(Encoding.UTF8.GetBytes(body));
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", $"multipart/form-data; boundary={boundary}");
+        return request;
+    }
+
+    #endregion
+
     #region Devices on Ariva.Api.Ingest
 
     [Fact]

@@ -6,9 +6,10 @@ using Microsoft.AspNetCore.Http;
 namespace Ariva.UnitTests.Security;
 
 /// <summary>
-/// ARV-096b (CWE-400, CWE-770, ASVS 5.0 V15.2.2): the user concurrency policies (upload, backtest, validation results, reports) run
+/// ARV-096b (CWE-400, CWE-770, ASVS 5.0 V15.2.2): the user concurrency policies (backtest, validation results, reports) run
 /// before authentication and count every request that sends credentials, read as authentication reads them; a request that sends
-/// none shares an unlimited partition, since authentication refuses it at once. <see cref="ReportsLimitsTests"/> proves it over HTTP on a saturated policy.
+/// none shares an unlimited partition, since authentication refuses it at once. The upload policy's places are taken after
+/// authorization since ARV-265 (<see cref="UploadLimitTests"/>). <see cref="ReportsLimitsTests"/> proves it over HTTP on a saturated policy.
 /// </summary>
 public sealed class SessionConcurrencyTests
 {

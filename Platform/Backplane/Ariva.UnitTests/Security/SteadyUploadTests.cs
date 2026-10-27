@@ -39,9 +39,11 @@ namespace Ariva.UnitTests.Security;
 /// HTTP/1.x the body must arrive at 32 KB a second after 10 seconds, and the filter reads it with the request's token, so the
 /// <c>transfer</c> request timeout ends a read that MVC's own readers (which take no token) would let run. On a real Kestrel (TestServer
 /// has no minimum data rate), a CSV import trickled at 4 KB a second (above Kestrel's own 240 bytes a second, so only the filter's rate
-/// can cut it) holds the host's one upload slot, so a third waiting upload is refused 429, until it is cut off with 408 a few seconds
-/// after the grace instead of the four minutes its declared length would take; the waiting uploads then run and the next is not
-/// refused. The JSON site configuration import is cut the same way, with the same fixed 408.
+/// can cut it) holds the host's one upload slot, so beside two other users' uploads waiting a third is refused 429, until it is cut
+/// off with 408 a few seconds after the grace instead of the four minutes its declared length would take; the waiting uploads then
+/// run and the next is not refused. The JSON site configuration import is cut the same way, with the same fixed 408. ARV-265: one
+/// user's trickled uploads hold one place, so their next ones are refused before their bodies are asked for and two other users'
+/// uploads take the waiting places, while a request that sends no credentials takes no place and waits for none.
 /// </summary>
 [Collection(HostCollection.Name)]
 public sealed class SteadyUploadTests
@@ -321,8 +323,9 @@ public sealed class SteadyUploadTests
         await slow.SendAsync(FilePartHead());
         slow.Trickle(new string('a', TrickleBytes), TrickleEvery);
 
-        // The 100 Continue came from the filter's first read, so the slow upload holds the one slot: two more wait, the next is refused.
-        var probes = Enumerable.Range(0, 3).Select(_ => FullCsvAsync(address)).ToList();
+        // The 100 Continue came from the filter's first read, so the slow upload holds the one slot: two more wait, the next is refused
+        // (three other users: one user holds one place at most, ARV-265).
+        var probes = Enumerable.Range(0, 3).Select(i => FullCsvAsync(address, "prober-" + i.ToString(CultureInfo.InvariantCulture))).ToList();
         var refused = await await Task.WhenAny(probes);
         refused.Should().StartWith("HTTP/1.1 429", "one upload runs and two wait; the rest are refused");
         refused.Should().Contain("Retry-After: 10");
@@ -344,6 +347,81 @@ public sealed class SteadyUploadTests
         waited.Should().OnlyContain(text => text.StartsWith("HTTP/1.1 200", StringComparison.Ordinal), "the slot the trickle held is free again, and the waiting uploads run");
         (await FullCsvAsync(address)).Should().StartWith("HTTP/1.1 200", "the next upload is not refused");
         imports.Verify(i => i.PreviewAsync(Site, It.IsAny<Func<Stream>>(), It.IsAny<CancellationToken>()), Times.Exactly(3), "only the whole uploads reached the service");
+    }
+
+    /// <summary>
+    /// ARV-265, on a real Kestrel as the trickle above: one user trickles CSV previews at a rate the steady read cuts (so the test
+    /// ends; at the 32 KB a second floor a transfer would hold its place as long as it lasts, about 32 s for this 1 MB file and 11
+    /// minutes for 20 MB). Their first holds the permit, and their second and third are refused 429 at once with the fixed text,
+    /// before their bodies are asked for. Two other users' uploads take the waiting places meanwhile, a request that sends no
+    /// credentials is answered 401 at once with every place taken, and a fourth user's upload is refused by the host. Once the
+    /// trickle is cut off, the waiting uploads run. Before ARV-265 the first user's three uploads took the permit and both waiting
+    /// places before authentication, and every other user's upload was refused.
+    /// </summary>
+    [Fact]
+    public async Task Upload_Should_LeaveTheWaitingPlacesToOtherUsers_When_OneUserTricklesThreeUploads()
+    {
+        var imports = new Mock<ISvcDeskCodeMappingImports>();
+        imports.Setup(i => i.SiteReachableAsync(Site, It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        imports.Setup(i => i.PreviewAsync(Site, It.IsAny<Func<Stream>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new Fluentx.Result<DeskCodeMappingImportPreviewViewModel>(new DeskCodeMappingImportPreviewViewModel("00", 1, [], [], 0, "token", null)));
+        await using var app = KestrelMain(services => services.Replace(ServiceDescriptor.Scoped(_ => imports.Object)));
+        var address = ArivaHosts.Address(app);
+        var limiter = app.Services.GetRequiredService<Ariva.Api.Main.Controllers.AdminArea.Uploads.UploadRateLimiter>();
+
+        await using var slow = await RawExchange.OpenAsync(address);
+        await slow.SendAsync(Headers(CsvPreview, "multipart/form-data; boundary=" + Boundary, 1_000_000, administrator: true, expectContinue: true, user: "trickler"));
+        await slow.ReadUntilAsync("HTTP/1.1 100 Continue\r\n\r\n", TimeSpan.FromSeconds(30));
+        await slow.SendAsync(FilePartHead());
+        slow.Trickle(new string('a', TrickleBytes), TrickleEvery);
+
+        // Everything below happens within the trickle's grace: the other users first, then the refusals, each read only until its
+        // answer is in (Kestrel keeps a connection open a while to drain a body it never asked for).
+        var second = FullCsvAsync(address, "second-user");
+        var third = FullCsvAsync(address, "third-user");
+        await UntilAsync(() => limiter.Places().CurrentQueuedCount == 2, "two other users' uploads waiting");
+        var refusals = new List<string>();
+        for (var i = 0; i < 2; i++)
+        {
+            await using var more = await RawExchange.OpenAsync(address);
+            await more.SendAsync(Headers(CsvPreview, "multipart/form-data; boundary=" + Boundary, 1_000_000, administrator: true, expectContinue: true, user: "trickler"));
+            refusals.Add(await more.ReadThroughAsync(Ariva.Api.Main.Controllers.AdminArea.Uploads.UploadLimitAttribute.UploadUnderway, TimeSpan.FromSeconds(10)));
+        }
+
+        string anonymous;
+        await using (var unsigned = await RawExchange.OpenAsync(address))
+        {
+            await unsigned.SendAsync(Headers(CsvPreview, "multipart/form-data; boundary=" + Boundary, 1_000_000, administrator: true, expectContinue: true, signedIn: false));
+            anonymous = await unsigned.ReadThroughAsync("\r\n\r\n", TimeSpan.FromSeconds(10));
+        }
+
+        // A credential that fails authentication: before ARV-265 the rate limiter counted it in the host's places.
+        string forged;
+        await using (var bearer = await RawExchange.OpenAsync(address))
+        {
+            await bearer.SendAsync(Headers(CsvPreview, "multipart/form-data; boundary=" + Boundary, 1_000_000, administrator: true, expectContinue: true, signedIn: false, forged: true));
+            forged = await bearer.ReadThroughAsync("\r\n\r\n", TimeSpan.FromSeconds(10));
+        }
+
+        var queued = limiter.Places().CurrentQueuedCount;
+
+        var fourth = await FullCsvAsync(address, "fourth-user");
+
+        refusals.Should().HaveCount(2).And.OnlyContain(text => text.StartsWith("HTTP/1.1 429", StringComparison.Ordinal) && text.Contains("Retry-After: 10", StringComparison.Ordinal) &&
+                                                           text.Contains(Ariva.Api.Main.Controllers.AdminArea.Uploads.UploadLimitAttribute.UploadUnderway, StringComparison.Ordinal) &&
+                                                           !text.Contains("100 Continue", StringComparison.Ordinal),
+            "one user holds one place: their next uploads are refused before their bodies are asked for");
+        anonymous.Should().StartWith("HTTP/1.1 401", "a request that sends no credentials takes no place and waits for none");
+        forged.Should().StartWith("HTTP/1.1 401", "a credential that fails authentication takes no place and waits for none");
+        queued.Should().Be(2, "neither took a waiting place");
+        fourth.Should().StartWith("HTTP/1.1 429").And.Contain(Ariva.Api.Main.Controllers.AdminArea.Uploads.UploadLimitAttribute.UploadsBusy);
+        (second.IsCompleted, third.IsCompleted).Should().Be((false, false), "the other users' uploads wait for the permit");
+
+        var answer = await slow.ReadAnswerAsync(TimeSpan.FromSeconds(60));
+        TestContext.Current.SendDiagnosticMessage($"Trickled CSV import answered: {FirstLine(answer)}");
+        var waited = await Task.WhenAll(second, third).WaitAsync(TimeSpan.FromSeconds(30), Ct);
+        waited.Should().OnlyContain(text => text.StartsWith("HTTP/1.1 200", StringComparison.Ordinal), "the waiting uploads run once the trickle is cut off");
+        imports.Verify(i => i.PreviewAsync(Site, It.IsAny<Func<Stream>>(), It.IsAny<CancellationToken>()), Times.Exactly(2), "only the other users' whole uploads reached the service");
     }
 
     [Fact]
@@ -415,16 +493,21 @@ public sealed class SteadyUploadTests
             services(collection);
         }));
 
-    private static byte[] Headers(string path, string contentType, long contentLength, bool administrator, bool expectContinue, bool recentSecondFactor = false)
+    private static byte[] Headers(string path, string contentType, long contentLength, bool administrator, bool expectContinue, bool recentSecondFactor = false,
+        string user = "steady-upload", bool signedIn = true, bool forged = false)
     {
         var text = new StringBuilder()
             .Append(CultureInfo.InvariantCulture, $"POST {path} HTTP/1.1\r\n")
             .Append("Host: 127.0.0.1\r\n")
             .Append(CultureInfo.InvariantCulture, $"Content-Type: {contentType}\r\n")
             .Append(CultureInfo.InvariantCulture, $"Content-Length: {contentLength}\r\n")
-            .Append(CultureInfo.InvariantCulture, $"{TestAuthenticationHandler.UserHeader}: steady-upload\r\n")
-            .Append(CultureInfo.InvariantCulture, $"Authorization: {TestAuthenticationHandler.Bearer}\r\n")
             .Append("Connection: close\r\n");
+        if (signedIn)
+            text.Append(CultureInfo.InvariantCulture, $"{TestAuthenticationHandler.UserHeader}: {user}\r\n")
+                .Append(CultureInfo.InvariantCulture, $"Authorization: {TestAuthenticationHandler.Bearer}\r\n");
+        else if (forged)
+            // A bearer without its user: the test scheme does not authenticate it, as a forged or expired token is not.
+            text.Append(CultureInfo.InvariantCulture, $"Authorization: {TestAuthenticationHandler.Bearer}\r\n");
         if (administrator)
             text.Append(CultureInfo.InvariantCulture, $"{TestAuthenticationHandler.RolesHeader}: {Ariva.Core.RoleCodes.SystemAdministrator}\r\n");
         if (recentSecondFactor)
@@ -438,17 +521,28 @@ public sealed class SteadyUploadTests
     private static byte[] FilePartHead() =>
         Encoding.ASCII.GetBytes($"--{Boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"mappings.csv\"\r\nContent-Type: text/csv\r\n\r\n");
 
-    /// <summary>A whole small CSV preview on its own connection; the answer as received.</summary>
-    private static async Task<string> FullCsvAsync(Uri address)
+    /// <summary>A whole small CSV preview on its own connection, by <paramref name="user"/>; the answer as received.</summary>
+    private static async Task<string> FullCsvAsync(Uri address, string user = "steady-upload")
     {
         var body = Encoding.ASCII.GetBytes($"--{Boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"mappings.csv\"\r\nContent-Type: text/csv\r\n\r\n" +
                                            $"system,externalCode,checkpoint,desk\r\nAman,D01,C1,D1\r\n--{Boundary}--\r\n");
         await using var exchange = await RawExchange.OpenAsync(address);
-        await exchange.SendAsync([.. Headers(CsvPreview, "multipart/form-data; boundary=" + Boundary, body.Length, administrator: true, expectContinue: false), .. body]);
+        await exchange.SendAsync([.. Headers(CsvPreview, "multipart/form-data; boundary=" + Boundary, body.Length, administrator: true, expectContinue: false, user: user), .. body]);
         return await exchange.ReadAnswerAsync(TimeSpan.FromSeconds(60));
     }
 
     private static string FirstLine(string answer) => answer.Length == 0 ? "(closed without an answer)" : answer.Split("\r\n")[0];
+
+    private static async Task UntilAsync(Func<bool> condition, string what)
+    {
+        var clock = Stopwatch.StartNew();
+        while (!condition())
+        {
+            if (clock.Elapsed > TimeSpan.FromSeconds(15))
+                throw new TimeoutException(what + ": not within 15 s");
+            await Task.Delay(10, Ct);
+        }
+    }
 
     private static byte[] Form(string name, string value) =>
         Encoding.UTF8.GetBytes($"--{Boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n--{Boundary}--\r\n");
@@ -655,6 +749,26 @@ public sealed class SteadyUploadTests
             var rest = _received.ToArray()[(text.IndexOf(marker, StringComparison.Ordinal) + marker.Length)..];
             _received.SetLength(0);
             _received.Write(rest);
+        }
+
+        /// <summary>
+        /// What the server has sent once <paramref name="marker"/> is in it, without waiting for the connection to close (ARV-265:
+        /// Kestrel keeps one open a while to drain a body it refused unread); what came before a close, if it closes first.
+        /// </summary>
+        public async Task<string> ReadThroughAsync(string marker, TimeSpan within)
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            deadline.CancelAfter(within);
+            var buffer = new byte[4096];
+            while (!Encoding.UTF8.GetString(_received.ToArray()).Contains(marker, StringComparison.Ordinal))
+            {
+                var read = await _stream.ReadAsync(buffer, deadline.Token);
+                if (read == 0)
+                    break;
+                _received.Write(buffer, 0, read);
+            }
+
+            return Encoding.UTF8.GetString(_received.ToArray());
         }
 
         /// <summary>Everything the server sends until it closes the connection (empty when it closed without an answer).</summary>
