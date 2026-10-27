@@ -90,10 +90,15 @@ public sealed class ExtensionUpdateTests : IAsyncLifetime
         await MigrationAsync("CREATE OPERATOR public.@> (LEFTARG = text, RIGHTARG = text, FUNCTION = public.it_extension_contains)");
         await MigrationAsync("CREATE EXTENSION pgcrypto");
         await MigrationAsync("ALTER DATABASE ariva SET work_mem = '8MB'");
+        // ARV-262 review: an overload in pg_catalog itself (what CREATE on pg_catalog, left by a forged dump, would let the
+        // migration login create), which an exact match of its argument types picks over the system's own.
+        await SuperuserAsync("CREATE FUNCTION pg_catalog.format(text, name) RETURNS text LANGUAGE sql IMMUTABLE AS $$ SELECT 'planted' $$");
         var planted = await _server.OpsAsync(Ct, "update-extensions");
         planted.ExitCode.Should().NotBe(0);
         planted.Stderr.Should().Contain("refused before any statement as the superuser: ").And.Contain("function public.lower")
-            .And.Contain("operator public.@>").And.Contain("extension pgcrypto").And.Contain("database setting work_mem=8MB").And.NotContain("updating");
+            .And.Contain("operator public.@>").And.Contain("extension pgcrypto").And.Contain("database setting work_mem=8MB")
+            .And.Contain("function pg_catalog.format (created after initdb)").And.NotContain("updating");
+        await SuperuserAsync("DROP FUNCTION pg_catalog.format(text, name)");
         (await InstalledVersionsAsync()).Should().Equal(new Dictionary<string, string> { ["timescaledb"] = timescale, ["timescaledb_toolkit"] = toolkit });
         await MigrationAsync("ALTER DATABASE ariva RESET work_mem");
         await MigrationAsync("DROP EXTENSION pgcrypto");
@@ -134,9 +139,13 @@ public sealed class ExtensionUpdateTests : IAsyncLifetime
         await MigrationAsync("INSERT INTO it_extension_probe VALUES (now() + INTERVAL '2 days', 3)");
         (await ScalarAsync("SELECT count(*)::text FROM it_extension_probe")).Should().Be("3");
 
+        // ARV-262: the probe hypertable is not one of Ariva's. Without it, the database migrated under the older versions and
+        // updated holds exactly the objects a fresh migration on the image's versions holds, and the image's members.
+        await MigrationAsync("DROP TABLE it_extension_probe");
         var check = await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         check.ExitCode.Should().Be(0, check.Stderr + check.Stdout);
-        check.Stdout.Should().Contain("ok    extension versions|TimescaleDB's extensions at the versions the image ships");
+        check.Stdout.Should().Contain("ok    extension versions|TimescaleDB's extensions at the versions the image ships")
+            .And.Contain("ok    schema|Ariva's ").And.Contain("ok    extension members|timescaledb ").And.Contain("ok    system functions|as PostgreSQL ");
 
         var twice = await _server.OpsAsync(Ct, "update-extensions");
         twice.ExitCode.Should().Be(0, twice.Stderr);

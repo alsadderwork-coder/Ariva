@@ -13,6 +13,7 @@ description: How Ariva persists data: NHibernate through IStorageProvider for co
 
 ## Scripts (production schema and TimescaleDB)
 - `Ariva.Infra/Timescale/Scripts/NNNN_description.sql`, applied in order by the script runner, recorded in `schema_version` with a checksum; a changed checksum of an applied script fails startup.
+- A new script moves `scripts/ops/ariva-db.sh`'s pins in the same change (ARV-262): `ARIVA_SCHEMA_AT` to the new script and `ARIVA_SCHEMA` to what a migrated database holds (`OpsScriptTests` fails first; `BackupRestoreTests` prints the list to paste), plus `ARIVA_FUNCTIONS`, `ARIVA_RUNTIME_PRIVILEGES` and `ARIVA_VIEWS` when it adds a function, changes the runtime role's grants or creates a view. A construct a dump and restore prints differently needs its normalisation in `schema_report`.
 - Hypertables: `sensing_events` (raw canonical events for replay), `queue_minute`, `desk_minute`, `egate_minute`, `wait_samples`; continuous aggregates for 15-minute bins and hourly reports; retention and compression policies per table (values in docs/architecture/overview.md; mark unknown values "to confirm").
 - Separate database roles: migration role (DDL) used by the runner job; runtime role without DDL (CWE-269).
 - Fallback if TimescaleDB is unavailable: native declarative partitioning by day (ADR on storage); keep queries portable where cheap.

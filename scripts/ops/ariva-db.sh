@@ -44,7 +44,20 @@
 #                                   ariva_runtime (the runtime login), with grant option, or on Ariva's relations to
 #                                   PUBLIC; and default privileges as script 0001 leaves them and nothing else. A
 #                                   DBA-provided server's own extension, login and setting pass when
-#                                   named with --allow-extension, --allow-login and --allow-setting (plain names)
+#                                   named with --allow-extension, --allow-login and --allow-setting (plain names). Since
+#                                   ARV-262 also: Ariva's objects in public as a database the same scripts migrated (their
+#                                   columns, constraints, indexes, triggers, grants and function definitions; ARIVA_SCHEMA,
+#                                   compared once the database is at ARIVA_SCHEMA_AT), TimescaleDB's extensions holding
+#                                   exactly the image's members (ARIVA_EXTENSION_MEMBERS), the system catalog's functions,
+#                                   operators, types, casts, aggregates and languages as this PostgreSQL version ships them
+#                                   (ARIVA_SYSTEM_FUNCTIONS, a digest taken outside the database), and no setting from a file
+#                                   but the server's postgresql.conf (postgresql.auto.conf or a file an include names). It
+#                                   finds what a careless forged dump leaves; it cannot prove a careful one absent (the
+#                                   superuser that ran it can change what check reads): the signed manifest is the gate
+#   schema [--full]                 what check compares: one <object>=<hash> line per object of Ariva's in public, each
+#                                   TimescaleDB extension's members digest and the system functions' digest; with --full
+#                                   each object's normalised definition and each extension member, one line each, so that
+#                                   two databases' outputs compare line by line (read-only, as the migration login)
 #   keyring [--certificate-sha256 HEX]...   the Data Protection keys and the certificate each needs
 #   after-kafka-loss --confirm-stream-stopped [--dry-run]
 #                                   re-sends the newest event of every key of the compacted topics and clears the
@@ -67,9 +80,10 @@
 # "Security Considerations for Extensions"). Before any superuser statement the command refuses functions and operators
 # named as the system's or the extensions' own outside the extensions, and any other extension (planted_objects); that
 # narrows the risk, it does not close it: it relies on TimescaleDB's scripts qualifying everything else, which ARV-236
-# did not review. check reads one read-only view as the superuser too (ARV-183): pg_file_settings, which only a superuser
-# may read, for the settings ALTER SYSTEM wrote into postgresql.auto.conf, with a statement that names nothing through the
-# search path, and only when planted_objects finds nothing. Every superuser session runs with the search path pinned to the
+# did not review. check reads two read-only views as the superuser too (ARV-183, ARV-262): pg_file_settings and pg_settings,
+# whose files only a superuser may see, for the settings any file but the server's postgresql.conf holds (ALTER SYSTEM's
+# postgresql.auto.conf, a file an include names), in one statement that names nothing through the search path, and only
+# when planted_objects finds nothing. Every superuser session runs with the search path pinned to the
 # system catalog by a startup option, which no setting of the database owner overrides, and the restore mode functions are
 # named with their schema (ARV-183 review). Nothing else runs as the superuser. The runtime login is never in a backup: the
 # migration job
@@ -230,6 +244,167 @@ zone_outage=SELECT,INSERT,UPDATE"
 # DML of script 0001 and reads with its owner's rights. OpsScriptTests holds the names equal to the scripts' views.
 readonly ARIVA_VIEWS="line_minute_15m=line_minute;overflow_bin_15m=overflow_minute;queue_minute_15m=queue_minute"
 
+# ARV-262 (CWE-269, CWE-345): every object of Ariva's in public as a database the scripts migrated holds it, as
+# <object>=<hash> entries separated by ";" (schema_report says what each hash covers: a relation's columns, constraints,
+# indexes, triggers and grants, a function's definition and grants). check compares them once the database is at
+# ARIVA_SCHEMA_AT, the latest script (any script may change them), so a trigger, constraint, grant or function a forged dump
+# left out, changed or added is reported even where no other line looks. OpsScriptTests holds ARIVA_SCHEMA_AT at the
+# latest script; BackupRestoreTests holds the list equal to a database the release's migration job migrated (and prints it).
+readonly ARIVA_SCHEMA_AT="0065_desk_feed_heartbeat.sql"
+readonly ARIVA_SCHEMA="advertising_media=2cb17c8c169d81de441d4192fdc21b0c;\
+advertising_media_guard()=0c14e39356e12f186a82b88895cc130a;\
+advertising_play=d5f1179d8cfaccdcc0d9c7d9c3634258;\
+advertising_playlist=4a6c0318760037977918e61300754a06;\
+advertising_playlist_guard()=633d55f8a6c27f13b7b7a1e94d2b9da1;\
+advertising_policy=d83429f45d805ccf52a04d7a9d403e5e;\
+advertising_schedule=b8b25b05cc51068e681cee5e690ef853;\
+advertising_schedule_guard()=bf75f116d53a7bf6e874609ff14775f4;\
+airport=3c94cfdd409c8390193522cab42771f1;\
+alert=24824e4c643233ddbac5ec2d6ab45655;\
+alert_keep_raise()=85dd9b3f8edd77b7ada96d91567edd5e;\
+alert_rule=667a50186480b9515162c8790ab9d2dc;\
+alert_rule_identity()=895b6cc23a25603fadff715c72460978;\
+alert_rule_state=33e6047c3886060ebd4fc368a29373be;\
+aman_pull_cursor=2b1f0d463807d44bf7e9550223bb1bf9;\
+ariva_ensure_runtime_login(login_name text, login_password text)=a34b831ffc5ede64cdd0f70840744ab4;\
+ariva_ensure_validation_reader_login(login_name text, login_verifier text)=a933282b920424704f9a04912201735e;\
+ariva_retention_purge(p_data_set text, p_limit integer)=a7ff57e7b5404c01e5cb1715f4416c2c;\
+ariva_set_runtime_statement_timeout(login_name text, timeout_seconds integer)=9e7119ef6c672f24c7f58833abdac5f9;\
+audit_entry=517f91f81aa4f05abee86733509a5cae;\
+availability_cursor=8e4b2ef670b3e952fe9b2d7d78c9ad63;\
+availability_minute=a0a7f3238150c745a520566b57e17da4;\
+border_desk_interval=5f357f5f8810dc45e5d0066550447da3;\
+border_desk_session=9f55be74e4a68f69813c1dd90063d42e;\
+border_egate_interval=f58e79376e4e7c851af7bb68b5cf1302;\
+checkpoint=f39bbc7b8379b08fca1a398490927d55;\
+counter_allocation=9160c214b4875f087f813c0fa69702ab;\
+data_protection_key=c325c22f8a9977960ad76a2bd20fc808;\
+database=b90a9d25f2cafa4afcdf86348a4884ea;\
+database_environment=e52adb8c3538e5988c62134485224f03;\
+desk=7e2fd78689a8e39df7d7718eb47ff4c2;\
+desk_code_mapping=e35f0f7d275e0630066f9fd4e42da56a;\
+desk_feed_state=d28b817a20b273a697a452a2e7fd9d50;\
+desk_minute=3e875cb29f2515f1ec77676bf22f596e;\
+desk_observation=f1b03382ca05ea989e8e7949a437fb9d;\
+desk_observation_batch=097cb763e24f900450524f0418de2be4;\
+desk_observation_insert_check()=825ab6784dec0fbdbc3538ef0a990d2f;\
+desk_sensor_minute=3546d814ef2e6a7e7c18241b43e7a362;\
+desk_zone_reading=a204ce21cdfc0d3efb69de85b4b2e2db;\
+device=01d58dde100b6d3391b2828a3f696af6;\
+device_calibration=8df606c26b6e3ab383f5867afd132b32;\
+device_calibration_immutable()=898d61ed2d4d8bed0d1c463c86f4abe9;\
+device_health_event=0c163b26b148eac8bd9c460e6a30bc1f;\
+device_heartbeat=0cd33743e6e2f39b0940afd5349aa485;\
+display=3e2ccabac8fa244989f46e9e8768f3f1;\
+display_advertising_allowed()=5420d3348838bb6c035cad53f5684d8c;\
+egate_minute=fe0f51641a7af9a738e8e5dcdc48301f;\
+email_message=1c531e7cecee02a2b7101e47730a08c8;\
+email_message_keep()=d91278075b584d4e3e4b5905e6770ee6;\
+feed_freshness=d06d4c8376c322fd09a876991f7735d9;\
+flight_event=718de1b8138faa0cb2c5d8d47a852c31;\
+flight_leg=995c0e72317cd5713439b4e544bb3b93;\
+floor_plan=4cb91c2b99aa2229325665b7547fbe22;\
+inbound_lane_demand=4513c5b054cd09dc13a0a5932dfb6ecc;\
+instruction_slide=88971ae117e1b10b28506495edb04e7e;\
+integration_call=e46b0d368a4916cb0834ecee757ad780;\
+integration_client=5900cfdb0d5ca73d3abce7cebf968b94;\
+integration_idempotency=7391a46cbb12dc523a9f98ef518d8c77;\
+integration_idempotency_keep()=b3b527e2df0c9358c30ac3e1d26d786f;\
+lane_staffing=85bfa55d161bfc2a81a3f6efac2592b2;\
+level=ef72305459eb8b4ba8140489c8612fcf;\
+line=b17d4462e2e004ba9db787d69655149d;\
+line_minute=949005495d9badc823b8f406bf0508a4;\
+line_minute_15m=c486d2eb00e6f688763ccbfa14f4f49a;\
+maintenance_window=30c9e45c92c9f12632648b94e61652cf;\
+manual_count=cc73bd7e33a26983b067f4d91e0ce437;\
+manual_count_insert_check()=440139ea9b09c91a26a5d0d497faae00;\
+operating_day_exception=039d4c83fdcce93a7f70c5689e6dd688;\
+operating_week=4bf3eae1c6360300dadde851d38f57c0;\
+outbound_endpoint=c22fdee5cf9a5b29d82973abcd2ddbc5;\
+outbox_message=bbd7564a3197af6eab375a3b02976a3f;\
+outbox_message_seq_seq=1385144055b5137fc429fe2b18c88a02;\
+overflow_bin_15m=437c7e5730c99b675118b78e998ca305;\
+overflow_minute=5ffa03608bb5598cc7e75b9559c04aee;\
+processed_event=e3e043f4a644c70841f27b0067158d27;\
+queue_bin=08776c919041f64ad030a3aa7d899eb1;\
+queue_bin_final_is_immutable()=a8f0a0b610e7430cc97d338b164571aa;\
+queue_minute=6a779edc6e03c01e76844db4c7a8ecfe;\
+queue_minute_15m=ab5233a3c5588ab61bbd2a96cc896fb7;\
+queue_minute_shadow=99cee8b2a6e0a9df0fad7f8f41fb24fe;\
+recovery_code=8505ef0be87bad1390e64df736902e79;\
+refresh_token=f1daa29c1e256df7932dac8db5dceae1;\
+replay_run=0cd65a5511a133ce3379725c2851d06d;\
+replay_run_anchor()=0787fcfcc3f351eb37e3f469e36ffbd5;\
+report_delivery=53deee3a4bb2b171b8768ff6ee18b555;\
+report_schedule=1b9f664301a76bbf4fd3e8507000c122;\
+report_schedule_recipient=a955d379c49e2a89352667344e1f0700;\
+retention_period=7392f4079c31935a03633a7a08238725;\
+schema _timescaledb_cache=01b9f62992baa1842166fe29ac004a7a;\
+schema _timescaledb_catalog=01b9f62992baa1842166fe29ac004a7a;\
+schema _timescaledb_config=01b9f62992baa1842166fe29ac004a7a;\
+schema _timescaledb_functions=01b9f62992baa1842166fe29ac004a7a;\
+schema _timescaledb_internal=01b9f62992baa1842166fe29ac004a7a;\
+schema information_schema=01b9f62992baa1842166fe29ac004a7a;\
+schema pg_catalog=01b9f62992baa1842166fe29ac004a7a;\
+schema pg_toast=b674f4d680283437e56727831c38bbf3;\
+schema public=3abf3cd4be4886c9d3aacf2b0b9f3734;\
+schema timescaledb_experimental=01b9f62992baa1842166fe29ac004a7a;\
+schema timescaledb_information=01b9f62992baa1842166fe29ac004a7a;\
+schema toolkit_experimental=01b9f62992baa1842166fe29ac004a7a;\
+schema_version=b28ff4f835f1e99b965b23ee311bb0af;\
+sensing_batch=e89a84e0d986b4f52711e08243a8ae86;\
+sensing_day_key=83545c0e1c076078e6eb00b450a90542;\
+sensing_event=d324e9c04c9a19a56db1458b2b351869;\
+site=c23fd0ae4abba5729f38703cea18030b;\
+stream_offset=7a6dcf84e92b526649085fd79d5fa516;\
+stream_partition_count=1ee751f5fda9720aeaa06947656cc370;\
+stream_zone_state=d7528ea2a44188105afd889623b93347;\
+terminal=df71d62a0b33cfa0a8a270f417784f90;\
+tracer_batch=91544f21e175f95d6226eaad7370ecd2;\
+tracer_run=ef5e635b2e58841bb8b872082a31dbfe;\
+user=98d18078d1cf068518726005d68af86e;\
+user_role=b409107c70c5fdc069a1e5d455f5a232;\
+user_session=9b9ea08ab46360356d343172edb30f8d;\
+user_site=d9ffd9b23069936bfc03888f4a71ef45;\
+validation_campaign=835158a659b6cbcb5e7ce1143f22f629;\
+validation_campaign_desk=6df792079f53aa13faa2be15ab5eb5f6;\
+validation_campaign_desk_check()=104ea7afcc154308d02495c5c62a6cb3;\
+validation_campaign_insert_check()=54d97900461e4a0900d00a9e1b2ca38c;\
+validation_campaign_line=53c13b9d9179eea8772c51ec24ed9c31;\
+validation_campaign_line_check()=660ada511c8ea7f4436835940bb6348f;\
+validation_campaign_transition()=1b4cd420c3805b5b6125015cd8456ff3;\
+validation_campaign_zone=c2d2c328696d12b45594aadf0f8c2674;\
+validation_campaign_zone_check()=6ff7893065cd5560d80c53b1b8d44af5;\
+validation_capture_insert_check()=75dff80d9f1c8e8e64d54c9f222fb0d1;\
+validation_result_revision=4af93ccdfbc4363e4a52652101add721;\
+validation_result_revision_insert_check()=bcdfa3eee48504be818dddb7738ef6fb;\
+validation_row_immutable()=e77b1c7f83acb7761ff4cd2ff8877653;\
+zone=144daa8f192dce93a13e75a77ec54228;\
+zone_health=567ae9a2661ee7a7f18dfb79c3b216c6;\
+zone_health_bin=83f6d4fc5a024c2bbae3392fd68df243;\
+zone_health_bin_final_is_immutable()=f6f65edacdd24324741915722bdcfa7b;\
+zone_outage=9d0dcb545d87fe20fa26779af5ddd1a4;\
+zone_profile=ecb5cd2096d36deaa1d51fd176bb2727;\
+zone_profile_geometry_immutable()=6328ab8391d54f21a060ba94d04bd158;\
+zone_profile_immutable()=ffc3bff3f5370bf70f8ae9d8c0702f41"
+
+# ARV-262: the members of TimescaleDB's extensions as the image ships them, as <extension> <version>=<SHA-256> entries
+# separated by ";" (extension_members' digest). An object a forged dump adds to an extension, or one it replaces in place,
+# changes it. BackupRestoreTests holds it equal to the pinned image's; a new image moves it.
+readonly ARIVA_EXTENSION_MEMBERS="timescaledb 2.31.0=f98feb4c3760ffd0239707ee37978915e8a4d82be2ce78a370a61a0c137e0b12;timescaledb_toolkit 1.26.0=f952f9b5b44c9746652ee0d4ced8b00c4002198e8afb9b27f5c41eda6a5ed52a"
+
+# ARV-262: the system catalog's own objects (system_catalog's rows, sorted, as a SHA-256 taken here, outside the database)
+# per PostgreSQL major version, as <major>=<SHA-256> entries separated by ";". template1 stays the reference for naming what
+# differs, but no longer the one that decides: a forged dump run by the superuser could change template1 as well.
+# BackupRestoreTests holds it equal to the pinned image's. What these pins prove, and what not: check finds what a careless
+# forged dump leaves; it cannot prove a careful one absent, since the superuser that runs the dump can also change what
+# check reads (a catalog row under allow_system_table_mods, a library written to the server's disk, the server's own
+# configuration files); the other digests are computed by the database's functions, which this one vouches for only as
+# far as that. The signed manifest stays the only gate. The digest assumes a cluster initialised by this image's
+# PostgreSQL and settings that leave the printed text alone (extra_float_digits changes how a cost prints): either
+# mismatch fails, never passes.
+readonly ARIVA_SYSTEM_FUNCTIONS="17=a077d5c8f23e6197ffa3ba07f2e8cd7931441f7fe639efe6ccde08b97bb5659f"
+
 # Set by restore only: a database behind ARIVA_RUNTIME_PRIVILEGES_AT is then the expected state (the migration job follows),
 # not a failure. check sets check_not_compared when it reported such a database, so that restore's last line says what to do.
 check_after_restore=0
@@ -248,7 +423,7 @@ SOCKET_DIR=/var/run/postgresql
 
 say() { printf 'ariva-db: %s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
-usage() { say "usage: ariva-db.sh <backup|manifest|check-dump|restore|check|keyring|after-kafka-loss|update-extensions> [options]; see the header of this file"; exit 2; }
+usage() { say "usage: ariva-db.sh <backup|manifest|check-dump|restore|check|schema|keyring|after-kafka-loss|update-extensions> [options]; see the header of this file"; exit 2; }
 
 valid_identifier() { [[ "$1" =~ ^[a-z_][a-z0-9_]{0,62}$ ]]; }
 valid_file() { [[ "$1" == "-" ]] || { [[ "$1" =~ ^/[A-Za-z0-9._/-]{1,255}$ ]] && [[ "$1" != *..* ]]; }; }
@@ -570,7 +745,7 @@ SQL
   check_after_restore=1
   cmd_check "${logins[@]}" "${allowed[@]}"
   if ((check_not_compared)); then
-    say "restore finished, but the backup is older than this release's scripts: the runtime role's privileges and the views are not compared yet. Next: run the migration job with api-main --migrate (the platform stays stopped), then check with --runtime-login, and start the hosts only when it passes; then restore the files and run keyring with the Data Protection certificate."
+    say "restore finished, but the backup is older than this release's scripts: the runtime role's privileges, the views and the schema are not compared yet. Next: run the migration job with api-main --migrate (the platform stays stopped), then check with --runtime-login, and start the hosts only when it passes; then restore the files and run keyring with the Data Protection certificate."
   else
     say "restore finished. Next: run the migration job (api-main --migrate) so the runtime and validation reader logins exist with this deployment's passwords, restore the files, start the hosts, then run keyring with the Data Protection certificate."
   fi
@@ -1033,6 +1208,11 @@ SQL
 )"
   # ARV-183 review: the system's own functions against template1's (a function replaced in place keeps its oid).
   report+=$'\n'"$(system_functions_line)"
+  # ARV-262: Ariva's objects in public against a database the same scripts migrated, and TimescaleDB's members against the image's.
+  local schema_line
+  schema_line="$(schema_report check)" || schema_line="FAIL schema|could not be read as the migration login"
+  report+=$'\n'"$schema_line"
+  report+=$'\n'"$(extension_members_line)"
   # ARV-183 review: functions and operators under system or TimescaleDB names outside the extensions, and settings for every
   # session of the database (ALTER DATABASE ... SET), which update-extensions refuses too (other extensions have their own
   # line). While there is any, the superuser reads nothing: the session's pinned search path already keeps such objects out
@@ -1047,22 +1227,26 @@ SQL
   else
     report+=$'\n'"FAIL planted|${planted//$'\n'/, } (the extensions' update refuses these too; find out who created them, wiki 10 section 4.13)"
   fi
-  local names name kept=()
+  local names name file kept=() passed=()
   if ((read == 0)) || [[ -n "$planted" ]]; then
-    report+=$'\n''FAIL settings|ALTER SYSTEM settings not read: the superuser reads nothing while the line above fails'
-  elif names="$(auto_conf_settings)"; then
-    while IFS= read -r name; do
-      [[ -z "$name" || ",$settings_allowed," == *",$name,"* ]] || kept+=("$name")
+    report+=$'\n''FAIL settings|the configuration files not read: the superuser reads nothing while the line above fails'
+  elif names="$(file_settings)"; then
+    while IFS='|' read -r name file; do
+      [[ -n "$name$file" ]] || continue
+      if [[ ",$settings_allowed," == *",$name,"* ]]; then passed+=("$name ($file)"); else kept+=("$name ($file)"); fi
     done <<<"$names"
     if ((${#kept[@]} == 0)); then
-      report+=$'\n''settings|no ALTER SYSTEM setting (postgresql.auto.conf)'"${settings_allowed:+ but the allowed: ${settings_allowed//,/, }}"
+      # ARV-262 review: each allowed setting with the file it comes from, so a name allowed for one file is seen in another.
+      local shown=""
+      for name in "${passed[@]}"; do shown+="${shown:+, }$name"; done
+      report+=$'\n'"settings|no setting from a file but the server's postgresql.conf (postgresql.auto.conf, a file an include names)${shown:+ but the allowed: $shown}"
     else
-      local joined
-      joined="$(IFS=,; printf '%s' "${kept[*]}")"
-      report+=$'\n'"FAIL settings|ALTER SYSTEM set ${joined//,/, } (postgresql.auto.conf): find out who, then ALTER SYSTEM RESET each and restart the server (a DBA's own: name it with --allow-setting)"
+      local joined=""
+      for name in "${kept[@]}"; do joined+="${joined:+, }$name"; done
+      report+=$'\n'"FAIL settings|set outside the server's postgresql.conf: $joined: find out who, then ALTER SYSTEM RESET what postgresql.auto.conf holds, take out an include line and the file it names, and restart the server (a DBA's own: name it with --allow-setting)"
     fi
   else
-    report+=$'\n''FAIL settings|postgresql.auto.conf could not be read as the superuser over the local socket (run check in the database pod or on the server)'
+    report+=$'\n''FAIL settings|the configuration files could not be read as the superuser over the local socket (run check in the database pod or on the server)'
   fi
   local line failed=0
   while IFS= read -r line; do
@@ -1078,42 +1262,501 @@ SQL
   ((failed == 0)) || die "check failed"
 }
 
-# The settings ALTER SYSTEM wrote (postgresql.auto.conf), one name a line; pg_file_settings is readable by a superuser only
-# (ARV-183). The statement names nothing through the search path, and the session pins it to the catalog anyway.
-auto_conf_settings() {
+# The settings any configuration file but the server's own postgresql.conf holds (ARV-183; ARV-262: not only the
+# postgresql.auto.conf ALTER SYSTEM writes, but a file an include line names, or one written with COPY TO and included),
+# one <name>|<file> line each: what the files say now (pg_file_settings, an entry that does not parse as "an unreadable
+# entry") and what the server applied from them (pg_settings, which keeps a value read from a file removed since). Both
+# show their files to a superuser only. The statement names nothing through the search path, and the session pins it to the
+# catalog anyway; control characters in a value print as "?".
+file_settings() {
   as_superuser --tuples-only --no-align <<'SQL'
-SELECT DISTINCT s.name FROM pg_catalog.pg_file_settings s WHERE s.sourcefile OPERATOR(pg_catalog.~~) '%/postgresql.auto.conf' ORDER BY 1;
+SELECT pg_catalog.regexp_replace(x.line, '[[:cntrl:]]', '?', 'g') FROM (SELECT coalesce(s.name, 'an unreadable entry') OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) s.sourcefile AS line FROM pg_catalog.pg_file_settings s WHERE s.sourcefile OPERATOR(pg_catalog.<>) pg_catalog.current_setting('config_file') UNION SELECT s.name OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) s.sourcefile FROM pg_catalog.pg_settings s WHERE s.sourcefile OPERATOR(pg_catalog.<>) pg_catalog.current_setting('config_file')) x ORDER BY 1;
 SQL
 }
 
-# The system's own functions of a database (oid below 16384), one oid|name|SHA-256 line each, the hash over what defines
-# the function but its grants (ARV-183 review). CREATE OR REPLACE keeps a function's oid, so a system function a forged dump
-# replaced in Ariva's database differs from the same one in template1 (or postgres), which a restore never touches.
-system_functions() {
+# ARV-262 (CWE-269, CWE-345): Ariva's objects as one <object>|<part> line per part: each relation of public outside the
+# extensions (table, view, sequence, foreign table, composite type) with its kind and options, columns (type, not null,
+# default, identity, generated, collation), constraints (and whether a trigger that enforces one is disabled), indexes,
+# triggers (and whether each is enabled), rules, row security policies, inheritance, what each inheritance child lacks of
+# its parent's row triggers, unique indexes and foreign keys (TimescaleDB copies them to every chunk, and an UPDATE fires
+# the chunk's trigger) and a trigger, row security or policy it has that the parent does not, grants table-wide and per column (the owner's as "owner", grantors left out), a view's definition,
+# a continuous aggregate's materialized-only switch, partial and direct views (TimescaleDB's internal numbers written as N)
+# and whether it reads the materialization TimescaleDB keeps for it, a sequence's parameters and a hypertable's dimensions
+# and compression switch; each function of public outside the extensions with its language, kind, arguments and their
+# defaults, result, markings, support function, settings, the SHA-256 of its body (a SQL-standard body too) and its
+# grants; every schema but the temporary ones (the system's, TimescaleDB's and public too) with its owner and grants; the database's
+# owner and its grants beyond PostgreSQL's default and the CONNECT the migration job gives this deployment's runtime and
+# validation reader logins (a REVOKE narrows it and passes); and each type, operator, collation,
+# conversion, text search configuration or dictionary, operator class or family in public and cast created after initdb
+# outside the extensions, and each of these or a relation created after initdb in pg_catalog or information_schema (a
+# migrated database has none). TimescaleDB's jobs are left out (the retention a deployment
+# configures). Each part is hashed as PostgreSQL prints it but for the one form a dump and restore changes in a CHECK
+# constraint (a varchar IN list: ((ARRAY['a'::character varying])::text[]) migrated, (ARRAY[('a'::character varying)::text])
+# restored, both hashed as (ARRAY['a'::character varying])); printed, a backslash doubles, a newline is \n and any other
+# control character "?" (display only). Modes: full (those lines), list (<object>=<hash>, the first 32 hex digits of the
+# SHA-256 of an object's parts in byte order: ARIVA_SCHEMA's entries) and check (the report line, compared once the
+# database is at ARIVA_SCHEMA_AT).
+schema_report() {
+  as_migration_catalog --tuples-only --no-align --set=mode="$1" --set=pinned="$ARIVA_SCHEMA" --set=schema_at="$ARIVA_SCHEMA_AT" \
+    --set=after_restore="$check_after_restore" <<'SQL'
+WITH extension_members AS (
+    SELECT d.classid, d.objid FROM pg_depend d WHERE d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e'),
+relations AS (
+    SELECT c.* FROM pg_class c
+     WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f', 'c')
+       AND NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.classid = 'pg_class'::regclass AND e.objid = c.oid)),
+functions AS (
+    SELECT p.*, p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' AS object FROM pg_proc p
+     WHERE p.pronamespace = 'public'::regnamespace
+       AND NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.classid = 'pg_proc'::regclass AND e.objid = p.oid)),
+children AS (
+    SELECT c.oid AS parent, i.inhrelid AS child FROM relations c JOIN pg_inherits i ON i.inhparent = c.oid),
+namespaces AS (
+    SELECT n.* FROM pg_namespace n WHERE n.nspname !~ '^pg_(toast_)?temp_'),
+acl_entries AS (
+    SELECT c.oid AS relation, NULL::name AS attname,
+           CASE WHEN a.grantee = 0 THEN 'PUBLIC' WHEN a.grantee = c.relowner THEN 'owner' ELSE pg_get_userbyid(a.grantee) END AS grantee,
+           a.privilege_type, a.is_grantable
+      FROM relations c CROSS JOIN LATERAL aclexplode(coalesce(c.relacl, acldefault(CASE WHEN c.relkind = 'S' THEN 's' ELSE 'r' END::"char", c.relowner))) a
+    UNION ALL
+    SELECT c.oid, t.attname, CASE WHEN a.grantee = 0 THEN 'PUBLIC' WHEN a.grantee = c.relowner THEN 'owner' ELSE pg_get_userbyid(a.grantee) END,
+           a.privilege_type, a.is_grantable
+      FROM relations c JOIN pg_attribute t ON t.attrelid = c.oid AND t.attnum > 0 AND NOT t.attisdropped AND t.attacl IS NOT NULL
+      CROSS JOIN LATERAL aclexplode(t.attacl) a),
+cagg AS (
+    SELECT to_regclass(format('%I.%I', a.user_view_schema, a.user_view_name)) AS relation, a.materialized_only,
+           to_regclass(format('%I.%I', a.partial_view_schema, a.partial_view_name)) AS partial_view,
+           to_regclass(format('%I.%I', a.direct_view_schema, a.direct_view_name)) AS direct_view,
+           to_regclass(format('%I.%I', h.schema_name, h.table_name)) AS materialization
+      FROM _timescaledb_catalog.continuous_agg a LEFT JOIN _timescaledb_catalog.hypertable h ON h.id = a.mat_hypertable_id
+     WHERE a.user_view_schema = 'public'),
+-- public's, and those created after initdb in the system's schemas (ARV-262 review: an overload or an operator there is
+-- picked up by any statement that names it, a superuser's included).
+object_schemas AS (
+    SELECT n.oid, n.nspname = 'public' AS all_of_it FROM pg_namespace n WHERE n.nspname IN ('public', 'pg_catalog', 'information_schema')),
+other_objects AS (
+    SELECT 'pg_type'::regclass AS classid, t.oid FROM pg_type t JOIN object_schemas s ON s.oid = t.typnamespace AND (s.all_of_it OR t.oid >= 16384)
+     WHERE t.typrelid = 0 AND NOT EXISTS (SELECT 1 FROM pg_type a WHERE a.typarray = t.oid)
+    UNION ALL SELECT 'pg_operator'::regclass, o.oid FROM pg_operator o JOIN object_schemas s ON s.oid = o.oprnamespace AND (s.all_of_it OR o.oid >= 16384)
+    UNION ALL SELECT 'pg_collation'::regclass, o.oid FROM pg_collation o JOIN object_schemas s ON s.oid = o.collnamespace AND (s.all_of_it OR o.oid >= 16384)
+    UNION ALL SELECT 'pg_conversion'::regclass, o.oid FROM pg_conversion o JOIN object_schemas s ON s.oid = o.connamespace AND (s.all_of_it OR o.oid >= 16384)
+    UNION ALL SELECT 'pg_ts_config'::regclass, o.oid FROM pg_ts_config o JOIN object_schemas s ON s.oid = o.cfgnamespace AND (s.all_of_it OR o.oid >= 16384)
+    UNION ALL SELECT 'pg_ts_dict'::regclass, o.oid FROM pg_ts_dict o JOIN object_schemas s ON s.oid = o.dictnamespace AND (s.all_of_it OR o.oid >= 16384)
+    UNION ALL SELECT 'pg_opclass'::regclass, o.oid FROM pg_opclass o JOIN object_schemas s ON s.oid = o.opcnamespace AND (s.all_of_it OR o.oid >= 16384)
+    UNION ALL SELECT 'pg_opfamily'::regclass, o.oid FROM pg_opfamily o JOIN object_schemas s ON s.oid = o.opfnamespace AND (s.all_of_it OR o.oid >= 16384)
+    UNION ALL SELECT 'pg_class'::regclass, c.oid FROM pg_class c JOIN object_schemas s ON s.oid = c.relnamespace AND NOT s.all_of_it AND c.oid >= 16384
+    UNION ALL SELECT 'pg_cast'::regclass, o.oid FROM pg_cast o WHERE o.oid >= 16384),
+parts (object, part) AS (
+    SELECT c.relname::text, 'kind ' || c.relkind::text || ', persistence ' || c.relpersistence::text || ', row security ' || c.relrowsecurity::text
+           || ', forced ' || c.relforcerowsecurity::text || ', options ' || coalesce(array_to_string(c.reloptions, ','), 'none')
+      FROM relations c
+    UNION ALL
+    SELECT c.relname, 'column ' || t.attname || ' ' || format_type(t.atttypid, t.atttypmod) || CASE WHEN t.attnotnull THEN ' not null' ELSE '' END
+           || coalesce(' default ' || pg_get_expr(d.adbin, d.adrelid), '') || CASE WHEN t.attidentity <> '' THEN ' identity ' || t.attidentity::text ELSE '' END
+           || CASE WHEN t.attgenerated <> '' THEN ' generated ' || t.attgenerated::text ELSE '' END
+           || CASE WHEN t.attcollation <> 0 AND t.attcollation <> (SELECT y.typcollation FROM pg_type y WHERE y.oid = t.atttypid)
+                   THEN ' collate ' || t.attcollation::regcollation::text ELSE '' END
+      FROM relations c JOIN pg_attribute t ON t.attrelid = c.oid AND t.attnum > 0 AND NOT t.attisdropped
+      LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = t.attnum
+    UNION ALL
+    SELECT c.relname, 'constraint ' || o.conname || ' ' || pg_get_constraintdef(o.oid) || CASE WHEN o.convalidated THEN '' ELSE ' (not validated)' END
+           || CASE WHEN EXISTS (SELECT 1 FROM pg_trigger g WHERE g.tgconstraint = o.oid AND g.tgenabled <> 'O') THEN ' (a trigger of it disabled)' ELSE '' END
+      FROM relations c JOIN pg_constraint o ON o.conrelid = c.oid
+    UNION ALL
+    SELECT c.relname, 'index ' || pg_get_indexdef(i.indexrelid) || CASE WHEN i.indisvalid THEN '' ELSE ' (invalid)' END
+      FROM relations c JOIN pg_index i ON i.indrelid = c.oid
+    UNION ALL
+    SELECT c.relname, 'trigger ' || pg_get_triggerdef(t.oid) || ' (enabled ' || t.tgenabled::text || ')'
+      FROM relations c JOIN pg_trigger t ON t.tgrelid = c.oid AND NOT t.tgisinternal
+    UNION ALL
+    SELECT c.relname, 'rule ' || pg_get_ruledef(r.oid)
+      FROM relations c JOIN pg_rewrite r ON r.ev_class = c.oid AND r.rulename <> '_RETURN'
+    UNION ALL
+    SELECT c.relname, 'policy ' || p.polname || ' ' || p.polcmd::text || CASE WHEN p.polpermissive THEN ' permissive' ELSE ' restrictive' END
+           || ' to ' || coalesce((SELECT string_agg(CASE WHEN r = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(r) END, ',' ORDER BY 1) FROM unnest(p.polroles) r), 'none')
+           || coalesce(' using ' || pg_get_expr(p.polqual, p.polrelid), '') || coalesce(' check ' || pg_get_expr(p.polwithcheck, p.polrelid), '')
+      FROM relations c JOIN pg_policy p ON p.polrelid = c.oid
+    UNION ALL
+    SELECT c.relname, 'inherits ' || i.inhparent::regclass::text
+      FROM relations c JOIN pg_inherits i ON i.inhrelid = c.oid
+    UNION ALL
+    SELECT c.relname, 'child ' || k.child::regclass::text || ' lacks trigger ' || t.tgname
+      FROM relations c JOIN children k ON k.parent = c.oid
+      JOIN pg_trigger t ON t.tgrelid = c.oid AND NOT t.tgisinternal AND (t.tgtype::integer & 1) = 1
+     WHERE NOT EXISTS (SELECT 1 FROM pg_trigger x
+                        WHERE x.tgrelid = k.child AND x.tgname = t.tgname AND x.tgenabled = t.tgenabled
+                          AND replace(pg_get_triggerdef(x.oid), ' ON ' || k.child::regclass::text || ' ', ' ON ' || c.oid::regclass::text || ' ')
+                              = pg_get_triggerdef(t.oid))
+    UNION ALL
+    SELECT c.relname, 'child ' || k.child::regclass::text || ' lacks unique index '
+           || regexp_replace(pg_get_indexdef(i.indexrelid), '^CREATE (UNIQUE )?INDEX .* ON (ONLY )?\S+ ', '')
+      FROM relations c JOIN children k ON k.parent = c.oid JOIN pg_index i ON i.indrelid = c.oid AND i.indisunique
+     WHERE NOT EXISTS (SELECT 1 FROM pg_index x
+                        WHERE x.indrelid = k.child AND x.indisunique AND x.indisvalid AND x.indisready
+                          AND regexp_replace(pg_get_indexdef(x.indexrelid), '^CREATE (UNIQUE )?INDEX .* ON (ONLY )?\S+ ', '')
+                              = regexp_replace(pg_get_indexdef(i.indexrelid), '^CREATE (UNIQUE )?INDEX .* ON (ONLY )?\S+ ', ''))
+    UNION ALL
+    SELECT c.relname, 'child ' || k.child::regclass::text || ' has trigger ' || x.tgname || ' its parent lacks'
+      FROM relations c JOIN children k ON k.parent = c.oid JOIN pg_trigger x ON x.tgrelid = k.child AND NOT x.tgisinternal
+     WHERE NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = c.oid AND t.tgname = x.tgname AND NOT t.tgisinternal)
+    UNION ALL
+    SELECT c.relname, 'child ' || k.child::regclass::text || ' has row security or a policy'
+      FROM relations c JOIN children k ON k.parent = c.oid JOIN pg_class r ON r.oid = k.child
+     WHERE r.relrowsecurity OR r.relforcerowsecurity OR EXISTS (SELECT 1 FROM pg_policy y WHERE y.polrelid = k.child)
+    UNION ALL
+    SELECT c.relname, 'child ' || k.child::regclass::text || ' lacks foreign key ' || pg_get_constraintdef(o.oid)
+      FROM relations c JOIN children k ON k.parent = c.oid JOIN pg_constraint o ON o.conrelid = c.oid AND o.contype = 'f'
+     WHERE NOT EXISTS (SELECT 1 FROM pg_constraint x
+                        WHERE x.conrelid = k.child AND x.contype = 'f' AND pg_get_constraintdef(x.oid) = pg_get_constraintdef(o.oid)
+                          AND NOT EXISTS (SELECT 1 FROM pg_trigger g WHERE g.tgconstraint = x.oid AND g.tgenabled <> 'O'))
+    UNION ALL
+    SELECT c.relname, CASE WHEN e.attname IS NULL THEN 'grant ' ELSE 'column grant ' || e.attname || ' ' END || e.grantee || ' ' || e.privilege_type
+           || CASE WHEN e.is_grantable THEN ' with grant option' ELSE '' END
+      FROM relations c JOIN acl_entries e ON e.relation = c.oid
+    UNION ALL
+    SELECT c.relname, 'definition ' || regexp_replace(pg_get_viewdef(c.oid), '(_materialized_hypertable_|cagg_watermark\()[0-9]+', '\1N', 'g')
+      FROM relations c WHERE c.relkind IN ('v', 'm')
+    UNION ALL
+    SELECT c.relname, 'continuous aggregate, materialized only ' || a.materialized_only::text
+           || ', partial view ' || coalesce(regexp_replace(pg_get_viewdef(a.partial_view), '(_materialized_hypertable_|cagg_watermark\()[0-9]+', '\1N', 'g'), 'missing')
+           || ', direct view ' || coalesce(regexp_replace(pg_get_viewdef(a.direct_view), '(_materialized_hypertable_|cagg_watermark\()[0-9]+', '\1N', 'g'), 'missing')
+           || ', reads its own materialization ' || EXISTS (SELECT 1 FROM pg_rewrite r
+                                                             JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid AND d.refclassid = 'pg_class'::regclass
+                                                            WHERE r.ev_class = c.oid AND d.refobjid = a.materialization)::text
+      FROM relations c JOIN cagg a ON a.relation = c.oid
+    UNION ALL
+    SELECT c.relname, 'sequence ' || format_type(s.seqtypid, NULL) || ' start ' || s.seqstart || ' increment ' || s.seqincrement || ' min ' || s.seqmin
+           || ' max ' || s.seqmax || ' cache ' || s.seqcache || ' cycle ' || s.seqcycle::text
+      FROM relations c JOIN pg_sequence s ON s.seqrelid = c.oid
+    UNION ALL
+    SELECT h.hypertable_name::text, 'hypertable dimension ' || d.column_name || ' ' || d.dimension_type || coalesce(' interval ' || d.time_interval::text, '')
+           || coalesce(' interval ' || d.integer_interval::text, '') || coalesce(' partitions ' || d.num_partitions::text, '')
+      FROM timescaledb_information.hypertables h JOIN timescaledb_information.dimensions d USING (hypertable_schema, hypertable_name)
+     WHERE h.hypertable_schema = 'public'
+    UNION ALL
+    SELECT h.hypertable_name::text, 'hypertable compression ' || h.compression_enabled::text
+      FROM timescaledb_information.hypertables h WHERE h.hypertable_schema = 'public'
+    UNION ALL
+    SELECT p.object, 'function ' || l.lanname || ', kind ' || p.prokind::text || ', arguments ' || pg_get_function_arguments(p.oid)
+           || ', returns ' || coalesce(pg_get_function_result(p.oid), 'nothing')
+           || ', volatility ' || p.provolatile::text || ', strict ' || p.proisstrict::text || ', security definer ' || p.prosecdef::text
+           || ', leakproof ' || p.proleakproof::text || ', parallel ' || p.proparallel::text || ', support ' || p.prosupport::text
+           || ', settings ' || coalesce(array_to_string(p.proconfig, ','), 'none')
+           || ', body sha256 ' || encode(sha256(convert_to(coalesce(p.prosrc, '') || '|' || coalesce(p.probin, '') || '|'
+                                                           || coalesce(pg_get_function_sqlbody(p.oid), ''), 'UTF8')), 'hex')
+      FROM functions p JOIN pg_language l ON l.oid = p.prolang
+    UNION ALL
+    SELECT p.object, 'grant ' || CASE WHEN a.grantee = 0 THEN 'PUBLIC' WHEN a.grantee = p.proowner THEN 'owner' ELSE pg_get_userbyid(a.grantee) END
+           || ' ' || a.privilege_type || CASE WHEN a.is_grantable THEN ' with grant option' ELSE '' END
+      FROM functions p CROSS JOIN LATERAL aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+    UNION ALL
+    SELECT o.type || ' ' || o.identity, 'exists'
+      FROM other_objects x CROSS JOIN LATERAL pg_identify_object(x.classid, x.oid, 0) o
+     WHERE NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.classid = x.classid AND e.objid = x.oid)
+    UNION ALL
+    SELECT 'schema ' || n.nspname, 'owner ' || CASE WHEN n.nspowner = 10 THEN 'the bootstrap superuser'
+                                                     WHEN n.nspowner = (SELECT r.oid FROM pg_roles r WHERE r.rolname = current_user) THEN 'the migration login'
+                                                     ELSE pg_get_userbyid(n.nspowner) END
+      FROM namespaces n
+    UNION ALL
+    SELECT 'schema ' || n.nspname, 'grant ' || CASE WHEN a.grantee = 0 THEN 'PUBLIC' WHEN a.grantee = n.nspowner THEN 'owner' ELSE pg_get_userbyid(a.grantee) END
+           || ' ' || a.privilege_type || CASE WHEN a.is_grantable THEN ' with grant option' ELSE '' END
+      FROM namespaces n CROSS JOIN LATERAL aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a
+    UNION ALL
+    SELECT 'database', 'owner ' || CASE WHEN d.datdba = (SELECT r.oid FROM pg_roles r WHERE r.rolname = current_user) THEN 'the migration login'
+                                        ELSE pg_get_userbyid(d.datdba) END
+      FROM pg_database d WHERE d.datname = current_database()
+    UNION ALL
+    SELECT 'database', 'grant ' || CASE WHEN a.grantee = 0 THEN 'PUBLIC' WHEN a.grantee = d.datdba THEN 'owner' ELSE pg_get_userbyid(a.grantee) END
+           || ' ' || a.privilege_type || CASE WHEN a.is_grantable THEN ' with grant option' ELSE '' END
+      FROM pg_database d CROSS JOIN LATERAL aclexplode(coalesce(d.datacl, acldefault('d', d.datdba))) a
+     WHERE d.datname = current_database()
+       AND NOT EXISTS (SELECT 1 FROM aclexplode(acldefault('d', d.datdba)) x
+                        WHERE x.grantee = a.grantee AND x.privilege_type = a.privilege_type AND x.is_grantable = a.is_grantable)
+       -- The migration job grants CONNECT to this deployment's runtime and validation reader logins, by their own names.
+       AND NOT (a.privilege_type = 'CONNECT' AND NOT a.is_grantable
+                AND EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
+                             WHERE m.member = a.grantee AND g.rolname IN ('ariva_runtime', 'ariva_validation_reader')))),
+normalized AS (
+    SELECT object, regexp_replace(regexp_replace(part,
+               '\(''((?:[^'']|'''')*)''::character varying\)::text', '''\1''::character varying', 'g'),
+               '\(\(ARRAY\[((?:[^]'']|''(?:[^'']|'''')*'')*)\]\)::text\[\]\)', '(ARRAY[\1])', 'g') AS part
+      FROM parts),
+objects AS (
+    SELECT n.object, left(encode(sha256(convert_to(string_agg(n.part, E'\n' ORDER BY n.part COLLATE "C"), 'UTF8')), 'hex'), 32) AS hash
+      FROM normalized n GROUP BY n.object),
+pinned AS (
+    SELECT split_part(e, '=', 1) AS object, split_part(e, '=', 2) AS hash FROM unnest(string_to_array(:'pinned', ';')) e),
+latest AS (
+    SELECT coalesce(max(script_name), 'no script') AS script, coalesce(max(script_name), '') COLLATE "C" AS at FROM public.schema_version),
+drift AS (
+    SELECT coalesce(o.object, p.object) || CASE WHEN o.object IS NULL THEN ' (missing)' WHEN p.object IS NULL THEN ' (not in the scripts)' ELSE ' (differs)' END AS name
+      FROM objects o FULL JOIN pinned p ON p.object = o.object
+     WHERE o.hash IS DISTINCT FROM p.hash)
+SELECT line FROM (
+    SELECT regexp_replace(replace(replace(n.object || '|' || n.part, '\', '\\'), E'\n', '\n'), '[[:cntrl:]]', '?', 'g') AS line
+      FROM normalized n WHERE :'mode' = 'full'
+    UNION ALL
+    SELECT regexp_replace(o.object, '[[:cntrl:]]', '?', 'g') || '=' || o.hash FROM objects o WHERE :'mode' = 'list'
+    UNION ALL
+    SELECT CASE
+        WHEN (SELECT at FROM latest) < :'schema_at' COLLATE "C" AND :'after_restore' = '1'
+            THEN 'schema|not compared: the database is at ' || (SELECT script FROM latest) || ' and the list at ' || :'schema_at'
+                 || ' (run the migration job, then check again before starting the hosts)'
+        WHEN (SELECT at FROM latest) < :'schema_at' COLLATE "C"
+            THEN 'FAIL schema|not compared: the database is at ' || (SELECT script FROM latest) || ' and the list at ' || :'schema_at'
+                 || ' (run the migration job, then check again)'
+        WHEN (SELECT at FROM latest) > :'schema_at' COLLATE "C"
+            THEN 'FAIL schema|not compared: the database is at ' || (SELECT script FROM latest) || ', past the list at ' || :'schema_at'
+                 || ' (run the ariva-db.sh of the release whose migration job ran)'
+        WHEN count(*) = 0 THEN 'schema|Ariva''s ' || (SELECT count(*) FROM pinned) || ' objects in public as a database the same scripts migrated'
+                 || ' (columns, constraints, indexes, triggers, grants and function definitions)'
+        ELSE 'FAIL schema|' || count(*) || ' objects differ from a database the same scripts migrated: '
+             || (SELECT string_agg(regexp_replace(name, '[[:cntrl:]]', '?', 'g'), ', ' ORDER BY name COLLATE "C")
+                   FROM (SELECT name FROM drift ORDER BY name COLLATE "C" LIMIT 50) first_ones)
+             || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END
+             || ' (ariva-db.sh schema --full here and on a database this release''s migration job migrated shows each difference)' END
+      FROM drift HAVING :'mode' = 'check') report
+ ORDER BY line COLLATE "C";
+SQL
+}
+
+# ARV-262: TimescaleDB's extensions' members in database $1 as one <extension> <version>|<member> line each (mode list): its
+# type and identity, a function's definition (language, kind, markings, settings, source, library, support function,
+# arguments with their defaults and a SQL-standard body) and a view's as a SHA-256 each; or one <extension> <version>=<SHA-256 of its member lines in byte order> line per extension (mode digest,
+# ARIVA_EXTENSION_MEMBERS' entries). An object a forged dump adds to an extension (ALTER EXTENSION ... ADD) is skipped by
+# every check that leaves the extensions out, and a member replaced in place (CREATE OR REPLACE keeps it a member) changes
+# what TimescaleDB, and check itself, run.
+extension_members() {
   valid_identifier "$1" || die "not a database name: $1"
-  ON_DATABASE="$1" as_migration_catalog --tuples-only --no-align <<'SQL'
-SELECT p.oid || '|' || p.proname || '|' || encode(sha256(convert_to(concat_ws('|', p.proname, p.pronamespace, p.proowner, p.prolang, p.prokind,
-       p.prosecdef, p.proleakproof, p.proisstrict, p.proretset, p.provolatile, p.proparallel, p.prorettype, p.proargtypes, p.proallargtypes,
-       p.proargmodes, p.proconfig, p.prosrc, p.probin, p.prosupport), 'UTF8')), 'hex')
-  FROM pg_proc p WHERE p.oid < 16384 ORDER BY 1;
+  ON_DATABASE="$1" as_migration_catalog --tuples-only --no-align --set=mode="$2" <<'SQL'
+WITH members AS (
+    SELECT regexp_replace(e.extname || ' ' || e.extversion, '[[:cntrl:]|]', '?', 'g') AS extension,
+           regexp_replace(o.type || ' ' || o.identity, '[[:cntrl:]]', '?', 'g')
+           || coalesce(' ' || (SELECT encode(sha256(convert_to(concat_ws('|', l.lanname, p.prokind, p.prosecdef, p.proleakproof, p.proisstrict,
+                                                              p.provolatile, p.proparallel, p.proconfig, p.prosrc, p.probin, p.prosupport,
+                                                              pg_get_function_arguments(p.oid), pg_get_function_sqlbody(p.oid)), 'UTF8')), 'hex')
+                                 FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang WHERE d.classid = 'pg_proc'::regclass AND p.oid = d.objid), '')
+           || coalesce(' ' || (SELECT encode(sha256(convert_to(pg_get_viewdef(c.oid), 'UTF8')), 'hex')
+                                 FROM pg_class c WHERE d.classid = 'pg_class'::regclass AND c.oid = d.objid AND c.relkind IN ('v', 'm')), '') AS member
+      FROM pg_depend d JOIN pg_extension e ON e.oid = d.refobjid CROSS JOIN LATERAL pg_identify_object(d.classid, d.objid, d.objsubid) o
+     WHERE d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e' AND e.extname IN ('timescaledb', 'timescaledb_toolkit'))
+SELECT line FROM (
+    SELECT m.extension || '|' || m.member AS line FROM members m WHERE :'mode' = 'list'
+    UNION ALL
+    SELECT m.extension || '=' || encode(sha256(convert_to(string_agg(m.member, E'\n' ORDER BY m.member COLLATE "C"), 'UTF8')), 'hex')
+      FROM members m GROUP BY m.extension HAVING :'mode' = 'digest') lines
+ ORDER BY line COLLATE "C";
 SQL
 }
 
-system_functions_line() {
-  local ours theirs reference changed
-  ours="$(system_functions "$DATABASE")" || { printf '%s' "FAIL system functions|$DATABASE's could not be read"; return; }
-  for reference in template1 postgres; do
-    if theirs="$(system_functions "$reference" 2>/dev/null)"; then
-      changed="$(comm -3 <(sort <<<"$ours") <(sort <<<"$theirs") | cut -d'|' -f2 | sort -u | paste -sd, -)"
-      if [[ -z "$changed" ]]; then
-        printf '%s' "system functions|the same as in $reference"
+
+# The lines of $1 (an extension and its version) in the extension_members list on stdin.
+lines_of() {
+  local line
+  while IFS= read -r line; do
+    [[ "$line" != "$1|"* ]] || printf '%s\n' "$line"
+  done
+}
+
+# A member line's object, without the extension and the definition's SHA-256 a function or view carries.
+member_name() {
+  local name="${1#*|}"
+  [[ ! "$name" =~ ^(.*)\ [0-9a-f]{64}$ ]] || name="${BASH_REMATCH[1]}"
+  printf '%s' "$name"
+}
+
+# ARV-262: check's line for TimescaleDB's members: each installed extension's digest against ARIVA_EXTENSION_MEMBERS (the
+# image's, pinned by this release; a digest, never another database, is the reference, since a forged dump run by the
+# superuser could reach template1 too), and on a difference what differs from template1's (or postgres's) members of the
+# same version, which a restore does not touch: added, missing, or changed (a function or view with another definition).
+extension_members_line() {
+  local digests extension digest pin found installed="" known="" pins=() missing=() differing=() items=()
+  IFS=';' read -ra pins <<<"$ARIVA_EXTENSION_MEMBERS"
+  for pin in "${pins[@]}"; do known+="${known:+, }${pin%%=*}"; done
+  digests="$(extension_members "$DATABASE" digest)" || { printf '%s' "FAIL extension members|$DATABASE's could not be read as the migration login"; return; }
+  while IFS='=' read -r extension digest; do
+    [[ -n "$extension" ]] || continue
+    installed+="${installed:+ and }$extension"
+    found=""
+    for pin in "${pins[@]}"; do
+      [[ "${pin%%=*}" != "$extension" ]] || found="${pin#*=}"
+    done
+    if [[ -z "$found" ]]; then
+      missing+=("$extension")
+    elif [[ "$found" != "$digest" ]]; then
+      differing+=("$extension")
+    fi
+  done <<<"$digests"
+  if [[ -z "$installed" ]]; then
+    printf '%s' "FAIL extension members|neither timescaledb nor timescaledb_toolkit is installed in $DATABASE"
+    return
+  fi
+  if ((${#missing[@]} == 0 && ${#differing[@]} == 0)); then
+    printf '%s' "extension members|$installed: exactly the members this release pins for the image, each function and view by its definition"
+    return
+  fi
+  for extension in "${missing[@]}"; do
+    items+=("$extension has no members pinned here (this release pins $known: run the ariva-db.sh of the release that ships this image)")
+  done
+  local ours theirs reference line name shown i named
+  local -A added=() lacking=()
+  local differences=() sorted=()
+  ours="$(extension_members "$DATABASE" list)" || ours=""
+  for extension in "${differing[@]}"; do
+    named=0
+    for reference in template1 postgres; do
+      theirs="$(extension_members "$reference" list 2>/dev/null | lines_of "$extension")" || theirs=""
+      [[ -n "$theirs" ]] || continue
+      added=()
+      lacking=()
+      while IFS= read -r line; do
+        case "$line" in
+          $'\t'*) lacking["$(member_name "${line#$'\t'}")"]=1 ;;
+          ?*) added["$(member_name "$line")"]=1 ;;
+        esac
+      done < <(comm -3 <(lines_of "$extension" <<<"$ours" | sort) <(sort <<<"$theirs"))
+      differences=()
+      for name in "${!added[@]}"; do
+        if [[ -n "${lacking[$name]:-}" ]]; then differences+=("changed $name"); else differences+=("added $name"); fi
+      done
+      for name in "${!lacking[@]}"; do
+        [[ -n "${added[$name]:-}" ]] || differences+=("missing $name")
+      done
+      mapfile -t sorted < <(((${#differences[@]} == 0)) || printf '%s\n' "${differences[@]}" | sort)
+      shown=""
+      for ((i = 0; i < ${#sorted[@]} && i < 10; i++)); do shown+="${shown:+; }${sorted[i]}"; done
+      ((${#sorted[@]} <= 10)) || shown+="; and $((${#sorted[@]} - 10)) more"
+      if [[ -n "$shown" ]]; then
+        items+=("$extension differs from the members this release pins (against $reference's: $shown)")
       else
-        printf '%s' "FAIL system functions|${changed//,/, } differ from $reference's (replaced in place in $DATABASE, or changed in $reference)"
+        items+=("$extension differs from the members this release pins, and $reference's are the same (changed there as well, or an image this release does not ship)")
+      fi
+      named=1
+      break
+    done
+    ((named == 1)) || items+=("$extension differs from the members this release pins (no other database holds that version to name what differs)")
+  done
+  shown=""
+  for line in "${items[@]}"; do shown+="${shown:+, }$line"; done
+  printf '%s' "FAIL extension members|$shown (an object added to an extension, or one replaced in place: find out who, wiki 10 section 4.13)"
+}
+
+# The system catalog's own objects in a database (oid below 16384; ARV-183 review, widened by ARV-262's): every function,
+# operator, type, cast, aggregate, operator class and family with their members and support functions (one an operator
+# family of the system's gained since included), language and rewrite rule (the system's views, check's own inputs among
+# them), one row each of the catalog's
+# columns but its grants, as PostgreSQL's own output functions print them: the kind, the name, then the columns, separated
+# by the unit separator, each row ended by NUL. CREATE OR REPLACE keeps a function's oid (and a SQL-standard body lives in
+# prosqlbody alone), so a system function a forged dump replaced in place differs from the same one in template1 (or
+# postgres), which a restore never touches, and from the digest this release pins. The digest is taken from these bytes
+# here (sha256sum), never by a function of the database, which the same superuser could replace: a SQL or PL/pgSQL body
+# cannot stand in for an output function (it returns cstring). The statements name nothing but catalog columns.
+system_catalog() {
+  valid_identifier "$1" || die "not a database name: $1"
+  ON_DATABASE="$1" as_migration_catalog --tuples-only --no-align --field-separator=$'\x1f' --record-separator-zero <<'SQL'
+SELECT 'function', p.proname, p.oid, p.pronamespace, p.proowner, p.prolang, p.procost, p.prorows, p.provariadic, p.prosupport, p.prokind,
+       p.prosecdef, p.proleakproof, p.proisstrict, p.proretset, p.provolatile, p.proparallel, p.pronargs, p.pronargdefaults, p.prorettype,
+       p.proargtypes, p.proallargtypes, p.proargmodes, p.proargnames, p.proargdefaults, p.protrftypes, p.prosrc, p.probin, p.prosqlbody, p.proconfig
+  FROM pg_proc p WHERE p.oid < 16384;
+SELECT 'operator', o.oprname, o.* FROM pg_operator o WHERE o.oid < 16384;
+SELECT 'type', t.typname, t.oid, t.typnamespace, t.typowner, t.typlen, t.typbyval, t.typtype, t.typcategory, t.typispreferred, t.typisdefined,
+       t.typdelim, t.typrelid, t.typsubscript, t.typelem, t.typarray, t.typinput, t.typoutput, t.typreceive, t.typsend, t.typmodin, t.typmodout,
+       t.typanalyze, t.typalign, t.typstorage, t.typnotnull, t.typbasetype, t.typtypmod, t.typndims, t.typcollation, t.typdefaultbin, t.typdefault
+  FROM pg_type t WHERE t.oid < 16384;
+SELECT 'cast', c.oid, c.* FROM pg_cast c WHERE c.oid < 16384;
+SELECT 'aggregate', a.aggfnoid, a.* FROM pg_aggregate a WHERE a.aggfnoid::oid < 16384;
+SELECT 'operator class member', o.oid, o.* FROM pg_amop o WHERE o.oid < 16384 OR o.amopfamily < 16384;
+SELECT 'operator class function', p.oid, p.* FROM pg_amproc p WHERE p.oid < 16384 OR p.amprocfamily < 16384;
+SELECT 'operator class', c.opcname, c.* FROM pg_opclass c WHERE c.oid < 16384;
+SELECT 'operator family', f.opfname, f.* FROM pg_opfamily f WHERE f.oid < 16384;
+SELECT 'rule', r.rulename, r.* FROM pg_rewrite r WHERE r.oid < 16384;
+SELECT 'language', l.lanname, l.oid, l.lanowner, l.lanispl, l.lanpltrusted, l.lanplcallfoid, l.laninline, l.lanvalidator
+  FROM pg_language l WHERE l.oid < 16384;
+SQL
+}
+
+# The server's major version (17 for PostgreSQL 17.x): ARIVA_SYSTEM_FUNCTIONS' key.
+server_major() {
+  as_migration_catalog --tuples-only --no-align <<'SQL'
+SELECT current_setting('server_version_num')::integer / 10000;
+SQL
+}
+
+# The SHA-256 of system_catalog's rows for the database, sorted byte by byte (ARIVA_SYSTEM_FUNCTIONS' value), taken here.
+system_functions_digest() {
+  local digest
+  digest="$(system_catalog "$DATABASE" | sort -z | sha256sum)" || return 1
+  printf '%s' "${digest%% *}"
+}
+
+# The objects whose rows differ between this database and $1, by name, comma-separated (a function by its name alone).
+system_catalog_changes() {
+  local line names=()
+  while IFS= read -r line; do
+    line="${line#$'\t'}"
+    [[ -n "$line" ]] || continue
+    [[ "$line" != function$'\x1f'* ]] || line="${line#function$'\x1f'}"
+    names+=("${line//$'\x1f'/ }")
+  done < <(comm -z -3 <(system_catalog "$DATABASE" | sort -z) <(system_catalog "$1" | sort -z) | cut -z -d $'\x1f' -f1,2 | tr '\0' '\n')
+  ((${#names[@]} > 0)) || return 0
+  printf '%s\n' "${names[@]}" | sort -u | paste -sd, -
+}
+
+# ARV-262: the system functions' digest against the one this release pins for the server's major version decides; template1's
+# (or postgres's) functions, which a restore never touches, name what differs.
+system_functions_line() {
+  local reference changed major digest pin pinned="" known="" pins=()
+  digest="$(system_functions_digest)" || { printf '%s' "FAIL system functions|$DATABASE's could not be read"; return; }
+  major="$(server_major)" || major="unknown"
+  IFS=';' read -ra pins <<<"$ARIVA_SYSTEM_FUNCTIONS"
+  for pin in "${pins[@]}"; do
+    known+="${known:+, }${pin%%=*}"
+    [[ "${pin%%=*}" != "$major" ]] || pinned="${pin#*=}"
+  done
+  if [[ -n "$pinned" && "$digest" == "$pinned" ]]; then
+    printf '%s' "system functions|as PostgreSQL $major ships them, with its operators, types, casts, aggregates, operator classes, languages and views (the digest this release pins, taken outside the database)"
+    return
+  fi
+  local why="differ from what this release pins for PostgreSQL $major"
+  [[ -n "$pinned" ]] || why="have no digest pinned here for PostgreSQL $major (this release pins $known: run the ariva-db.sh of the release that ships this image)"
+  for reference in template1 postgres; do
+    if system_catalog "$reference" >/dev/null 2>&1; then
+      changed="$(system_catalog_changes "$reference")" || changed=""
+      if [[ -z "$changed" ]]; then
+        printf '%s' "FAIL system functions|$DATABASE's $why, and $reference's are the same (changed there as well, or a server build this release does not ship)"
+      else
+        printf '%s' "FAIL system functions|${changed//,/, } differ from $reference's (replaced in place in $DATABASE, or changed in $reference); $DATABASE's $why"
       fi
       return
     fi
   done
-  printf '%s' "FAIL system functions|neither template1 nor postgres could be read as the migration login to compare them (CONNECT on template1)"
+  printf '%s' "FAIL system functions|$DATABASE's $why; neither template1 nor postgres could be read as the migration login to name what differs (CONNECT on template1)"
+}
+
+# ARV-262: what check compares a database with, for an operator to compare two databases (a restored one and one this
+# release's migration job migrated) and for BackupRestoreTests to read the pins from a migrated one. Read-only.
+cmd_schema() {
+  local full=0 line
+  while (($#)); do
+    case "$1" in
+      --full) full=1; shift ;;
+      *) usage ;;
+    esac
+  done
+  check_settings
+  require_migration_login
+  if ((full == 1)); then
+    schema_report full
+    extension_members "$DATABASE" list | while IFS= read -r line; do printf 'extension %s\n' "$line"; done
+  else
+    local major digest
+    major="$(server_major)" || die "the server's version could not be read"
+    digest="$(system_functions_digest)" || die "the system catalog could not be read"
+    schema_report list
+    extension_members "$DATABASE" digest | while IFS= read -r line; do printf 'extension %s\n' "$line"; done
+    printf 'system functions %s=%s\n' "$major" "$digest"
+  fi
 }
 
 cmd_keyring() {
@@ -1242,7 +1885,8 @@ SQL
 
 # What the extensions' update scripts could pick up instead of the system's or their own objects: a function, procedure,
 # aggregate or operator outside the three extensions (plpgsql, timescaledb, timescaledb_toolkit) named as one in
-# pg_catalog or one of theirs, any other extension, and settings made for every session of this database (ALTER DATABASE
+# pg_catalog or one of theirs (since ARV-262's review also one created after initdb in pg_catalog or information_schema
+# under such a name, an overload that an exact match of its argument types would pick), any other extension, and settings made for every session of this database (ALTER DATABASE
 # ... SET, which the database owner may make and the superuser's update session would inherit; Ariva makes none), one line
 # per setting. One line per object; none expected. $1: setting names to leave out, comma-separated (check's --allow-setting;
 # the extensions' update gives none).
@@ -1271,6 +1915,20 @@ SELECT 'operator ' || n.nspname || '.' || o.oprname
   FROM pg_catalog.pg_operator o JOIN pg_catalog.pg_namespace n ON n.oid = o.oprnamespace
  WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
    AND o.oprname IN (SELECT oprname FROM operator_names)
+   AND NOT EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_operator'::pg_catalog.regclass AND m.objid = o.oid)
+UNION
+SELECT 'function ' || n.nspname || '.' || p.proname || ' (created after initdb)'
+  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname IN ('pg_catalog', 'information_schema') AND p.oid >= 16384
+   AND p.proname IN (SELECT q.proname FROM pg_catalog.pg_proc q
+                      WHERE q.oid < 16384 OR EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND m.objid = q.oid))
+   AND NOT EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND m.objid = p.oid)
+UNION
+SELECT 'operator ' || n.nspname || '.' || o.oprname || ' (created after initdb)'
+  FROM pg_catalog.pg_operator o JOIN pg_catalog.pg_namespace n ON n.oid = o.oprnamespace
+ WHERE n.nspname IN ('pg_catalog', 'information_schema') AND o.oid >= 16384
+   AND o.oprname IN (SELECT q.oprname FROM pg_catalog.pg_operator q
+                      WHERE q.oid < 16384 OR EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_operator'::pg_catalog.regclass AND m.objid = q.oid))
    AND NOT EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_operator'::pg_catalog.regclass AND m.objid = o.oid)
 UNION
 SELECT 'extension ' || e.extname FROM pg_catalog.pg_extension e WHERE e.extname NOT IN ('plpgsql', 'timescaledb', 'timescaledb_toolkit')
@@ -1376,6 +2034,7 @@ main() {
     check-dump) cmd_check_dump "${rest[@]}" ;;
     restore) cmd_restore "${rest[@]}" ;;
     check) cmd_check "${rest[@]}" ;;
+    schema) cmd_schema "${rest[@]}" ;;
     keyring) cmd_keyring "${rest[@]}" ;;
     after-kafka-loss) cmd_after_kafka_loss "${rest[@]}" ;;
     update-extensions) cmd_update_extensions "${rest[@]}" ;;

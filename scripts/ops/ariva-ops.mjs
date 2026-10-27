@@ -12,6 +12,7 @@
 //   node scripts/ops/ariva-ops.mjs keyring --namespace <ns> --certificate <tls.crt> [--certificate <previous.crt>]
 //   node scripts/ops/ariva-ops.mjs check --namespace <ns> [--runtime-login <name>] [--reader-login <name>] [--allow-extension <name>]...
 //        [--allow-login <name>]... [--allow-setting <name>]...
+//   node scripts/ops/ariva-ops.mjs schema --namespace <ns> [--full]   (what check compares; ARV-262)
 //   node scripts/ops/ariva-ops.mjs after-kafka-loss --namespace <ns> --confirm-stream-stopped [--dry-run]
 //   node scripts/ops/ariva-ops.mjs update-extensions --namespace <ns>   (after the database pod restarted on a newer image)
 //   node scripts/ops/ariva-ops.mjs --self-test
@@ -107,7 +108,7 @@ const DEFAULTS = { pod: 'timescaledb-0', container: 'timescaledb', filesTarget: 
 const VALUE_OPTIONS = new Set(['--namespace', '--context', '--pod', '--container', '--out', '--recipient-file', '--signing-key', '--in', '--identity',
   '--sha256', '--manifest', '--signature', '--allowed-signers', '--certificate', '--runtime-login', '--reader-login', '--files-target',
   '--files-container', '--files-root', '--allow-extension', '--allow-login', '--allow-setting']);
-const FLAG_OPTIONS = new Set(['--files', '--confirm-stream-stopped', '--dry-run', '--plan', '--force-namespace', '--allow-signer-patterns']);
+const FLAG_OPTIONS = new Set(['--files', '--confirm-stream-stopped', '--dry-run', '--plan', '--force-namespace', '--allow-signer-patterns', '--full']);
 
 export function parse(argv) {
   const [command, ...rest] = argv;
@@ -178,6 +179,8 @@ function refuseUnused(o) {
     throw new UsageError('--runtime-login, --reader-login, --allow-extension, --allow-login and --allow-setting apply to restore and check only');
   if ((o.forceNamespace || o.allowSignerPatterns) && o.command !== 'restore' && o.command !== 'files-restore')
     throw new UsageError('--force-namespace and --allow-signer-patterns apply to restore and files-restore only');
+  if (o.full && o.command !== 'schema')
+    throw new UsageError('--full applies to schema only');
 }
 
 function stamp(now) {
@@ -252,6 +255,9 @@ export function plan(o, now = new Date()) {
     }
     case 'check':
       return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['check', ...checkOptions(o)]) }] };
+    case 'schema':
+      // ARV-262: what check compares Ariva's database with (read-only, as the migration login), to compare two databases.
+      return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['schema', ...(o.full ? ['--full'] : [])]) }] };
     case 'after-kafka-loss': {
       if (!o.confirmStreamStopped) throw new UsageError('scale api-stream to 0 first, then pass --confirm-stream-stopped');
       return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['after-kafka-loss', '--confirm-stream-stopped', ...(o.dryRun ? ['--dry-run'] : [])]) }] };
@@ -260,7 +266,7 @@ export function plan(o, now = new Date()) {
       // ARV-236: TimescaleDB's extensions to the versions the image ships, as the superuser over the pod's socket (ariva-db.sh).
       return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['update-extensions']) }] };
     default:
-      throw new UsageError('unknown command; use backup, restore, files-restore, keyring, check, after-kafka-loss, update-extensions or --self-test');
+      throw new UsageError('unknown command; use backup, restore, files-restore, keyring, check, schema, after-kafka-loss, update-extensions or --self-test');
   }
 }
 
@@ -729,6 +735,10 @@ async function selfTest() {
     assert.deepEqual(keyring.steps[1].cmd[1].slice(-3), ['keyring', '--certificate-sha256', thumbprint]); checks++;
     const update = plan(parse(['update-extensions', '--namespace', 'ariva']));
     assert.deepEqual(update.steps[1].cmd[1].slice(-2), ['/tmp/ariva-db.sh', 'update-extensions']); checks++;
+    // ARV-262: schema prints what check compares; --full only there.
+    assert.deepEqual(plan(parse(['schema', '--namespace', 'ariva', '--full'])).steps[1].cmd[1].slice(-3), ['/tmp/ariva-db.sh', 'schema', '--full']); checks++;
+    assert.deepEqual(plan(parse(['schema', '--namespace', 'ariva'])).steps[1].cmd[1].slice(-2), ['/tmp/ariva-db.sh', 'schema']); checks++;
+    refuses(() => plan(parse(['check', '--namespace', 'ariva', '--full'])), '--full with check');
     fs.writeFileSync(path.join(temp, 'tls.key'), '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n');
     refuses(() => certificateSha256(path.join(temp, 'tls.key')), 'a private key given as the certificate');
 

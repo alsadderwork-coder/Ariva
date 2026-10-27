@@ -197,6 +197,60 @@ public sealed partial class OpsScriptTests
     }
 
     [Fact]
+    public void Check_Should_TakeTheSchemaAtTheLatestScript_When_ItComparesArivasObjects()
+    {
+        // ARV-262 (CWE-269, CWE-345): check compares every object of Ariva's in public with ARIVA_SCHEMA once the database is at
+        // ARIVA_SCHEMA_AT, and any script may change an object, so the list is taken at the latest script: a new script moves
+        // both (BackupRestoreTests prints the list from a database the migration job migrated).
+        var at = SchemaAt().Match(Script.Value);
+        at.Success.Should().BeTrue("the script names the script its schema list is taken at");
+        at.Groups["script"].Value.Should().Be(SqlScriptCatalog.Embedded().Max(script => script.Name),
+            "a new script moves ARIVA_SCHEMA_AT and ARIVA_SCHEMA (take the list from BackupRestoreTests' message)");
+
+        // Each entry is <object>=<32 hex digits>, in byte order, once; the relations are the tables and views the scripts create
+        // (and a sequence), the functions those whose bodies ARIVA_FUNCTIONS pins.
+        var listed = SchemaList().Match(Script.Value);
+        listed.Success.Should().BeTrue("the script lists Ariva's objects in ARIVA_SCHEMA");
+        var entries = listed.Groups["entries"].Value.Replace("\\\n", string.Empty, StringComparison.Ordinal).Split(';');
+        entries.Should().OnlyContain(entry => SchemaEntry().IsMatch(entry), "<relation>=<hash>, <function>(<arguments>)=<hash>, schema <name>=<hash> or database=<hash>");
+        var names = entries.Select(entry => entry[..entry.LastIndexOf('=')]).ToList();
+        names.Should().BeInAscendingOrder(StringComparer.Ordinal).And.OnlyHaveUniqueItems();
+
+        var scripts = SqlScriptCatalog.Embedded();
+        var relations = scripts
+            .SelectMany(script => CreateTable().Matches(WithoutComments(script.Sql)).Concat(CreateView().Matches(WithoutComments(script.Sql))))
+            .Select(m => m.Groups["name"].Value.ToLowerInvariant())
+            .ToHashSet(StringComparer.Ordinal);
+        // The migration runner's own table, and "user", whose quoted name CreateTable does not read.
+        relations.UnionWith(["schema_version", "user"]);
+        var listedRelations = names.Where(name => !name.Contains('(', StringComparison.Ordinal) && !name.StartsWith("schema ", StringComparison.Ordinal) && name != "database").ToList();
+        listedRelations.Where(name => !name.EndsWith("_seq", StringComparison.Ordinal)).Should().BeEquivalentTo(relations,
+            "every table and view the scripts create (none is dropped), and nothing else");
+
+        var functions = ArivaFunctionsList().Match(Script.Value).Groups["entries"].Value.Replace("\\\n", string.Empty, StringComparison.Ordinal).Split(',')
+            .Select(entry => entry[..entry.IndexOf(':', StringComparison.Ordinal)])
+            .ToHashSet(StringComparer.Ordinal);
+        names.Where(name => name.Contains('(', StringComparison.Ordinal)).Select(name => name[..name.IndexOf('(', StringComparison.Ordinal)])
+            .Should().BeEquivalentTo(functions, "every function the scripts create, once");
+        names.Should().Contain(["schema_version", "queue_minute_15m", "ariva_retention_purge(p_data_set text, p_limit integer)", "schema public", "database"]);
+    }
+
+    [Fact]
+    public void Check_Should_PinTheImagesExtensionMembersAndSystemFunctions_When_ItComparesThem()
+    {
+        // ARV-262: TimescaleDB's members per extension version, and the system functions per PostgreSQL major version, each a
+        // SHA-256 that BackupRestoreTests holds equal to the pinned image's (a new image moves them).
+        var members = ExtensionMembersList().Match(Script.Value);
+        members.Success.Should().BeTrue("the script pins the image's extension members in ARIVA_EXTENSION_MEMBERS");
+        members.Groups["entries"].Value.Split(';').Select(entry => entry[..entry.IndexOf(' ', StringComparison.Ordinal)])
+            .Should().Equal(["timescaledb", "timescaledb_toolkit"], "one entry per TimescaleDB extension, at the image's version");
+        SystemFunctionsList().Match(Script.Value).Success.Should().BeTrue("the script pins the system functions in ARIVA_SYSTEM_FUNCTIONS");
+
+        // The extension members are read in every check, and the superuser runs none of it (the migration login reads them).
+        Script.Value.Should().Contain("report+=$'\\n'\"$(extension_members_line)\"").And.Contain("schema_line=\"$(schema_report check)\"");
+    }
+
+    [Fact]
     public void Check_Should_PinEveryViewTheScriptsCreate_When_ItComparesTheViewsOfPublic()
     {
         // ARV-189 review (CWE-269): a view in public takes script 0001's default DML and reads with its owner's rights, so check
@@ -269,9 +323,10 @@ public sealed partial class OpsScriptTests
         calls.Select(call => call.Groups["sql"].Value.Trim()).Should().BeEquivalentTo(
             ["SELECT public.timescaledb_pre_restore();", "SELECT public.timescaledb_post_restore();", "ALTER EXTENSION timescaledb UPDATE;",
              "ALTER EXTENSION timescaledb_toolkit UPDATE;",
-             // ARV-183: check reads the ALTER SYSTEM settings, a view only the superuser may read; its review: with nothing named
-             // through the search path (the operator qualified, no function), and the restore mode functions with their schema.
-             "SELECT DISTINCT s.name FROM pg_catalog.pg_file_settings s WHERE s.sourcefile OPERATOR(pg_catalog.~~) '%/postgresql.auto.conf' ORDER BY 1;"],
+             // ARV-183: check reads the settings files, views only the superuser may read; its review: with nothing named through
+             // the search path (each operator and function qualified), and the restore mode functions with their schema. ARV-262:
+             // every file but the server's postgresql.conf, what the files say and what the server applied from them.
+             "SELECT pg_catalog.regexp_replace(x.line, '[[:cntrl:]]', '?', 'g') FROM (SELECT coalesce(s.name, 'an unreadable entry') OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) s.sourcefile AS line FROM pg_catalog.pg_file_settings s WHERE s.sourcefile OPERATOR(pg_catalog.<>) pg_catalog.current_setting('config_file') UNION SELECT s.name OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) s.sourcefile FROM pg_catalog.pg_settings s WHERE s.sourcefile OPERATOR(pg_catalog.<>) pg_catalog.current_setting('config_file')) x ORDER BY 1;"],
             "each superuser session runs one fixed statement");
         calls.Select(call => call.Groups["args"].Value.Trim()).Should().OnlyContain(args => args.Length == 0 || args == "--tuples-only --no-align");
         calls.Select(call => call.Groups["prefix"].Value.Trim()).Should().OnlyContain(prefix => prefix.Length == 0 || prefix == "PGOPTIONS='-c lock_timeout=30s'",
@@ -450,6 +505,21 @@ public sealed partial class OpsScriptTests
 
     [GeneratedRegex(@"^readonly ARIVA_FUNCTIONS=""(?<entries>[a-z0-9_:,\\\n]+)""$", RegexOptions.Multiline)]
     private static partial Regex ArivaFunctionsList();
+
+    [GeneratedRegex(@"^readonly ARIVA_SCHEMA_AT=""(?<script>[0-9]{4}_[a-z0-9_]+\.sql)""$", RegexOptions.Multiline)]
+    private static partial Regex SchemaAt();
+
+    [GeneratedRegex(@"^readonly ARIVA_SCHEMA=""(?<entries>[a-z0-9_=;(), \\\n]+)""$", RegexOptions.Multiline)]
+    private static partial Regex SchemaList();
+
+    [GeneratedRegex(@"^(schema [a-z_][a-z0-9_]*|[a-z_][a-z0-9_]*(\([a-z0-9_ ,]*\))?)=[0-9a-f]{32}$")]
+    private static partial Regex SchemaEntry();
+
+    [GeneratedRegex(@"^readonly ARIVA_EXTENSION_MEMBERS=""(?<entries>timescaledb [0-9]+(\.[0-9]+)+=[0-9a-f]{64};timescaledb_toolkit [0-9]+(\.[0-9]+)+=[0-9a-f]{64})""$", RegexOptions.Multiline)]
+    private static partial Regex ExtensionMembersList();
+
+    [GeneratedRegex(@"^readonly ARIVA_SYSTEM_FUNCTIONS=""[0-9]{2}=[0-9a-f]{64}(;[0-9]{2}=[0-9a-f]{64})*""$", RegexOptions.Multiline)]
+    private static partial Regex SystemFunctionsList();
 
     [GeneratedRegex(@"^(?<prefix>[^\n]*?)\bas_superuser\b(?<args>[^<\n]*)<<'SQL'[^\n]*\n(?<sql>.*?)\nSQL\n", RegexOptions.Singleline | RegexOptions.Multiline)]
     private static partial Regex SuperuserCall();

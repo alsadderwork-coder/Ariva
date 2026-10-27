@@ -111,6 +111,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
     {
         // The source deployment: the release's migration job, then Ariva.Api.Main as the cluster runs it, with the demo site.
         (await DatabaseMigration.RunAsync(Configuration(_source.MigrationSettings(RuntimeLogin, SourceRuntimePassword)), Ct)).Should().Be(0);
+        await AssertSchemaPinsAsync();
         var source = await SeedSourceAsync();
 
         // The backup, taken by the operations script in the database pod as the migration login, while Main is running.
@@ -142,7 +143,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         // ARV-183 and its review: the wider checks pass on a clean restore (every Ariva function body is one its scripts ship, and
         // the system functions are template1's).
         foreach (var line in new[] { "logins", "held roles", "role settings", "settings", "rules", "other functions", "plpgsql", "system functions", "replication", "planted",
-                     "internal privileges", "runtime grants", "default privileges" })
+                     "internal privileges", "runtime grants", "default privileges", "schema", "extension members" })
             restore.Stdout.Should().Contain($"ok    {line}|");
         // The backup is at the latest script, so restore's own check compares the runtime role's privileges and the views (an ok
         // "not compared" would be the wrong pass here).
@@ -289,6 +290,36 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         plain.Stdout.Should().NotContain("SCRAM-SHA-256$", "no password verifier is in a backup");
     }
 
+    /// <summary>
+    /// ARV-262: what check compares a restored database with comes from a database the release's migration job migrated, here
+    /// the source right after its migration: Ariva's objects in public (ARIVA_SCHEMA), the pinned image's TimescaleDB members
+    /// (ARIVA_EXTENSION_MEMBERS) and system functions (ARIVA_SYSTEM_FUNCTIONS), as ariva-db.sh schema prints them. A script or
+    /// an image that changes them fails here, and the message holds the lines to pin.
+    /// </summary>
+    private async Task AssertSchemaPinsAsync()
+    {
+        var schema = await _source.OpsAsync(Ct, "schema");
+        schema.ExitCode.Should().Be(0, schema.Stderr);
+        var lines = schema.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var members = lines.Where(line => line.StartsWith("extension ", StringComparison.Ordinal)).Select(line => line["extension ".Length..]).ToList();
+        var system = lines.Where(line => line.StartsWith("system functions ", StringComparison.Ordinal)).Select(line => line["system functions ".Length..]).ToList();
+        var objects = lines.Where(line => !line.StartsWith("extension ", StringComparison.Ordinal) && !line.StartsWith("system functions ", StringComparison.Ordinal)).ToList();
+        objects.Should().HaveCountGreaterThan(100).And.BeInAscendingOrder(StringComparer.Ordinal);
+        members.Should().HaveCount(2);
+        system.Should().ContainSingle();
+
+        var script = await File.ReadAllTextAsync(Ariva.UnitTests.Setup.RepositoryPaths.Resolve("scripts/ops/ariva-db.sh"), Ct);
+        foreach (var pinned in new[]
+                 {
+                     $"readonly ARIVA_SCHEMA=\"{string.Join(";\\\n", objects)}\"",
+                     $"readonly ARIVA_EXTENSION_MEMBERS=\"{string.Join(';', members)}\"",
+                     $"readonly ARIVA_SYSTEM_FUNCTIONS=\"{string.Join(';', system)}\""
+                 })
+        {
+            script.Contains(pinned, StringComparison.Ordinal).Should().BeTrue("ariva-db.sh pins what a database the release's migration job migrated holds:\n" + pinned);
+        }
+    }
+
     private void AssertNoSecretIn(string text, SourceDeployment source, string what)
     {
         // A slice of the private key's base64 body: any copy of the key would contain it.
@@ -322,6 +353,12 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             .And.Contain("ok    internal privileges|ariva_runtime: each inheritance child no wider than its parent")
             .And.Contain("ok    runtime grants|every grant of a relation or column to the runtime role goes to ariva_runtime without grant option")
             .And.Contain("ok    default privileges|script 0001's only");
+        // ARV-262: the restored database, migrated again by the release's job, holds Ariva's objects as a database the scripts
+        // migrated (the pinned list AssertSchemaPinsAsync took from the source), TimescaleDB's members as the image ships them,
+        // the system functions as the pinned digest, and no setting from a file but the server's postgresql.conf.
+        check.Stdout.Should().Contain("ok    schema|Ariva's ").And.Contain(" objects in public as a database the same scripts migrated")
+            .And.Contain("ok    extension members|timescaledb ").And.Contain("exactly the members this release pins for the image")
+            .And.Contain("ok    system functions|as PostgreSQL ").And.Contain("ok    settings|no setting from a file but the server's postgresql.conf");
         // TimescaleDB's own functions and event triggers are extension members: a clean restore has nothing to report.
         check.Stdout.Should().Contain("functions|no C, untrusted-language or SECURITY DEFINER function outside the extensions")
             .And.Contain("event triggers|none outside the extensions").And.Contain("group members|only the migration login and the named logins")
@@ -404,7 +441,11 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
     /// privileges for every schema and for _timescaledb_internal, a view over a toast table, a system table granted to PUBLIC
     /// and another to the runtime role, and CREATE on a schema for the runtime login. Its fourth: script 0001's own default
     /// privileges widened (TRUNCATE on public's tables, UPDATE with grant option on its sequences), and PUBLIC SELECT on an
-    /// information_schema view that initdb leaves to its owner (_pg_user_mappings).
+    /// information_schema view that initdb leaves to its owner (_pg_user_mappings). ARV-262: a trigger and a CHECK constraint
+    /// taken away and the lost revoke against a database the scripts migrated, a function added to timescaledb, and a settings
+    /// file written with COPY TO and included; its review: a chunk's copy of an immutability trigger taken away, a foreign key's
+    /// triggers disabled, a grant to the validation reader role, a member replaced in place, lpad's SQL-standard body replaced,
+    /// the same functions replaced in template1 too, and sha256 replaced in place.
     /// </summary>
     private async Task AssertCheckFindsWhatAForgedDumpWouldLeaveAsync()
     {
@@ -412,6 +453,8 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         await ExecuteAsync(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.PlantAsSuperuser);
         // ALTER SYSTEM cannot run in a transaction block, so on its own (one statement, no implicit block).
         await ExecuteAsync(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.AlterSystem);
+        // ARV-262: a settings file written with COPY TO and included from postgresql.auto.conf.
+        await ExecuteAsync(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.IncludeSettingsFile);
         // CREATE SUBSCRIPTION on its own as well (no slot is created without a connection).
         await ExecuteAsync(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.Subscription);
 
@@ -428,13 +471,20 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             .And.Contain($"{RuntimeLogin} (holds pg_execute_server_program)", "the runtime login reaches the server role through ariva_runtime");
         check.Stdout.Should().Contain("FAIL  held roles|ariva_runtime holds pg_execute_server_program");
         check.Stdout.Should().Contain("FAIL  role settings|it_back work_mem");
-        check.Stdout.Should().Contain("FAIL  settings|ALTER SYSTEM set work_mem (postgresql.auto.conf)");
+        // ARV-262: every file but the server's postgresql.conf: ALTER SYSTEM's and the one an include line names.
+        Line(check, "FAIL  settings|").Should().Contain("set outside the server's postgresql.conf: maintenance_work_mem (")
+            .And.Contain("/ariva-planted.conf), work_mem (").And.Contain("/postgresql.auto.conf): find out who");
+        // ARV-262: an object added to TimescaleDB's extension, which every check that leaves the extensions out skips.
+        Line(check, "FAIL  extension members|").Should().Contain("timescaledb ").And.Contain("differs from the members this release pins (against template1's: ")
+            .And.Contain("added function public.it_ts_member()")
+            .And.Contain("changed function _timescaledb_functions.interval_to_usec(interval)", "a member replaced in place stays a member");
         check.Stdout.Should().Contain("FAIL  rules|public.site it_rule");
         Line(check, "FAIL  other functions|").Should().Contain("pg_catalog.it_shadow").And.Contain("public.it_plain")
             .And.Contain("public.validation_row_immutable", "an Ariva name with a body no script ships")
             .And.Contain("public.zone_profile_immutable", "an Ariva name owned by another role");
         check.Stdout.Should().Contain("FAIL  plpgsql|also holds function it_hidden()");
-        check.Stdout.Should().Contain("FAIL  system functions|reverse differ from template1's");
+        // ARV-262 review: a SQL-standard body (lpad's lives in prosqlbody alone) and a source (reverse), each replaced in place.
+        Line(check, "FAIL  system functions|").Should().Contain("lpad, reverse differ from template1's");
         check.Stdout.Should().Contain("FAIL  replication|publication it_pub, subscription it_sub");
         // ARV-189: a lost revoke (report_delivery's table-wide UPDATE back, which script 0054 takes to four columns) and a grant on
         // a chunk, which reaches the append-only sensing events by the chunk's name. Here the database lacks every script from the
@@ -443,7 +493,8 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         // until the scripts are recorded again, and a plain check fails on that (only restore's own check, whose migration job
         // follows, passes it); what lies outside public is checked either way.
         check.Stdout.Should().Contain("FAIL  runtime privileges|not compared: the database is at ", check.Stdout)
-            .And.Contain("FAIL  views|not compared: the database is behind the list");
+            .And.Contain("FAIL  views|not compared: the database is behind the list")
+            .And.Contain("FAIL  schema|not compared: the database is at ");
         Line(check, "FAIL  internal privileges|").Should().Contain("_timescaledb_internal._hyper_")
             .And.Contain("_compressed", "a compressed chunk no wider than its hypertable either")
             .And.Contain("_timescaledb_internal._materialized_hypertable_", "a continuous aggregate's table at most SELECT")
@@ -479,13 +530,38 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             "report_delivery (the scripts: SELECT,INSERT,UPDATE(attempts reason sent_utc status); found: SELECT,INSERT,UPDATE)")
             .And.Contain("sensing_event (the scripts: SELECT,INSERT; found: SELECT,INSERT,MAINTAIN)");
         Line(compared, "FAIL  views|").Should().Contain("it_deliveries (the scripts: no such view; found: reads report_delivery)");
+        // ARV-262 (the story's criterion): a trigger and a constraint taken away and a lost revoke, each in a relation of Ariva's
+        // that no other line compares this way, and a function and a view the scripts do not create. Its review: a chunk's copy
+        // of an immutability trigger taken away (TimescaleDB fires the chunk's), a foreign key's triggers disabled with its
+        // definition unchanged, a grant to the validation reader role, and a schema the scripts do not create.
+        Line(compared, "FAIL  schema|").Should().Contain("objects differ from a database the same scripts migrated: ")
+            .And.Contain("validation_result_revision (differs)", "its immutability trigger is gone")
+            .And.Contain("alert (differs)", "a CHECK constraint is gone")
+            .And.Contain("report_delivery (differs)", "the revoke of its table-wide UPDATE lost")
+            .And.Contain("queue_bin (differs)", "a chunk lacks its copy of the immutability trigger")
+            .And.Contain("advertising_media (differs)", "a foreign key no longer enforced")
+            .And.Contain("user (differs)", "SELECT granted to the validation reader role")
+            .And.Contain("validation_row_immutable() (differs)", "another body under an Ariva name")
+            .And.Contain("it_plain() (not in the scripts)").And.Contain("it_deliveries (not in the scripts)").And.Contain("schema it_side (not in the scripts)")
+            .And.Contain("schema pg_catalog (differs)", "CREATE on pg_catalog for the migration role, which would let its login plant an overload there")
+            .And.Contain("information_schema.it_view (not in the scripts)", "a relation created after initdb in a system schema");
+        var full = await _target.OpsAsync(Ct, "schema", "--full");
+        full.ExitCode.Should().Be(0, full.Stderr);
+        full.Stdout.Should().MatchRegex(@"(?m)^queue_bin\|child _timescaledb_internal\._hyper_\d+_\d+_chunk lacks trigger trg_queue_bin_final_is_immutable$",
+                "the --full output names the chunk")
+            .And.Contain("advertising_media|constraint advertising_media_site_code_fkey FOREIGN KEY (site_code) REFERENCES public.site(code) (a trigger of it disabled)")
+            .And.Contain("user|grant ariva_validation_reader SELECT")
+            // Its third round: what a child has that its parent does not (a guard trigger or row security on a chunk).
+            .And.Contain("alert_rule|child it_side.it_child has trigger it_extra its parent lacks")
+            .And.Contain("alert_rule|child it_side.it_child has row security or a policy");
         check.Stdout.Should().Contain("ok    planted|", "nothing under a system name outside the extensions yet");
         check.Stdout.Should().Contain("FAIL  extensions|pg_stat_statements (a DBA-provided server's own: name it with --allow-extension)");
         var allowed = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--allow-extension", "pg_stat_statements", "--allow-login", "it_repl",
-            "--allow-setting", "work_mem");
+            "--allow-setting", "work_mem", "--allow-setting", "maintenance_work_mem");
         allowed.Stdout.Should().Contain("ok    extensions|plpgsql, timescaledb and timescaledb_toolkit, and allowed: pg_stat_statements")
-            .And.Contain("ok    settings|no ALTER SYSTEM setting (postgresql.auto.conf) but the allowed: work_mem")
-            .And.Contain("ok    role settings|none but the runtime login's statement timeout, and allowed: work_mem");
+            .And.Contain("ok    settings|no setting from a file but the server's postgresql.conf (postgresql.auto.conf, a file an include names) but the allowed: maintenance_work_mem (")
+            .And.Contain("/ariva-planted.conf), work_mem (")
+            .And.Contain("ok    role settings|none but the runtime login's statement timeout, and allowed: work_mem, maintenance_work_mem");
         Line(allowed, "FAIL  logins|").Should().NotContain("it_repl").And.Contain("it_bypass (bypassrls)");
         foreach (var (option, value) in new[] { ("--allow-extension", "pg-stat"), ("--allow-login", "It_Repl"), ("--allow-setting", "work-mem") })
         {
@@ -495,7 +571,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         }
         // A superuser read that fails (here a superuser name the socket does not map) is a FAIL, never a pass.
         var unread = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--superuser", "it_nobody");
-        unread.Stdout.Should().Contain("FAIL  settings|postgresql.auto.conf could not be read as the superuser");
+        unread.Stdout.Should().Contain("FAIL  settings|the configuration files could not be read as the superuser");
 
         // The review's escalation: as the migration login, a schema of its own with an aggregate and an operator under system
         // names that make a superuser of whoever runs them as one, a count(*) that always says 0, and that schema first on the
@@ -507,7 +583,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         hijacked.ExitCode.Should().NotBe(0);
         Line(hijacked, "FAIL  planted|").Should().Contain("function it_evil.string_agg").And.Contain("function it_evil.count").And.Contain("operator it_evil.~~")
             .And.Contain("database setting search_path=it_evil, pg_catalog, public");
-        hijacked.Stdout.Should().Contain("FAIL  settings|ALTER SYSTEM settings not read: the superuser reads nothing while the line above fails");
+        hijacked.Stdout.Should().Contain("FAIL  settings|the configuration files not read: the superuser reads nothing while the line above fails");
         hijacked.Stdout.Should().Contain("FAIL  event triggers|it_event", "the report's own session keeps the catalog's search path, so count(*) is the system's");
         await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.RevokePurgeFromPublic);
         FunctionsLine(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Should().Contain("public.it_definer")
@@ -530,6 +606,17 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.ForgePurgeBody);
         FunctionsLine(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Should().Contain("public.ariva_retention_purge (plpgsql, SECURITY DEFINER)",
             "another body under the purge's name, its settings and grants unchanged");
+
+        // ARV-262: the system functions' pinned digest decides, not template1, which a forged dump run by the superuser could
+        // reach as well: the same function replaced in template1 too leaves template1 equal, and the line still fails.
+        await ExecuteAsync(new NpgsqlConnectionStringBuilder(_target.ConnectionString("postgres", _target.SuperuserPassword)) { Database = "template1" }.ConnectionString,
+            Query.ReplaceInTemplate1);
+        Line(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin), "FAIL  system functions|").Should()
+            .Contain($"{ChartDatabase.Database}'s differ from what this release pins for PostgreSQL ").And.Contain("template1's are the same");
+        // Its review: the digest is taken outside the database, so the database's own sha256, replaced in place, cannot vouch
+        // for itself.
+        await ExecuteAsync(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.ReplaceSha256);
+        Line(await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin), "FAIL  system functions|").Should().Contain("sha256");
 
         await ExecuteAsync(_target.ConnectionString("postgres", _target.SuperuserPassword), Query.GiveMigrationLoginReplication);
         var replication = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
@@ -614,6 +701,9 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         PlantAsMigrationLogin,
         PlantAsSuperuser,
         AlterSystem,
+        IncludeSettingsFile,
+        ReplaceInTemplate1,
+        ReplaceSha256,
         Subscription,
         HijackSearchPath,
         MigrationLoginIsSuperuser,
@@ -683,6 +773,16 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             CREATE OR REPLACE FUNCTION public.validation_row_immutable() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
             CREATE PUBLICATION it_pub FOR TABLE public.site;
             GRANT UPDATE ON public.report_delivery TO ariva_runtime;
+            DROP TRIGGER validation_result_revision_immutable ON public.validation_result_revision;
+            ALTER TABLE public.alert DROP CONSTRAINT alert_state_check;
+            INSERT INTO public.queue_bin (zone_key, start_utc, length_minutes, profile_version, entries, exits, waits, abandoned, censored, fragmented,
+                                          late_events, open_people, reanchored, rejected, revision, status, quality, updated_on)
+            VALUES ('DMO/IT-CHUNK', now(), 15, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'Final', 'Good', now());
+            DO $$ BEGIN
+                EXECUTE (SELECT format('DROP TRIGGER trg_queue_bin_final_is_immutable ON %s', i.inhrelid::regclass)
+                           FROM pg_inherits i WHERE i.inhparent = 'public.queue_bin'::regclass ORDER BY i.inhrelid LIMIT 1);
+            END $$;
+            GRANT SELECT ON public."user" TO ariva_validation_reader;
             DO $$ BEGIN
                 EXECUTE (SELECT format('GRANT UPDATE ON %I.%I TO ariva_runtime', chunk_schema, chunk_name)
                            FROM timescaledb_information.chunks WHERE hypertable_name = 'sensing_event' ORDER BY chunk_name LIMIT 1);
@@ -698,6 +798,8 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             CREATE VIEW it_side.it_view AS SELECT 1 AS one;
             GRANT SELECT ON it_side.it_view TO ariva_runtime;
             CREATE TABLE it_side.it_child () INHERITS (public.alert_rule);
+            CREATE TRIGGER it_extra BEFORE UPDATE ON it_side.it_child FOR EACH ROW EXECUTE FUNCTION public.validation_row_immutable();
+            ALTER TABLE it_side.it_child ENABLE ROW LEVEL SECURITY;
             GRANT UPDATE ON SEQUENCE public.outbox_message_seq_seq TO ariva_runtime;
             GRANT SELECT ON public.integration_call TO ariva_app;
             GRANT SELECT ON public.audit_entry TO ariva_runtime WITH GRANT OPTION;
@@ -725,6 +827,19 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             CREATE FUNCTION pg_catalog.it_hidden() RETURNS int LANGUAGE sql AS 'SELECT 1';
             ALTER EXTENSION plpgsql ADD FUNCTION pg_catalog.it_hidden();
             CREATE OR REPLACE FUNCTION pg_catalog.reverse(text) RETURNS text LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT $1 $$;
+            CREATE FUNCTION public.it_ts_member() RETURNS int LANGUAGE sql AS 'SELECT 1';
+            ALTER EXTENSION timescaledb ADD FUNCTION public.it_ts_member();
+            GRANT CREATE ON SCHEMA pg_catalog TO ariva_migration;
+            DO $$ BEGIN
+                EXECUTE replace(pg_get_functiondef('pg_catalog.lpad(text, integer)'::regprocedure), ''' ''::text', '''*''::text');
+                EXECUTE regexp_replace(pg_get_functiondef('_timescaledb_functions.interval_to_usec(interval)'::regprocedure), '\$function\$\s*$', ' $function$');
+            END $$;
+            DO $$ DECLARE t name; BEGIN
+                FOR t IN SELECT g.tgname FROM pg_trigger g JOIN pg_constraint o ON o.oid = g.tgconstraint
+                          WHERE o.conname = 'advertising_media_site_code_fkey' AND g.tgrelid = 'public.advertising_media'::regclass LOOP
+                    EXECUTE format('ALTER TABLE public.advertising_media DISABLE TRIGGER %I', t);
+                END LOOP;
+            END $$;
             GRANT UPDATE ON _timescaledb_catalog.hypertable TO PUBLIC;
             GRANT UPDATE (config) ON _timescaledb_catalog.bgw_job TO ariva_runtime;
             CREATE VIEW information_schema.it_view AS SELECT * FROM public.retention_period;
@@ -753,6 +868,21 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             GRANT SELECT ON information_schema._pg_user_mappings TO PUBLIC;
             """,
         Query.AlterSystem => "ALTER SYSTEM SET work_mem = '8MB'",
+        Query.IncludeSettingsFile => """
+            DO $$ BEGIN
+                EXECUTE format('COPY (VALUES (%L)) TO %L', 'maintenance_work_mem = ''64MB''', current_setting('data_directory') || '/ariva-planted.conf');
+                EXECUTE format('COPY (VALUES (%L), (%L)) TO %L', 'work_mem = ''8MB''', 'include ''ariva-planted.conf''',
+                               current_setting('data_directory') || '/postgresql.auto.conf');
+            END $$
+            """,
+        // As PlantAsSuperuser replaces them in Ariva's database.
+        Query.ReplaceInTemplate1 => """
+            CREATE OR REPLACE FUNCTION pg_catalog.reverse(text) RETURNS text LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT $1 $$;
+            DO $$ BEGIN
+                EXECUTE replace(pg_get_functiondef('pg_catalog.lpad(text, integer)'::regprocedure), ''' ''::text', '''*''::text');
+            END $$;
+            """,
+        Query.ReplaceSha256 => "CREATE OR REPLACE FUNCTION pg_catalog.sha256(bytea) RETURNS bytea LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE AS $$ SELECT $1 $$",
         Query.Subscription => "CREATE SUBSCRIPTION it_sub CONNECTION 'host=127.0.0.1 dbname=ariva' PUBLICATION it_pub WITH (connect = false)",
         Query.HijackSearchPath => """
             CREATE SCHEMA it_evil;
