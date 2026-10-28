@@ -30,7 +30,7 @@ public sealed class DeviceHealthSettings
 /// <summary>
 /// Device health metrics (meter <c>Ariva.Devices</c>): heartbeats lost, recoveries and zones that became degraded, per
 /// site; and, from the last sweep, devices monitored (ARV-125a: commissioned devices whose health is watched, Online,
-/// Degraded or Offline), offline and degraded, and zones degraded. Only the replica of Ariva.Api.Main that wins a sweep's
+/// Degraded or Offline), offline and degraded, zones degraded, and devices whose clock is unreliable (ARV-259a). Only the replica of Ariva.Api.Main that wins a sweep's
 /// lock computes the totals, so they are reported only while that sweep is fresh (<see cref="Snapshot"/>'s window): the
 /// other hosts, which register this class without sweeping, and a replica that has not won a sweep lately report nothing,
 /// and a dashboard takes the largest of the copies, never their sum.
@@ -51,7 +51,7 @@ public sealed class DeviceHealthMetrics : IDisposable
     /// <summary>Zones remembered as warned about; beyond this many (never in practice) each further one warns every time.</summary>
     internal const int MaxRememberedZones = 1_000;
 
-    private sealed record Totals(int Monitored, int Offline, int Degraded, int Zones, DateTimeOffset At, TimeSpan FreshFor);
+    private sealed record Totals(int Monitored, int Offline, int Degraded, int Zones, int ClockUnreliable, DateTimeOffset At, TimeSpan FreshFor);
 
     public DeviceHealthMetrics(IMeterFactory meterFactory = null, TimeProvider timeProvider = null)
     {
@@ -67,6 +67,8 @@ public sealed class DeviceHealthMetrics : IDisposable
         _meter.CreateObservableGauge("ariva.devices.offline", () => Fresh(t => t.Offline), description: "Commissioned devices Offline at the last sweep");
         _meter.CreateObservableGauge("ariva.devices.degraded", () => Fresh(t => t.Degraded), description: "Commissioned devices Degraded at the last sweep");
         _meter.CreateObservableGauge("ariva.zones.degraded_now", () => Fresh(t => t.Zones), description: "Queue zones Degraded at the last sweep");
+        _meter.CreateObservableGauge("ariva.devices.clock_unreliable", () => Fresh(t => t.ClockUnreliable),
+            description: "Commissioned devices heard within the heartbeat timeout whose clock is unreliable (off by more than 500 ms and unstable, F19) at the last sweep");
     }
 
     /// <summary>This instance's meter (tests listen to it alone).</summary>
@@ -91,12 +93,12 @@ public sealed class DeviceHealthMetrics : IDisposable
     }
 
     /// <summary>The totals of a sweep that just ran, reported for <paramref name="freshFor"/> (two sweep intervals).</summary>
-    public void Snapshot(int monitored, int offline, int degraded, int zones, TimeSpan freshFor) =>
-        _totals = new Totals(monitored, offline, degraded, zones, _time.GetUtcNow(), freshFor);
+    public void Snapshot(int monitored, int offline, int degraded, int zones, int clockUnreliable, TimeSpan freshFor) =>
+        _totals = new Totals(monitored, offline, degraded, zones, clockUnreliable, _time.GetUtcNow(), freshFor);
 
     /// <summary>The last sweep's totals (zeros before the first), fresh or not.</summary>
-    public (int Monitored, int Offline, int Degraded, int Zones) Current =>
-        _totals is { } t ? (t.Monitored, t.Offline, t.Degraded, t.Zones) : (0, 0, 0, 0);
+    public (int Monitored, int Offline, int Degraded, int Zones, int ClockUnreliable) Current =>
+        _totals is { } t ? (t.Monitored, t.Offline, t.Degraded, t.Zones, t.ClockUnreliable) : (0, 0, 0, 0, 0);
 
     private IEnumerable<Measurement<int>> Fresh(Func<Totals, int> value)
     {

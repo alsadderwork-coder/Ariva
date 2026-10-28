@@ -2468,7 +2468,9 @@ for (const [label, file, sets, message, annotation] of [
 			zonesDegraded: ['ariva.zones.degraded_now', 'max', 'all_the_times', '5m', 'warning', []],
 			aodbFeedStale: ['ariva.feeds.stale', 'max', 'all_the_times', '5m', 'warning', []],
 			amanCodesUnmapped: ['ariva.border.feed.unmapped', 'sum', 'in_total', '15m', 'warning', ['site']],
-			integrationLockout: ['ariva.integration.lockouts', 'sum', 'in_total', '15m', 'warning', []]
+			integrationLockout: ['ariva.integration.lockouts', 'sum', 'in_total', '15m', 'warning', []],
+			// ARV-259a: the devices whose clock is unreliable, a gauge of Api.Main's leader sweep like ariva.devices.degraded.
+			clockUnreliable: ['ariva.devices.clock_unreliable', 'max', 'all_the_times', '15m', 'warning', []]
 		};
 		for (const [key, [metric, space, match, window, severity, groups]] of Object.entries(existing)) {
 			const rule = JSON.parse(monitoringRule(docs, `${key}.json`) || 'null');
@@ -2512,7 +2514,7 @@ for (const [label, file, sets, message, annotation] of [
 		failed = true;
 		console.error(`FAIL monitoring switches:\n  ${findings.join('\n  ')}`);
 	} else {
-		console.log('PASS monitoring switches: the border rules (AMAN feed and AMAN codes) where turned on, the rules over existing metrics (ARV-259) and the stream checkpoint rule (ARV-258) as their values say, channels on every threshold, the release\'s environment and namespace by default and the scopes set, nothing when monitoring is off');
+		console.log('PASS monitoring switches: the border rules (AMAN feed and AMAN codes) where turned on, the rules over existing metrics (ARV-259) with the clock rule (ARV-259a), and the stream checkpoint rule (ARV-258) as their values say, channels on every threshold, the release\'s environment and namespace by default and the scopes set, nothing when monitoring is off');
 	}
 }
 

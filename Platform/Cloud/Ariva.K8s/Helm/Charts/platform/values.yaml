@@ -521,8 +521,13 @@ monitoring:
     # Commissioned devices reporting themselves Degraded, any, for the whole window (ARV-259).
     devicesDegraded: { enabled: true, minutes: 5, severity: warning }
     # Queue zones Degraded, any, for the whole window (ARV-259; wiki 10 section 2, the degraded count): a device of the zone
-    # is offline or degraded. A line without coverage (zone Unknown) has no rule yet (ARV-259a).
+    # is offline or degraded. A line without coverage (zone Unknown) has no rule: the queue engine has no line coverage model
+    # yet (ARV-259e).
     zonesDegraded: { enabled: true, minutes: 5, severity: warning }
+    # Devices heard within the heartbeat timeout whose clock is unreliable (off by more than 500 ms and unstable, formulas
+    # F19), any, for the whole window (ARV-259a): their events are not corrected and their zones' numbers are flagged. 15
+    # minutes, so a clock that settles within a few pushes does not page.
+    clockUnreliable: { enabled: true, minutes: 15, severity: warning }
     # Flight feeds stale (no message within their cadence while flights are due), any, for the whole window (ARV-259).
     aodbFeedStale: { enabled: true, minutes: 5, severity: warning }
     # AMAN records whose desk or gate code has no mapping, any in the window, per site (ARV-259). Border deployments only:

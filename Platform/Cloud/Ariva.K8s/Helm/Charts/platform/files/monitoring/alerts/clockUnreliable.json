@@ -1,0 +1,77 @@
+{
+  "alert": "Ariva sensor clocks unreliable (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "Commissioned devices heard within the heartbeat timeout whose clock is unreliable (off by more than 500 ms and unstable, formulas F19) for the whole window (ARV-259a): their events are not corrected and are taken as degraded input, so their zones' numbers are flagged; the clock does not change the devices' state.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.devices.clock_unreliable",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            }
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${clockUnreliable.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${clockUnreliable.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "clockUnreliable",
+    "environment": "${environment}",
+    "severity": "${clockUnreliable.severity}"
+  },
+  "annotations": {
+    "summary": "Sensor clocks unreliable",
+    "description": "{{$value}} devices have reported an unreliable clock for ${clockUnreliable.minutes} minutes: their events are not corrected and their zones' numbers are flagged. Check the devices' time sync (NTP or PTP) and the site time source.",
+    "runbook": "wiki/10-Operations-Runbook.md#45-clock-drift-detected"
+  },
+  "disabled": false
+}

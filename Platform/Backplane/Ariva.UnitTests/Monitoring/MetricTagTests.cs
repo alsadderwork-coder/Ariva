@@ -66,7 +66,7 @@ public sealed partial class MetricTagTests
             devices.Recovered(Site);
             devices.ZoneDegraded(Site);
             devices.ZoneNotKeyable(Site, "DMO/zone");
-            devices.Snapshot(4, 1, 1, 1, TimeSpan.FromMinutes(1));
+            devices.Snapshot(4, 1, 1, 1, 1, TimeSpan.FromMinutes(1));
         },
         [typeof(SensingArchiveMetrics)] = m => ((SensingArchiveMetrics)m).Skipped(SensingArchiveMetrics.BatchKind, 1),
         [typeof(BorderMetrics)] = m =>

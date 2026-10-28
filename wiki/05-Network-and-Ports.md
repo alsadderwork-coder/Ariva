@@ -113,9 +113,9 @@ Clock offset tracking (F19): Ingest computes each sensor's offset against the si
 |---|---|
 | Offset within 500 ms (an assumption to tune) | Normal |
 | Offset above 500 ms and stable (standard deviation of the last 10 readings below 50 ms, Proposed) | The offset is subtracted from the sensor's timestamps and the data is flagged `Degraded` |
-| Offset above 500 ms and not stable | The sensor is marked `Degraded`; waits across that sensor's boundaries are unreliable; alarm to resynchronise |
+| Offset above 500 ms and not stable | The sensor's events are flagged `ClockUnreliable` and taken as degraded input: its zone's numbers are flagged and waits across that sensor's boundaries are unreliable; the device's state does not change; the `clockUnreliable` alert (ARV-259a) asks to resynchronise |
 
-Examples from the formula tests: offsets 620, 610 and 630 ms are stable and corrected; 100, 900 and 300 ms are not stable and the sensor is degraded. See the [runbook](10-Operations-Runbook.md) procedure for clock drift.
+Examples from the formula tests: offsets 620, 610 and 630 ms are stable and corrected; 100, 900 and 300 ms are not stable and the clock unreliable. See the [runbook](10-Operations-Runbook.md) procedure for clock drift.
 
 ## TLS everywhere
 

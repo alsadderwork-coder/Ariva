@@ -1456,12 +1456,33 @@
     },
     {
       "id": "ARV-259a",
-      "title": "[E17] Metrics and alert rules for zone Unknown, clock drift, bin maturity, retention failures and stale displays",
-      "description": "Split from ARV-259 (2026-10-27): five of the wiki 10 section 3 alarms have no metric yet, each in another host, so they did not fit ARV-259 (which ships the rules over the existing metrics): zone Unknown (an entry or exit line without coverage: the queue engine's Unknown wait, Ariva.Api.Stream; ARV-259's zonesDegraded counts zones with any device out, which is broader, as its review found), clock drift unstable (the device clock estimates of F19, Ariva.Api.Stream; wiki 10 section 4.5 says an unstable offset marks the sensor Degraded, which no code does: an unreliable clock only flags its events ClockUnreliable, so either implement it, which devicesDegraded then fires on, or correct 4.5), bin maturity backlog (bins not final past their maturity, Ariva.Api.Cronz), retention job failed (the Cronz RelationalRetention job's error and warnings, and TimescaleDB's own retention and compression jobs, timescaledb_information.job_stats) and display stale (Ariva.Api.Main's display heartbeats). Each needs a bounded metric first, then its rule. With the zone Unknown rule, consider a tunable count for zonesDegraded (wiki 10 section 2's 'degraded count above normal'; it fires on any degraded zone today, so a site with a zone known to be degraded can only turn it off; ARV-259 review round 2, advisory 2). CWEs to review: CWE-400, CWE-532.",
+      "title": "[E17] Clock drift unstable: a metric and alert rule; zone Unknown's missing rule explained (split 2026-10-28)",
+      "description": "Split from ARV-259 (2026-10-27), then split again (2026-10-28, backlog/progress.md) when a survey found that the five alarms read state in four places and two of them have no state yet. This slice: clock drift unstable. Ingest estimates each device's clock offset (ClockOffset, F19) and Api.Main stores its state in device_heartbeat.clock_state (Ok, Corrected, Unreliable), but nothing counts the unreliable ones, and wiki 10 section 4.5 says an unstable offset marks the sensor Degraded, which no code does: an unreliable clock only flags its events ClockUnreliable (Stream treats them as degraded input). Count the commissioned devices whose fresh heartbeat reports an Unreliable clock in Api.Main's leader sweep (SvcDeviceHealth.SweepAsync, beside ariva.devices.degraded), export it as a bounded gauge, add the rule, and correct 4.5. Zone Unknown: the queue engine never decides a zone Unknown (F11's entry or exit line without coverage needs a device-to-line mapping the domain does not have; only device outages mark bins Degraded), so wiki 10 section 3.1 states why the alarm has no rule and points at ARV-259e, which builds the coverage model. CWEs to review: CWE-400, CWE-532.",
       "acceptanceCriteria": [
-        "Each of the five alarms has a metric with bounded tags (MetricTagTests and MeterExportTests covering it) and a chart rule (off by default where it fits only some deployments), or a stated reason in wiki 10 section 3.1 why it has none",
-        "Each rule has a chart render test (its expression, its window and severity from values), as the ARV-125b rules have",
-        "Wiki 10 sections 2a, 3 and 3.1 updated: what each metric and rule watches and what to do when it fires",
+        "Api.Main's device health sweep reports the commissioned devices whose fresh heartbeat says the clock is Unreliable as a gauge (ariva.devices.clock_unreliable, no tags, read as the largest copy like ariva.devices.degraded), with MetricTagTests driving it and a unit or integration test of the count",
+        "The clock rule (a Warning, its window from values) its rule ships in the chart with a render test in chart-security.mjs (its metric, aggregation, window and severity from values) and in tests/monitoring.json, and wiki 10 sections 2a, 3 and 3.1 say what it watches and what to do when it fires",
+        "Wiki 10 section 4.5 says what an unstable offset does (events flagged ClockUnreliable, the zone's numbers degraded, the rule) and no longer that it marks the sensor Degraded; docs/domain/formulas.md F19 agrees",
+        "Wiki 10 section 3.1 states why zone Unknown has no rule (the engine has no line coverage model; zonesDegraded is the device-outage proxy) and names ARV-259e",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": true,
+      "notes": "Size S. Phase 3. Split from ARV-259 (2026-10-27) and again into ARV-259a to ARV-259e (2026-10-28, backlog/progress.md: the survey of where each alarm's state lives). No sign-in code.",
+      "dependsOn": [
+        "ARV-259"
+      ]
+    },
+    {
+      "id": "ARV-259b",
+      "title": "[E17] Bin maturity backlog: a metric and alert rule",
+      "description": "Split from ARV-259a (2026-10-28). Wiki 10 section 2's alarm 'bins older than the censoring timeout still provisional': a queue bin becomes Final once its end has passed the stream's watermark, its open entrants are resolved (exit, or censored after CensorAfter, 120 minutes) and lateness has passed (BinAccumulator.Accept), so a bin still Provisional long after end + CensorAfter + lateness means a stuck watermark, a dead or lagging Stream, or a fault in finalisation. Nothing counts them. Count, in a leader-only sweep with its own advisory lock, the latest queue_bin revision of each bin that is Provisional past that maturity (by site, bounded), export it as a gauge with the freshness pattern of DeviceHealthMetrics, and add the rule. A sweep over the stored bins also catches a Stream that stopped, which a count inside the Stream would not. CWEs to review: CWE-400, CWE-532.",
+      "acceptanceCriteria": [
+        "A leader-only sweep counts the provisional bins past maturity (bin end + Stream:CensorAfter + Stream:LatenessSeconds, read from the same settings the engine uses) as a bounded gauge, with MetricTagTests driving it, an integration test of the count and the lock, and a query bounded in time (Database:CommandTimeoutSeconds)",
+        "The bin maturity rule (a Warning) its rule ships in the chart with a render test in chart-security.mjs (its metric, aggregation, window and severity from values) and in tests/monitoring.json, and wiki 10 sections 2a, 3 and 3.1 say what it watches and what to do when it fires",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -1470,9 +1491,71 @@
       ],
       "priority": 40,
       "passes": false,
-      "notes": "Size M. Phase 3. Split from ARV-259 because each metric lives in another host (backlog/progress.md, 2026-10-27).",
+      "notes": "Size S to M. Phase 3. Split from ARV-259a (2026-10-28). No sign-in code.",
       "dependsOn": [
         "ARV-259"
+      ]
+    },
+    {
+      "id": "ARV-259c",
+      "title": "[E17] Retention job failed: metrics and alert rules for the Cronz retention job and TimescaleDB's policy jobs",
+      "description": "Split from ARV-259a (2026-10-28). The Cronz RelationalRetention job (RetentionJobs.PurgeAsync over RetentionRound) logs a failed data set as an Error and a data set without a period as a Warning, and a run that fails as a whole (database unreachable, its run timeout) throws; nothing counts either. TimescaleDB's own retention and compression policies (set by the migration job, RetentionPolicies) run inside the database, and nothing reads timescaledb_information.job_stats (ariva-db.sh check only counts the jobs). Export the last run's outcome of RelationalRetention (data sets failed or without a period, and a run that failed as a whole) and the policy jobs whose last run failed, each as a bounded gauge with a freshness window above their period, and add the rules (Critical, as wiki 10 section 3 proposes). Check first that the runtime login sees the job_stats rows of jobs the migration login owns; if it cannot, read them through a narrow grant or a SECURITY DEFINER view in a versioned script, or state why there is no rule. CWEs to review: CWE-400, CWE-532, CWE-269 (a grant or view for job_stats).",
+      "acceptanceCriteria": [
+        "The RelationalRetention job's last run outcome is a bounded gauge (failed and unset data sets, a run that failed as a whole) with MetricTagTests driving it and a test of each outcome",
+        "TimescaleDB's retention and compression jobs whose last run failed are a bounded gauge read by a Cronz job under the runtime login (or the reason it cannot, in wiki 10 section 3.1), with an integration test against a failed job",
+        "The retention rules (Critical) its rule ships in the chart with a render test in chart-security.mjs (its metric, aggregation, window and severity from values) and in tests/monitoring.json, and wiki 10 sections 2a, 3 and 3.1 say what it watches and what to do when it fires",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M. Phase 3. Split from ARV-259a (2026-10-28). No sign-in code.",
+      "dependsOn": [
+        "ARV-259"
+      ]
+    },
+    {
+      "id": "ARV-259d",
+      "title": "[E17] Display stale: a metric and alert rule",
+      "description": "Split from ARV-259a (2026-10-28). A display shows the neutral message once its board's data is older than the display's StaleSeconds (60 to 1,800) or it has had no board for that long; nothing on the server records either, and no display heartbeat is stored (the player polls GET api/v1/display/board, which only reads). Count, in a leader-only sweep in Api.Main with its own advisory lock, the enabled displays whose board would be stale now (a zone's live snapshot missing or older than the display's StaleSeconds), export it as a bounded gauge with the freshness pattern, and add the rule. A player that stopped polling is not seen this way; say so in wiki 10 section 3.1 (recording the last request would add a write to a hot endpoint across every Main replica), and that 'during operating hours' is not modelled. CWEs to review: CWE-400, CWE-532.",
+      "acceptanceCriteria": [
+        "A leader-only sweep counts the enabled displays whose board data would be stale (by the display's own StaleSeconds) as a bounded gauge, with MetricTagTests driving it and an integration test with a fresh and a stale snapshot",
+        "The display rule (a Warning) its rule ships in the chart with a render test in chart-security.mjs (its metric, aggregation, window and severity from values) and in tests/monitoring.json, and wiki 10 sections 2a, 3 and 3.1 say what it watches and what to do when it fires, and section 3.1 says what the rule does not see (a player that stopped asking, operating hours)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S to M. Phase 3. Split from ARV-259a (2026-10-28). No sign-in code.",
+      "dependsOn": [
+        "ARV-259"
+      ]
+    },
+    {
+      "id": "ARV-259e",
+      "title": "[E4] Queue engine line coverage: a zone with an entry or exit line no live device covers is Unknown, with its metric and rule",
+      "description": "Split from ARV-259a (2026-10-28). Formulas F11 says a zone whose entry or exit line has no coverage has an Unknown wait and screens show the neutral message; the engine never decides it: nothing maps devices to the lines they cover (QueueZoneGeometry has EntryLines and ExitLines only), BinQuality.Unknown is never produced from live data, and a device outage only marks the zone's bins Degraded. Model which devices cover each entry and exit line (from the line definitions or the device's mapping), have the engine mark the zone's live minutes and bins Unknown while a line has no live device, carry it to the live snapshot and the screens, and export the zones Unknown now as a gauge summed across Stream replicas (each owns its zones) with a rule (Critical, wiki 10 section 3). No measurement at all is Unknown by F11 too, which the engine does not produce either: docs/architecture/overview.md's whole-site-down row ('waits for the gap Unknown') says otherwise (ARV-259a review, round 2). With it, consider a tunable count for zonesDegraded (wiki 10 section 2's 'degraded count above normal'; ARV-259 review round 2, advisory 2). CWEs to review: CWE-400, CWE-532.",
+      "acceptanceCriteria": [
+        "The engine marks a zone Unknown while an entry or exit line has no live covering device, with table-driven unit tests from formulas F11 and a golden replay unchanged where every line stays covered",
+        "The live snapshot and the screens show it as F11 says, with unit and Playwright functional tests",
+        "Stream reports the zones Unknown now as a gauge summed across replicas, with MetricTagTests driving it, and its rule (Critical) its rule ships in the chart with a render test in chart-security.mjs (its metric, aggregation, window and severity from values) and in tests/monitoring.json, and wiki 10 sections 2a, 3 and 3.1 say what it watches and what to do when it fires",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M to L. Phase 3. Split from ARV-259a (2026-10-28): a domain change (the coverage model) before its metric. No sign-in code.",
+      "dependsOn": [
+        "ARV-259a"
       ]
     },
     {

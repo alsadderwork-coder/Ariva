@@ -156,6 +156,57 @@ public sealed class DeviceHealthTests(PostgresFixture fixture) : IAsyncDisposabl
     }
 
     [Fact]
+    public async Task Sweep_Should_CountTheDevicesHeardWithAnUnreliableClock_When_ItRuns()
+    {
+        // ARV-259a: ariva.devices.clock_unreliable counts the commissioned devices (Online or Degraded) heard within the
+        // heartbeat timeout whose last report says the clock is Unreliable; a corrected clock is not, nor a device still being
+        // commissioned, and an Offline device's last clock is old news. The sweep covers every site of the shared database, so
+        // the counts are compared with the one before.
+        var (admin, first, second) = await SiteAsync("CLK");
+        await RecordAsync(Report(first, "CLK"));
+        await RecordAsync(Report(second, "CLK"));
+        var before = (await SweepAsync()).DevicesClockUnreliable;
+
+        _host.Clock.Advance(TimeSpan.FromSeconds(1));
+        var unreliable = Report(first, "CLK");
+        unreliable.Clock = new ClockReading(900, false, ClockState.Unreliable);
+        await RecordAsync(unreliable);
+        await RecordAsync(Report(second, "CLK"));
+        (await SweepAsync()).DevicesClockUnreliable.Should().Be(before + 1, "the first device's clock is unreliable, the second's Ok");
+        (await StateAsync(first)).Should().Be("Online", "an unreliable clock flags the device's events, not the device");
+
+        _host.Clock.Advance(TimeSpan.FromSeconds(1));
+        var corrected = Report(second, "CLK");
+        corrected.Clock = new ClockReading(620, true, ClockState.Corrected);
+        await RecordAsync(corrected);
+        (await SweepAsync()).DevicesClockUnreliable.Should().Be(before + 1, "a corrected clock (off but stable) is not counted");
+
+        _host.Clock.Advance(TimeSpan.FromSeconds(1));
+        var unwell = Report(second, "CLK", online: false);
+        unwell.Clock = new ClockReading(900, false, ClockState.Unreliable);
+        await RecordAsync(unwell);
+        (await StateAsync(second)).Should().Be("Degraded", "the device reports itself not online");
+        (await SweepAsync()).DevicesClockUnreliable.Should().Be(before + 2, "a Degraded device is commissioned and heard, so its clock counts");
+
+        var level = await _host.ReadAsync<Guid>("SELECT level_id FROM device WHERE id = @id", first);
+        var registered = await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcDevices>().RegisterAsync(
+            new RegisterDeviceRequest("S-3", "StereoVision", "PC2SE", "HttpsPush", "Xovis", "Ntp", new DevicePlacement(level, 30, 16, 5, 0, "Snake A")), Ct));
+        var commissioning = registered.Data.Device.Id;
+        var early = Report(commissioning, "CLK");
+        early.Clock = new ClockReading(900, false, ClockState.Unreliable);
+        await RecordAsync(early);
+        (await StateAsync(commissioning)).Should().Be("Commissioning");
+        (await SweepAsync()).DevicesClockUnreliable.Should().Be(before + 2, "a device still being commissioned is not counted, though it was heard");
+
+        _host.Clock.Advance(TimeSpan.FromSeconds(200));
+        var stillUnwell = Report(second, "CLK", online: false);
+        stillUnwell.Clock = new ClockReading(900, false, ClockState.Unreliable);
+        await RecordAsync(stillUnwell);
+        (await SweepAsync()).DevicesClockUnreliable.Should().Be(before + 1, "the first device went Offline, so its last clock is not counted");
+        (await StateAsync(first)).Should().Be("Offline");
+    }
+
+    [Fact]
     public async Task Health_Should_BeLimitedToTheCallersSites()
     {
         var (_, first, _) = await SiteAsync("HBC");

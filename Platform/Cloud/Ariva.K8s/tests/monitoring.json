@@ -29,7 +29,7 @@
     "deadLetters", "disk", "certificateExpiry", "ingressCertificateExpiry", "amanFeedStale", "devicesOffline", "kafkaProducerFatal",
     "consumedTopicMissing", "consumerUnconnected", "scannerSignaturesStale", "scannerNotAnswering", "queueRefused",
     "outboxBrokerStreak", "consumerHeld", "streamCheckpointStale", "devicesDegraded", "zonesDegraded", "aodbFeedStale",
-    "amanCodesUnmapped", "integrationLockout"
+    "amanCodesUnmapped", "integrationLockout", "clockUnreliable"
   ],
   "severities": ["warning", "critical"],
   "runbook": "wiki/10-Operations-Runbook.md#"

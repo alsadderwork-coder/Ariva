@@ -24,17 +24,17 @@ public sealed class TotalsAndCertificateMetricsTests
         var clock = new ManualClock(DateTimeOffset.UtcNow);
         using var metrics = new DeviceHealthMetrics(timeProvider: clock);
         using var reader = new InstrumentReader(metrics.Meter);
-        string[] totals = ["ariva.devices.monitored", "ariva.devices.offline", "ariva.devices.degraded", "ariva.zones.degraded_now"];
+        string[] totals = ["ariva.devices.monitored", "ariva.devices.offline", "ariva.devices.degraded", "ariva.zones.degraded_now", "ariva.devices.clock_unreliable"];
         totals.Should().OnlyContain(name => reader.Observe(name).Count == 0, "a host or replica that never swept reports no total, not zeros");
 
-        metrics.Snapshot(12, 3, 1, 2, TimeSpan.FromSeconds(30));
+        metrics.Snapshot(12, 3, 1, 2, 4, TimeSpan.FromSeconds(30));
 
-        totals.Select(name => reader.Observe(name).Single().Value).Should().Equal(12, 3, 1, 2);
+        totals.Select(name => reader.Observe(name).Single().Value).Should().Equal(12, 3, 1, 2, 4);
         clock.Advance(TimeSpan.FromSeconds(30));
         reader.Observe("ariva.devices.offline").Should().ContainSingle("still within two sweep intervals");
         clock.Advance(TimeSpan.FromSeconds(1));
         totals.Should().OnlyContain(name => reader.Observe(name).Count == 0, "another replica swept since: this copy is stale and is not reported");
-        metrics.Current.Should().Be((12, 3, 1, 2), "the last sweep is still known to the process");
+        metrics.Current.Should().Be((12, 3, 1, 2, 4), "the last sweep is still known to the process");
     }
 
     [Fact]

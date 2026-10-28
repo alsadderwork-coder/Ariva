@@ -31,7 +31,7 @@ While signed in:
 | Final | Everyone who joined in the bin has left or been resolved; only final bins count for SLAs |
 | `Good` | All sensors healthy, all desks known, clocks within limits |
 | `Degraded` | A sensor degraded, a desk state unknown, a feed stale, or similar. Waits are shown as a band, not a single number |
-| `Unknown` | No usable measurement (for example an entry or exit line without coverage). Screens show a neutral message |
+| `Unknown` | No usable measurement (for example an entry or exit line without coverage; Ariva does not detect an uncovered line yet, so such a zone shows `Degraded`). Screens show a neutral message |
 | No service | No staffed desk: the nowcast is undefined and screens show a neutral message, never zero or infinity |
 | Profile version (for example v12) | The zone configuration the number was computed with |
 | Desk states | `Closed` (not staffed), `Idle` (staffed, not serving), `Serving`, `Paused` (staffed but inactive for a while; does not count as open), `Unknown` (all signals silent). E-gates may also show out of service (To confirm) |

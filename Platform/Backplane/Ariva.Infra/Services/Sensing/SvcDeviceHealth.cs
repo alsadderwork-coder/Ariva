@@ -251,9 +251,18 @@ internal sealed class SvcDeviceHealth(
 
         var totals = counts.Aggregate((Monitored: 0, Offline: 0, Degraded: 0, Zones: 0), (t, c) =>
             (t.Monitored + c.Devices, t.Offline + c.Offline, t.Degraded + c.Degraded, t.Zones + (c.Offline + c.Degraded > 0 ? 1 : 0)));
+        // ARV-259a: devices heard within the heartbeat timeout whose last report says the clock is Unreliable (F19: off by
+        // more than the tolerance and unstable, so their events are flagged ClockUnreliable and not corrected). An Offline
+        // device's last clock state is old news, and the heartbeat alarm already covers it.
+        var clocks = await ExecuteSqlAsync<LockRow>("""
+            SELECT CAST(count(*) AS integer) AS "Value"
+            FROM device d JOIN device_heartbeat h ON h.device_id = d.id
+            WHERE d.deleted_on IS NULL AND d.state IN ('Online', 'Degraded') AND h.last_seen_on >= :cutoff AND h.clock_state = 'Unreliable'
+            """, new Dictionary<string, object> { ["cutoff"] = cutoff }, ct);
+        var clockUnreliable = clocks.Count > 0 ? clocks[0].Value : 0;
         // ARV-125a: reported for two sweep intervals, so only the replica that swept lately reports the totals.
-        metrics.Snapshot(totals.Monitored, totals.Offline, totals.Degraded, totals.Zones, TimeSpan.FromSeconds(2 * settings.Value.SweepSeconds));
-        return new DeviceHealthSweep(true, marked, changed, totals.Offline, totals.Degraded, totals.Zones, totals.Monitored);
+        metrics.Snapshot(totals.Monitored, totals.Offline, totals.Degraded, totals.Zones, clockUnreliable, TimeSpan.FromSeconds(2 * settings.Value.SweepSeconds));
+        return new DeviceHealthSweep(true, marked, changed, totals.Offline, totals.Degraded, totals.Zones, totals.Monitored, clockUnreliable);
     }
 
     /// <summary>

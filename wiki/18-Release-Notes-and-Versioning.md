@@ -146,6 +146,11 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-259a: the clock rule (2026-10-28)
+
+- New metric: `ariva.devices.clock_unreliable` (meter `Ariva.Devices`, no tags): devices heard within the heartbeat timeout whose clock is unreliable.
+- New rule: `clockUnreliable` (on by default, 15 minutes, Warning; wiki 10 section 4.5). Import the rules ConfigMap into SigNoz again after the upgrade (wiki 10 section 1.1).
+
 ### ARV-257 to ARV-259: per-site AMAN feed age, the queue engine's checkpoint age and new alert rules (2026-10-27)
 
 - Script 0065 adds `desk_feed_state.heartbeat_utc` (the migration job applies it); Stream fills it at its next read of each site.

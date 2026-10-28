@@ -26,4 +26,4 @@ public interface ISvcDeviceHealth : ISvcScoped
 }
 
 /// <summary>What a sweep did: devices it marked offline, zones whose health changed, and the totals after it.</summary>
-public sealed record DeviceHealthSweep(bool Ran, int MarkedOffline, int ZonesChanged, int DevicesOffline, int DevicesDegraded, int ZonesDegraded, int DevicesMonitored = 0);
+public sealed record DeviceHealthSweep(bool Ran, int MarkedOffline, int ZonesChanged, int DevicesOffline, int DevicesDegraded, int ZonesDegraded, int DevicesMonitored = 0, int DevicesClockUnreliable = 0);
