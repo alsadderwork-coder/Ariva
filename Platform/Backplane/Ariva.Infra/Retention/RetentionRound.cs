@@ -26,8 +26,10 @@ public sealed record RetentionRun(bool HeldElsewhere, IReadOnlyList<RetentionDat
 /// passes only the data set's name and the batch size, as bind parameters of constant statements (CWE-89, CWE-269). Logs name
 /// the data set, the period and counts, never a row's values (no address, route or recipient).
 /// </para>
+/// A run that ends reports its data sets that failed and those without a period (<see cref="RetentionMetrics.ProblemsName"/>,
+/// ARV-259c); a run that fails as a whole is the job's to report.
 /// </summary>
-public sealed class RetentionRound(DatabaseSettings database, RetentionJobSettings settings, ILogger<RetentionRound> logger)
+public sealed class RetentionRound(DatabaseSettings database, RetentionJobSettings settings, ILogger<RetentionRound> logger, RetentionMetrics metrics = null)
 {
     #region Constants
 
@@ -67,7 +69,9 @@ public sealed class RetentionRound(DatabaseSettings database, RetentionJobSettin
             var runs = new List<RetentionDataSetRun>();
             foreach (var dataSet in RetentionSettings.DataSetNames)
                 runs.Add(await DataSetAsync(connection, dataSet, periods.TryGetValue(dataSet, out var days) ? days : null, ct));
-            return new RetentionRun(false, runs);
+            var run = new RetentionRun(false, runs);
+            metrics?.RunFinished(run, RetentionMetrics.RunFreshFor);
+            return run;
         }
         finally
         {

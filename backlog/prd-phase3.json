@@ -1511,7 +1511,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3. Split from ARV-259a (2026-10-28). No sign-in code.",
       "dependsOn": [
         "ARV-259"

@@ -1,0 +1,86 @@
+{
+  "alert": "Ariva relational retention failed (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The last run of Cronz's relational retention job (RelationalRetention, daily) had data sets that failed or have no period, or failed as a whole (ARV-259c): alert emails, Integration API call records or report deliveries past their period are not being deleted, so the data is kept longer than agreed and the tables grow.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.retention.problems",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "outcome",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${retentionFailed.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${retentionFailed.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "outcome"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "retentionFailed",
+    "environment": "${environment}",
+    "severity": "${retentionFailed.severity}"
+  },
+  "annotations": {
+    "summary": "Relational retention: {{$outcome}}",
+    "description": "The last relational retention run reported {{$value}} for {{$outcome}} (failed: data sets whose purge failed; unset: data sets without a period; run: the run failed as a whole), held for ${retentionFailed.minutes} minutes. Rows past their period are kept until it is fixed.",
+    "runbook": "wiki/10-Operations-Runbook.md#48m-data-retention-arv-111a"
+  },
+  "disabled": false
+}

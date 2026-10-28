@@ -2472,7 +2472,10 @@ for (const [label, file, sets, message, annotation] of [
 			// ARV-259a: the devices whose clock is unreliable, a gauge of Api.Main's leader sweep like ariva.devices.degraded.
 			clockUnreliable: ['ariva.devices.clock_unreliable', 'max', 'all_the_times', '15m', 'warning', []],
 			// ARV-259b: the queue bins still provisional past their maturity, a gauge of Stream's leader sweep, per site.
-			binsOverdue: ['ariva.stream.bins_overdue', 'max', 'all_the_times', '15m', 'warning', ['site']]
+			binsOverdue: ['ariva.stream.bins_overdue', 'max', 'all_the_times', '15m', 'warning', ['site']],
+			// ARV-259c: the relational retention run's outcome by outcome, and TimescaleDB's failed policy jobs by kind (Cronz).
+			retentionFailed: ['ariva.retention.problems', 'max', 'all_the_times', '5m', 'critical', ['outcome']],
+			policyJobsFailed: ['ariva.retention.policy_jobs_failed', 'max', 'all_the_times', '30m', 'critical', ['kind']]
 		};
 		for (const [key, [metric, space, match, window, severity, groups]] of Object.entries(existing)) {
 			const rule = JSON.parse(monitoringRule(docs, `${key}.json`) || 'null');
@@ -2516,7 +2519,7 @@ for (const [label, file, sets, message, annotation] of [
 		failed = true;
 		console.error(`FAIL monitoring switches:\n  ${findings.join('\n  ')}`);
 	} else {
-		console.log('PASS monitoring switches: the border rules (AMAN feed and AMAN codes) where turned on, the rules over existing metrics (ARV-259) with the clock rule (ARV-259a) and the bin maturity rule by site (ARV-259b), and the stream checkpoint rule (ARV-258) as their values say, channels on every threshold, the release\'s environment and namespace by default and the scopes set, nothing when monitoring is off');
+		console.log('PASS monitoring switches: the border rules (AMAN feed and AMAN codes) where turned on, the rules over existing metrics (ARV-259) with the clock rule (ARV-259a) and the bin maturity rule by site (ARV-259b), the retention rules by outcome and kind (ARV-259c), and the stream checkpoint rule (ARV-258) as their values say, channels on every threshold, the release\'s environment and namespace by default and the scopes set, nothing when monitoring is off');
 	}
 }
 

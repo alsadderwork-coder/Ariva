@@ -307,6 +307,61 @@ public sealed class RetentionTests(PostgresFixture fixture)
 
     #endregion
 
+    #region Outcome metrics (ARV-259c)
+
+    [Fact]
+    public async Task RetentionRound_Should_ReportItsDataSetsThatFailedOrHaveNoPeriod_When_ItRuns()
+    {
+        (await MigrateAsync()).Should().Be(0);
+        using var metrics = new RetentionMetrics();
+        using var reader = new InstrumentReader(metrics.Meter);
+        var runtime = new DatabaseSettings { Host = fixture.Hostname, Port = fixture.Port, Name = _database, Username = RuntimeLogin, Password = RuntimePassword };
+        var round = new RetentionRound(runtime, new RetentionJobSettings { BatchSize = 100, MaxBatchesPerRun = 1 }, NullLogger<RetentionRound>.Instance, metrics);
+        Dictionary<string, double> Outcomes() => reader.Observe(RetentionMetrics.ProblemsName).ToDictionary(m => m.Tags["outcome"], m => m.Value, StringComparer.Ordinal);
+
+        await round.RunAsync(Ct);
+        Outcomes().Should().BeEquivalentTo(new Dictionary<string, double> { ["failed"] = 0, ["unset"] = 0, ["run"] = 0 });
+
+        await ExecuteAsync(Admin, "WITH gone AS (DELETE FROM retention_period WHERE data_set = 'report_delivery' RETURNING 1) SELECT count(*) FROM gone");
+        await ExecuteAsync(Admin, "REVOKE EXECUTE ON FUNCTION ariva_retention_purge(text, integer) FROM ariva_runtime");
+        try
+        {
+            await round.RunAsync(Ct);
+            Outcomes().Should().BeEquivalentTo(new Dictionary<string, double> { ["failed"] = 2, ["unset"] = 1, ["run"] = 0 },
+                "the two data sets with a period could not be purged, and the third has none");
+
+            // A replica that cannot take the lock skips the run and reports nothing new.
+            await using (var holder = new NpgsqlConnection(Admin))
+            {
+                await holder.OpenAsync(Ct);
+                await using (var hold = new NpgsqlCommand("SELECT pg_advisory_lock(52, 0)", holder))
+                    await hold.ExecuteNonQueryAsync(Ct);
+                (await round.RunAsync(Ct)).HeldElsewhere.Should().BeTrue();
+                Outcomes().Should().BeEquivalentTo(new Dictionary<string, double> { ["failed"] = 2, ["unset"] = 1, ["run"] = 0 });
+                await using var release = new NpgsqlCommand("SELECT pg_advisory_unlock(52, 0)", holder);
+                await release.ExecuteNonQueryAsync(Ct);
+            }
+
+            // A run that fails as a whole reports nothing here: the job reports it (RetentionJobsTests).
+            await ExecuteAsync(Admin, "REVOKE SELECT ON retention_period FROM ariva_runtime");
+            var failing = async () => await round.RunAsync(Ct);
+            await failing.Should().ThrowAsync<PostgresException>();
+            Outcomes().Should().BeEquivalentTo(new Dictionary<string, double> { ["failed"] = 2, ["unset"] = 1, ["run"] = 0 });
+        }
+        finally
+        {
+            // Whatever failed above, this class's other tests find the grants and the periods as the migration job left them.
+            await ExecuteAsync(Admin, "GRANT SELECT ON retention_period TO ariva_runtime; GRANT EXECUTE ON FUNCTION ariva_retention_purge(text, integer) TO ariva_runtime");
+            ClearRuntimePool(runtime);
+            await MigrateAsync();
+        }
+
+        await round.RunAsync(Ct);
+        Outcomes().Should().BeEquivalentTo(new Dictionary<string, double> { ["failed"] = 0, ["unset"] = 0, ["run"] = 0 });
+    }
+
+    #endregion
+
     #region Helpers
 
     private static void ClearRuntimePool(DatabaseSettings runtime)

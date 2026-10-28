@@ -144,7 +144,8 @@ databaseConnections:
   operators: 5
   # Sized from the pilot load run (wiki 05, ARV-232): the request paths (ingest, main) with room for the D5 burst, stream and
   # integration below their unbounded peaks (their consumers wait for a connection rather than fail), cronz for its jobs at
-  # once (the five TickerQ jobs, two of them at 03:15, with the outbox relay and the health checks). The same numbers are in
+  # once (the six TickerQ jobs, two of them at 03:15, and the TimescaleDB policy job check's one short read every tenth minute at
+  # second 0, beside the report deliveries; with the outbox relay and the health checks). The same numbers are in
   # each host's appsettings.service.json (ConnectionBudgetTests holds them together).
   poolSize:
     main: 14
@@ -533,6 +534,12 @@ monitoring:
     # finalisation fails. 15 minutes, a bin's length: a stream that lags by less finalises each bin before the next is
     # mature, so the count falls back to 0 between bins and does not page.
     binsOverdue: { enabled: true, minutes: 15, severity: warning }
+    # The last relational retention run (Cronz, daily) had data sets that failed or have no period, or failed as a whole (ARV-259c):
+    # rows past their period are kept. Held a day and two hours after the run, so 5 minutes is enough to be sure.
+    retentionFailed: { enabled: true, minutes: 5, severity: critical }
+    # TimescaleDB's retention, compression or refresh policy jobs whose last run failed, any, for the whole window (ARV-259c). 30
+    # minutes, three checks: TimescaleDB retries a failed job, and one that succeeds on its retry does not page.
+    policyJobsFailed: { enabled: true, minutes: 30, severity: critical }
     # Flight feeds stale (no message within their cadence while flights are due), any, for the whole window (ARV-259).
     aodbFeedStale: { enabled: true, minutes: 5, severity: warning }
     # AMAN records whose desk or gate code has no mapping, any in the window, per site (ARV-259). Border deployments only:

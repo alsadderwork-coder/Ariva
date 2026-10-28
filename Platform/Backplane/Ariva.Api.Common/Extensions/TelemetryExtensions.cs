@@ -47,6 +47,8 @@ public static class TelemetryExtensions
         Ariva.Infra.Streaming.StreamMetrics.MeterName,
         // The malware scanner's signature age and whether it answers (ARV-092c), Ariva.Api.Main with a scanner only.
         Ariva.Infra.Storage.UploadScanMetrics.MeterName,
+        // The relational retention run's outcome and TimescaleDB's failed policy jobs (ARV-259c), Ariva.Api.Cronz only.
+        Ariva.Infra.Retention.RetentionMetrics.MeterName,
         // Security events by kind and outcome, written or left out by the throttle (ARV-091).
         SecurityEventMetrics.MeterName
     ];

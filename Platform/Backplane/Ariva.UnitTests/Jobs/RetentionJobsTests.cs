@@ -104,4 +104,144 @@ public sealed class RetentionJobsTests
 
         await purge.Should().NotThrowAsync();
     }
+
+    [Fact]
+    public void RetentionMetrics_Should_ReportTheRunsOutcomeForADayAndTwoHours_When_ARunEnds()
+    {
+        // ARV-259c: the data sets that failed and those without a period; a run that failed as a whole replaces them.
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        using var metrics = new RetentionMetrics(timeProvider: clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        Dictionary<string, double> Outcomes() => reader.Observe(RetentionMetrics.ProblemsName).ToDictionary(m => m.Tags["outcome"], m => m.Value, StringComparer.Ordinal);
+        Outcomes().Should().BeEmpty("nothing before the first run");
+
+        metrics.RunFinished(new RetentionRun(false,
+        [
+            new RetentionDataSetRun("email_message", 30, 10, 1, true, false),
+            new RetentionDataSetRun("integration_call", 45, 0, 1, false, true),
+            new RetentionDataSetRun("report_delivery", null, 0, 0, false, false)
+        ]), RetentionMetrics.RunFreshFor);
+        clock.Advance(TimeSpan.FromHours(26));
+
+        Outcomes().Should().BeEquivalentTo(new Dictionary<string, double> { ["failed"] = 1, ["unset"] = 1, ["run"] = 0 });
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Outcomes().Should().BeEmpty("a run older than a day and two hours: the job stopped running");
+
+        metrics.RunFailed(RetentionMetrics.RunFreshFor);
+        Outcomes().Should().BeEquivalentTo(new Dictionary<string, double> { ["run"] = 1 }, "what the data sets did is not known");
+        metrics.RunFinished(new RetentionRun(false, [new RetentionDataSetRun("email_message", 30, 0, 1, true, false)]), RetentionMetrics.RunFreshFor);
+        Outcomes().Should().BeEquivalentTo(new Dictionary<string, double> { ["failed"] = 0, ["unset"] = 0, ["run"] = 0 }, "the next run replaces it");
+        RetentionMetrics.RunFreshFor.Should().Be(TimeSpan.FromHours(26));
+        FluentActions.Invoking(() => metrics.RunFinished(null, RetentionMetrics.RunFreshFor)).Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public void RetentionMetrics_Should_ReportThePolicyJobsByKindForTheirWindow_When_Checked()
+    {
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        using var metrics = new RetentionMetrics(timeProvider: clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        var kinds = new List<(string Kind, int Failed)> { (TimescalePolicyJobs.Compression, 0), (TimescalePolicyJobs.Retention, 2) };
+
+        metrics.PolicyJobs(kinds, TimescaleJobs.ReportFreshFor);
+        kinds.Add((TimescalePolicyJobs.Refresh, 5));
+        clock.Advance(TimeSpan.FromMinutes(25));
+
+        reader.Observe(RetentionMetrics.PolicyJobsFailedName).ToDictionary(m => m.Tags["kind"], m => m.Value, StringComparer.Ordinal)
+            .Should().BeEquivalentTo(new Dictionary<string, double> { ["compression"] = 0, ["retention"] = 2 }, "its own copy of the check");
+        clock.Advance(TimeSpan.FromSeconds(1));
+        reader.Observe(RetentionMetrics.PolicyJobsFailedName).Should().BeEmpty("a check that stopped reads as missing");
+        FluentActions.Invoking(() => metrics.PolicyJobs(null, TimescaleJobs.ReportFreshFor)).Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public async Task PurgeAsync_Should_ReportARunThatFailedAsAWhole_When_TheDatabaseIsOutOfReach()
+    {
+        using var metrics = new RetentionMetrics();
+        using var reader = new InstrumentReader(metrics.Meter);
+        // Nothing listens on the port: the run fails before any data set.
+        var round = new RetentionRound(new DatabaseSettings { Host = "127.0.0.1", Port = 1 }, new RetentionJobSettings(), NullLogger<RetentionRound>.Instance, metrics);
+        var job = new RetentionJobs(round, new RetentionJobSettings(), NullLogger<RetentionJobs>.Instance, metrics: metrics);
+
+        var purge = () => job.PurgeAsync(new TickerFunctionContext(), TestContext.Current.CancellationToken);
+
+        await purge.Should().ThrowAsync<Exception>("TickerQ records the failure as before");
+        reader.Observe(RetentionMetrics.ProblemsName).Should().ContainSingle()
+            .Which.Should().Match<(double Value, IReadOnlyDictionary<string, string> Tags)>(m => m.Value == 1 && m.Tags["outcome"] == "run");
+    }
+
+    [Fact]
+    public async Task PurgeAsync_Should_ReportARunThatFailedAsAWhole_When_ItRunsOutItsRunTimeout()
+    {
+        // The database accepts the connection and never answers: the run ends at its run timeout, which counts as a failed run.
+        await using var silent = new SilentServer();
+        using var metrics = new RetentionMetrics();
+        using var reader = new InstrumentReader(metrics.Meter);
+        var round = new RetentionRound(new DatabaseSettings { Host = "127.0.0.1", Port = silent.Port, ConnectTimeoutSeconds = 2 }, new RetentionJobSettings(),
+            NullLogger<RetentionRound>.Instance, metrics);
+        var job = new RetentionJobs(round, new RetentionJobSettings(), NullLogger<RetentionJobs>.Instance, metrics: metrics) { RunTimeout = TimeSpan.FromSeconds(1) };
+
+        var purge = () => job.PurgeAsync(new TickerFunctionContext(), TestContext.Current.CancellationToken);
+
+        await purge.Should().ThrowAsync<Ariva.Infra.Resilience.RunTimeoutException>();
+        reader.Observe(RetentionMetrics.ProblemsName).Should().ContainSingle()
+            .Which.Should().Match<(double Value, IReadOnlyDictionary<string, string> Tags)>(m => m.Value == 1 && m.Tags["outcome"] == "run");
+    }
+
+    [Fact]
+    public async Task PurgeAsync_Should_ReportNothing_When_TheHostStopsTheRun()
+    {
+        using var metrics = new RetentionMetrics();
+        using var reader = new InstrumentReader(metrics.Meter);
+        var round = new RetentionRound(new DatabaseSettings { Host = "127.0.0.1", Port = 1 }, new RetentionJobSettings(), NullLogger<RetentionRound>.Instance, metrics);
+        var job = new RetentionJobs(round, new RetentionJobSettings(), NullLogger<RetentionJobs>.Instance, metrics: metrics);
+        using var stopping = new CancellationTokenSource();
+        await stopping.CancelAsync();
+
+        var purge = () => job.PurgeAsync(new TickerFunctionContext(), stopping.Token);
+
+        await purge.Should().ThrowAsync<OperationCanceledException>();
+        reader.Observe(RetentionMetrics.ProblemsName).Should().BeEmpty("a stop is not a failed run");
+    }
+
+    [Fact]
+    public void PolicyJobCheck_Should_RunEveryTenMinutesWithinAMinute_When_Scheduled()
+    {
+        var function = typeof(TimescaleJobs).GetMethod(nameof(TimescaleJobs.CheckAsync)).CustomAttributes
+            .Single(a => a.AttributeType == typeof(TickerFunctionAttribute));
+
+        function.ConstructorArguments.Select(a => a.Value).Should().StartWith([TimescaleJobs.PolicyJobs, "0 */10 * * * *"]);
+        new TimescaleJobs(new TimescalePolicyJobs(new DatabaseSettings()), new RetentionMetrics(), NullLogger<TimescaleJobs>.Instance).RunTimeout.Should().Be(TimeSpan.FromMinutes(1));
+        TimescaleJobs.ReportFreshFor.Should().Be(TimeSpan.FromMinutes(25), "two checks may be missed before the copy lapses");
+    }
+
+    [Fact]
+    public void PolicyJobs_Should_ReadAtMostMaxProceduresRows_When_ItsStatementRuns()
+    {
+        TimescalePolicyJobs.Failed.TrimEnd().Should().EndWith($"LIMIT {TimescalePolicyJobs.MaxProcedures}");
+        TimescalePolicyJobs.MaxProcedures.Should().Be(20);
+    }
+
+    [Fact]
+    public async Task PolicyJobCheck_Should_ReportNothing_When_TheDatabaseIsOutOfReach()
+    {
+        using var metrics = new RetentionMetrics();
+        using var reader = new InstrumentReader(metrics.Meter);
+        var check = new TimescaleJobs(new TimescalePolicyJobs(new DatabaseSettings { Host = "127.0.0.1", Port = 1 }), metrics, NullLogger<TimescaleJobs>.Instance);
+
+        var run = () => check.CheckAsync(new TickerFunctionContext(), TestContext.Current.CancellationToken);
+
+        await run.Should().ThrowAsync<Exception>();
+        reader.Observe(RetentionMetrics.PolicyJobsFailedName).Should().BeEmpty("the database's own rule reports it");
+    }
+
+    [Fact]
+    public async Task Cronz_Should_ResolveThePolicyJobCheck_When_ItRuns()
+    {
+        await using var app = ArivaHosts.Create(ArivaHosts.Cronz);
+        await using var scope = app.Services.CreateAsyncScope();
+
+        ActivatorUtilities.CreateInstance<TimescaleJobs>(scope.ServiceProvider).Should().NotBeNull();
+        app.Services.GetRequiredService<RetentionMetrics>().Should().BeSameAs(app.Services.GetRequiredService<RetentionMetrics>());
+    }
 }

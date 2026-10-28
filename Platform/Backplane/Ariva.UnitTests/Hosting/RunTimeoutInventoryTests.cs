@@ -121,7 +121,7 @@ public sealed class RunTimeoutInventoryTests
         await using var app = ArivaHosts.Create(ArivaHosts.Cronz);
         await using var scope = app.Services.CreateAsyncScope();
 
-        JobTypes().Select(t => t.Name).Should().BeEquivalentTo(["AvailabilityJobs", "ReportJobs", "RetentionJobs", "SecretJobs", "StaffingJobs"]);
+        JobTypes().Select(t => t.Name).Should().BeEquivalentTo(["AvailabilityJobs", "ReportJobs", "RetentionJobs", "SecretJobs", "StaffingJobs", "TimescaleJobs"]);
         foreach (var type in JobTypes())
         {
             var job = ActivatorUtilities.CreateInstance(scope.ServiceProvider, type);

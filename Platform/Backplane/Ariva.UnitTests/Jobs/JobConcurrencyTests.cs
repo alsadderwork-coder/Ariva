@@ -22,7 +22,8 @@ public sealed class JobConcurrencyTests
         [ReportJobs.Deliveries] = "preparation under a transaction advisory lock (skipped when held), deliveries unique per schedule, day and recipient; each delivery claimed FOR UPDATE SKIP LOCKED with its status checked again, so a sent one is never sent again; a failed one may be tried by both copies, within MaxAttempts",
         [StaffingJobs.Recommendations] = "site advisory lock (class 51), skipped when held; lane minutes inserted ON CONFLICT DO NOTHING",
         [RetentionJobs.Purge] = "session advisory lock (class 52), skipped when held",
-        [SecretJobs.Reprotect] = "compare-and-swap UPDATE of each value under an older key"
+        [SecretJobs.Reprotect] = "compare-and-swap UPDATE of each value under an older key",
+        [TimescaleJobs.PolicyJobs] = "reads only; each check's report replaces the last, so two copies report the same counts"
     };
 
     [Fact]

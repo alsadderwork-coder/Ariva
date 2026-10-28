@@ -146,6 +146,11 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-259c: the retention rules (2026-10-28)
+
+- New metrics (meter `Ariva.Retention`, Cronz): `ariva.retention.problems` by `outcome` (the last relational retention run: data sets failed, without a period, or the run failed as a whole) and `ariva.retention.policy_jobs_failed` by `kind` (TimescaleDB's retention, compression and refresh jobs whose last run failed), the latter from a new TickerQ function `TimescalePolicyJobs` every 10 minutes. No script and no grant: the runtime login reads `timescaledb_information.job_stats` as it is.
+- New rules: `retentionFailed` (5 minutes) and `policyJobsFailed` (30 minutes), both on by default and Critical (wiki 10 section 4.8m). Import the rules ConfigMap into SigNoz again after the upgrade (wiki 10 section 1.1).
+
 ### ARV-259b: the bin maturity rule (2026-10-28)
 
 - New metric: `ariva.stream.bins_overdue` (meter `Ariva.Stream`, by `site`): queue bins still provisional past their maturity, from a sweep Stream runs whenever `Stream:Enabled` is on (lock class 53; new settings `Stream:BinMaturitySweepSeconds`, 60, and `Stream:BinMaturityLookbackHours`, 24).

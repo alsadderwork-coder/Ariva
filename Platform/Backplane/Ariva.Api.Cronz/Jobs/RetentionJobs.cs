@@ -14,9 +14,11 @@ namespace Ariva.Api.Cronz.Jobs;
 /// on integration_call).
 /// TimescaleDB drops old hypertable chunks itself (its retention policies, also set by the migration job).
 /// A run ends at <see cref="RunTimeout"/> (ARV-096e): the batches it deleted stay deleted, and the next day's run takes the rest.
+/// The run's outcome is reported as <see cref="RetentionMetrics.ProblemsName"/> (ARV-259c): the round reports the data sets that
+/// failed or have no period, and this job a run that failed as a whole.
 /// </summary>
-public sealed class RetentionJobs(RetentionRound round, RetentionJobSettings settings, ILogger<RetentionJobs> logger, TimeProvider timeProvider = null)
-    : IBoundedRuns
+public sealed class RetentionJobs(RetentionRound round, RetentionJobSettings settings, ILogger<RetentionJobs> logger, TimeProvider timeProvider = null,
+    RetentionMetrics metrics = null) : IBoundedRuns
 {
     /// <summary>The function name the dashboard shows and runs.</summary>
     public const string Purge = "RelationalRetention";
@@ -33,7 +35,18 @@ public sealed class RetentionJobs(RetentionRound round, RetentionJobSettings set
         ArgumentNullException.ThrowIfNull(context);
         if (!settings.Enabled)
             return;
-        var run = await RunBound.RunAsync(Purge, RunTimeout, timeProvider ?? TimeProvider.System, round.RunAsync, ct);
+        RetentionRun run;
+        try
+        {
+            run = await RunBound.RunAsync(Purge, RunTimeout, timeProvider ?? TimeProvider.System, round.RunAsync, ct);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            // ARV-259c: the database out of reach or the run timeout; TickerQ records the failure as before.
+            metrics?.RunFailed(RetentionMetrics.RunFreshFor);
+            throw;
+        }
+
         if (run.HeldElsewhere)
         {
             logger.LogInformation("Retention ({Type}): another replica is running it; skipped", context.Type);
@@ -49,7 +62,7 @@ public sealed class RetentionJobs(RetentionRound round, RetentionJobSettings set
     }
 }
 
-/// <summary>Registers the retention job's settings (<c>Cronz:Retention</c>, checked at start) and its round.</summary>
+/// <summary>Registers the retention job's settings (<c>Cronz:Retention</c>, checked at start), its round, its metrics and the policy job check.</summary>
 public static class RetentionJobsRegistration
 {
     public static IServiceCollection AddArivaRetentionJob(this IServiceCollection services, IConfiguration configuration)
@@ -62,6 +75,9 @@ public static class RetentionJobsRegistration
             throw new InvalidOperationException(string.Join(" ", problems));
         services.TryAddSingleton(settings);
         services.TryAddSingleton<RetentionRound>();
+        // ARV-259c: the outcome of the retention run and TimescaleDB's policy jobs (TimescaleJobs).
+        services.TryAddSingleton<RetentionMetrics>();
+        services.TryAddSingleton<TimescalePolicyJobs>();
         return services;
     }
 }

@@ -141,14 +141,18 @@ public sealed class BinMaturityTests
     [Fact]
     public async Task Monitor_Should_ReportNothing_When_ItStops()
     {
-        // The database refuses at once (port 9): the sweep fails, logs and waits; stopping ends the copy it last reported.
+        // The database refuses at once (port 9): the sweep fails, logs and waits; stopping ends the copy it last reported. The
+        // stop waits for the first sweep's error: the host may start ExecuteAsync on the thread pool, and a stop before it began
+        // would end a loop that never ran (a story gate saw it), which has reported nothing to clear.
         using var metrics = new StreamMetrics();
         using var reader = new InstrumentReader(metrics.Meter);
+        var log = new FirstError();
         var monitor = new BinMaturityMonitor(new StreamStore(new DatabaseSettings { Host = "127.0.0.1", Port = 9 }, TimeProvider.System, NullLogger<StreamStore>.Instance),
-            new StreamSettings { Enabled = true }, metrics, TimeProvider.System, NullLogger<BinMaturityMonitor>.Instance);
+            new StreamSettings { Enabled = true }, metrics, TimeProvider.System, log);
         metrics.OverdueBins([("DMO", 2)], TimeSpan.FromMinutes(2));
 
         await monitor.StartAsync(TestContext.Current.CancellationToken);
+        await log.Logged.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         reader.Observe(StreamMetrics.BinsOverdueName).Should().ContainSingle("a failed sweep changes nothing");
         await monitor.StopAsync(TestContext.Current.CancellationToken);
 
@@ -173,6 +177,23 @@ public sealed class BinMaturityTests
         var hosted = services.Where(d => d.ServiceType == typeof(IHostedService)).Select(d => d.ImplementationType).ToList();
         hosted.Contains(typeof(BinMaturityMonitor)).Should().Be(sweep, "the sweep reads the stored bins and needs no Kafka");
         hosted.Contains(typeof(QueueStreamWorker)).Should().Be(worker);
+    }
+
+    /// <summary>Completes when the monitor logs its first error (a failed sweep).</summary>
+    private sealed class FirstError : Microsoft.Extensions.Logging.ILogger<BinMaturityMonitor>
+    {
+        public TaskCompletionSource Logged { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception exception,
+            Func<TState, Exception, string> formatter)
+        {
+            if (logLevel == Microsoft.Extensions.Logging.LogLevel.Error)
+                Logged.TrySetResult();
+        }
     }
 
     private static BinMaturityMonitor Monitor(StreamSettings settings, ZoneProcessorSettings zoneSettings = null) =>

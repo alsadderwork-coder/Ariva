@@ -1,0 +1,86 @@
+{
+  "alert": "Ariva TimescaleDB policy jobs failed (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "TimescaleDB's own policy jobs whose last run failed, by kind (retention, compression, refresh), for the whole window (ARV-259c): old chunks are not dropped (retention), raw data is not compressed (compression) or the 15-minute aggregates fall behind (refresh), so the database grows or the reports read stale aggregates.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.retention.policy_jobs_failed",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "kind",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${policyJobsFailed.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${policyJobsFailed.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "kind"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "policyJobsFailed",
+    "environment": "${environment}",
+    "severity": "${policyJobsFailed.severity}"
+  },
+  "annotations": {
+    "summary": "TimescaleDB {{$kind}} jobs failed",
+    "description": "{{$value}} TimescaleDB {{$kind}} policy jobs have had a failed last run for ${policyJobsFailed.minutes} minutes. timescaledb_information.job_stats names them; the database log says why.",
+    "runbook": "wiki/10-Operations-Runbook.md#48m-data-retention-arv-111a"
+  },
+  "disabled": false
+}

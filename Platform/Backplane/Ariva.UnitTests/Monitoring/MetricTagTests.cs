@@ -8,6 +8,7 @@ using Ariva.Infra.Flights;
 using Ariva.Infra.Messaging.Kafka;
 using Ariva.Infra.Messaging.Outbox;
 using Ariva.Infra.Monitoring;
+using Ariva.Infra.Retention;
 using Ariva.Infra.Sensing;
 using Ariva.Infra.Services.Integration;
 using Ariva.Infra.Storage;
@@ -117,6 +118,12 @@ public sealed partial class MetricTagTests
             ((StreamMetrics)m).Refused("AUH-TA", nameof(Ariva.Core.Queueing.QueueRejections.BufferFull), 3);
             ((StreamMetrics)m).Checkpointed("ariva-stream.queue-engine");
             ((StreamMetrics)m).OverdueBins([("DMO", 2)], TimeSpan.FromMinutes(1));
+        },
+        [typeof(RetentionMetrics)] = m =>
+        {
+            var retention = (RetentionMetrics)m;
+            retention.RunFinished(new RetentionRun(false, [new RetentionDataSetRun("email_message", 30, 0, 1, false, true), new RetentionDataSetRun("report_delivery", null, 0, 0, false, false)]), TimeSpan.FromHours(1));
+            retention.PolicyJobs([(TimescalePolicyJobs.Compression, 0), (TimescalePolicyJobs.Refresh, 0), (TimescalePolicyJobs.Retention, 1)], TimeSpan.FromMinutes(1));
         },
         [typeof(UploadScanMetrics)] = m => ((UploadScanMetrics)m).Report(
             new Ariva.Core.Services.Storage.MalwareSignatures("1.4.3", 27927, DateTime.UtcNow.AddHours(-3)), TimeSpan.FromMinutes(30)),
