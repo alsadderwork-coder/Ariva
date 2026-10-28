@@ -15,7 +15,9 @@ namespace Ariva.Infra.Streaming;
 /// seconds since this instance's queue engine last wrote everything it owed (a checkpoint, or nothing to write), tagged with the
 /// consumer <c>group</c>: a checkpoint that keeps failing while the database answers (a statement timeout, a lock wait, a
 /// zone's state above its bound) makes it grow, which the lag cannot show once reading pauses. Reported from the worker's
-/// start until it stops.
+/// start until it stops. <see cref="BinsOverdueName"/> (ARV-259b) is the queue bins still provisional past their maturity, by
+/// <c>site</c>, from the last bin maturity sweep: only the replica that won the sweep's lock computes it, and reports it for two
+/// sweep intervals, so a dashboard takes the largest copy of each site, never the sum.
 /// </summary>
 public sealed class StreamMetrics : IDisposable
 {
@@ -23,6 +25,7 @@ public sealed class StreamMetrics : IDisposable
     public const string ConsumerLagName = "ariva.stream.consumer_lag";
     public const string QueueRefusedName = "ariva.stream.queue_refused";
     public const string CheckpointAgeName = "ariva.stream.checkpoint_age_seconds";
+    public const string BinsOverdueName = "ariva.stream.bins_overdue";
 
     #region Fields
 
@@ -31,12 +34,15 @@ public sealed class StreamMetrics : IDisposable
     private readonly TimeProvider _time;
     private volatile Snapshot _last;
     private volatile CheckpointState _checkpoint;
+    private volatile OverdueState _overdue;
 
     #endregion
 
     private sealed record Snapshot(string Group, IReadOnlyList<(string Topic, long Lag)> Lags, DateTimeOffset At, TimeSpan FreshFor);
 
     private sealed record CheckpointState(string Group, DateTimeOffset At);
+
+    private sealed record OverdueState(IReadOnlyList<(string Site, int Count)> Sites, DateTimeOffset At, TimeSpan FreshFor);
 
     #region Constructors
 
@@ -50,6 +56,8 @@ public sealed class StreamMetrics : IDisposable
             description: "Events a zone's queue engine refused or applied early, by kind and site");
         _meter.CreateObservableGauge(CheckpointAgeName, ObserveCheckpointAge, unit: "s",
             description: "Seconds since this Stream instance's queue engine last wrote everything it owed (a checkpoint, or nothing to write)");
+        _meter.CreateObservableGauge(BinsOverdueName, ObserveOverdue, unit: "{bin}",
+            description: "Queue bins still provisional past their maturity (bin end, the censoring timeout and the lateness), by site, at the last bin maturity sweep");
     }
 
     #endregion
@@ -88,12 +96,25 @@ public sealed class StreamMetrics : IDisposable
         _checkpoint = new CheckpointState(group, _time.GetUtcNow());
     }
 
-    /// <summary>Nothing more to report (the worker stopped).</summary>
+    /// <summary>
+    /// ARV-259b: the sites with queue bins still provisional past their maturity and their counts, from a bin maturity sweep
+    /// this replica just ran, reported for <paramref name="freshFor"/> (two sweep intervals). A site left out has none.
+    /// </summary>
+    public void OverdueBins(IReadOnlyList<(string Site, int Count)> sites, TimeSpan freshFor)
+    {
+        ArgumentNullException.ThrowIfNull(sites);
+        _overdue = new OverdueState([.. sites], _time.GetUtcNow(), freshFor);
+    }
+
+    /// <summary>Nothing more to report from the queue engine (the worker stopped); the bin maturity sweep's copy is its own.</summary>
     public void Clear()
     {
         _last = null;
         _checkpoint = null;
     }
+
+    /// <summary>Nothing more to report from the bin maturity sweep (it stopped).</summary>
+    public void ClearOverdueBins() => _overdue = null;
 
     /// <summary>
     /// The lag per topic of the given partitions: the high watermark less the next offset to read, at least 0, summed over
@@ -121,6 +142,14 @@ public sealed class StreamMetrics : IDisposable
             return [];
         return last.Lags.Select(l => new Measurement<long>(l.Lag, new KeyValuePair<string, object>("topic", l.Topic),
             new KeyValuePair<string, object>("group", last.Group)));
+    }
+
+    private IEnumerable<Measurement<int>> ObserveOverdue()
+    {
+        var overdue = _overdue;
+        if (overdue is null || _time.GetUtcNow() - overdue.At > overdue.FreshFor)
+            return [];
+        return overdue.Sites.Select(s => new Measurement<int>(s.Count, new KeyValuePair<string, object>("site", s.Site)));
     }
 
     private IEnumerable<Measurement<double>> ObserveCheckpointAge()

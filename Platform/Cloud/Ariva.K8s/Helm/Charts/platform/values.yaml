@@ -528,6 +528,11 @@ monitoring:
     # F19), any, for the whole window (ARV-259a): their events are not corrected and their zones' numbers are flagged. 15
     # minutes, so a clock that settles within a few pushes does not page.
     clockUnreliable: { enabled: true, minutes: 15, severity: warning }
+    # Queue bins still provisional past their maturity (bin end, the censoring timeout and the longest lateness of any site),
+    # any at a site, for the whole window (ARV-259b): the stream's watermark does not move, a queue worker stopped or lags, or
+    # finalisation fails. 15 minutes, a bin's length: a stream that lags by less finalises each bin before the next is
+    # mature, so the count falls back to 0 between bins and does not page.
+    binsOverdue: { enabled: true, minutes: 15, severity: warning }
     # Flight feeds stale (no message within their cadence while flights are due), any, for the whole window (ARV-259).
     aodbFeedStale: { enabled: true, minutes: 5, severity: warning }
     # AMAN records whose desk or gate code has no mapping, any in the window, per site (ARV-259). Border deployments only:

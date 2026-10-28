@@ -11,8 +11,8 @@ namespace Ariva.Di.Extensions;
 public static class StreamExtensions
 {
     /// <summary>
-    /// Registers the stream store, the geometry source and, when <c>Stream:Enabled</c> and Kafka are on, the queue stream
-    /// worker. Call after <c>RegisterArivaServices</c> with <see cref="StreamQueueZones"/> in its messaging builder.
+    /// Registers the stream store, the geometry source, when <c>Stream:Enabled</c> the bin maturity sweep (ARV-259b) and, when
+    /// Kafka is on too, the queue stream worker. Call after <c>RegisterArivaServices</c> with <see cref="StreamQueueZones"/> in its messaging builder.
     /// </summary>
     public static IServiceCollection AddArivaQueueStream(this IServiceCollection services, IConfiguration configuration)
     {
@@ -34,6 +34,10 @@ public static class StreamExtensions
         var kafka = configuration.GetSection(KafkaSettings.SectionName).Get<KafkaSettings>() ?? new KafkaSettings();
         if (settings.Enabled && kafka.Enabled)
             services.AddHostedService<QueueStreamWorker>();
+        // ARV-259b: the bin maturity sweep reads the stored bins, so it needs the database only, not Kafka: it also sees a
+        // Stream whose workers stopped.
+        if (settings.Enabled)
+            services.AddHostedService<BinMaturityMonitor>();
         return services;
     }
 

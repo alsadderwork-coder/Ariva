@@ -1,0 +1,86 @@
+{
+  "alert": "Ariva queue bins not finalised (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "Queue bins still provisional past their maturity (their end, the censoring timeout of 120 minutes and the longest lateness of any site) at a site, for the whole window (ARV-259b): the stream's watermark does not move, a queue worker stopped or lags, or finalisation fails, so the site's final bin results (reports, SLA, staffing) are late.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.stream.bins_overdue",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "site",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${binsOverdue.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${binsOverdue.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "site"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "binsOverdue",
+    "environment": "${environment}",
+    "severity": "${binsOverdue.severity}"
+  },
+  "annotations": {
+    "summary": "Queue bins not finalised at site {{$site}}",
+    "description": "{{$value}} queue bins of site {{$site}} have stayed provisional past their maturity for ${binsOverdue.minutes} minutes: the site's final results are late. Check the queue stream worker (its consumer lag and checkpoint age) and the zones' snapshots.",
+    "runbook": "wiki/10-Operations-Runbook.md#45c-queue-bins-not-finalised-arv-259b"
+  },
+  "disabled": false
+}

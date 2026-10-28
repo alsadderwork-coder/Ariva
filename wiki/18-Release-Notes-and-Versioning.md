@@ -146,6 +146,11 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-259b: the bin maturity rule (2026-10-28)
+
+- New metric: `ariva.stream.bins_overdue` (meter `Ariva.Stream`, by `site`): queue bins still provisional past their maturity, from a sweep Stream runs whenever `Stream:Enabled` is on (lock class 53; new settings `Stream:BinMaturitySweepSeconds`, 60, and `Stream:BinMaturityLookbackHours`, 24).
+- New rule: `binsOverdue` (on by default, 15 minutes, Warning; wiki 10 section 4.5c). Import the rules ConfigMap into SigNoz again after the upgrade (wiki 10 section 1.1). The bins a zone left open when its snapshot was refused stay counted, and the rule firing, until they leave the look-back (about 26 hours at the defaults; nothing writes them Final today, wiki 10 section 4.5c); a zone that moved to a newer profile version is not counted for the bins of the old one, nor a zone taken out of the published profile.
+
 ### ARV-259a: the clock rule (2026-10-28)
 
 - New metric: `ariva.devices.clock_unreliable` (meter `Ariva.Devices`, no tags): devices heard within the heartbeat timeout whose clock is unreliable.

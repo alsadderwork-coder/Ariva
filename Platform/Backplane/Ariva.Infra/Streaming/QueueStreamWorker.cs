@@ -58,6 +58,24 @@ public sealed class StreamSettings
     /// </summary>
     public int PushIntervalSeconds { get; init; } = 60;
 
+    /// <summary>
+    /// How often the bin maturity sweep runs, in seconds (ARV-259b): one Stream replica a round counts the queue bins still
+    /// provisional past their maturity. 60 by default, from 10 to 3,600.
+    /// </summary>
+    public int BinMaturitySweepSeconds { get; init; } = 60;
+
+    /// <summary>
+    /// How far back the bin maturity sweep reads, in hours (ARV-259b): bins that started earlier are not counted, which bounds
+    /// its read to the newest chunks. 24 by default, from 1 to 168.
+    /// </summary>
+    public int BinMaturityLookbackHours { get; init; } = 24;
+
+    /// <summary>
+    /// The longest lateness any site runs under (ARV-259b): the default or a site's own, whichever is larger. The bin maturity
+    /// sweep counts a bin from its end plus the censoring timeout plus this, so no site's bin is counted before it is mature.
+    /// </summary>
+    public int MaxLatenessSeconds => Math.Max(LatenessSeconds, (Sites ?? []).Values.Select(s => s?.LatenessSeconds ?? 0).DefaultIfEmpty(0).Max());
+
     /// <summary>A site's own lateness and push interval, by site code (either may be left out); at most 500 sites.</summary>
     public Dictionary<string, StreamSiteSettings> Sites { get; init; } = new(StringComparer.Ordinal);
 
@@ -123,6 +141,10 @@ public sealed class StreamSettings
             yield return "Stream:MaxMergeBytes is from 1 MB to 1 GB.";
         if (DeskTermSeconds is < 0 or > 600)
             yield return "Stream:DeskTermSeconds is from 0 (off) to 600.";
+        if (BinMaturitySweepSeconds is < 10 or > 3_600)
+            yield return "Stream:BinMaturitySweepSeconds is from 10 to 3,600.";
+        if (BinMaturityLookbackHours is < 1 or > 168)
+            yield return "Stream:BinMaturityLookbackHours is from 1 to 168.";
         foreach (var problem in TimingProblems("Stream", LatenessSeconds, PushIntervalSeconds))
             yield return problem;
         if ((Sites?.Count ?? 0) > MaxSites)

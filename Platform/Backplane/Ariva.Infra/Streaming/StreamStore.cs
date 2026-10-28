@@ -42,6 +42,72 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
     /// <summary>A zone snapshot larger than this is refused (CWE-120): a corrupt or hostile state is not loaded.</summary>
     public const int MaxStateBytes = 64 * 1024 * 1024;
 
+    /// <summary>
+    /// The advisory lock class of the bin maturity sweep (two-key form, ARV-259b; 25, 26, 36, 37, 38, 41, 42, 49 to 52, 141, 145,
+    /// 1421, 1431, 1432 and 1441 are taken).
+    /// </summary>
+    public const int BinMaturityLockClass = 53;
+
+    /// <summary>The sites the bin maturity sweep reports at most (the most overdue first).</summary>
+    public const int MaxOverdueSites = 100;
+
+    /// <summary>
+    /// ARV-259b: under the bin maturity sweep's lock (one Stream replica a round; null when another holds it), the sites whose
+    /// latest queue bin revision is still Provisional though the bin ended before <paramref name="matureBefore"/>, among the bins
+    /// that started from <paramref name="since"/>, with their counts: at most <see cref="MaxOverdueSites"/>, the most overdue
+    /// first. A queue zone's key is its site code and its name (<c>site/zone</c>). Two kinds of bin stay Provisional by design,
+    /// not because the stream is stuck, and are left out: a bin of a zone that has since written a bin under a newer profile
+    /// version (the zone started afresh under that version and no longer holds it), and a bin of a zone that is not a queue zone
+    /// of its site's published profile (taken out of it, or the site has none: its events are skipped).
+    /// </summary>
+    public async Task<IReadOnlyList<(string Site, int Count)>> CountOverdueBinsAsync(DateTime since, DateTime matureBefore, CancellationToken ct)
+    {
+        // Bound as timestamptz: a time of another kind would be read in the server's zone.
+        if (since.Kind != DateTimeKind.Utc || matureBefore.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("The bin maturity sweep's times are UTC.");
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
+        await connection.OpenAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await using (var claim = new NpgsqlCommand("SELECT pg_try_advisory_xact_lock(53, 0)", connection, transaction))
+        {
+            if (await claim.ExecuteScalarAsync(ct) is not true)
+                return null;
+        }
+
+        await using var command = new NpgsqlCommand("""
+            SELECT split_part(zone_key, '/', 1) AS site, CAST(count(*) AS integer) AS bins
+            FROM (
+                SELECT DISTINCT ON (zone_key, start_utc) zone_key, start_utc, length_minutes, status, profile_version
+                FROM queue_bin
+                WHERE start_utc >= @since AND start_utc < @matureBefore
+                ORDER BY zone_key, start_utc, revision DESC
+            ) latest
+            WHERE status = 'Provisional' AND start_utc + make_interval(mins => length_minutes) < @matureBefore
+              AND NOT EXISTS (
+                  SELECT 1 FROM queue_bin moved
+                  WHERE moved.zone_key = latest.zone_key AND moved.start_utc >= @since AND moved.start_utc >= latest.start_utc
+                    AND moved.profile_version > latest.profile_version)
+              AND EXISTS (
+                  SELECT 1 FROM zone_profile p JOIN zone z ON z.profile_id = p.id
+                  WHERE p.site_code = split_part(latest.zone_key, '/', 1) AND p.status = 'Published' AND z.kind = 'Queue'
+                    AND z.name = substr(latest.zone_key, length(split_part(latest.zone_key, '/', 1)) + 2))
+            GROUP BY 1
+            ORDER BY 2 DESC, 1
+            LIMIT 100
+            """, connection, transaction);
+        command.Parameters.AddWithValue("since", since);
+        command.Parameters.AddWithValue("matureBefore", matureBefore);
+        var sites = new List<(string Site, int Count)>();
+        await using (var reader = await command.ExecuteReaderAsync(ct))
+        {
+            while (await reader.ReadAsync(ct))
+                sites.Add((reader.GetString(0), reader.GetInt32(1)));
+        }
+
+        await transaction.CommitAsync(ct);
+        return sites;
+    }
+
     public async Task SaveAsync(StreamCheckpoint checkpoint, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(checkpoint);

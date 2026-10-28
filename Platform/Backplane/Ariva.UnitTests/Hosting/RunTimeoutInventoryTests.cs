@@ -50,7 +50,7 @@ public sealed class RunTimeoutInventoryTests
     private static readonly IReadOnlyDictionary<string, string[]> BoundedLoops = new Dictionary<string, string[]>
     {
         [ArivaHosts.Main] = ["DeviceHeartbeatMonitor", "ValidationResultsFreezer", "ScannerSignatureMonitor"],
-        [ArivaHosts.Stream] = ["AlertEvaluationWorker", "DeskFeedWorker"],
+        [ArivaHosts.Stream] = ["AlertEvaluationWorker", "DeskFeedWorker", "BinMaturityMonitor"],
         [ArivaHosts.Integration] = ["IdempotencySweeper", "AcrisPoller", "AmanPoller", "FeedFreshnessMonitor", "EmailSenderWorker"],
         [ArivaHosts.Ingest] = [],
         [ArivaHosts.Cronz] = []
@@ -60,9 +60,13 @@ public sealed class RunTimeoutInventoryTests
 
     private static bool IsAriva(Type type) => type.Assembly.GetName().Name?.StartsWith("Ariva.", StringComparison.Ordinal) == true;
 
-    /// <summary>Turns on the loops a test host leaves off by default: the scanner's signature check needs a scanner named.</summary>
+    /// <summary>
+    /// Turns on the loops a test host leaves off by default: the scanner's signature check needs a scanner named, and Stream's
+    /// bin maturity sweep <c>Stream:Enabled</c> (on in Stream's own service settings, which the shared test output does not hold).
+    /// </summary>
     private static Action<IWebHostBuilder> WithOptionalLoops(int scannerPort) => builder =>
     {
+        builder.UseSetting("Stream:Enabled", "true");
         builder.UseSetting("MalwareScan:Host", "127.0.0.1");
         builder.UseSetting("MalwareScan:Port", scannerPort.ToString(System.Globalization.CultureInfo.InvariantCulture));
     };

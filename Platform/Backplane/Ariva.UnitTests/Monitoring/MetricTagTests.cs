@@ -116,6 +116,7 @@ public sealed partial class MetricTagTests
             ((StreamMetrics)m).Report("ariva-stream.queue-engine", new Dictionary<string, long> { [KafkaTopics.DeviceZoneOccupancy] = 5 }, TimeSpan.FromMinutes(1));
             ((StreamMetrics)m).Refused("AUH-TA", nameof(Ariva.Core.Queueing.QueueRejections.BufferFull), 3);
             ((StreamMetrics)m).Checkpointed("ariva-stream.queue-engine");
+            ((StreamMetrics)m).OverdueBins([("DMO", 2)], TimeSpan.FromMinutes(1));
         },
         [typeof(UploadScanMetrics)] = m => ((UploadScanMetrics)m).Report(
             new Ariva.Core.Services.Storage.MalwareSignatures("1.4.3", 27927, DateTime.UtcNow.AddHours(-3)), TimeSpan.FromMinutes(30)),
