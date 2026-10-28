@@ -1691,7 +1691,7 @@
         "docs and wiki pages affected by the change are updated (wiki 10 relay entries and the outboxBrokerStreak rule; node scripts/verify.mjs docs passes)"
       ],
       "priority": 314,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Filed 2026-10-28 by ARV-269 from its security review (advice 5). No sign-in code.",
       "dependsOn": [
         "ARV-269"

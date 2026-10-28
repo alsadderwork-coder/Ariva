@@ -490,7 +490,9 @@ monitoring:
     # The oldest unsent outbox row older than minutes.
     outboxBacklog: { enabled: true, minutes: 5, severity: critical }
     # An outbox row whose sends failed with the broker unavailable for Kafka:Outbox:BrokerStreakMinutes without a break
-    # (ARV-245), in the window: a partition of its topic may have no leader while the brokers answer.
+    # (ARV-245), in the window: a partition of its topic may have no leader while the brokers answer, the pod's producer
+    # queue stayed full, or its sends ran past their bound or got no delivery report; the relay's Error names the cause
+    # (ARV-270).
     outboxBrokerStreak: { enabled: true, minutes: 15, severity: warning }
     # Any dead letter (sent, kept or failed) in the window.
     deadLetters: { enabled: true, minutes: 15, severity: warning }

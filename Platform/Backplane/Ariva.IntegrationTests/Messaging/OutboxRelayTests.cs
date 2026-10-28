@@ -678,8 +678,8 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         var topic = KafkaTopics.DeadLetter(KafkaTopics.SlaDisputeChanged);
         var transport = new RecordingTransport
         {
-            ProducerGoneFor = topic,
-            ProducerGone = failure switch
+            FailFor = topic,
+            Failure = failure switch
             {
                 "disposed" => () => new ObjectDisposedException(nameof(KafkaProduce)),
                 "destroyed" => () => new Confluent.Kafka.KafkaException(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_Destroy,
@@ -701,7 +701,7 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
 
         // The next pass of this relay (its own holds) sends the topic's other letter and the other topic's at once; another
         // relay (the rows) sends the failed letter after its broker retry.
-        transport.ProducerGoneFor = null;
+        transport.FailFor = null;
         (await relay.RunOnceAsync(Ct)).Should().Be(new RelayPass(true, 2, 2, 0, 0), "nothing of the topic is held");
         transport.Sent.Skip(2).Select(m => m.Topic).Should().Equal(topic, KafkaTopics.DeadLetter(KafkaTopics.AlertStateChanged));
         _host.Clock.Advance(BrokerRetry + TimeSpan.FromSeconds(1));
@@ -919,7 +919,7 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
     {
         await ResetAsync();
         await WriteAsync(true, Probe("P", 1));
-        var transport = new RecordingTransport { ProducerGoneFor = KafkaTopics.AlertStateChanged, ProducerGone = ProducersOwn(failure) };
+        var transport = new RecordingTransport { FailFor = KafkaTopics.AlertStateChanged, Failure = ProducersOwn(failure) };
         var log = new RelayLog();
         using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
         using var reader = new InstrumentReader(metrics.Meter);
@@ -940,7 +940,7 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message")).Should().Be(0, "not the row's failure (ARV-165)");
 
         // The recreated client sends it.
-        transport.ProducerGoneFor = null;
+        transport.FailFor = null;
         (await relay.RunOnceAsync(Ct)).Sent.Should().Be(1);
     }
 
@@ -964,7 +964,7 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1, "the broker's absence starts the row's streak");
         relay.BrokerStreaksFollowed.Should().Be(1);
         _host.Clock.Advance(BrokerRetry);
-        (transport.BrokerDownFor, transport.ProducerGoneFor, transport.ProducerGone) = (null, KafkaTopics.AlertStateChanged, ProducersOwn("destroyed"));
+        (transport.BrokerDownFor, transport.FailFor, transport.Failure) = (null, KafkaTopics.AlertStateChanged, ProducersOwn("destroyed"));
         for (var pass = 0; pass < 13; pass++)
         {
             (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
@@ -972,7 +972,7 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         }
 
         relay.BrokerStreaksFollowed.Should().Be(0, "the producer's failure ended the streak");
-        (transport.BrokerDownFor, transport.ProducerGoneFor) = (KafkaTopics.AlertStateChanged, null);
+        (transport.BrokerDownFor, transport.FailFor) = (KafkaTopics.AlertStateChanged, null);
         (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
 
         log.Errors.Should().BeEmpty("70 seconds since the first broker failure, but the producer's 65 broke the streak");
@@ -987,6 +987,72 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
 
         log.Errors.Should().ContainSingle().Which.Should().Contain("for 1 minutes without a break");
         reader.Sum(OutboxMetrics.BrokerStreaksName).Should().Be(1);
+    }
+
+    /// <summary>
+    /// ARV-270: a broker streak's Error names its last failure's cause, and points at a partition without a leader only for the
+    /// client's message timeout. A full producer queue (not the row's failure, so no attempt, and no topic hold) lasting the
+    /// minute is reported as the queue; a partition without a leader as the partition, the topic held between tries; the
+    /// producer's own bound and the relay pass's bound each as what they are; a missing delivery report (the producer's sweep)
+    /// as the brokers not reached; another timeout (here the test transport's) as a send not answered within its bound.
+    /// </summary>
+    [Theory]
+    [InlineData("queue full", "Local_QueueFull", "this host's producer queue was full")]
+    [InlineData("leaderless", "Local_MsgTimedOut", "the topic's partition may have no leader")]
+    [InlineData("producer bound", "KafkaProduceTimeoutException", "the producer did not report the send within its bound")]
+    [InlineData("pass bound", "OutboxPassTimeoutException", "the relay pass's bound cut the send before the client reported")]
+    [InlineData("no report", "Local_TimedOut", "the brokers were not reached or did not take it")]
+    [InlineData("broker down", "TimeoutException", "the send was not answered within its bound")]
+    public async Task Relay_Should_NameTheStreaksCause_When_ARowFailsForTheMinute(string failure, string code, string hint)
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("N", 1));
+        var transport = new RecordingTransport();
+        switch (failure)
+        {
+            case "queue full":
+                (transport.FailFor, transport.Failure) = (KafkaTopics.AlertStateChanged,
+                    () => new Confluent.Kafka.KafkaException(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_QueueFull, "Local: Queue full")));
+                break;
+            case "producer bound":
+                (transport.FailFor, transport.Failure) = (KafkaTopics.AlertStateChanged,
+                    () => new KafkaProduceTimeoutException(KafkaTopics.AlertStateChanged, KafkaProduce.SendTimeout));
+                break;
+            case "pass bound":
+                (transport.FailFor, transport.Failure) = (KafkaTopics.AlertStateChanged,
+                    () => new OutboxPassTimeoutException("Not sent within what was left of the relay pass's 60 seconds.", new TimeoutException()));
+                break;
+            case "no report":
+                (transport.FailFor, transport.Failure) = (KafkaTopics.AlertStateChanged,
+                    () => new Confluent.Kafka.KafkaException(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_TimedOut,
+                        "Kafka gave no delivery report for the message; its sender sends it again.")));
+                break;
+            case "leaderless":
+                transport.Leaderless.Add(KafkaTopics.AlertStateChanged);
+                break;
+            default:
+                transport.BrokerDownFor = KafkaTopics.AlertStateChanged;
+                break;
+        }
+        var log = new RelayLog();
+        using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        var relay = StreakRelay(transport, log, metrics);
+
+        // Tried again after the broker retry, or when the partition's topic hold ends: past the one-minute streak either way.
+        var step = failure == "leaderless" ? OutboxRelay.EventTopicHold + TimeSpan.FromSeconds(1) : BrokerRetry;
+        for (var pass = 0; pass < 20 && log.Errors.Count == 0; pass++)
+        {
+            (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+            _host.Clock.Advance(step);
+        }
+
+        var error = log.Errors.Should().ContainSingle("the streak is reported once").Subject;
+        error.Should().Contain($"the last time with {code}: {hint}");
+        if (failure != "leaderless")
+            error.Should().NotContain("partition", "only the client's message timeout points at a partition");
+        reader.Sum(OutboxMetrics.BrokerStreaksName, ("topic", KafkaTopics.AlertStateChanged)).Should().Be(1);
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message")).Should().Be(0, "the broker's or the queue's, not the row's (ARV-165)");
     }
 
     /// <summary>This host's producer's own failure, as the Kafka client and <c>KafkaProduce</c> raise it (ARV-246, ARV-269).</summary>
@@ -1370,11 +1436,14 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         /// <summary>Every send refused by the cluster's authorization: a failure of no topic in particular.</summary>
         public bool ClusterRefused { get; set; }
 
-        /// <summary>A topic whose sends fail on this host's producer (ARV-246), with <see cref="ProducerGone"/>'s failure.</summary>
-        public string ProducerGoneFor { get; set; }
+        /// <summary>
+        /// A topic whose sends fail with <see cref="Failure"/>'s exception, thrown as it is: this host's producer's own failures
+        /// (ARV-246, ARV-269) or another client failure the relay classifies by its type and code (ARV-270, a full queue).
+        /// </summary>
+        public string FailFor { get; set; }
 
-        /// <summary>This host's producer's own failure (ARV-246): disposed, Local_Destroy, a message purged at a fatal error, or the fatal client error itself.</summary>
-        public Func<Exception> ProducerGone { get; set; }
+        /// <summary>The exception a send to <see cref="FailFor"/> fails with.</summary>
+        public Func<Exception> Failure { get; set; }
 
         /// <summary>A topic whose sends never end and ignore their token (ARV-175: its partition leader is away).</summary>
         public string HangFor { get; set; }
@@ -1414,6 +1483,13 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         /// <summary>This host's producer's own condition, as the Kafka transport classifies it (ARV-246).</summary>
         public bool IsProducerUnavailable(Exception error) => KafkaProduce.IsProducerUnavailable(error);
 
+        /// <summary>A full producer queue, the producer's own bound and a failure's code, as the Kafka transport names them (ARV-270).</summary>
+        public bool IsQueueFull(Exception error) => KafkaProduce.IsQueueFull(error);
+
+        public bool IsReportOverdue(Exception error) => KafkaProduce.IsReportOverdue(error);
+
+        public string FailureCode(Exception error) => KafkaProduce.FailureCode(error);
+
         public Task SendAsync(OutboxEnvelope message, CancellationToken ct)
         {
             Attempts++;
@@ -1424,8 +1500,8 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
                 throw new Confluent.Kafka.ProduceException<string, byte[]>(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_MsgTimedOut), null);
             if (BrokerDown || string.Equals(message.Topic, BrokerDownFor, StringComparison.Ordinal))
                 throw new TimeoutException("Local: Message timed out");
-            if (string.Equals(message.Topic, ProducerGoneFor, StringComparison.Ordinal))
-                throw ProducerGone();
+            if (string.Equals(message.Topic, FailFor, StringComparison.Ordinal))
+                throw Failure();
             if (string.Equals(message.Topic, RefusedFor, StringComparison.Ordinal))
                 throw new Confluent.Kafka.KafkaException(Confluent.Kafka.ErrorCode.TopicAuthorizationFailed);
             if (string.Equals(message.Topic, UnknownTopicFor, StringComparison.Ordinal))

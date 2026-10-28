@@ -57,6 +57,24 @@ public interface IOutboxTransport
     bool IsProducerUnavailable(Exception error) => error is ObjectDisposedException;
 
     /// <summary>
+    /// Whether <paramref name="error"/> from <see cref="SendAsync"/> says this host's producer queue was full (ARV-270): more to
+    /// send than the brokers took, a cause the broker streak's Error names apart from a partition without a leader.
+    /// </summary>
+    bool IsQueueFull(Exception error) => false;
+
+    /// <summary>
+    /// Whether <paramref name="error"/> from <see cref="SendAsync"/> is the producer's own bound (ARV-270): the client neither
+    /// acknowledged nor refused the send within it, so the brokers were slow or the client stalled.
+    /// </summary>
+    bool IsReportOverdue(Exception error) => false;
+
+    /// <summary>
+    /// A short constant naming <paramref name="error"/>'s cause for the logs (ARV-270): the client's error code, else the
+    /// exception's type. Never the exception's message.
+    /// </summary>
+    string FailureCode(Exception error) => error?.GetType().Name;
+
+    /// <summary>
     /// Whether the brokers answer now (ARV-245): the producer's cached probe (<c>KafkaProduce.BrokersAnswerAsync</c>), which
     /// asks the cluster at most once a second and never throws. After a pass met the broker's absence the relay asks this
     /// before each pass and skips the pass while it is false.
@@ -539,19 +557,25 @@ public sealed class OutboxRelay(
     /// <summary>
     /// Logs a row the broker did not take (ARV-165) and, once, a row whose streak has lasted <c>Kafka:Outbox:BrokerStreakMinutes</c>
     /// as an Error, counted by its topic (ARV-245: no attempt counts against such a row, so this is what raises a partition that
-    /// stays without a leader while the brokers answer). A row whose topic is held now (ARV-175, ARV-264) is not tried again after
-    /// the broker retry but when the hold ends, which the hold's own Warning says, so it adds no Warning of its own.
+    /// stays without a leader while the brokers answer). Since ARV-270 the Error names the last failure's cause and says
+    /// "partition" only for the client's message timeout (<see cref="StreakHint"/>). A row whose topic is held now (ARV-175,
+    /// ARV-264) is not tried again after the broker retry but when the hold ends, which the hold's own Warning says, so it adds
+    /// no Warning of its own.
     /// </summary>
     private void ReportBrokerUnavailable(OutboxEnvelope row, Exception e, DateTime now, bool topicHeld)
     {
         if (_streaks.BrokerUnavailable(row.Seq, now) is { } streak)
         {
+            // ARV-270: the Error names the last failure's cause; only the client's message timeout points at a partition
+            // (StreakHint).
+            var cause = transport.FailureCode(e);
+            var hint = StreakHint(e);
             if (topicHeld)
-                logger.LogError(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) has failed with the broker unavailable for {Minutes:F0} minutes without a break (Kafka:Outbox:BrokerStreakMinutes {StreakMinutes}); the topic's partition may have no leader. Its topic is held back and the row tries it again when the hold ends",
-                    row.Seq, row.MessageType, row.Id, row.Topic, streak.TotalMinutes, kafka.Outbox.BrokerStreakMinutes);
+                logger.LogError(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) has failed with the broker unavailable for {Minutes:F0} minutes without a break (Kafka:Outbox:BrokerStreakMinutes {StreakMinutes}), the last time with {Cause}: {Hint}. Its topic is held back and the row tries it again when the hold ends",
+                    row.Seq, row.MessageType, row.Id, row.Topic, streak.TotalMinutes, kafka.Outbox.BrokerStreakMinutes, cause, hint);
             else
-                logger.LogError(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) has failed with the broker unavailable for {Minutes:F0} minutes without a break (Kafka:Outbox:BrokerStreakMinutes {StreakMinutes}); the topic's partition may have no leader. Trying again every {Seconds} s",
-                    row.Seq, row.MessageType, row.Id, row.Topic, streak.TotalMinutes, kafka.Outbox.BrokerStreakMinutes, BrokerRetry.TotalSeconds);
+                logger.LogError(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) has failed with the broker unavailable for {Minutes:F0} minutes without a break (Kafka:Outbox:BrokerStreakMinutes {StreakMinutes}), the last time with {Cause}: {Hint}. Trying again every {Seconds} s",
+                    row.Seq, row.MessageType, row.Id, row.Topic, streak.TotalMinutes, kafka.Outbox.BrokerStreakMinutes, cause, hint, BrokerRetry.TotalSeconds);
             metrics?.BrokerStreak(row.Topic);
         }
         else if (!topicHeld)
@@ -562,9 +586,25 @@ public sealed class OutboxRelay(
     }
 
     /// <summary>
+    /// What a broker streak's last failure says about its cause (ARV-270), a fixed text: only the client's message timeout (a
+    /// partition without a leader, while the brokers answer) points at a partition; a full queue is this host's producer taking
+    /// more than the brokers did; the producer's own bound, a send not reported in time; the relay pass's bound, a send cut
+    /// before the client said why (on a dead-letter topic, whose sends get 5 seconds of a pass, the client's own 30 second
+    /// message timeout never comes first: wiki 10 says what to check); any other timeout, the brokers slow or away; anything
+    /// else, the brokers not reached.
+    /// </summary>
+    private string StreakHint(Exception e) =>
+        transport.IsPartitionUnavailable(e) ? "the topic's partition may have no leader"
+        : transport.IsQueueFull(e) ? "this host's producer queue was full, more to send than the brokers took"
+        : transport.IsReportOverdue(e) ? "the producer did not report the send within its bound, the brokers slow or the client stalled"
+        : e is OutboxPassTimeoutException ? "the relay pass's bound cut the send before the client reported, so the client's own cause is not known"
+        : e is TimeoutException ? "the send was not answered within its bound, the brokers slow or away"
+        : "the brokers were not reached or did not take it";
+
+    /// <summary>
     /// Logs a row this host's own producer did not send (ARV-269): disposed, retired or stopping, a fatal client error, or a
     /// message it purged at that error. Named as the producer's, not as the broker's absence, and kept out of the row's broker
-    /// streak (ARV-245), whose Error points at a partition without a leader (the caller ends the row's streak): the row is due
+    /// streak (ARV-245), whose Error names the broker's failure (ARV-270; the caller ends the row's streak): the row is due
     /// again after the broker retry and sent once the producer is ready again (after a fatal error, once it is recreated).
     /// </summary>
     private void ReportProducerUnavailable(OutboxEnvelope row, Exception e) =>

@@ -251,6 +251,30 @@ public sealed class KafkaProduce : IDisposable
     };
 
     /// <summary>
+    /// Whether a send's failure is this host's producer queue being full (ARV-270): <c>Local_QueueFull</c>, more to send than
+    /// the brokers took. A broker unavailability (the row counts no attempt), but not a partition without a leader.
+    /// </summary>
+    public static bool IsQueueFull(Exception error) => error is KafkaException { Error.Code: ErrorCode.Local_QueueFull };
+
+    /// <summary>
+    /// Whether a send's failure is this producer's own bound passing before the client reported the send (ARV-270):
+    /// <see cref="KafkaProduceTimeoutException"/>, the brokers slow or the client stalled. Not the relay pass's bound, and not
+    /// the client's message timeout (a partition without a leader).
+    /// </summary>
+    public static bool IsReportOverdue(Exception error) => error is KafkaProduceTimeoutException;
+
+    /// <summary>
+    /// A short constant naming a send's failure for the logs (ARV-270): the client's error code (<c>Local_QueueFull</c>,
+    /// <c>Local_MsgTimedOut</c>), else the exception's type (<c>KafkaProduceTimeoutException</c>). Never its message.
+    /// </summary>
+    public static string FailureCode(Exception error) => error switch
+    {
+        null => null,
+        KafkaException kafka => kafka.Error.Code.ToString(),
+        _ => error.GetType().Name
+    };
+
+    /// <summary>
     /// Whether a send's failure says its topic is missing or refused to this principal (ARV-177): the broker's unknown topic,
     /// the client's (once it knows the topic is missing, every later send for it fails so at once), or the topic's
     /// authorization. The row's own failure, but one every row of the topic meets, so the relay holds the topic until that
@@ -754,6 +778,12 @@ internal sealed class KafkaOutboxTransport(KafkaProduce produce, EventCatalog ca
     public bool IsPartitionUnavailable(Exception error) => KafkaProduce.IsPartitionUnavailable(error);
 
     public bool IsProducerUnavailable(Exception error) => KafkaProduce.IsProducerUnavailable(error);
+
+    public bool IsQueueFull(Exception error) => KafkaProduce.IsQueueFull(error);
+
+    public bool IsReportOverdue(Exception error) => KafkaProduce.IsReportOverdue(error);
+
+    public string FailureCode(Exception error) => KafkaProduce.FailureCode(error);
 
     /// <summary>
     /// The producer's cached probe, as the readiness check asks it (ARV-245): within <see cref="KafkaReadiness.ProbeTimeout"/>

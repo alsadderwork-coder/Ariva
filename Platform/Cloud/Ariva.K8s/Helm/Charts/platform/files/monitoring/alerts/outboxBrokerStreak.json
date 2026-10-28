@@ -1,7 +1,7 @@
 {
   "alert": "Ariva outbox row refused by the broker for a streak (${environment})",
   "alertType": "METRIC_BASED_ALERT",
-  "description": "An outbox row's sends failed with the broker unavailable for Kafka:Outbox:BrokerStreakMinutes without a break, while the brokers answer: a partition of its topic may have no leader (ARV-245).",
+  "description": "An outbox row's sends failed with the broker unavailable for Kafka:Outbox:BrokerStreakMinutes without a break, while the brokers answer: a partition of its topic may have no leader, the pod's producer queue stayed full, or its sends ran past their bound or got no delivery report; the relay's Error names the cause (ARV-245, ARV-270).",
   "ruleType": "threshold_rule",
   "version": "v5",
   "schemaVersion": "v2alpha1",

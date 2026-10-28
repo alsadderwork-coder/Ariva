@@ -215,6 +215,51 @@ public sealed class ProducerHardeningTests
         KafkaProduce.IsProducerUnavailable(new InvalidOperationException("Outbox row 1 has an empty payload.")).Should().BeFalse();
     }
 
+    [Fact]
+    public void FailureCode_Should_NameTheCauseWithoutItsMessage_When_ASendFailed()
+    {
+        // ARV-270: the broker streak's Error names its cause by a constant, never the exception's text.
+        KafkaProduce.FailureCode(new KafkaException(new Error(ErrorCode.Local_QueueFull, "Local: Queue full"))).Should().Be("Local_QueueFull");
+        KafkaProduce.FailureCode(new ProduceException<string, byte[]>(new Error(ErrorCode.Local_MsgTimedOut), null)).Should().Be("Local_MsgTimedOut");
+        KafkaProduce.FailureCode(new KafkaProduceTimeoutException("ariva.flow.nowcast.v1", KafkaProduce.SendTimeout)).Should().Be(nameof(KafkaProduceTimeoutException));
+        KafkaProduce.FailureCode(new InvalidOperationException("row 1 secret-looking text")).Should().Be(nameof(InvalidOperationException));
+        KafkaProduce.FailureCode(null).Should().BeNull();
+        KafkaProduce.IsQueueFull(new KafkaException(new Error(ErrorCode.Local_QueueFull))).Should().BeTrue();
+        KafkaProduce.IsQueueFull(new ProduceException<string, byte[]>(new Error(ErrorCode.Local_QueueFull), null)).Should().BeTrue("as the client's Produce throws it");
+        KafkaProduce.IsQueueFull(new KafkaException(new Error(ErrorCode.Local_MsgTimedOut))).Should().BeFalse();
+        KafkaProduce.IsBrokerUnavailable(new KafkaException(new Error(ErrorCode.Local_QueueFull))).Should().BeTrue("a full queue still counts no attempt");
+        KafkaProduce.IsPartitionUnavailable(new KafkaException(new Error(ErrorCode.Local_QueueFull))).Should().BeFalse("and is not a partition without a leader");
+        var overdue = new KafkaProduceTimeoutException("ariva.flow.nowcast.v1", KafkaProduce.SendTimeout);
+        var passBound = new OutboxPassTimeoutException("Outbox row 1 was not sent within 00:00:05.", new TimeoutException());
+        var leaderless = new KafkaException(new Error(ErrorCode.Local_MsgTimedOut));
+        var queueFull = new KafkaException(new Error(ErrorCode.Local_QueueFull));
+
+        // The production transport, as the relay asks it: each hint's own classification, and the code by constant.
+        // A strict client: classifying a failure calls nothing on it (DeadLetterOutboxTests builds the transport so too).
+        IOutboxTransport kafka = new KafkaOutboxTransport(new KafkaProduce(new Mock<IProducer<string, byte[]>>(MockBehavior.Strict).Object, TimeProvider.System, NullLogger.Instance), new EventCatalog([]));
+        kafka.IsReportOverdue(overdue).Should().BeTrue("the producer's own bound passed before the client reported");
+        kafka.IsReportOverdue(passBound).Should().BeFalse("the relay pass's bound is not the producer's");
+        kafka.IsReportOverdue(new TimeoutException()).Should().BeFalse();
+        kafka.IsReportOverdue(leaderless).Should().BeFalse("the client's message timeout is a partition without a leader");
+        kafka.IsQueueFull(queueFull).Should().BeTrue();
+        kafka.IsQueueFull(overdue).Should().BeFalse();
+        kafka.IsPartitionUnavailable(leaderless).Should().BeTrue();
+        kafka.IsPartitionUnavailable(overdue).Should().BeFalse();
+        kafka.FailureCode(queueFull).Should().Be("Local_QueueFull");
+        kafka.FailureCode(passBound).Should().Be(nameof(OutboxPassTimeoutException));
+
+        IOutboxTransport defaults = new DefaultsTransport();
+        defaults.FailureCode(new InvalidOperationException("row 1 secret-looking text")).Should().Be(nameof(InvalidOperationException), "the interface's default names the type");
+        defaults.IsQueueFull(queueFull).Should().BeFalse("and classifies nothing");
+        defaults.IsReportOverdue(overdue).Should().BeFalse();
+    }
+
+    /// <summary>A transport that keeps <see cref="IOutboxTransport"/>'s defaults (ARV-270).</summary>
+    private sealed class DefaultsTransport : IOutboxTransport
+    {
+        public Task SendAsync(OutboxEnvelope message, CancellationToken ct) => Task.CompletedTask;
+    }
+
     [Theory]
     [InlineData(ErrorCode.UnknownTopicOrPart, true)]
     [InlineData(ErrorCode.Local_UnknownTopic, true)]
