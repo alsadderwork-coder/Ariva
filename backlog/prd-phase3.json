@@ -146,7 +146,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 45,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3.",
       "dependsOn": [
         "ARV-164b"
@@ -1696,6 +1696,40 @@
       "dependsOn": [
         "ARV-269"
       ]
+    },
+    {
+      "id": "ARV-271",
+      "title": "[E17] CI residuals of ARV-252: the mutation workflow's log and report checked before upload, and the E2E failure comment's quoted lines without backticks",
+      "description": "From the ARV-252 security review (2026-10-28, advice). The mutation workflow (.github/workflows/mutation.yml) uploads .verify/mutation.log and Stryker's report from a public repository without the artifact check (Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs) that the backend and E2E jobs now run first; Stryker's output carries test failures' messages. And the E2E job's failure comment quotes log lines inside code fences with their backticks kept, so a line holding three backticks ends the block and the rest of it (an @mention among it) is read as Markdown; the backend job takes backticks out since ARV-252. Also from the ARV-252 review (round 2, advice): the test log check copies with cp -R, which keeps a symlink as a link that the scanner skips while cat and upload-artifact follow it (copy with -L, or report a link as a finding); and backendLogWiring still passes a few deliberate edits: a step before the check that reads the TRX other than the count guards' --trx, an if that names the gate without depending on it (always() || ...), a read outside the LOGS_CHECKED block of a step that tests it elsewhere, a log named through a variable, and set +e around the check. CWEs to review: CWE-532.",
+      "acceptanceCriteria": [
+        "mutation.yml copies the mutation log and report to a folder of their own, checks that copy with artifact-secrets.mjs and uploads the copy only when the check passed (a finding fails the job), with a structural check in the script's self-test as backendLogWiring holds ci.yml's backend job",
+        "The E2E job's failure comment quotes no backtick from a log line, with the wiring check or a test holding it",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 315,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-10-28 by ARV-252 from its security review. No sign-in code.",
+      "dependsOn": [
+        "ARV-252"
+      ]
+    },
+    {
+      "id": "ARV-272",
+      "title": "[E17] E2E host logs kept for the latest runs only",
+      "description": "Found in ARV-270 (2026-10-28): every Playwright run verify.mjs starts writes the hosts' logs to Platform/Testing/Ariva.E2E/logs/<run start>/ (playwright.config.ts) and nothing removes an old run's folder; 33 runs held 2.9 GB, and a story gate's full integration suite then failed 41 cases on a full disk (Postgres and Docker's snapshotter). Keep the folders of the latest few runs (a configured count, default 5) and remove older ones when a run starts, never the folder of a run in progress; say so in the test cadence page. CWEs to review: none beyond CWE-400 (the gate's own disk).",
+      "acceptanceCriteria": [
+        "When verify.mjs starts a Playwright run it removes the E2E log folders beyond the latest N runs (N configurable, default 5), by the folder's run start, never a folder newer than the run's own start, with a self-test",
+        "docs/harness/test-cadence.md and wiki 16 say how long the E2E host logs are kept",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 316,
+      "passes": false,
+      "notes": "Size XS. Phase 3. Filed 2026-10-28 by ARV-252 (found during ARV-270's gate). No sign-in code.",
+      "dependsOn": []
     }
   ]
 }

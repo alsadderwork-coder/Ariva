@@ -13,29 +13,33 @@ namespace Ariva.UnitTests.Security;
 /// </summary>
 public sealed class SessionConcurrencyTests
 {
+    // A row's arguments are its display name, which the TRX keeps and CI checks for secrets (ARV-252): a row names its made-up
+    // token by a placeholder, replaced here, and the failure message quotes the row as written.
     [Theory]
     [InlineData(new string[0], false)]
     [InlineData(new[] { "" }, false)]
     [InlineData(new[] { "   " }, false)]
     [InlineData(new[] { "", "" }, false)]
-    [InlineData(new[] { "Bearer eyJhbGciOiJFUzI1NiJ9.e30.c2ln" }, true)]
-    [InlineData(new[] { "bearer eyJhbGciOiJFUzI1NiJ9.e30.c2ln" }, true)]
-    [InlineData(new[] { "Bearer eyJhbGciOiJFUzI1NiJ9.e30.c2ln", "" }, true)]
-    [InlineData(new[] { "", "Bearer eyJhbGciOiJFUzI1NiJ9.e30.c2ln" }, true)]
+    [InlineData(new[] { "Bearer {jwt}" }, true)]
+    [InlineData(new[] { "bearer {jwt}" }, true)]
+    [InlineData(new[] { "Bearer {jwt}", "" }, true)]
+    [InlineData(new[] { "", "Bearer {jwt}" }, true)]
     [InlineData(new[] { "Bearer one", "Bearer two" }, true)]
     [InlineData(new[] { "Bearer " }, true)]
-    [InlineData(new[] { "Bearer ardk_0123456789abcdef" }, true)]
+    [InlineData(new[] { "Bearer {device}" }, true)]
     [InlineData(new[] { "Basic dXNlcjpwYXNz" }, true)]
     [InlineData(new[] { "Token eyJhbGciOiJFUzI1NiJ9" }, true)]
-    public void PresentsCredentials_Should_ReadTheHeaderAsAuthenticationDoes_When_ItDecidesWhoIsCounted(string[] values, bool counted)
+    public void PresentsCredentials_Should_ReadTheHeaderAsAuthenticationDoes_When_ItDecidesWhoIsCounted(string[] rows, bool counted)
     {
         // Security review H1: JWT authentication reads the values joined, empty ones dropped (Headers.Authorization.ToString()); a
         // token beside an empty second value must be counted, or a signed-in caller would go uncounted and still be authenticated.
+        var values = rows.Select(v => v.Replace("{jwt}", "eyJhbGciOiJFUzI1NiJ9.e30.c2ln", StringComparison.Ordinal)
+            .Replace("{device}", "ardk_0123456789abcdef", StringComparison.Ordinal)).ToArray();
         var context = new DefaultHttpContext();
         if (values.Length > 0)
             context.Request.Headers.Authorization = new Microsoft.Extensions.Primitives.StringValues(values);
 
-        RateLimitingExtensions.PresentsCredentials(context).Should().Be(counted, string.Join(" | ", values.Select(v => $"[{v}]")));
+        RateLimitingExtensions.PresentsCredentials(context).Should().Be(counted, string.Join(" | ", rows.Select(v => $"[{v}]")));
     }
 
     [Fact]

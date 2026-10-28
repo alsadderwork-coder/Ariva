@@ -130,9 +130,12 @@ jobs:
   backend:
     name: Backend build and unit tests
     runs-on: ubuntu-24.04
-    # 40: the job took 23 minutes when CommitRaceTests' stray test ran into its old 5 minute timeout, and that test may now
-    # take up to 10 minutes before it fails on its own assertion; a job timeout would lose the test's output.
-    timeout-minutes: 40
+    # 60 (ARV-252): the suites end at timeouts of their own (14 and 27 minutes; a run takes about 6 and 16, and CommitRaceTests'
+    # stray test may take up to 10 more before it fails on its own assertion), so a suite that hangs ends its step and the
+    # test log check, the logs and the summaries after it still run: restore and build (about 3 minutes), both suites at their
+    # limits and both count guards' listings (seconds each, 5 minutes at most) stay under it. A job timeout would cancel
+    # those steps and lose the output.
+    timeout-minutes: 60
     permissions:
       contents: read
       pull-requests: write # failure summary as a PR comment (job logs are not readable with the repo token scope we use)
@@ -154,33 +157,72 @@ jobs:
       # Pact verifier's native report and display names with control characters also reach, and drops a line it cannot read
       # without a failure (ARV-164), so a failing test could have passed here unnoticed. The TRX goes where the test counts
       # step reads it; --no-ansi keeps colour codes out of unit.log, whose lines the failure report reads from the start.
+      # ARV-252 (CWE-532): the output, which carries the in-process hosts' console logs, goes to unit.log and not to this
+      # public repository's job log; the test log check below reads a copy of it before any of it is printed, quoted or
+      # uploaded. coreutils timeout ends the suite and its process group a minute before the step's own timeout, which would
+      # end only the step's shell and leave the suite writing to its log after the check.
       - name: Unit, architecture and security tests
-        run: dotnet Platform/Backplane/Ariva.UnitTests/bin/Release/net10.0/Ariva.UnitTests.dll --no-ansi --results-directory "$GITHUB_WORKSPACE/TestResults" --report-xunit-trx --report-xunit-trx-filename unit-tests.trx 2>&1 | tee unit.log
+        timeout-minutes: 15
+        run: timeout -k 30s 14m dotnet Platform/Backplane/Ariva.UnitTests/bin/Release/net10.0/Ariva.UnitTests.dll --no-ansi --results-directory "$GITHUB_WORKSPACE/TestResults" --report-xunit-trx --report-xunit-trx-filename unit-tests.trx > unit.log 2>&1
       # Every case the executable lists has its results in the TRX, method by method, and a theory listed once its rows from the
-      # project's theory-rows.json, copied beside the executable (ARV-251).
+      # project's theory-rows.json, copied beside the executable (ARV-251). It prints case names only (a failed listing's
+      # output through redactSecrets).
       - name: Unit test count guard (every listed case has its results)
         if: ${{ !cancelled() }}
         run: |
           node scripts/test-count-guard.mjs --self-test
           node scripts/test-count-guard.mjs --dll Platform/Backplane/Ariva.UnitTests/bin/Release/net10.0/Ariva.UnitTests.dll --trx TestResults/unit-tests.trx
-      # ARV-068: the AMAN feed's message pact, written by the unit tests, for AMAN's provider verification (wiki 08).
-      - name: Publish the AMAN pact
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: aman-pact
-          path: .verify/pacts/Ariva-AMAN.json
-          if-no-files-found: error
       # ARV-164b: the integration tests' executable too, as the integration gate runs it (scripts/verify.mjs): under dotnet test
       # the hosts' console logs share the runner's message stream, from which the VSTest adapter drops a line it cannot read.
+      # ARV-252: to integration.log, as the unit suite's output goes to unit.log, and under the same kind of timeout.
       - name: Integration tests (Testcontainers, Docker on the runner)
         id: integration
-        run: dotnet Platform/Backplane/Ariva.IntegrationTests/bin/Release/net10.0/Ariva.IntegrationTests.dll --no-ansi --results-directory "$GITHUB_WORKSPACE/TestResults" --report-xunit-trx --report-xunit-trx-filename integration-tests.trx 2>&1 | tee integration.log
+        timeout-minutes: 28
+        run: timeout -k 30s 27m dotnet Platform/Backplane/Ariva.IntegrationTests/bin/Release/net10.0/Ariva.IntegrationTests.dll --no-ansi --results-directory "$GITHUB_WORKSPACE/TestResults" --report-xunit-trx --report-xunit-trx-filename integration-tests.trx > integration.log 2>&1
       - name: Integration test count guard (every listed case has its results)
         if: ${{ !cancelled() && steps.integration.outcome != 'skipped' }}
         run: node scripts/test-count-guard.mjs --dll Platform/Backplane/Ariva.IntegrationTests/bin/Release/net10.0/Ariva.IntegrationTests.dll --trx TestResults/integration-tests.trx
+      # ARV-252 (CWE-532): the suites' logs, their results and the AMAN pact are copied to checked/, and that copy is checked for
+      # a credential (Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs, as the E2E job checks its report and the hosts'
+      # logs) before any of it reaches the job log, the step summary, the pull request or an artifact. The steps below read the
+      # copy alone, so nothing written after the check reaches them. The check names the file and the kind, never the value; a
+      # finding fails the job, and the steps below then print, quote and upload nothing of it. Its self-test holds this wiring
+      # (backendLogWiring).
+      - name: Test logs hold no secret (CWE-532)
+        id: test-logs
+        if: ${{ !cancelled() }}
+        run: |
+          rm -rf checked
+          mkdir checked
+          for item in unit.log integration.log TestResults .verify/pacts; do
+            if [ -e "$item" ]; then cp -R "$item" checked/; fi
+          done
+          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked
+      # ARV-068: the AMAN feed's message pact, written by the unit tests, for AMAN's provider verification (wiki 08).
+      - name: Publish the AMAN pact
+        if: ${{ !cancelled() && steps.test-logs.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aman-pact
+          path: checked/pacts/Ariva-AMAN.json
+          if-no-files-found: error
+      # The checked logs as the suites wrote them, with workflow commands stopped so that no line of a log is read as one.
+      - name: Test logs
+        if: ${{ !cancelled() && steps.test-logs.outcome == 'success' }}
+        run: |
+          token=$(openssl rand -hex 16)
+          for log in checked/unit.log checked/integration.log; do
+            [ -f "$log" ] || continue
+            echo "::group::${log#checked/}"
+            echo "::stop-commands::$token"
+            cat "$log"
+            printf '\n::%s::\n' "$token"
+            echo "::endgroup::"
+          done
       - name: Test counts (fails when a suite ran no tests)
         if: always()
+        env:
+          LOGS_CHECKED: ${{ steps.test-logs.outcome }}
         run: |
           set +o pipefail # head closes pipes early on purpose here
           {
@@ -189,22 +231,32 @@ jobs:
             echo '|---|---|---|---|---|'
           } > test-summary.md
           status=0
-          for trx in TestResults/*.trx; do
+          for trx in checked/TestResults/*.trx; do
             [ -f "$trx" ] || continue
             counters=$(grep -o '<Counters [^>]*>' "$trx" | head -1)
             get() { echo "$counters" | grep -o "$1=\"[0-9]*\"" | grep -o '[0-9]*'; }
             total=$(get total); passed=$(get passed); failed=$(get failed); executed=$(get executed)
             skipped=$(( ${total:-0} - ${executed:-0} ))
             name=$(grep -o 'storage="[^"]*\.dll"' "$trx" | head -1 | sed 's#.*/##; s#\.dll"##')
-            echo "| ${name:-$trx} | ${total:-0} | ${passed:-0} | ${failed:-0} | ${skipped} |" >> test-summary.md
+            echo "| ${name:-${trx##*/}} | ${total:-0} | ${passed:-0} | ${failed:-0} | ${skipped} |" >> test-summary.md
             if [ "${total:-0}" -eq 0 ]; then status=1; fi
           done
-          ls TestResults/*.trx >/dev/null 2>&1 || { echo '| no TRX files | 0 | 0 | 0 | 0 |' >> test-summary.md; status=1; }
-          for log in unit.log integration.log; do
-            [ -f "$log" ] && { echo; echo "\`$log\` (last lines)"; echo '```'; grep -v '^\s*$' "$log" | tail -n 8 | cut -c1-300; echo '```'; } >> test-summary.md
-          done
+          ls checked/TestResults/*.trx >/dev/null 2>&1 || { echo '| no TRX files | 0 | 0 | 0 | 0 |' >> test-summary.md; status=1; }
+          # ARV-252: a log's last lines only once the test log check has passed it, and without backticks, which could end
+          # the code block and turn the rest of a line into Markdown (an @mention among it).
+          if [ "$LOGS_CHECKED" = success ]; then
+            for log in checked/unit.log checked/integration.log; do
+              [ -f "$log" ] && { echo; echo "\`${log#checked/}\` (last lines)"; echo '```'; grep -v '^\s*$' "$log" | tail -n 8 | cut -c1-300 | tr -d '\140'; echo '```'; } >> test-summary.md
+            done
+          else
+            { echo; echo "Test logs not quoted: the test log check did not pass (${LOGS_CHECKED:-not run}); its findings name the file and the kind."; } >> test-summary.md
+          fi
           cat test-summary.md >> "$GITHUB_STEP_SUMMARY"
+          # The summary quotes log lines: printed with workflow commands stopped, as the logs themselves are (ARV-252).
+          token=$(openssl rand -hex 16)
+          echo "::stop-commands::$token"
           cat test-summary.md
+          printf '\n::%s::\n' "$token"
           exit $status
       - name: Post test counts on the pull request
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
@@ -221,6 +273,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          LOGS_CHECKED: ${{ steps.test-logs.outcome }}
         run: |
           set +o pipefail # head closes pipes early on purpose here
           {
@@ -232,28 +285,35 @@ jobs:
               echo '#### Build'; echo '```'; grep -E ': error [A-Z]+[0-9]+' build.log | sed 's#/home/runner/work/[^/]*/[^/]*/##' | sort -u | head -60 | cut -c1-400; echo '```'
             fi
             # Both test suites' output is Microsoft Testing Platform's ("failed <name> (<time>)", the error on the next lines;
-            # ARV-164a, ARV-164b).
-            for log in unit.log integration.log; do
-              if [ -f "$log" ] && grep -Eq '^failed [A-Za-z]' "$log"; then
-                echo "#### ${log%.log} tests: failing tests"; echo '```'
-                grep -E '^failed [A-Za-z]' "$log" | sed -E 's/^failed //; s/ \([0-9][^)]*\)$//' | sort -u | head -100 | cut -c1-300
-                echo '```'; echo "#### ${log%.log} tests: distinct errors"; echo '```'
-                grep -A1 -E '^failed [A-Za-z]' "$log" | grep -v -E '^failed |^--$' | sed -E 's/^\s+//' | sort | uniq -c | sort -rn | head -25 | cut -c1-300
-                echo '```'; echo "#### ${log%.log} tests: first details"; echo '```'
-                grep -E -A14 '^failed [A-Za-z]' "$log" | head -80 | cut -c1-300; echo '```'
-              fi
-            done
+            # ARV-164a, ARV-164b). ARV-252: quoted from the checked copy only once the test log check has passed it, without
+            # backticks (they could end the code block).
+            if [ "$LOGS_CHECKED" = success ]; then
+              for log in checked/unit.log checked/integration.log; do
+                suite=${log#checked/}; suite=${suite%.log}
+                if [ -f "$log" ] && grep -Eq '^failed [A-Za-z]' "$log"; then
+                  echo "#### $suite tests: failing tests"; echo '```'
+                  grep -E '^failed [A-Za-z]' "$log" | sed -E 's/^failed //; s/ \([0-9][^)]*\)$//' | sort -u | head -100 | cut -c1-300 | tr -d '\140'
+                  echo '```'; echo "#### $suite tests: distinct errors"; echo '```'
+                  grep -A1 -E '^failed [A-Za-z]' "$log" | grep -v -E '^failed |^--$' | sed -E 's/^\s+//' | sort | uniq -c | sort -rn | head -25 | cut -c1-300 | tr -d '\140'
+                  echo '```'; echo "#### $suite tests: first details"; echo '```'
+                  grep -E -A14 '^failed [A-Za-z]' "$log" | head -80 | cut -c1-300 | tr -d '\140'; echo '```'
+                fi
+              done
+            else
+              echo "#### Test logs: not quoted (the test log check did not pass: ${LOGS_CHECKED:-not run}; see its findings in the job log)"
+            fi
             if [ -f vulnerable.txt ] && grep -Eq '\b(High|Critical)\b' vulnerable.txt; then
               echo '#### Vulnerable packages'; echo '```'; grep -E '>|High|Critical' vulnerable.txt | head -40; echo '```'
             fi
           } > failure.md
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file failure.md
+      # ARV-252: the TRX files from the checked copy, only once the test log check has passed them.
       - name: Test results
-        if: always()
+        if: ${{ !cancelled() && steps.test-logs.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unit-test-results
-          path: TestResults
+          path: checked/TestResults
           if-no-files-found: ignore
 
   web:

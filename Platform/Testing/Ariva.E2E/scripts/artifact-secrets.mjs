@@ -4,7 +4,9 @@
 // an error, an attachment or a trace recorded. This scans plain files, every zip (a trace, or a zip file of the report) and
 // every zip a file embeds as a data URL (the HTML report), also zips inside zips, and names the file and the kind of secret
 // found, never the value. scripts/verify.mjs runs it after every Playwright run it starts; CI and the Azure DevOps pipeline
-// run it before they upload or publish the report or the test output, and fail instead of uploading.
+// run it before they upload or publish the report or the test output, and fail instead of uploading. ARV-252: CI's backend
+// job runs it on the unit and integration suites' output (unit.log and integration.log, which carry the in-process hosts'
+// console logs) and their TRX files before any of it is printed, quoted or uploaded; backendLogWiring holds that wiring.
 //
 //   node scripts/artifact-secrets.mjs [--require-seed] [paths...]   scan the paths (default: playwright-report, test-results)
 //   node scripts/artifact-secrets.mjs --self-test                    prove every kind is found in a plain file, a report's
@@ -42,6 +44,7 @@ import { REDACTION_SAMPLES, SHAPES, redactSecrets, shapeMatches } from './secret
 const E2E = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ACCOUNTS = path.join(E2E, 'tests', 'support', 'accounts.ts');
 const KEYS = path.join(E2E, '.e2e-keys');
+const CI_WORKFLOW = path.resolve(E2E, '..', '..', '..', '.github', 'workflows', 'ci.yml');
 export const DEFAULT_PATHS = ['playwright-report', 'test-results'].map((folder) => path.join(E2E, folder));
 
 export { SHAPES };
@@ -271,6 +274,82 @@ export function checkArtifacts(paths, { requireSeed = false, env = process.env, 
 	return findings.length === 0;
 }
 
+/**
+ * ARV-252: the backend job's wiring in a CI workflow's text (.github/workflows/ci.yml), read step by step with comments left
+ * out (whole lines and a comment after a value), so a step is read by what it runs:
+ * - every step that runs a test suite (`dotnet ...Tests.dll`; `dotnet test` is refused) runs the unit or the integration
+ *   executable, writes its output to unit.log or integration.log alone (never teed to the public job log), has a timeout of
+ *   its own (so a hung suite still leaves the check its time) and comes before the check;
+ * - the test log check (id test-logs, one step) runs after a failed suite too, cannot be told to continue on an error,
+ *   copies unit.log, integration.log and TestResults to checked/ and checks that copy, so nothing a suite writes later
+ *   reaches the steps after it;
+ * - before it no other step reads a log or uploads anything; after it every log or result a step names is the checked copy
+ *   (restore.log and build.log, the compiler's, aside), every upload's path is under checked/, a step that names the copy
+ *   waits for the check's success (in its if, or by LOGS_CHECKED taken from the check's outcome and tested in its script),
+ *   and a step that prints with cat stops workflow commands around it with a random token and resumes on a line of its own.
+ * Returns what is wrong, empty when the wiring holds.
+ */
+export function backendLogWiring(workflow) {
+	const start = workflow.search(/^ {2}backend:\s*$/m);
+	if (start < 0) return ['no backend job'];
+	const rest = workflow.slice(start + 1);
+	const end = rest.search(/^ {2}[A-Za-z][\w-]*:\s*$/m);
+	const steps = (end < 0 ? rest : rest.slice(0, end))
+		.split(/^ {6}- /m)
+		.slice(1)
+		.map((step) => step.replace(/^\s*#.*$/gm, '').replace(/[ \t]+#.*$/gm, ''));
+	const nameOf = (step, i) => /^(?:name: |\s*name: )(.*)$/m.exec(step)?.[1] ?? `step ${i + 1}`;
+	const problems = [];
+	const check = steps.findIndex((s) => /^\s*id: test-logs\s*$/m.test(s));
+	if (check < 0 || steps.filter((s) => /^\s*id: test-logs\s*$/m.test(s)).length > 1) return ['not one test log check (id: test-logs)'];
+	const logs = { 'Ariva.UnitTests.dll': 'unit.log', 'Ariva.IntegrationTests.dll': 'integration.log' };
+	const ran = new Set();
+	steps.forEach((step, i) => {
+		const name = nameOf(step, i);
+		if (/\bdotnet\s+test\b/.test(step)) problems.push(`"${name}" runs a suite through dotnet test, whose output the check does not read`);
+		for (const [, dll] of step.matchAll(/\bdotnet\s+\S*?([\w.]+Tests\.dll)\b/g)) {
+			const log = logs[dll];
+			if (!log) {
+				problems.push(`"${name}" runs ${dll}, whose output the check does not read`);
+				continue;
+			}
+			ran.add(dll);
+			if (!new RegExp(`> ${log.replace('.', '\\.')} 2>&1\\s*$`, 'm').test(step) || /\btee\b/.test(step)) problems.push(`"${name}" does not write ${dll}'s output to ${log} alone (the job log is public)`);
+			if (!/^\s*timeout-minutes: \d+\s*$/m.test(step)) problems.push(`"${name}" has no timeout of its own`);
+			if (i > check) problems.push(`"${name}" runs ${dll} after the test log check`);
+		}
+	});
+	for (const dll of Object.keys(logs)) if (!ran.has(dll)) problems.push(`no step runs ${dll}`);
+	const checkStep = steps[check];
+	if (!/^\s*if: \$\{\{ !cancelled\(\) \}\}\s*$/m.test(checkStep)) problems.push('the test log check does not run after a failed suite');
+	if (/^\s*continue-on-error:/m.test(checkStep)) problems.push('the test log check may continue on an error');
+	if (!/^\s*for item in unit\.log integration\.log TestResults\b[^\n]*; do\s*$/m.test(checkStep) || !/cp -R "\$item" checked\//.test(checkStep)) problems.push('the test log check does not copy unit.log, integration.log and TestResults to checked/');
+	if (!/^\s*node \S*artifact-secrets\.mjs checked\s*$/m.test(checkStep)) problems.push('the test log check does not check the copy in checked/ (and that alone)');
+	const allowed = new Set(['checked/unit.log', 'checked/integration.log', 'restore.log', 'build.log']);
+	steps.forEach((step, i) => {
+		if (i === check || /\bdotnet\s+\S*Tests\.dll\b/.test(step)) return;
+		const name = nameOf(step, i);
+		const named = [...step.matchAll(/(?<![\w%])[\w./*$-]*[\w*]\.log\b/g)].map((m) => m[0]);
+		const results = [...step.matchAll(/[\w./*${}-]*TestResults[\w./*-]*/g)].map((m) => m[0]);
+		const uploads = /^\s*uses: actions\/upload-artifact@/m.test(step);
+		if (i < check) {
+			if (named.some((log) => /^(?:unit|integration)\.log$|\*/.test(log))) problems.push(`"${name}" reads a test log before the test log check`);
+			if (uploads) problems.push(`"${name}" uploads before the test log check`);
+			return;
+		}
+		for (const log of named) if (!allowed.has(log)) problems.push(`"${name}" reads ${log}, not the checked copy`);
+		for (const result of results) if (!result.startsWith('checked/TestResults')) problems.push(`"${name}" reads ${result}, not the checked copy`);
+		if (uploads) for (const [, path] of step.matchAll(/^\s*path: (.*)$/gm)) if (!path.trim().startsWith('checked/')) problems.push(`"${name}" uploads ${path.trim()}, not the checked copy`);
+		if (!step.includes('checked/')) return;
+		const inIf = /^\s*if: [^\n]*steps\.test-logs\.outcome == 'success'/m.test(step);
+		const inScript = /^\s*LOGS_CHECKED: \$\{\{ steps\.test-logs\.outcome \}\}\s*$/m.test(step) && /\[ "\$LOGS_CHECKED" = success \]/.test(step);
+		if (!inIf && !inScript) problems.push(`"${name}" reads the checked copy without waiting for the check's success`);
+		if (/\bcat\b/.test(step) && !(/token=\$\(openssl rand -hex (?:1[6-9]|[2-9]\d)\)/.test(step) && step.includes('echo "::stop-commands::$token"') && step.includes(`printf '\\n::%s::\\n' "$token"`)))
+			problems.push(`"${name}" prints with workflow commands live (a random token, stopped before and resumed on a line of its own after)`);
+	});
+	return problems;
+}
+
 /** The commands that mask the seed and every value derived from it in a CI log (GitHub Actions or Azure DevOps). */
 export function maskCommands(system, env = process.env) {
 	const seed = valueOf(env, 'ARIVA_E2E_ACCOUNT_SEED');
@@ -436,6 +515,86 @@ function selfTest() {
 			if (redactSecrets(sample.replace('|', '')).includes(secret)) problems.push(`redactSecrets leaves ${sample.split('|')[0]}...`);
 		}
 		for (const text of REDACTION_SAMPLES.kept) if (redactSecrets(text) !== text) problems.push(`redactSecrets changes ${text}`);
+		// ARV-252: CI's unit and integration suites write the in-process hosts' console logs (Serilog's JsonFormatter with the
+		// message rendered, as ArivaLogging configures the console) to unit.log and integration.log, and the TRX keeps a test's
+		// output. A credential planted in a host line, or in a TRX's output, fails the check on that file and is never printed;
+		// the hosts' usual lines, password prose included, pass.
+		const hostLine = (level, template, properties = {}, exception) => {
+			const rendered = template.replace(/\{(\w+)\}/g, (_, key) => JSON.stringify(properties[key]));
+			return JSON.stringify({ Timestamp: '2026-10-27T23:55:30.3720616+00:00', Level: level, MessageTemplate: template, RenderedMessage: rendered, ...(exception ? { Exception: exception } : {}), Properties: { ...properties, SourceContext: 'Ariva.Infra.Sensing.DeviceRegistry', Application: 'api-ingest', Environment: 'vm-local' } });
+		};
+		const hostLog = [
+			hostLine('Information', 'Application started. Press Ctrl+C to shut down.'),
+			hostLine('Error', 'An error occurred while reading the key ring.', {}, 'Npgsql.PostgresException (0x80004005): 28P01: password authentication failed for user "ariva_runtime"'),
+			hostLine('Warning', 'Device {DeviceId} refused: {Reason}', { DeviceId: 'DMO-T1-S01', Reason: 'credential ardk_[redacted] is retired' }),
+			'passed Ariva.IntegrationTests.Sensing.DeviceHealthTests.Health_Should_BeLimitedToTheCallersSites (412ms)'
+		].join('\n');
+		const xml = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+		const trx = (output) => `<TestRun><Results><UnitTestResult testName="Ariva.UnitTests.Security.TotpTests.Normalize(typed: &quot;ABCDE-FGHJK&quot;)" outcome="Passed"><Output><StdOut>${xml(output)}</StdOut></Output></UnitTestResult></Results></TestRun>`;
+		const backendDir = path.join(dir, 'checked');
+		fs.mkdirSync(path.join(backendDir, 'TestResults'), { recursive: true });
+		const planted = `ardk_${random(32)}`;
+		const plantedLine = hostLine('Information', 'Device {DeviceId} registered with {Credential}', { DeviceId: 'DMO-T1-S02', Credential: planted });
+		const unitLog = path.join(backendDir, 'unit.log');
+		const integrationLog = path.join(backendDir, 'integration.log');
+		const results = path.join(backendDir, 'TestResults', 'integration-tests.trx');
+		const plants = [
+			['integration.log', () => fs.writeFileSync(integrationLog, `${hostLog}\n${plantedLine}\n`)],
+			['integration-tests.trx', () => fs.writeFileSync(results, trx(`${hostLog}\n${plantedLine}`))]
+		];
+		for (const [file, plant] of plants) {
+			fs.writeFileSync(unitLog, hostLog);
+			fs.writeFileSync(integrationLog, hostLog);
+			fs.writeFileSync(results, trx(hostLog));
+			plant();
+			const logged = [];
+			if (checkArtifacts([backendDir], { env: {}, log: (l) => logged.push(l) })) problems.push(`a credential planted in ${file} passed the check`);
+			const found = logged.filter((l) => l.startsWith('SECRET '));
+			if (!found.some((l) => l.startsWith('SECRET a device or display credential') && l.endsWith(file))) problems.push(`the check does not name ${file} and the kind of the planted credential`);
+			if (found.some((l) => !l.endsWith(file))) problems.push(`a clean host log or result was flagged: ${found.join('; ')}`);
+			if (logged.some((l) => l.includes(planted))) problems.push('the planted credential was printed');
+		}
+		fs.writeFileSync(integrationLog, hostLog);
+		fs.writeFileSync(results, trx(hostLog));
+		if (!checkArtifacts([backendDir], { env: {}, log: () => {} })) problems.push("the hosts' usual log lines failed the check");
+		// The workflow's own wiring, and the wiring check firing on each way to break it: a suite teed to the job log, run again
+		// after the check or through dotnet test, or with no timeout of its own; the check before a suite, skipped by a failed
+		// suite, allowed to continue on an error, or reading the logs in place; a log read in place, quoted unchecked or
+		// printed with workflow commands live; a result uploaded unchecked or from outside the copy; and a gate written only
+		// in a comment.
+		const workflow = fs.readFileSync(CI_WORKFLOW, 'utf8');
+		for (const problem of backendLogWiring(workflow)) problems.push(`ci.yml: ${problem}`);
+		const stepAt = (text, name) => {
+			const start = text.indexOf(`      - name: ${name}\n`);
+			const next = text.slice(start + 1).search(/^ {6}- /m);
+			return start < 0 || next < 0 ? null : text.slice(start, start + 1 + next);
+		};
+		const checkStep = stepAt(workflow, 'Test logs hold no secret (CWE-532)');
+		const integrationStep = stepAt(workflow, 'Integration tests (Testcontainers, Docker on the runner)');
+		const unitStep = stepAt(workflow, 'Unit, architecture and security tests');
+		const replace = (from, to) => (text) => (text.includes(from) ? text.replace(from, to) : null);
+		const miswired = {
+			'a suite teed to the job log': replace('> unit.log 2>&1', '2>&1 | tee unit.log'),
+			'a suite run again after the check': (text) => (checkStep && unitStep ? text.replace(checkStep, checkStep + unitStep.replace('> unit.log 2>&1', '2>&1 | tee unit.log')) : null),
+			'a suite run through dotnet test': replace('timeout -k 30s 14m dotnet Platform/Backplane/Ariva.UnitTests/bin/Release/net10.0/Ariva.UnitTests.dll', 'dotnet test Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj'),
+			'a suite without a timeout of its own': replace('        timeout-minutes: 28\n', ''),
+			'the check before the integration suite': (text) => (checkStep && integrationStep ? text.replace(checkStep, '').replace(integrationStep, checkStep + integrationStep) : null),
+			'a check a failed suite skips': replace('id: test-logs\n        if: ${{ !cancelled() }}', 'id: test-logs\n        if: success()'),
+			'a check that continues on an error': replace('id: test-logs\n', 'id: test-logs\n        continue-on-error: true\n'),
+			'a check of the logs in place': replace('artifact-secrets.mjs checked\n', 'artifact-secrets.mjs unit.log integration.log TestResults\n'),
+			'a log read in place': replace('for log in checked/unit.log checked/integration.log; do', 'for log in unit.log integration.log; do'),
+			'a log quoted unchecked': replace('if [ "$LOGS_CHECKED" = success ]; then', 'if true; then'),
+			'a log printed with workflow commands live': replace('echo "::stop-commands::$token"', 'echo "commands live"'),
+			'commands resumed on a log line': replace(`printf '\\n::%s::\\n' "$token"`, 'echo "::$token::"'),
+			'a result uploaded unchecked': replace("if: ${{ !cancelled() && steps.test-logs.outcome == 'success' }}\n        uses: actions/upload-artifact", 'if: always()\n        uses: actions/upload-artifact'),
+			'a result uploaded from outside the copy': replace('path: checked/TestResults\n', 'path: TestResults\n'),
+			'a gate in a comment': replace("if: ${{ !cancelled() && steps.test-logs.outcome == 'success' }}\n        uses: actions/upload-artifact", "if: always() # steps.test-logs.outcome == 'success'\n        uses: actions/upload-artifact")
+		};
+		for (const [label, change] of Object.entries(miswired)) {
+			const changed = change(workflow);
+			if (changed === null || changed === workflow) problems.push(`ci.yml no longer has the text that ${label} changes: update the wiring cases`);
+			else if (backendLogWiring(changed).length === 0) problems.push(`the wiring check passes ${label}`);
+		}
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
@@ -443,7 +602,7 @@ function selfTest() {
 		console.error(`artifact secret check self-test FAILED:\n${problems.join('\n')}`);
 		return false;
 	}
-	console.log(`artifact secret check self-test: ${samples.length} samples of ${new Set(samples.map(([kind]) => kind)).size} kinds found in a plain file, a report's embedded zip, a trace zip, a nested zip and an error context; the clean set passes; an unreadable zip fails; no value printed; every derived value masked; redactSecrets clears ${REDACTION_SAMPLES.cleared.length} samples and keeps ${REDACTION_SAMPLES.kept.length}.`);
+	console.log(`artifact secret check self-test: ${samples.length} samples of ${new Set(samples.map(([kind]) => kind)).size} kinds found in a plain file, a report's embedded zip, a trace zip, a nested zip and an error context; the clean set passes; an unreadable zip fails; no value printed; every derived value masked; redactSecrets clears ${REDACTION_SAMPLES.cleared.length} samples and keeps ${REDACTION_SAMPLES.kept.length}; a credential planted in a host log line fails the backend logs' check; CI's backend job checks its test logs before it prints, quotes or uploads them.`);
 	return true;
 }
 

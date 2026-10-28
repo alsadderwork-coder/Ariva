@@ -114,8 +114,10 @@ public sealed class TotpTests
         codes.Distinct(StringComparer.Ordinal).Count().Should().Be(200, "50 random bits per code");
     }
 
+    // A row's arguments are part of its display name, which the TRX keeps and CI checks for secrets (ARV-252): a dashed code
+    // here is letters only, outside a recovery code's shape (letters and digits mixed); the last row covers the digits.
     [Theory]
-    [InlineData("ABCDE-FGH12", "ABCDEFGH12")]
+    [InlineData("ABCDE-FGHJK", "ABCDEFGHJK")]
     [InlineData("abcde fgh12", "ABCDEFGH12")]
     [InlineData("ABCDEFGHI2", "ABCDEFGH12")]
     [InlineData("0O1IL-ABCDE", "00111ABCDE")]

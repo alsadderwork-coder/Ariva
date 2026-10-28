@@ -12,10 +12,11 @@
 // row needs no entry: losing it leaves its method without a result); on a whole run an entry for a method not listed (renamed
 // or removed) is reported as well. The method is the name before the first parenthesis, so a test under a display name of
 // its own could be counted with another; TheoryRowsTests refuses such names, so none is set. Not caught: a theory listed once
-// and left out of the file whose every run, from its first, lost all but one of its rows. No dependencies; the command is
-// always dotnet.
+// and left out of the file whose every run, from its first, lost all but one of its rows. No package dependencies (the
+// secret shapes are a local module); the command is always dotnet.
 
 import { spawnSync } from 'node:child_process';
+import { redactSecrets } from '../Platform/Testing/Ariva.E2E/scripts/secret-shapes.mjs';
 
 // The s flag: a case's arguments may hold U+2028 or U+2029, which . does not match without it (a display text test does).
 const CASE = /^ {2}(?!duration: )(\S.*?)\s*$/s;
@@ -169,7 +170,9 @@ export function listing(dll, filter = []) {
   const r = spawnSync('dotnet', [dll, '--list-tests', '--no-ansi', ...filter], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 5 * 60 * 1000 });
   if (r.status !== 0) {
     console.error(`test-counts: dotnet ${dll} --list-tests exited ${r.status ?? r.signal ?? r.error?.code}`);
-    process.stderr.write(`${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-4000));
+    // ARV-252: the listing's tail holds case names with their theory arguments, printed into CI's public job log before the
+    // test log check runs, so through the shapes' redaction.
+    process.stderr.write(redactSecrets(`${r.stdout ?? ''}${r.stderr ?? ''}`.slice(-4000)));
     return null;
   }
   return r.stdout;

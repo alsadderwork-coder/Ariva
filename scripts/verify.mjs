@@ -137,6 +137,14 @@ function artifactCheck(folders, started) {
   results.push({ name: 'no secret in the test artifacts (report, output, traces)', ok });
   return ok;
 }
+// ARV-252: a suite's TRX file, which CI uploads only once its test log check has read it with the suite's output. A theory
+// row's arguments are part of its display name, so a fixture in a secret's shape fails here before it fails CI.
+function resultsCheck(name, trx) {
+  process.stdout.write(`\n=== ${name}: ${path.relative(ROOT, trx)}\n`);
+  if (PLAN) { results.push({ name, ok: true, planned: true }); return; }
+  results.push({ name, ok: checkArtifacts([trx]) });
+}
+
 // The hosts of a Playwright run listen on fixed ports (Platform/Testing/Ariva.E2E/tests/support/hosts.ts), and a host of the run
 // before can still be stopping when the next one starts: on 2026-10-20 the checkpoint's E2E run met the visual run's Ingest on
 // 51002 ("address already in use") five seconds after it ended. So a run first waits, at most a minute, until each port can be
@@ -476,6 +484,7 @@ const steps = {
     run('test count guard self-test', 'node', ['scripts/test-count-guard.mjs', '--self-test']);
     run('unit test count guard (every listed case has its results)', 'node', ['scripts/test-count-guard.mjs', '--dll', unitDll,
       '--trx', path.join(ROOT, '.verify', 'unit-tests.trx')]);
+    resultsCheck('unit test results hold no secret (ARV-252)', path.join(ROOT, '.verify', 'unit-tests.trx'));
   },
   // ARV-164b: as the unit suite, the test executable runs the integration suite itself (Microsoft Testing Platform, in process),
   // not dotnet test, whose VSTest adapter reads the runner's messages from standard output, which the hosts' console logs share,
@@ -496,6 +505,7 @@ const steps = {
       [dll, '--results-directory', path.join(ROOT, '.verify'), '--report-xunit-trx', '--report-xunit-trx-filename', 'integration-tests.trx', ...options]);
     run('integration test count guard (every listed case has its results)', 'node',
       ['scripts/test-count-guard.mjs', '--dll', dll, '--trx', trx, ...(options.length ? ['--', ...options] : [])]);
+    resultsCheck('integration test results hold no secret (ARV-252)', trx);
   },
   web: () => {
     if (!fs.existsSync(path.join(WEB, 'node_modules'))) run('web npm ci', 'npm', ['ci'], WEB);

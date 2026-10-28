@@ -17,15 +17,25 @@ public sealed class RedactionEnricherTests
     private static string Base64Url(string text) =>
         Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(text)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
+    /// <summary>
+    /// A row's arguments are its display name, which the TRX keeps and CI checks for secrets (ARV-252), so a row names its
+    /// made-up credential by a placeholder (<see cref="Expand"/>) instead of carrying it.
+    /// </summary>
     public static TheoryData<string, string> TextCases => new()
     {
-        { "/hubs/live?access_token=" + Jwt + "&id=abc", "/hubs/live?access_token=[REDACTED]&id=abc" },
-        { "https://ariva/api/x?a=1&access_token=opaque-token-value", "https://ariva/api/x?a=1&access_token=[REDACTED]" },
-        { "sent Authorization: Bearer opaque.token-value_1", "sent Authorization: Bearer [REDACTED]" },
+        { "/hubs/live?access_token={jwt}&id=abc", "/hubs/live?access_token=[REDACTED]&id=abc" },
+        { "https://ariva/api/x?a=1&access_token={v}", "https://ariva/api/x?a=1&access_token=[REDACTED]" },
+        { "sent Authorization: Bearer {b}", "sent Authorization: Bearer [REDACTED]" },
         { "header Basic dXNlcjpwYXNzd29yZA==", "header Basic [REDACTED]" },
-        { "token " + Jwt + " in text", "token [REDACTED] in text" },
+        { "token {jwt} in text", "token [REDACTED] in text" },
         { "nothing secret here", "nothing secret here" }
     };
+
+    /// <summary>A row's text with its placeholders replaced by the made-up credentials.</summary>
+    private static string Expand(string text) => text
+        .Replace("{jwt}", Jwt, StringComparison.Ordinal)
+        .Replace("{v}", "opaque-token-value", StringComparison.Ordinal)
+        .Replace("{b}", "opaque.token-value_1", StringComparison.Ordinal);
 
     private sealed class ListSink : ILogEventSink
     {
@@ -140,7 +150,7 @@ public sealed class RedactionEnricherTests
     [MemberData(nameof(TextCases))]
     public void RedactText_Should_MaskCredentials_When_TheyAppearInsideText(string input, string expected)
     {
-        RedactionEnricher.RedactText(input).Should().Be(expected);
+        RedactionEnricher.RedactText(Expand(input)).Should().Be(expected);
     }
 
     [Fact]
