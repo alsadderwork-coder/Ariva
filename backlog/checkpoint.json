@@ -1,32 +1,32 @@
 {
-  "commit": "2b14da052e10381238e411d9f279fe953b0e3f13",
-  "at": "2026-10-27",
-  "stories": 6,
+  "commit": "ea511446fad175648bc265e3761d8a5cc889220b",
+  "at": "2026-10-28",
+  "stories": 5,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 204
+      "seconds": 139
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 13
+      "seconds": 9
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 780
+      "seconds": 498
     },
     {
       "name": "test count guard self-test",
       "ok": true,
-      "seconds": 1
+      "seconds": 0
     },
     {
       "name": "unit test count guard (every listed case has its results)",
       "ok": true,
-      "seconds": 4
+      "seconds": 3
     },
     {
       "name": "security scanner self-test",
@@ -96,22 +96,22 @@
     {
       "name": "offline bundle verifier self-test",
       "ok": true,
-      "seconds": 10
+      "seconds": 9
     },
     {
       "name": "offline bundle builder self-test",
       "ok": true,
-      "seconds": 10
+      "seconds": 8
     },
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "seconds": 66
+      "seconds": 53
     },
     {
       "name": "nuget vulnerability audit (fails on high or critical)",
       "ok": true,
-      "seconds": 21
+      "seconds": 20
     },
     {
       "name": "npm audit (web)",
@@ -121,7 +121,7 @@
     {
       "name": "npm audit (e2e)",
       "ok": true,
-      "seconds": 1
+      "seconds": 0
     },
     {
       "name": "npm audit (chart tests)",
@@ -139,22 +139,22 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 16
+      "seconds": 14
     },
     {
       "name": "web lint",
       "ok": true,
-      "seconds": 11
+      "seconds": 9
     },
     {
       "name": "web build",
       "ok": true,
-      "seconds": 41
+      "seconds": 33
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 1847
+      "seconds": 1267
     },
     {
       "name": "integration test count guard (every listed case has its results)",
@@ -169,7 +169,7 @@
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 251
+      "seconds": 195
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
@@ -178,14 +178,14 @@
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 1579
+      "seconds": 1365
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
       "ok": true
     },
     {
-      "name": "mutation tests (no engine change since 477c5dffef)",
+      "name": "mutation tests (no engine change since 2b14da052e)",
       "ok": true,
       "skipped": true
     }
