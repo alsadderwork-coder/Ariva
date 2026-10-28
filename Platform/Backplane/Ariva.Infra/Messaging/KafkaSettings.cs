@@ -82,9 +82,31 @@ public sealed class OutboxRelaySettings
     /// <summary>Runs the relay in this host. Every host that writes domain events can; one leader relays at a time.</summary>
     public bool Enabled { get; init; } = true;
 
+    /// <summary>
+    /// The rows a relay pass claims, a batch of events and again a batch of dead letters (ARV-175), each read whole into memory
+    /// before the first send. From <see cref="MinBatchSize"/> to <see cref="MaxBatchSize"/> (ARV-269), a host with another
+    /// value does not start: 0 claims nothing, a very small batch drains a backlog one short transaction at a time, and a larger
+    /// batch holds more payloads at once (an event and a kept dead letter are up to about 1 MB of JSON each: at the default,
+    /// about 140 MB with dead letters at their cap and the usual small events, some hundreds of MB only if every event were
+    /// near 1 MB, within the smallest relay host's memory); the pass's time
+    /// (<see cref="PassSeconds"/>), not its batch, bounds its transaction and its locks.
+    /// </summary>
     public int BatchSize { get; init; } = 100;
 
+    public const int MinBatchSize = 10;
+    public const int MaxBatchSize = 100;
+
+    /// <summary>
+    /// The wait between two relay passes, except after a full batch with a row sent and no failure (ARV-246). From
+    /// <see cref="MinPollMilliseconds"/> to <see cref="MaxPollMilliseconds"/> (ARV-269), a host with another value does not
+    /// start: at 0 or below the wait is skipped, so a relay with nothing to send would claim from the database without a pause
+    /// (each replica runs 1000 / this short transactions a second while idle); above, an event written just after a pass waits
+    /// more than a minute for the next, and another pod waits as long to take over the lead.
+    /// </summary>
     public int PollMilliseconds { get; init; } = 500;
+
+    public const int MinPollMilliseconds = 100;
+    public const int MaxPollMilliseconds = 60_000;
 
     /// <summary>Sent rows are kept this long for tracing, then removed.</summary>
     public int KeepSentDays { get; init; } = 7;

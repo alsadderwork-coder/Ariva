@@ -133,6 +133,15 @@ public static partial class MessagingExtensions
         if (pass is < OutboxRelaySettings.MinPassSeconds or > OutboxRelaySettings.MaxPassSeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
                 $"Kafka:Outbox:PassSeconds must be from {OutboxRelaySettings.MinPassSeconds} to {OutboxRelaySettings.MaxPassSeconds} (ARV-264; {OutboxRelaySettings.MinPassSecondsForTopicHolds} or more for a topic with a partition without a leader to be held)."));
+        // ARV-269: a batch the relay can claim and a wait that paces it.
+        var batch = settings.Outbox?.BatchSize ?? 0;
+        if (batch is < OutboxRelaySettings.MinBatchSize or > OutboxRelaySettings.MaxBatchSize)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Outbox:BatchSize must be from {OutboxRelaySettings.MinBatchSize} to {OutboxRelaySettings.MaxBatchSize}."));
+        var poll = settings.Outbox?.PollMilliseconds ?? 0;
+        if (poll is < OutboxRelaySettings.MinPollMilliseconds or > OutboxRelaySettings.MaxPollMilliseconds)
+            throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"Kafka:Outbox:PollMilliseconds must be from {OutboxRelaySettings.MinPollMilliseconds} to {OutboxRelaySettings.MaxPollMilliseconds}."));
         var retry = settings.Outbox?.BrokerRetrySeconds ?? 0;
         if (retry is < OutboxRelaySettings.MinBrokerRetrySeconds or > OutboxRelaySettings.MaxBrokerRetrySeconds)
             throw new InvalidOperationException(string.Create(System.Globalization.CultureInfo.InvariantCulture,

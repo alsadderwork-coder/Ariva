@@ -905,6 +905,101 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         "it-consumer", new InvalidOperationException("boom"), _host.Clock.GetUtcNow().UtcDateTime);
 
     /// <summary>
+    /// ARV-269: a send this host's own producer failed (disposed, <c>Local_Destroy</c> as a retired client fails it, a message it
+    /// purged at a fatal error, the fatal error itself) is logged as the producer's and kept out of the row's broker streak:
+    /// past the one-minute streak no Error points at a partition without a leader and nothing is counted by topic; every
+    /// warning names the producer, none the broker; no attempt is counted.
+    /// </summary>
+    [Theory]
+    [InlineData("disposed")]
+    [InlineData("destroyed")]
+    [InlineData("purged")]
+    [InlineData("fatal")]
+    public async Task Relay_Should_ReportTheProducersOwnFailureAsItsOwn_When_ItLastsPastTheBrokerStreak(string failure)
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("P", 1));
+        var transport = new RecordingTransport { ProducerGoneFor = KafkaTopics.AlertStateChanged, ProducerGone = ProducersOwn(failure) };
+        var log = new RelayLog();
+        using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        var relay = StreakRelay(transport, log, metrics);
+
+        // Fifteen broker retries, 75 seconds: past the one-minute streak a broker failure would have reached.
+        for (var pass = 0; pass < 15; pass++)
+        {
+            (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+            _host.Clock.Advance(BrokerRetry);
+        }
+
+        log.Errors.Should().BeEmpty("the producer's own failure is not the broker's absence, so no streak points at a partition");
+        reader.Sum(OutboxMetrics.BrokerStreaksName).Should().Be(0);
+        relay.BrokerStreaksFollowed.Should().Be(0);
+        log.Warnings.Should().HaveCount(15).And.OnlyContain(w => w.Contains("this host's Kafka producer is unavailable", StringComparison.Ordinal) &&
+            !w.Contains("the broker is unavailable", StringComparison.Ordinal));
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message")).Should().Be(0, "not the row's failure (ARV-165)");
+
+        // The recreated client sends it.
+        transport.ProducerGoneFor = null;
+        (await relay.RunOnceAsync(Ct)).Sent.Should().Be(1);
+    }
+
+    /// <summary>
+    /// ARV-269: a producer's own failure ends a broker streak already running for the row, since the broker never saw those
+    /// sends: one broker failure, then the producer failing it for 65 seconds (past the one-minute streak), then the broker
+    /// again: that failure starts a new streak, so no Error points at a partition without a leader and nothing is counted.
+    /// The new streak is then reported as usual once it lasts the minute.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_EndTheBrokerStreak_When_TheProducerFailsTheRowInBetween()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("Q", 1));
+        var transport = new RecordingTransport { BrokerDownFor = KafkaTopics.AlertStateChanged };
+        var log = new RelayLog();
+        using var metrics = new OutboxMetrics(timeProvider: _host.Clock);
+        using var reader = new InstrumentReader(metrics.Meter);
+        var relay = StreakRelay(transport, log, metrics);
+
+        (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1, "the broker's absence starts the row's streak");
+        relay.BrokerStreaksFollowed.Should().Be(1);
+        _host.Clock.Advance(BrokerRetry);
+        (transport.BrokerDownFor, transport.ProducerGoneFor, transport.ProducerGone) = (null, KafkaTopics.AlertStateChanged, ProducersOwn("destroyed"));
+        for (var pass = 0; pass < 13; pass++)
+        {
+            (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+            _host.Clock.Advance(BrokerRetry);
+        }
+
+        relay.BrokerStreaksFollowed.Should().Be(0, "the producer's failure ended the streak");
+        (transport.BrokerDownFor, transport.ProducerGoneFor) = (KafkaTopics.AlertStateChanged, null);
+        (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+
+        log.Errors.Should().BeEmpty("70 seconds since the first broker failure, but the producer's 65 broke the streak");
+        reader.Sum(OutboxMetrics.BrokerStreaksName).Should().Be(0);
+
+        // The broker's absence alone for the minute is still reported.
+        for (var pass = 0; pass < 12; pass++)
+        {
+            _host.Clock.Advance(BrokerRetry);
+            (await relay.RunOnceAsync(Ct)).Failed.Should().Be(1);
+        }
+
+        log.Errors.Should().ContainSingle().Which.Should().Contain("for 1 minutes without a break");
+        reader.Sum(OutboxMetrics.BrokerStreaksName).Should().Be(1);
+    }
+
+    /// <summary>This host's producer's own failure, as the Kafka client and <c>KafkaProduce</c> raise it (ARV-246, ARV-269).</summary>
+    private static Func<Exception> ProducersOwn(string failure) => failure switch
+    {
+        "disposed" => () => new ObjectDisposedException(nameof(KafkaProduce)),
+        "destroyed" => () => new Confluent.Kafka.KafkaException(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_Destroy,
+            "The producer was replaced after a fatal error; send the message again.")),
+        "purged" => () => new Confluent.Kafka.KafkaException(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_PurgeQueue, "Local: Purged in queue")),
+        _ => () => new Confluent.Kafka.KafkaException(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_Fatal, "fatal", true))
+    };
+
+    /// <summary>
     /// ARV-245: a row the broker keeps refusing (a partition without a leader while the brokers answer: no attempt counts, so
     /// the "stuck after N attempts" Error never fires) warns at each try until its streak reaches
     /// <c>Kafka:Outbox:BrokerStreakMinutes</c> (one minute here), is then logged once as an Error naming its topic and the

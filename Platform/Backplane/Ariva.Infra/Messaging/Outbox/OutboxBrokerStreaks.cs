@@ -6,7 +6,7 @@ namespace Ariva.Infra.Messaging.Outbox;
 /// alone, while the brokers answer) is tried every <c>Kafka:Outbox:BrokerRetrySeconds</c> for ever and never reaches the
 /// "stuck after N attempts" Error. The relay notes each such failure here and reports the row once, when its streak passes
 /// <see cref="OutboxRelaySettings.BrokerStreakMinutes"/>. A send ends the streak, and so does a failure of the row's own (the
-/// broker answered it).
+/// broker answered it) or of this host's own producer (the broker never saw the send, ARV-269).
 /// <para>
 /// Kept in the relay's memory, not in the row: a relay that takes over the lead (another pod, or this one after a restart)
 /// starts the streaks it sees afresh, so a row is reported once per relay that leads through its streak. Bounded: a streak

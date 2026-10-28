@@ -1672,10 +1672,29 @@
         "docs and wiki pages affected by the change are updated (wiki 04 Kafka:Outbox rows, wiki 10 relay entries, costly-operations; node scripts/verify.mjs docs passes)"
       ],
       "priority": 313,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Filed 2026-10-27 by ARV-246 from its security review (advice 4 and 5). No sign-in code.",
       "dependsOn": [
         "ARV-246"
+      ]
+    },
+    {
+      "id": "ARV-270",
+      "title": "[E6] Outbox broker streak names its cause: a full local queue or a send bound is not a partition without a leader",
+      "description": "From the ARV-269 security review (2026-10-28, advice 5). The ARV-245 broker streak counts every failure IsBrokerUnavailable names, so its Error, which says the topic's partition may have no leader, also follows causes that are not a partition: Local_QueueFull (this host's own producer queue, shared with ISvcMessageBus and dead-letter sends, full under a sensor flood the brokers cannot absorb), KafkaProduceTimeoutException (the producer's own 45 second bound) and the report sweep's Local_TimedOut. Name the last failure's code in the streak Error and say 'partition' only for a streak of Local_MsgTimedOut, or keep the ambiguous causes out of the streak with their own report. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "The broker streak's Error names the last failure's cause and suggests a partition without a leader only for Local_MsgTimedOut; a streak of Local_QueueFull or of the producer's own bound says what it is, with integration tests in OutboxRelayTests",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (wiki 10 relay entries and the outboxBrokerStreak rule; node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 314,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-10-28 by ARV-269 from its security review (advice 5). No sign-in code.",
+      "dependsOn": [
+        "ARV-269"
       ]
     }
   ]

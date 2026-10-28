@@ -428,7 +428,14 @@ public sealed class OutboxRelay(
                 // ARV-264: an event row timed out in the client while the brokers answer: a partition of its topic has no
                 // leader. Only that topic waits, so the other topics are not held behind it at every pass.
                 var partitionHeld = !passTimeUsed && !deadLetter && transport.IsPartitionUnavailable(e) && await BrokersAnswerAsync(ct);
-                ReportBrokerUnavailable(row, e, now, topicHeld: partitionHeld || (!passTimeUsed && !producersOwn && deadLetter));
+                if (producersOwn)
+                {
+                    // ARV-269: the broker never saw this send, so a streak of its absence cannot run "without a break" through it.
+                    _streaks.Ended(row.Seq);
+                    ReportProducerUnavailable(row, e);
+                }
+                else
+                    ReportBrokerUnavailable(row, e, now, topicHeld: partitionHeld || (!passTimeUsed && deadLetter));
                 if (!passTimeUsed && !producersOwn && await HoldTopicAsync(connection, transaction, row, heldTopics, ct))
                     continue;
                 if (partitionHeld)
@@ -448,7 +455,8 @@ public sealed class OutboxRelay(
             {
                 failed++;
                 held.Add((row.Topic, row.Key));
-                // The broker answered this row, so a streak of its absence ends (ARV-245).
+                // The broker answered this row (or, with a transport keeping the interface's defaults, this host's producer
+                // failed it), so a streak of the broker's absence ends (ARV-245).
                 _streaks.Ended(row.Seq);
                 await MarkFailedAsync(connection, transaction, row.Seq, now, e, ct);
                 if (row.Attempts + 1 >= kafka.Outbox.StuckAfterAttempts)
@@ -471,7 +479,8 @@ public sealed class OutboxRelay(
                 }
 
                 // A row that cannot be read (unknown type, bad payload) only holds back its key. Anything else is the
-                // broker or the network (a send past the pass's time included, and a transport already disposed): the rest
+                // broker, the network or, with a transport keeping the interface's defaults, this host's producer (a send past
+                // the pass's time included, and a transport already disposed): the rest
                 // of the batch would fail the same way after the produce timeout, so the pass ends here and the remaining
                 // rows wait untouched for the next one; a dead letter's holds back only its topic (ARV-175), unless the failure is
                 // this host's producer's own (ARV-246: a disposed transport), which ends the pass and holds nothing.
@@ -551,6 +560,16 @@ public sealed class OutboxRelay(
                 row.Seq, row.MessageType, row.Id, row.Topic, BrokerRetry.TotalSeconds);
         }
     }
+
+    /// <summary>
+    /// Logs a row this host's own producer did not send (ARV-269): disposed, retired or stopping, a fatal client error, or a
+    /// message it purged at that error. Named as the producer's, not as the broker's absence, and kept out of the row's broker
+    /// streak (ARV-245), whose Error points at a partition without a leader (the caller ends the row's streak): the row is due
+    /// again after the broker retry and sent once the producer is ready again (after a fatal error, once it is recreated).
+    /// </summary>
+    private void ReportProducerUnavailable(OutboxEnvelope row, Exception e) =>
+        logger.LogWarning(e, "Outbox row {Seq} ({MessageType} {EventId} to {Topic}) not sent: this host's Kafka producer is unavailable (stopping, retired or failed); due again in {Seconds} s, sent once the producer is ready",
+            row.Seq, row.MessageType, row.Id, row.Topic, BrokerRetry.TotalSeconds);
 
     /// <summary>The topics held at <paramref name="now"/> (ARV-264); the holds that have ended are dropped.</summary>
     private string[] TopicsHeldAt(DateTime now)

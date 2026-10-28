@@ -449,6 +449,58 @@ public sealed class ProducerHardeningTests
 
     [Theory]
     [InlineData("0", true)]
+    [InlineData("-1", true)]
+    [InlineData("9", true)]
+    [InlineData("10", false)]
+    [InlineData("100", false)]
+    [InlineData("101", true)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_TheRelaysBatchIsOutOfBounds(string rows, bool refused)
+    {
+        // ARV-269: a batch of 0 claims nothing, and a pass reads its whole claim (events and dead letters, each up to about
+        // 1 MB) into memory before its first send, so the default is the most the smallest relay host holds with room.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Kafka:Enabled"] = "true",
+            ["Kafka:Outbox:BatchSize"] = rows
+        }).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (refused)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Outbox:BatchSize must be from 10 to 100*");
+        else
+            add.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("0", true)]
+    [InlineData("-1", true)]
+    [InlineData("99", true)]
+    [InlineData("100", false)]
+    [InlineData("200", false)]
+    [InlineData("500", false)]
+    [InlineData("60000", false)]
+    [InlineData("60001", true)]
+    public void AddArivaMessaging_Should_RefuseToStart_When_TheRelaysPollIsOutOfBounds(string milliseconds, bool refused)
+    {
+        // ARV-269: at 0 or below the relay's wait is skipped, so a relay with nothing to send would claim without a pause
+        // (ARV-246's wait after a pass that sent nothing included); past a minute an event waits that long for its pass.
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Kafka:Enabled"] = "true",
+            ["Kafka:Outbox:PollMilliseconds"] = milliseconds
+        }).Build();
+
+        var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
+
+        if (refused)
+            add.Should().Throw<InvalidOperationException>().WithMessage("*Kafka:Outbox:PollMilliseconds must be from 100 to 60000*");
+        else
+            add.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("0", true)]
     [InlineData("1", false)]
     [InlineData("5", false)]
     [InlineData("30", false)]
