@@ -7,13 +7,16 @@ namespace Ariva.Infra.Streaming;
 /// The stream's projection of a live minute into the screens' snapshot (ARV-035): the published values only. It lives on the
 /// stream's side (ARV-104g1) so that no live type takes the stream's <see cref="QueueLiveMinute"/>, which also carries the shadow
 /// nowcast: the live snapshot is built from the published fields here and never receives the shadow at all (the exposure
-/// tests' signature check in Ariva.UnitTests).
+/// tests' signature check in Ariva.UnitTests). A minute without measurement (<see cref="QueueLiveMinute.Unknown"/>, ARV-259e2)
+/// gives a snapshot without nowcast, throughput or no-service reason, its length and nowcast flagged degraded.
 /// </summary>
 public static class LiveMinuteSnapshots
 {
     public static LiveZoneSnapshot From(QueueLiveMinute live, DateTime publishedUtc)
     {
         ArgumentNullException.ThrowIfNull(live);
+        if (live.Unknown)
+            return new LiveZoneSnapshot(live.ZoneKey, live.MinuteUtc, live.QueueLength, live.LengthMeasured, true, null, null, null, true, publishedUtc, Unknown: true);
         return new LiveZoneSnapshot(live.ZoneKey, live.MinuteUtc, live.QueueLength, live.LengthMeasured, live.LengthDegraded, live.NowcastMinutes,
             live.Throughput, live.NoService?.ToString(), live.NowcastDegraded, publishedUtc);
     }

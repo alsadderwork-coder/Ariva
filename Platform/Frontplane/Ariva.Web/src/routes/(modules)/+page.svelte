@@ -81,10 +81,12 @@
 	);
 	const level = $derived(levels.find((l) => l.id === levelId) ?? null);
 	const levelZones = $derived(queueZones.filter((z) => z.levelId === levelId));
+	// The zones measured now: a fresh snapshot of a zone with a measurement (ARV-259e2: an Unknown zone has none, so it is in
+	// no total and does not count as reporting).
 	const fresh = $derived(
 		queueZones
 			.map((z) => snapshots.get(z.key))
-			.filter((s): s is ZoneSnapshot => !!s && !isStale(s, now))
+			.filter((s): s is ZoneSnapshot => !!s && !isStale(s, now) && !s.unknown)
 	);
 	const waiting = $derived(fresh.reduce((sum, s) => sum + s.queueLength, 0));
 	const longest = $derived(Math.max(0, ...fresh.map((s) => s.nowcastMinutes ?? 0)));
@@ -446,10 +448,21 @@
 										</button>
 									</th>
 									<td class="px-4 py-2 text-end tabular-nums"
-										>{snapshot ? numberFormat.format(snapshot.queueLength) : ''}</td
+										>{snapshot && !snapshot.unknown
+											? numberFormat.format(snapshot.queueLength)
+											: ''}</td
 									>
 									<td class="px-4 py-2 text-end tabular-nums">
-										{#if snapshot?.nowcastMinutes != null}
+										{#if snapshot?.unknown}
+											<span
+												data-testid="not-measured"
+												class="text-xs text-muted-foreground"
+												title={$_('liveOperations.notMeasuredHint')}
+												>{$_('liveOperations.status.notMeasured')}<span class="sr-only"
+													>: {$_('liveOperations.notMeasuredHint')}</span
+												></span
+											>
+										{:else if snapshot?.nowcastMinutes != null}
 											{#if estimateOnly(snapshot)}<span
 													data-testid="estimate-marker"
 													class="me-1 text-muted-foreground"
@@ -486,6 +499,13 @@
 														values: { seconds: staleAfterSeconds }
 													})}
 													><StatusBadge tone="neutral" label={$_('liveOperations.stale')} /></span
+												>
+											{:else if status === 'notMeasured'}
+												<span title={$_('liveOperations.notMeasuredHint')}
+													><StatusBadge
+														tone={statusTone[status]}
+														label={$_('liveOperations.status.notMeasured')}
+													/></span
 												>
 											{:else}
 												<StatusBadge

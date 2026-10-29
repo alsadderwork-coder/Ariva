@@ -26,7 +26,8 @@
 		overTarget: 'fill-status-danger/55 stroke-status-danger-solid',
 		degraded: 'fill-status-neutral/60 stroke-status-neutral-foreground',
 		noEstimate: 'fill-status-neutral/45 stroke-status-neutral-foreground',
-		noData: 'fill-status-neutral/30 stroke-status-neutral-foreground'
+		noData: 'fill-status-neutral/30 stroke-status-neutral-foreground',
+		notMeasured: 'fill-status-neutral/15 stroke-status-neutral-foreground'
 	};
 
 	function centre(points: Point[]): Point {
@@ -65,6 +66,7 @@
 			<polygon
 				points={zone.points.map((p) => `${p.x},${p.y}`).join(' ')}
 				class={cn(fill[status], 'cursor-pointer')}
+				stroke-dasharray={status === 'notMeasured' ? '6 4' : undefined}
 				stroke-width={selected === zone.key ? 3 : 1.5}
 				vector-effect="non-scaling-stroke"
 				role="button"
@@ -72,7 +74,11 @@
 				aria-label={zone.name}
 				onpointerdown={() => onSelect(zone.key)}
 			>
-				<title>{zone.name}</title>
+				<title
+					>{status === 'notMeasured'
+						? `${zone.name}: ${$_('liveOperations.notMeasuredHint')}`
+						: zone.name}</title
+				>
 			</polygon>
 			<text
 				x={middle.x}
@@ -86,10 +92,25 @@
 				y={middle.y + size / 50}
 				font-size={size / 45}
 				text-anchor="middle"
-				class="pointer-events-none fill-foreground font-semibold tabular-nums"
+				class={cn(
+					'pointer-events-none fill-foreground font-semibold tabular-nums',
+					status === 'notMeasured' && 'hidden'
+				)}
 			>
 				{snapshot?.nowcastMinutes != null ? `${Math.round(snapshot.nowcastMinutes)}′` : '·'}
 			</text>
+			{#if status === 'notMeasured'}
+				<!-- ARV-259e2: a zone without measurement says so in place of its wait. -->
+				<text
+					data-testid="plan-not-measured"
+					x={middle.x}
+					y={middle.y + size / 50}
+					font-size={size / 60}
+					text-anchor="middle"
+					class="pointer-events-none fill-muted-foreground"
+					>{$_('liveOperations.status.notMeasured')}</text
+				>
+			{/if}
 		</g>
 	{/each}
 </svg>

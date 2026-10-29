@@ -176,6 +176,26 @@ public sealed class DisplayStaleTests(PostgresFixture fixture, RedisFixture redi
     }
 
     [Fact]
+    public async Task Sweep_Should_NotCountADisplay_When_ItsZoneIsFreshlyUnknown()
+    {
+        // ARV-259e2 (formulas F11): a zone without measurement shows the display's neutral message by design, as one out of service, so
+        // the display is not stale while the snapshot saying so is fresh, and is once that snapshot is older than its threshold.
+        await HostAsync();
+        await ExecuteAsync("INSERT INTO site (id, code, name) VALUES (gen_random_uuid(), 'DSU', 'Stale Unknown')");
+        await _snapshots.PublishAsync([new LiveZoneSnapshot("DSU/Z1", Now.AddMinutes(-1), 12, true, true, null, null, null, true, Now.AddSeconds(-10), Unknown: true)], Ct);
+        await DisplayAsync("DSU", "U1", 60, ["Z1"]);
+        (await _snapshots.GetAsync("DSU/Z1", Ct)).Should().Match<LiveZoneSnapshot>(s => s.Unknown && s.NowcastMinutes == null, "Unknown comes back from Redis");
+
+        await Monitor.RunOnceAsync(Ct);
+
+        BySite(Monitor.Last).Should().BeEquivalentTo(new Dictionary<string, (int, int)> { ["DSU"] = (1, 0) }, "a fresh Unknown snapshot is not stale");
+
+        _host.Clock.Advance(TimeSpan.FromSeconds(51));
+        await Monitor.RunOnceAsync(Ct);
+        BySite(Monitor.Last).Should().BeEquivalentTo(new Dictionary<string, (int, int)> { ["DSU"] = (1, 1) }, "61 seconds old against its 60");
+    }
+
+    [Fact]
     public async Task Sweep_Should_SkipTheRoundAndBoundItsRead_When_AnotherReplicaHoldsTheLockOrDisplaysAreMany()
     {
         await HostAsync();

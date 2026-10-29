@@ -335,6 +335,38 @@ public sealed class LiveHubTests
             .NoService.Should().Be("NothingOpen");
     }
 
+    [Fact]
+    public void Snapshot_Should_CarryUnknownWithNothingMeasured_When_TheMinuteHadNoMeasurement()
+    {
+        // ARV-259e2 (formulas F11): a minute in which no live device covered the zone's lines reaches the screens as Unknown, with no
+        // nowcast, throughput or no-service reason, and both flags set even if the engine's minute left one unset.
+        static byte[] Json(object value) => System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(value, Ariva.Infra.Messaging.EventCatalog.Json);
+        var minute = new QueueLiveMinute("DMO/A-VIS", Visitors.MinuteUtc, 61, true, false, 15.4, 4.0, NoServiceReason.NothingOpen, false) { Unknown = true };
+
+        var unknown = Ariva.Infra.Streaming.LiveMinuteSnapshots.From(minute, Visitors.PublishedUtc);
+
+        unknown.Should().Be(new LiveZoneSnapshot("DMO/A-VIS", Visitors.MinuteUtc, 61, true, true, null, null, null, true, Visitors.PublishedUtc, Unknown: true));
+        LiveZones.Plausible(unknown).Should().BeTrue();
+        RedisLiveSnapshots.Read(Json(unknown)).Should().Be(unknown, "Unknown survives the round trip through Redis");
+        Ariva.Infra.Streaming.LiveMinuteSnapshots.From(minute with { Unknown = false }, Visitors.PublishedUtc).Unknown.Should().BeFalse();
+
+        foreach (var (bad, because) in new (LiveZoneSnapshot, string)[]
+                 {
+                     (unknown with { NowcastMinutes = 3 }, "a nowcast"), (unknown with { ThroughputPerMinute = 1 }, "a throughput"),
+                     (unknown with { NoService = "NothingOpen" }, "a no-service reason"), (unknown with { LengthDegraded = false }, "a length not flagged"),
+                     (unknown with { NowcastDegraded = false }, "a nowcast not flagged")
+                 })
+        {
+            LiveZones.Plausible(bad).Should().BeFalse("an Unknown minute has no measurement, so {0} comes with nothing", because);
+            RedisLiveSnapshots.Read(Json(bad)).Should().BeNull(because);
+        }
+
+        // A snapshot written before ARV-259e2 has no unknown member: it reads as a measured one.
+        var older = System.Text.Json.JsonSerializer.SerializeToNode(Visitors, Ariva.Infra.Messaging.EventCatalog.Json)!.AsObject();
+        older.Remove("unknown").Should().BeTrue();
+        RedisLiveSnapshots.Read(older.ToJsonString()).Should().Be(Visitors);
+    }
+
     private static IArivaHost Main(bool granted)
     {
         var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder => builder.ConfigureTestServices(services =>

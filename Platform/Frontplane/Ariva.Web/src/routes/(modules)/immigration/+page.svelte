@@ -6,7 +6,12 @@
 	import StaffingPanel from '$lib/components/pages/immigration/StaffingPanel.svelte';
 	import DataQualityPanel from '$lib/components/pages/live/DataQualityPanel.svelte';
 	import OverflowMarker from '$lib/components/pages/live/OverflowMarker.svelte';
-	import { estimateOnly, statusTone, waitStatus } from '$lib/components/pages/live/waits';
+	import {
+		estimateOnly,
+		statusTone,
+		waitStatus,
+		type WaitStatus
+	} from '$lib/components/pages/live/waits';
 	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
 	import StatusBadge, { type StatusTone } from '$lib/components/shared/StatusBadge.svelte';
@@ -118,20 +123,31 @@
 		if (result.data) overflowFresh = result.data.freshMinutes;
 	}
 
-	/** The lane's wait now: the longest fresh nowcast among its queue zones. */
-	function laneWait(code: string): { snapshot: ZoneSnapshot | undefined; tone: StatusTone } {
+	/**
+	 * The lane's wait now: the longest fresh nowcast among its queue zones. A lane with a queue zone that has no measurement
+	 * (ARV-259e2, formulas F11) has no longest wait either, so it shows that zone, Not measured.
+	 */
+	function laneWait(code: string): {
+		snapshot: ZoneSnapshot | undefined;
+		tone: StatusTone;
+		status: WaitStatus;
+	} {
 		const fresh = (hall?.queues ?? [])
 			.filter((q) => q.lane === code)
 			.map((q) => snapshots.get(q.zoneKey))
 			.filter((s): s is ZoneSnapshot => !!s)
 			.sort((a, b) => (b.nowcastMinutes ?? -1) - (a.nowcastMinutes ?? -1));
-		const snapshot = fresh[0];
-		return { snapshot, tone: statusTone[waitStatus(snapshot, now)] };
+		const snapshot = fresh.find((s) => waitStatus(s, now) === 'notMeasured') ?? fresh[0];
+		const status = waitStatus(snapshot, now);
+		return { snapshot, tone: statusTone[status], status };
 	}
+
+	/** What a cell shows without a value: an en dash, written as its escape. */
+	const none = '\u2013';
 
 	function seconds(value: number | null | undefined): string {
 		return value == null
-			? '–'
+			? none
 			: $_('immigration.seconds', { values: { value: numberFormat.format(value) } });
 	}
 
@@ -311,7 +327,15 @@
 										<span class="ms-1 font-mono text-xs text-muted-foreground">{code}</span>
 									</th>
 									<td class="px-4 py-2 text-end tabular-nums" data-testid="lane-wait">
-										{#if wait.snapshot?.nowcastMinutes != null}
+										{#if wait.status === 'notMeasured'}
+											<span data-testid="not-measured" title={$_('liveOperations.notMeasuredHint')}
+												><StatusBadge
+													tone={wait.tone}
+													label={$_('liveOperations.status.notMeasured')}
+												/><span class="sr-only">: {$_('liveOperations.notMeasuredHint')}</span
+												></span
+											>
+										{:else if wait.snapshot?.nowcastMinutes != null}
 											{#if estimateOnly(wait.snapshot)}<span
 													data-testid="estimate-marker"
 													class="me-1 text-muted-foreground"
@@ -335,7 +359,9 @@
 										/>
 									</td>
 									<td class="px-4 py-2 text-end tabular-nums"
-										>{wait.snapshot ? numberFormat.format(wait.snapshot.queueLength) : '–'}</td
+										>{wait.snapshot && !wait.snapshot.unknown
+											? numberFormat.format(wait.snapshot.queueLength)
+											: none}</td
 									>
 									<td class="px-4 py-2 text-end tabular-nums">{lane?.desksOpen ?? 0}</td>
 									<td class="px-4 py-2 text-end tabular-nums">{lane?.desksPaused ?? 0}</td>

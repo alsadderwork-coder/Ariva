@@ -156,6 +156,38 @@ test('a border shift supervisor sees each lane, the desks and the e-gates of the
 		await expect(page.getByTestId('aman-link')).toHaveAttribute('aria-disabled', 'true');
 		expect(await page.locator('main').innerText(), 'Ariva shows its own desk codes, not AMAN’s').not.toContain('IN02');
 
+		// ARV-259e2: then every sensor of the e-gate lane's queue is out (formulas F11): the lane has no longest wait, so it shows
+		// Not measured, with no wait and no queue length, in English and Arabic.
+		const unknown = {
+			...snapshot,
+			minuteUtc: new Date(Date.parse(snapshot.minuteUtc) + 60_000).toISOString(),
+			nowcastMinutes: null,
+			throughputPerMinute: null,
+			lengthDegraded: true,
+			nowcastDegraded: true,
+			unknown: true,
+			publishedUtc: new Date().toISOString()
+		};
+		await redis.set(`${instance}live:zone:DMO/A-EG`, JSON.stringify(unknown), { EX: 3600 });
+		await expect
+			.poll(
+				async () => {
+					await redis.publish(`${instance}live:zones`, JSON.stringify(unknown));
+					return egLane.getByTestId('not-measured').count();
+				},
+				{ timeout: 20_000, intervals: [500, 1000, 2000] }
+			)
+			.toBe(1);
+		await expect(egLane.getByTestId('lane-wait')).toContainText('Not measured');
+		await expect(egLane.getByTestId('not-measured')).toHaveAttribute('title', /no measurement/);
+		await expect(egLane.getByTestId('lane-wait')).not.toContainText('min');
+		await expect(egLane.locator('td').nth(1), 'no queue length').toHaveText('\u2013');
+		await page.getByTestId('language-toggle').click();
+		await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+		await expect(egLane.getByTestId('lane-wait')).toContainText('غير مقاس');
+		await page.getByTestId('language-toggle').click();
+		await expect(page.locator('html')).toHaveAttribute('dir', 'ltr');
+
 		// The departures hall has its own lanes.
 		await page.getByTestId('hall-Emigration').click();
 		await expect(page.getByTestId('hall-Emigration')).toHaveAttribute('aria-selected', 'true');

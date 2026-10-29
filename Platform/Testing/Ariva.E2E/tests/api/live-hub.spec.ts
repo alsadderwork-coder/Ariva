@@ -100,7 +100,38 @@ test.describe('live hub', () => {
 			expect(received.length).toBeGreaterThanOrEqual(before);
 
 			// Joining again returns the kept snapshot straight away.
-			expect(await hub.invoke('JoinZone', zoneKey)).toMatchObject({ zoneKey, queueLength: 61 });
+			expect(await hub.invoke('JoinZone', zoneKey)).toMatchObject({ zoneKey, queueLength: 61, unknown: false });
+
+			// ARV-259e2: a minute without measurement (every sensor of the zone out, formulas F11) is announced as Unknown with
+			// nothing measured, and joining returns it so; one claiming Unknown with a nowcast never reaches a screen.
+			const unknown = {
+				...snapshot,
+				minuteUtc: '2026-09-28T18:06:00Z',
+				nowcastMinutes: null,
+				throughputPerMinute: null,
+				lengthDegraded: true,
+				nowcastDegraded: true,
+				unknown: true,
+				publishedUtc: new Date().toISOString()
+			};
+			await redis.set(`${instance}live:zone:${zoneKey}`, JSON.stringify(unknown), { EX: 3600 });
+			await expect
+				.poll(async () => {
+					await redis.publish(`${instance}live:zones`, JSON.stringify(unknown));
+					return received.some((s) => s.unknown === true);
+				}, { timeout: 20_000, intervals: [500, 1000, 2000] })
+				.toBe(true);
+			expect(received.find((s) => s.unknown === true)).toMatchObject({ zoneKey, unknown: true, nowcastMinutes: null, throughputPerMinute: null, noService: null });
+			expect(await hub.invoke('JoinZone', zoneKey)).toMatchObject({ zoneKey, unknown: true, nowcastMinutes: null, lengthDegraded: true, nowcastDegraded: true });
+			// The sentinel after the forged ones: the relay forwards one channel in order, so once it arrives the forged ones were refused.
+			const forged = received.length;
+			await redis.publish(`${instance}live:zones`, JSON.stringify({ ...unknown, nowcastMinutes: 3.5 }));
+			await redis.publish(`${instance}live:zones`, JSON.stringify({ ...unknown, noService: 'NothingOpen' }));
+			await redis.publish(`${instance}live:zones`, JSON.stringify({ ...unknown, lengthDegraded: false }));
+			const sentinel = { ...unknown, minuteUtc: '2026-09-28T18:07:00Z' };
+			await redis.publish(`${instance}live:zones`, JSON.stringify(sentinel));
+			await expect.poll(() => received.slice(forged).some((s) => s.minuteUtc === sentinel.minuteUtc), { timeout: 20_000 }).toBe(true);
+			expect(received.slice(forged).filter((s) => s.nowcastMinutes === 3.5 || s.noService === 'NothingOpen' || s.lengthDegraded === false)).toHaveLength(0);
 		} finally {
 			await redis.quit();
 			await hub.stop();

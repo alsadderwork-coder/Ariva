@@ -56,10 +56,13 @@ internal sealed class SvcDisplayBoard(
         foreach (var entry in display.EntryList)
         {
             var snapshot = await snapshots.GetAsync(ZoneKeys.For(display.SiteCode, entry.Zone), ct);
+            // ARV-259e2: a zone without measurement (Unknown) gives no nowcast, so the player shows the display's neutral message.
             entries.Add(snapshot is null
                 ? new DisplayBoardEntryViewModel(entry.Labels, null, false, null, null)
-                : new DisplayBoardEntryViewModel(entry.Labels, snapshot.NowcastMinutes, snapshot.NowcastDegraded || snapshot.LengthDegraded, snapshot.NoService,
-                    AgeSeconds(snapshot, now)));
+                : snapshot.Unknown
+                    ? new DisplayBoardEntryViewModel(entry.Labels, null, true, null, AgeSeconds(snapshot, now))
+                    : new DisplayBoardEntryViewModel(entry.Labels, snapshot.NowcastMinutes, snapshot.NowcastDegraded || snapshot.LengthDegraded, snapshot.NoService,
+                        AgeSeconds(snapshot, now)));
         }
 
         var illustrative = await unitOfWork.StorageProvider.Query<Site>().AnyAsync(s => s.Code == display.SiteCode && s.IsIllustrative, ct);

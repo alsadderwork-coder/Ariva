@@ -16,7 +16,10 @@ import { Endpoints } from './Endpoints';
  * while the first connection is still opening ends on the zones it asked for last, never on an earlier list.
  */
 
-/** A queue zone's latest minute (Ariva.Infra LiveZoneSnapshot). */
+/**
+ * A queue zone's latest minute (Ariva.Infra LiveZoneSnapshot). `unknown` (ARV-259e2, formulas F11): the zone had no
+ * measurement in the minute (every sensor of it out); such a snapshot has no nowcast, throughput or no-service reason.
+ */
 export interface ZoneSnapshot {
 	zoneKey: string;
 	minuteUtc: string;
@@ -28,6 +31,7 @@ export interface ZoneSnapshot {
 	noService: string | null;
 	nowcastDegraded: boolean;
 	publishedUtc: string;
+	unknown: boolean;
 }
 
 /** What changed about an alert (Ariva.Infra AlertNotice); the screen reads the alert itself through the API. */
@@ -62,10 +66,16 @@ const isNumberOrNull = (value: unknown): value is number | null =>
 const isTime = (value: unknown): value is string =>
 	isText(value) && Number.isFinite(Date.parse(value));
 
-/** A hub message is untrusted input: a zone snapshot with the expected shape, or nothing. */
+/**
+ * A hub message is untrusted input: a zone snapshot with the expected shape, or nothing. `unknown` (ARV-259e2) is a boolean
+ * when present; a snapshot from a server before ARV-259e2 has none and reads as measured, as the server reads one stored
+ * before it, so the web app and Api.Main may be rolled out or back in either order. An Unknown one comes with nothing
+ * measured and both flags set, as the server checks too.
+ */
 export function asZoneSnapshot(value: unknown): ZoneSnapshot | null {
 	if (typeof value !== 'object' || value === null) return null;
 	const v = value as Record<string, unknown>;
+	const unknown = v.unknown === undefined ? false : v.unknown;
 	return isText(v.zoneKey) &&
 		isTime(v.minuteUtc) &&
 		isNumber(v.queueLength) &&
@@ -75,8 +85,15 @@ export function asZoneSnapshot(value: unknown): ZoneSnapshot | null {
 		isNumberOrNull(v.throughputPerMinute) &&
 		isTextOrNull(v.noService) &&
 		typeof v.nowcastDegraded === 'boolean' &&
-		isTime(v.publishedUtc)
-		? (value as ZoneSnapshot)
+		isTime(v.publishedUtc) &&
+		typeof unknown === 'boolean' &&
+		(!unknown ||
+			(v.nowcastMinutes === null &&
+				v.throughputPerMinute === null &&
+				v.noService === null &&
+				v.lengthDegraded === true &&
+				v.nowcastDegraded === true))
+		? { ...(value as ZoneSnapshot), unknown }
 		: null;
 }
 

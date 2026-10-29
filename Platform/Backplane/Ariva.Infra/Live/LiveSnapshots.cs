@@ -10,7 +10,11 @@ namespace Ariva.Infra.Live;
 /// <summary>
 /// A queue zone's live state as screens see it (ARV-035): the latest minute's queue length and nowcast, written by
 /// Ariva.Api.Stream after each checkpoint and pushed by Ariva.Api.Main's live hub to the zone's group. No identities, and no
-/// shadow nowcast: the stream builds it from the published values only (<c>LiveMinuteSnapshots</c>).
+/// shadow nowcast: the stream builds it from the published values only (<c>LiveMinuteSnapshots</c>). <c>Unknown</c> (ARV-259e2,
+/// formulas F11): the zone had no measurement in the minute (an entry or exit line without a live covering device); such a
+/// snapshot carries no nowcast, throughput or no-service reason, and its length and nowcast are flagged degraded, so a reader
+/// that knows only the flags still doubts it; its queue length is the engine's last, not a measurement, and no screen shows it.
+/// A snapshot written before ARV-259e2 reads as not Unknown.
 /// </summary>
 public sealed record LiveZoneSnapshot(
     string ZoneKey,
@@ -22,7 +26,8 @@ public sealed record LiveZoneSnapshot(
     double? ThroughputPerMinute,
     string NoService,
     bool NowcastDegraded,
-    DateTime PublishedUtc)
+    DateTime PublishedUtc,
+    bool Unknown = false)
 {
     // Built by the stream from a live minute's published values (Ariva.Infra.Streaming.LiveMinuteSnapshots, ARV-104g1): no live
     // type takes the stream's minute, which also carries the shadow nowcast.
@@ -48,6 +53,8 @@ public static partial class LiveZones
         (s.NowcastMinutes is null || (double.IsFinite(s.NowcastMinutes.Value) && s.NowcastMinutes >= 0 && s.NowcastMinutes <= 100_000)) &&
         (s.ThroughputPerMinute is null || (double.IsFinite(s.ThroughputPerMinute.Value) && s.ThroughputPerMinute >= 0)) &&
         (s.NoService is null || (s.NoService.Length <= 32 && Enum.TryParse<NoServiceReason>(s.NoService, out _))) &&
+        // ARV-259e2: an Unknown minute has no measurement, so nothing measured may come with it and both flags are set.
+        (!s.Unknown || (s.NowcastMinutes is null && s.ThroughputPerMinute is null && s.NoService is null && s.LengthDegraded && s.NowcastDegraded)) &&
         s.MinuteUtc.Year is >= 2000 and < 9000 && s.PublishedUtc.Year is >= 2000 and < 9000;
 
     [GeneratedRegex(@"^[A-Z0-9][A-Z0-9-]{0,16}/[^\u0000-\u001F/][^\u0000-\u001F]{0,199}\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]

@@ -226,6 +226,32 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
     }
 
     [Fact]
+    public async Task Board_Should_GiveAnUnknownZoneNoNowcast_When_ItHasNoMeasurement()
+    {
+        // ARV-259e2 (formulas F11): a zone without measurement gives its entry no nowcast and no no-service reason, flagged degraded,
+        // with its age, so the player shows the display's neutral message and never a number, even from a snapshot that carried one.
+        var admin = await AdminAsync("it.display.unknown.admin");
+        var manager = await ManagerAsync(admin, "it.display.unknown.manager");
+        var created = (await _host.AsCallerAsync(manager, s => Displays(s).CreateAsync(Request("UNK-1"), Ct))).Data;
+        AccountsHost unknown = null;
+        unknown = new AccountsHost(fixture, database: TestDatabase.Displays,
+            configure: services => services.AddSingleton<ILiveSnapshotStore>(new UnknownSnapshots(unknown.Clock, TimeSpan.FromSeconds(10))));
+        try
+        {
+            await unknown.CreateUserAsync("it.display.unknown.reader");
+            var board = await unknown.AsCallerAsync(null, s => Board(s).GetAsync(created.Display.Id, created.Display.CredentialPrefix, Ct));
+
+            board.HasErrors.Should().BeFalse(string.Join(", ", board.ErrorMessages ?? []));
+            board.Data.Entries.Should().ContainSingle().Which.Should().Match<DisplayBoardEntryViewModel>(e =>
+                e.NowcastMinutes == null && e.Degraded && e.NoService == null && e.AgeSeconds == 10 && e.Labels["en"] == "Citizens");
+        }
+        finally
+        {
+            await unknown.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task Layout_Should_RoundTripAuditedAndReachTheBoard_When_ADisplayIsSplit()
     {
         var admin = await AdminAsync("it.display.layout.admin");
@@ -298,6 +324,23 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
         var delete = () => command.ExecuteNonQueryAsync(Ct);
         (await delete.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("42501", "displays are soft deleted only");
         await transaction.RollbackAsync(Ct);
+    }
+
+    /// <summary>
+    /// Unknown live snapshots (ARV-259e2) published <paramref name="age"/> before each read; forged with a nowcast and a no-service
+    /// reason, which the store's checks would refuse, to prove the board drops them itself.
+    /// </summary>
+    private sealed class UnknownSnapshots(ManualClock clock, TimeSpan age) : ILiveSnapshotStore
+    {
+        public Task PublishAsync(IReadOnlyCollection<LiveZoneSnapshot> snapshots, CancellationToken ct) => Task.CompletedTask;
+
+        public Task<LiveZoneSnapshot> GetAsync(string zoneKey, CancellationToken ct)
+        {
+            var now = clock.GetUtcNow().UtcDateTime;
+            return Task.FromResult(new LiveZoneSnapshot(zoneKey, now.AddMinutes(-1), 12, true, true, 9, 3, "NothingOpen", true, now - age, Unknown: true));
+        }
+
+        public Task SubscribeAsync(Func<LiveZoneSnapshot, Task> handler, CancellationToken ct) => Task.CompletedTask;
     }
 
     /// <summary>Live snapshots published <paramref name="age"/> before each read, each read taking <paramref name="takes"/> of the clock.</summary>

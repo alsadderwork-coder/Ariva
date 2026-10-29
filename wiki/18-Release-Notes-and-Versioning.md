@@ -146,11 +146,17 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-259e2: a zone without measurement is Not measured on the screens and boards (2026-10-29)
+
+- The live snapshot in Redis and on the live hub carries `unknown` (the zone had no measurement in its minute, formulas F11); such a snapshot has no nowcast, throughput or no-service reason and both flags set, and one claiming `unknown` with any of them is refused on its way to a screen. A snapshot stored before the release reads as measured.
+- The live operations screen, its floor plan (outlined dashed) and the immigration screen show such a zone as Not measured, in English and Arabic, with no queue length or wait, never within target and outside the passengers waiting tile and the zones reporting count; an immigration lane with such a zone shows Not measured. Display boards give its entry no nowcast, so the player shows the display's neutral message, and the `displaysStale` rule does not count the display while the snapshot is fresh.
+- Ariva.Web and Ariva.Api.Main roll out or back in either order: the new web app reads a snapshot without the member (from an Api.Main before ARV-259e2) as measured, and a web app before ARV-259e2 ignores it and shows such a zone as Data degraded, without a nowcast. Nothing to migrate.
+
 ### ARV-259e1: a zone whose every device is out is Unknown (zone snapshot version 14, 2026-10-29)
 
 - Ariva.Api.Stream writes zone snapshot version 14: the zone's entry and exit lines without a live covering device and the ended spells whose live minutes are not all published yet. A version 13 snapshot restores as it is, its spells derived from its devices; a rollback to a build before ARV-259e1 refuses version 14 snapshots and starts the zones afresh, as for version 11 (below).
 - Behaviour: a zone whose every device is out (offline, or silent beyond 180 seconds) is `Unknown` where it was `Degraded` (formulas F11, the owner's decision of 2026-10-29): its bins are stored `Unknown` for the spell, so a single-sensor zone's bins over an outage read `Unknown` in reports, exports and the weekly summary's Unknown count. A zone with another live device stays `Degraded`. Bins made final before the release keep their revision; a recomputation over a range with such a spell writes revision r + 1 for them.
-- Not yet: the live screens and the display boards still show such a zone as degraded (ARV-259e2), and the `zonesUnknown` rule is not shipped (ARV-259e3).
+- Not yet: the `zonesUnknown` rule (ARV-259e3); the screens and boards follow in ARV-259e2 (above).
 - Nothing to configure: until devices declare the lines they cover (ARV-259e4, ARV-259e5), every device of a zone covers all its lines.
 
 ### ARV-259d: the display stale rule (2026-10-29)

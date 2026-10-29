@@ -44,6 +44,42 @@ public sealed class LiveSnapshotsTests(RedisFixture redis) : IClassFixture<Redis
         (await reader.GetAsync("bogus", Ct)).Should().BeNull();
         await stop.CancelAsync();
     }
+
+    [Fact]
+    public async Task Snapshots_Should_KeepUnknownWithNothingMeasured_When_PublishedOrReadBack()
+    {
+        // ARV-259e2 (formulas F11) on a real Redis: an Unknown snapshot is kept, announced and read back as Unknown; one claiming
+        // Unknown with a nowcast is neither kept nor announced, and written to Redis past Stream's checks it reads as nothing
+        // (the live hub's JoinZone and the display board read it so).
+        var settings = new RedisSettings { Enabled = true, ConnectionString = redis.ConnectionString, InstanceName = "it-live-unknown:" };
+        await using var connection = new RedisConnection(settings);
+        var store = new RedisLiveSnapshots(connection);
+        var unknown = Visitors with { LengthDegraded = true, NowcastMinutes = null, ThroughputPerMinute = null, NowcastDegraded = true, Unknown = true };
+        var forged = unknown with { ZoneKey = "DMO/A-CIT", NowcastMinutes = 3 };
+        var received = new ConcurrentQueue<LiveZoneSnapshot>();
+        using var stop = new CancellationTokenSource();
+        await store.SubscribeAsync(s =>
+        {
+            received.Enqueue(s);
+            return Task.CompletedTask;
+        }, stop.Token);
+
+        // The sentinel after the forged one: announcements on one channel arrive in order, so once it is in, the forged one was not.
+        await store.PublishAsync([unknown, forged, Visitors with { ZoneKey = "DMO/A-CRW" }], Ct);
+        var until = DateTime.UtcNow.AddSeconds(10);
+        while (!received.Any(r => r.ZoneKey == "DMO/A-CRW") && DateTime.UtcNow < until)
+            await Task.Delay(50, Ct);
+
+        received.Select(r => r.ZoneKey).Should().Equal(["DMO/A-VIS", "DMO/A-CRW"], "the forged one is not announced");
+        received.First().Should().Be(unknown);
+        (await store.GetAsync("DMO/A-VIS", Ct)).Should().Be(unknown);
+        (await store.GetAsync("DMO/A-CIT", Ct)).Should().BeNull("not kept");
+        var database = (await connection.GetAsync()).GetDatabase();
+        await database.StringSetAsync("it-live-unknown:live:zone:DMO/A-RES",
+            System.Text.Json.JsonSerializer.Serialize(forged with { ZoneKey = "DMO/A-RES" }, Ariva.Infra.Messaging.EventCatalog.Json));
+        (await store.GetAsync("DMO/A-RES", Ct)).Should().BeNull("read back, it fails the checks");
+        await stop.CancelAsync();
+    }
     [Fact]
     public async Task AlertNotices_Should_BeAnnouncedAndCheckedOnTheWayBack_When_PublishedAndForged()
     {

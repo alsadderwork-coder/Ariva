@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type WebSocketRoute } from '@playwright/test';
 import pg from 'pg';
 import { createClient } from 'redis';
 import { accounts, call, signIn } from '../support/accounts';
@@ -45,14 +45,17 @@ function snapshot(zone: string, queueLength: number, nowcastMinutes: number | nu
 	};
 }
 
-/** People queuing at the demo airport's zones whose snapshot in Redis is fresh (published within 150 seconds). */
+/**
+ * People queuing at the demo airport's zones whose snapshot in Redis is fresh (published within 150 seconds) and measured: a
+ * zone without measurement (ARV-259e2) is in no total.
+ */
 async function freshQueueLengths(redis: ReturnType<typeof createClient>): Promise<number> {
 	let total = 0;
 	for (const key of await redis.keys(`${instance}live:zone:DMO/*`)) {
 		const value = await redis.get(key);
 		if (!value) continue;
-		const snapshot = JSON.parse(value) as { queueLength: number; publishedUtc: string };
-		if (Date.now() - Date.parse(snapshot.publishedUtc) <= 150_000) total += snapshot.queueLength;
+		const snapshot = JSON.parse(value) as { queueLength: number; publishedUtc: string; unknown?: boolean };
+		if (Date.now() - Date.parse(snapshot.publishedUtc) <= 150_000 && !snapshot.unknown) total += snapshot.queueLength;
 	}
 	return total;
 }
@@ -289,7 +292,7 @@ test('a handler station manager has no arrival wave and no other desks; Arabic m
 	await guards.expectClean();
 });
 
-test('a nowcast from the exit rate alone is marked as an estimate; only doubtful data is shown as degraded (ARV-064)', async ({ page }) => {
+test('a nowcast from the exit rate alone is marked as an estimate; only doubtful data is shown as degraded; a zone without measurement as Not measured (ARV-064, ARV-259e2)', async ({ page }) => {
 	test.skip(!redisUrl, "the live hub needs the run's Redis (ARIVA_E2E_REDIS_URL)");
 	const guards = await guardPage(page);
 	const redis = createClient({ url: redisUrl });
@@ -325,9 +328,113 @@ test('a nowcast from the exit rate alone is marked as an estimate; only doubtful
 			)
 			.toContain('No estimate');
 		await expect(residents.getByTestId('estimate-marker')).toHaveCount(0);
+
+		// ARV-259e2: then every sensor of D-CRW is out (formulas F11), as Stream announces it: nothing measured, both flags set.
+		// The queue length is the last one the engine held; the screen never shows it, nor counts it in the waiting tile.
+		const unknown = {
+			...snapshot('D-CRW', 27, null, new Date(minute.getTime() + 60_000)),
+			throughputPerMinute: null,
+			lengthDegraded: true,
+			nowcastDegraded: true,
+			unknown: true
+		};
+		await redis.set(`${instance}live:zone:DMO/D-CRW`, JSON.stringify(unknown), { EX: 3600 });
+		await expect
+			.poll(
+				async () => {
+					await redis.publish(`${instance}live:zones`, JSON.stringify(unknown));
+					return crew.getByTestId('not-measured').count();
+				},
+				{ timeout: 20_000, intervals: [500, 1000, 2000] }
+			)
+			.toBe(1);
+		await expect(crew.getByTestId('not-measured')).toHaveText(/^Not measured/);
+		await expect(crew.getByTestId('not-measured')).toHaveAttribute('title', /no measurement/);
+		await expect(crew.locator('td').nth(0), 'no queue length').toHaveText('');
+		await expect(crew.locator('td').nth(1), 'no wait').not.toContainText('27');
+		await expect(crew).not.toContainText('Data degraded');
+		await expect(crew).not.toContainText('Within target');
+		await page.getByRole('region', { name: 'Floor plan by nowcast' }).getByLabel('Level').selectOption({ label: 'DEP, Departures' });
+		const plan = page.locator('[data-testid="plan-zone"][data-zone="D-CRW"]');
+		await expect(plan).toHaveAttribute('data-status', 'notMeasured');
+		await expect(plan.getByTestId('plan-not-measured')).toHaveText('Not measured');
+		// The waiting tile adds up the measured fresh zones only: were D-CRW's 27 in it, it would not match.
+		await expect
+			.poll(async () => {
+				const fresh = await freshQueueLengths(redis);
+				const shown = Number(((await page.getByTestId('metric-waiting').textContent()) ?? '').match(/\d+/g)?.pop());
+				return shown === fresh;
+			})
+			.toBe(true);
+		await page.getByTestId('language-toggle').click();
+		await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+		await expect(crew.getByTestId('not-measured')).toHaveText(/^غير مقاس/);
+		await expect(plan.getByTestId('plan-not-measured')).toHaveText('غير مقاس');
 		await guards.expectClean();
 	} finally {
 		await redis.del(keys);
 		await redis.quit();
 	}
+});
+
+test('the screen refuses a zone frame whose unknown is not a boolean, or Unknown with a number or without its flags (ARV-259e2, CWE-501)', async ({ page }) => {
+	// The server checks every snapshot too (LiveZones.Plausible), so these frames are written into the hub's WebSocket here, as a
+	// tampering proxy would: only the screen's own check (asZoneSnapshot) stands between them and the rows. The server's frames
+	// for the two zones used are held back, so the rows show only what this test sends, whatever other suites plant in Redis.
+	const guards = await guardPage(page);
+	const record = '\u001e';
+	const ours = new Set(['DMO/D-VIS', 'DMO/D-CIT']);
+	let toPage: WebSocketRoute | undefined;
+	await page.routeWebSocket(/\/hubs\/live/, (ws) => {
+		const server = ws.connectToServer();
+		ws.onMessage((message) => server.send(message));
+		server.onMessage((message) => {
+			const kept = String(message)
+				.split(record)
+				.filter((r) => r.length > 0)
+				.flatMap((r) => {
+					const m = JSON.parse(r) as { type?: number; target?: string; arguments?: Array<{ zoneKey?: string }>; result?: { zoneKey?: string } | null };
+					if (m.type === 1 && m.target === 'zone' && ours.has(m.arguments?.[0]?.zoneKey ?? '')) return [];
+					if (m.type === 3 && ours.has(m.result?.zoneKey ?? '')) return [JSON.stringify({ ...m, result: null })];
+					return [r];
+				});
+			if (kept.length > 0) ws.send(kept.map((r) => r + record).join(''));
+		});
+		toPage = ws;
+	});
+	await signInThroughUi(page, accounts().webBorder);
+	await expect(page.getByTestId('live-state')).toHaveAttribute('data-state', 'connected');
+	await expect.poll(() => toPage !== undefined).toBe(true);
+	const send = (snapshot: object) => toPage!.send(JSON.stringify({ type: 1, target: 'zone', arguments: [snapshot] }) + record);
+	const minute = new Date(Math.floor(Date.now() / 60_000) * 60_000 - 60_000);
+	const nothing = { nowcastMinutes: null, throughputPerMinute: null, noService: null };
+	const flagged = { lengthDegraded: true, nowcastDegraded: true };
+	const visitors = page.locator('[data-testid="zone-row"][data-zone="D-VIS"]');
+	const citizens = page.locator('[data-testid="zone-row"][data-zone="D-CIT"]');
+
+	// A frame without the member (an Api.Main before ARV-259e2) reads as measured.
+	send(snapshot('D-VIS', 20, 4.4, minute));
+	await expect(visitors.locator('td').nth(1)).toHaveText('4.4');
+	for (const forged of [
+		{ ...snapshot('D-VIS', 20, 3.1, minute), unknown: 0 },
+		{ ...snapshot('D-VIS', 20, 3.2, minute), unknown: 'false' },
+		{ ...snapshot('D-VIS', 20, null, minute), ...nothing, ...flagged, unknown: 'true' },
+		{ ...snapshot('D-VIS', 20, 3.3, minute), ...flagged, throughputPerMinute: null, unknown: true },
+		{ ...snapshot('D-VIS', 20, null, minute), ...flagged, unknown: true },
+		{ ...snapshot('D-VIS', 20, null, minute), ...nothing, noService: 'NothingOpen', ...flagged, unknown: true },
+		{ ...snapshot('D-VIS', 20, null, minute), ...nothing, lengthDegraded: true, unknown: true },
+		{ ...snapshot('D-VIS', 20, null, minute), ...nothing, lengthDegraded: false, nowcastDegraded: true, unknown: true }
+	])
+		send(forged);
+	// The sentinel, on the same socket after them: once it shows, every frame before it has been judged.
+	send({ ...snapshot('D-CIT', 20, 7.7, minute), unknown: false });
+	await expect(citizens.locator('td').nth(1)).toHaveText('7.7');
+	await expect(visitors.locator('td').nth(1), 'every forged frame refused').toHaveText('4.4');
+	await expect(visitors.getByTestId('not-measured')).toHaveCount(0);
+
+	// A well-formed Unknown frame is taken.
+	send({ ...snapshot('D-VIS', 20, null, minute), ...nothing, ...flagged, unknown: true });
+	await expect(visitors.getByTestId('not-measured')).toBeVisible();
+	await expect(visitors.locator('td').nth(0), 'no queue length').toHaveText('');
+	await guards.expectClean();
 });

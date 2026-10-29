@@ -82,7 +82,8 @@
 			"overTarget": "Over target",
 			"degraded": "Data degraded",
 			"noEstimate": "No estimate",
-			"noData": "No data"
+			"noData": "No data",
+			"notMeasured": "Not measured"
 		},
 		"connection": {
 			"connecting": "Connecting",
@@ -152,6 +153,7 @@
 		},
 		"noAccess": "Your role has no live operations view. Ask an administrator for a role at your site.",
 		"estimateHint": "Estimate from the exit rate only (desk states not known): a wider margin",
+		"notMeasuredHint": "Every sensor of this zone is out, so it has no measurement: no queue length or wait is shown until a sensor reports again",
 		"overflow": {
 			"inUse": "Overflow in use",
 			"band": "{band}: {people} people at {time}",

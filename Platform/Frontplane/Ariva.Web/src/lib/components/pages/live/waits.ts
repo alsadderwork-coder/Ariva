@@ -12,17 +12,21 @@ export type WaitStatus =
 	| 'overTarget'
 	| 'degraded'
 	| 'noEstimate'
-	| 'noData';
+	| 'noData'
+	| 'notMeasured';
 
 /**
- * A zone's status from its snapshot (ARV-064): no data first; "Data degraded" only when the data itself is in doubt (the
- * snapshot is stale, or the queue length comes from a sensor outage or degraded readings); no estimate when there is no
- * nowcast (the wait column says why); then the wait against the thresholds. A nowcast that is only an estimate (its
- * throughput from the exit rate, without desk state) keeps its colour and is marked by {@link estimateOnly}.
+ * A zone's status from its snapshot (ARV-064): no data first; "Data degraded" when the snapshot is stale; "Not measured"
+ * when the zone had no measurement in its minute (ARV-259e2, formulas F11: never a number, never within target); "Data
+ * degraded" when the queue length comes from a sensor outage or degraded readings; no estimate when there is no nowcast
+ * (the wait column says why); then the wait against the thresholds. A nowcast that is only an estimate (its throughput
+ * from the exit rate, without desk state) keeps its colour and is marked by {@link estimateOnly}.
  */
 export function waitStatus(snapshot: ZoneSnapshot | undefined, now = Date.now()): WaitStatus {
 	if (!snapshot) return 'noData';
-	if (isStale(snapshot, now) || snapshot.lengthDegraded) return 'degraded';
+	if (isStale(snapshot, now)) return 'degraded';
+	if (snapshot.unknown) return 'notMeasured';
+	if (snapshot.lengthDegraded) return 'degraded';
 	if (snapshot.nowcastMinutes === null) return 'noEstimate';
 	if (snapshot.nowcastMinutes > overMinutes) return 'overTarget';
 	if (snapshot.nowcastMinutes >= nearMinutes) return 'nearTarget';
@@ -35,7 +39,8 @@ export const statusTone: Record<WaitStatus, StatusTone> = {
 	overTarget: 'danger',
 	degraded: 'neutral',
 	noEstimate: 'neutral',
-	noData: 'neutral'
+	noData: 'neutral',
+	notMeasured: 'neutral'
 };
 
 /**
@@ -45,6 +50,7 @@ export const statusTone: Record<WaitStatus, StatusTone> = {
 export function estimateOnly(snapshot: ZoneSnapshot | undefined): boolean {
 	return (
 		!!snapshot &&
+		!snapshot.unknown &&
 		snapshot.nowcastDegraded &&
 		!snapshot.lengthDegraded &&
 		snapshot.nowcastMinutes !== null

@@ -61,6 +61,24 @@ async function signInAged(page: Page): Promise<void> {
 	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Live operations');
 }
 
+/**
+ * Keeps a zone's snapshot and announces it, as Stream does, so a live screen another suite has open agrees with Redis (its
+ * waiting tile is compared with the fresh snapshots there).
+ */
+async function keep(redis: ReturnType<typeof createClient>, s: { zoneKey: string } & Record<string, unknown>): Promise<void> {
+	await redis.set(`${instance}live:zone:${s.zoneKey}`, JSON.stringify(s), { EX: 3600 });
+	await redis.publish(`${instance}live:zones`, JSON.stringify(s));
+}
+
+/**
+ * Takes a zone's snapshot out of Redis, after announcing it stale, so a live screen another suite has open drops it from its
+ * totals as Redis does (a delete alone is not announced, and the screen would keep the last snapshot until it ages out).
+ */
+async function drop(redis: ReturnType<typeof createClient>, zone: string): Promise<void> {
+	await redis.publish(`${instance}live:zones`, JSON.stringify(snapshot(zone, null, { ageSeconds: 600 })));
+	await redis.del(`${instance}live:zone:DMO/${zone}`);
+}
+
 async function player(browser: Browser): Promise<{ page: Page; close: () => Promise<void> }> {
 	const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
 	const page = await context.newPage();
@@ -72,7 +90,8 @@ test.afterAll(async () => {
 	const redis = createClient({ url: redisUrl });
 	await redis.connect();
 	try {
-		await redis.del([`${instance}live:zone:DMO/D-CIT`, `${instance}live:zone:DMO/D-VIS`]);
+		await drop(redis, 'D-CIT');
+		await drop(redis, 'D-VIS');
 	} finally {
 		await redis.quit();
 	}
@@ -157,11 +176,11 @@ test('the player shows bands in every language, holds them within the hysteresis
 	const { page, close } = await player(browser);
 	const guards = await guardPage(page);
 	try {
-		const plant = async (...snapshots: ReturnType<typeof snapshot>[]) => {
-			for (const s of snapshots) await redis.set(`${instance}live:zone:${s.zoneKey}`, JSON.stringify(s), { EX: 3600 });
+		const plant = async (...snapshots: Array<{ zoneKey: string } & Record<string, unknown>>) => {
+			for (const s of snapshots) await keep(redis, s);
 		};
 		await plant(snapshot('D-CIT', 12.4));
-		await redis.del(`${instance}live:zone:DMO/D-VIS`);
+		await drop(redis, 'D-VIS');
 
 		await page.goto(playerAddress);
 		await expect.poll(() => new URL(page.url()).hash.includes('key='), { message: 'the credential leaves the address bar' }).toBe(false);
@@ -194,6 +213,22 @@ test('the player shows bands in every language, holds them within the hysteresis
 		// A degraded nowcast shows a band twice as wide.
 		await plant(snapshot('D-CIT', 16.5, { degraded: true }));
 		await expect(citizens).toHaveAttribute('data-band', '15-25', { timeout: 20_000 });
+		// ARV-259e2: every sensor of the citizens' queue is out (formulas F11). The snapshot is fresh, but the board gives the zone no
+		// nowcast, so the neutral message in each language, never a number.
+		const credential = decodeURIComponent(playerAddress.split('#key=')[1]);
+		await plant({ ...snapshot('D-CIT', null), throughputPerMinute: null, lengthDegraded: true, nowcastDegraded: true, unknown: true });
+		const answer = await call('GET', `${board}?code=${code}`, { headers: { 'X-Ariva-Display-Key': credential } });
+		await expectStatus(answer, 200);
+		const entry = (await answer.json()).entries[0];
+		expect(entry, 'an Unknown zone has no nowcast on the board').toMatchObject({ nowcastMinutes: null, degraded: true, noService: null });
+		expect(entry.ageSeconds, 'fresh, so not stale').toBeLessThanOrEqual(60);
+		await expect(citizens).toHaveAttribute('data-band', 'none', { timeout: 20_000 });
+		for (const message of Object.values(fallback)) await expect(citizens).toContainText(message);
+		await expect(citizens).not.toContainText('min');
+		// Measured again: the band comes back, so the stale step below starts from a band.
+		await plant(snapshot('D-CIT', 16.5, { degraded: true }));
+		await expect(citizens).toHaveAttribute('data-band', '15-25', { timeout: 20_000 });
+
 		// Data older than the display's 120 seconds: the neutral message, never the old number.
 		await plant(snapshot('D-CIT', 16.5, { ageSeconds: 300 }));
 		await expect(citizens).toHaveAttribute('data-band', 'none', { timeout: 20_000 });
@@ -339,8 +374,8 @@ test('a running player switches to the split screen at its next poll; the queues
 	const guards = await guardPage(page);
 	try {
 		await change(token, { layout: 'Full', orientation: 'Landscape', languages: ['ar', 'en', 'pt', 'sw'] });
-		await redis.set(`${instance}live:zone:DMO/D-CIT`, JSON.stringify(snapshot('D-CIT', 12.4)), { EX: 3600 });
-		await redis.del(`${instance}live:zone:DMO/D-VIS`);
+		await keep(redis, snapshot('D-CIT', 12.4));
+		await drop(redis, 'D-VIS');
 		await page.goto(playerAddress);
 		const boardView = page.getByTestId('board');
 		await expect(boardView).toHaveAttribute('data-layout', 'Full');
@@ -394,7 +429,7 @@ test('a running player switches to the split screen at its next poll; the queues
 		await page.screenshot({ path: test.info().outputPath('split-ar-1920x1080.png') });
 
 		// Stale queue data inside the region: the neutral message, never the old number; the instructions stay.
-		await redis.set(`${instance}live:zone:DMO/D-CIT`, JSON.stringify(snapshot('D-CIT', 12.4, { ageSeconds: 300 })), { EX: 3600 });
+		await keep(redis, snapshot('D-CIT', 12.4, { ageSeconds: 300 }));
 		await expect(entries.nth(0)).toHaveAttribute('data-band', 'none', { timeout: 25_000 });
 		await expect(entries.nth(0)).toContainText(fallback.en);
 		await expect(entries.nth(0)).not.toContainText('min');
@@ -425,7 +460,7 @@ for (const split of splitCases) {
 		const guards = await guardPage(page);
 		try {
 			await change(token, { layout: 'Split', queueShare: split.share, orientation: split.orientation, languages: split.languages });
-			await redis.set(`${instance}live:zone:DMO/D-CIT`, JSON.stringify(snapshot('D-CIT', 12.4)), { EX: 3600 });
+			await keep(redis, snapshot('D-CIT', 12.4));
 			await page.goto(playerAddress);
 			const boardView = page.getByTestId('board');
 			await expect(boardView).toHaveAttribute('data-layout', 'Split');
@@ -474,7 +509,7 @@ test('the second region failing to load leaves the queue region whole', async ({
 	await redis.connect();
 	try {
 		await change(token, { layout: 'Split', queueShare: 60, orientation: 'Landscape', languages: ['ar', 'en', 'pt', 'sw'] });
-		await redis.set(`${instance}live:zone:DMO/D-CIT`, JSON.stringify(snapshot('D-CIT', 12.4)), { EX: 3600 });
+		await keep(redis, snapshot('D-CIT', 12.4));
 		// The instructions cannot be fetched, then come back as something that is not instructions.
 		for (const failure of ['abort', 'garbage'] as const) {
 			const { page, close } = await player(browser);
