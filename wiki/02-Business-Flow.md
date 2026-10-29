@@ -69,7 +69,7 @@ sequenceDiagram
 | 7 | Display | Ariva.Web | Dashboards show nowcast and realised waits with their flags; passenger boards show the nowcast in 5-minute bands with hysteresis, never a realised number, and a neutral message when data is stale |
 | 8 | Alert | Stream (rules), Main (list), Cronz (escalation timers), Integration (channels) | Rules evaluate nowcasts and forecasts, never realised waits. One open alert per rule and target; escalation if not acknowledged in time |
 
-Who acts: nobody in the loop; it runs continuously. Supervisors act on what it shows (open desks, acknowledge alerts). If a sensor drops out, its zone turns `Degraded` and screens show a band instead of a number. A line that loses coverage should make the wait `Unknown` with a neutral message (formulas F11), but the queue engine does not decide that yet (ARV-259e): the zone stays `Degraded`.
+Who acts: nobody in the loop; it runs continuously. Supervisors act on what it shows (open desks, acknowledge alerts). If a sensor drops out, its zone turns `Degraded` and screens show a band instead of a number. A zone whose every sensor is out has no measurement at all: the queue engine makes it `Unknown` (formulas F11, ARV-259e1) and stores its bins so; the screens show a neutral message for it from ARV-259e2. A zone with another live sensor stays `Degraded`.
 
 ## C. Arrival wave: from on-block to staffing alert
 

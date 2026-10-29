@@ -146,6 +146,13 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-259e1: a zone whose every device is out is Unknown (zone snapshot version 14, 2026-10-29)
+
+- Ariva.Api.Stream writes zone snapshot version 14: the zone's entry and exit lines without a live covering device and the ended spells whose live minutes are not all published yet. A version 13 snapshot restores as it is, its spells derived from its devices; a rollback to a build before ARV-259e1 refuses version 14 snapshots and starts the zones afresh, as for version 11 (below).
+- Behaviour: a zone whose every device is out (offline, or silent beyond 180 seconds) is `Unknown` where it was `Degraded` (formulas F11, the owner's decision of 2026-10-29): its bins are stored `Unknown` for the spell, so a single-sensor zone's bins over an outage read `Unknown` in reports, exports and the weekly summary's Unknown count. A zone with another live device stays `Degraded`. Bins made final before the release keep their revision; a recomputation over a range with such a spell writes revision r + 1 for them.
+- Not yet: the live screens and the display boards still show such a zone as degraded (ARV-259e2), and the `zonesUnknown` rule is not shipped (ARV-259e3).
+- Nothing to configure: until devices declare the lines they cover (ARV-259e4, ARV-259e5), every device of a zone covers all its lines.
+
 ### ARV-259d: the display stale rule (2026-10-29)
 
 - New metric: `ariva.displays.stale` (meter `Ariva.Displays`, by `site`): the enabled displays whose board would be stale now (a queue zone's live snapshot missing or older than the display's stale threshold), from a sweep Api.Main runs every minute on one replica (lock class 54). No setting, no script and no grant.

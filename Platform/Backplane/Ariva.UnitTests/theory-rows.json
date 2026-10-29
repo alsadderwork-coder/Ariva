@@ -53,6 +53,7 @@
   "Ariva.UnitTests.Queueing.HealthChecksTests.Restore_Should_RefuseHealthInputsTheEngineNeverWrites_When_TheSnapshotIsHostile": 12,
   "Ariva.UnitTests.Queueing.HealthChecksTests.Restore_Should_RefuseHealthTalliesTheBinsNeverWrite_When_TheSnapshotIsHostile": 8,
   "Ariva.UnitTests.Queueing.LineCountsTests.Restore_Should_Refuse_When_TheEngineSnapshotHoldsHostileLineMovements": 8,
+  "Ariva.UnitTests.Queueing.LineCoverageTests.Zone_Should_BeUnknownOnlyWhileNoDeviceIsLive_When_ItsDevicesGoOut": 5,
   "Ariva.UnitTests.Queueing.OverflowBandsTests.Restore_Should_RefuseTheSnapshot_When_TheEngineNeverWroteIt": 25,
   "Ariva.UnitTests.Queueing.QueueEngineWatermarkTests.Advance_Should_MoveTheWatermarkToTheZonesClockLessTheLateness_When_Stepped": 9,
   "Ariva.UnitTests.Queueing.QueueStateEngineTests.Restore_Should_RefuseAPendingCheck_When_NoFullStepLeavesItThere": 12,

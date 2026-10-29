@@ -533,7 +533,7 @@ public sealed class QueueEngineAheadRunTests
         var state = new ZoneProcessor("PLE/Q", Hall, 1, settings).Capture() with { Engine = RoundTrip(engine.Capture()), ReferenceUtc = t0 };
         var run = state.Engine.Runs.Should().ContainSingle().Which;
         run.PendingAhead.Should().BeTrue();
-        state.Version.Should().Be(ZoneProcessorState.AheadRunsSinceVersion).And.Be(ZoneProcessorState.CurrentVersion);
+        state.Version.Should().Be(ZoneProcessorState.CurrentVersion).And.BeGreaterThanOrEqualTo(ZoneProcessorState.AheadRunsSinceVersion);
         SnapshotChecks.Of(state, "PLE/Q", Hall.QueueZone, 1, notAfter).Should().BeEmpty();
         ZoneProcessor.Restore("PLE/Q", Hall, 1, settings, state, notAfter).Capture().Engine.Runs.Should().ContainSingle().Which.PendingAhead.Should().BeTrue();
 

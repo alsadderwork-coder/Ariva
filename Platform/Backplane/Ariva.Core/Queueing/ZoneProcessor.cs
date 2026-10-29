@@ -108,6 +108,14 @@ public sealed record QueueLiveMinute(
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public ShadowNowcast Shadow { get; init; }
+
+    /// <summary>
+    /// An entry or exit line of the zone had no live covering device during the minute (ARV-259e1, formulas F11: Unknown, and so
+    /// <see cref="LengthDegraded"/> and a degraded nowcast too). Left out of the JSON when false, so a minute without it reads
+    /// and hashes as before (the replay ledger, the live snapshot).
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Unknown { get; init; }
 }
 
 /// <summary>
@@ -193,9 +201,12 @@ public sealed record ZoneProcessorState
     /// anchor after the engine's clock, held in the buffer as a sample ahead of it or, in a quiet zone whose watermark followed
     /// the receive clock, already applied; and its pending sample marked ahead, <see cref="QueueRunState.PendingAhead"/>,
     /// ARV-239); an earlier snapshot carries neither and is refused if it does, and restores as before, its samples ahead of the
-    /// clock all in its buffer.
+    /// clock all in its buffer. 14 adds the entry and exit lines without a live covering device and the spells that ended but
+    /// whose live minutes are not all published (<see cref="Coverage"/>, <see cref="RecentUncovered"/>, ARV-259e1); an earlier
+    /// snapshot carries neither, nor an Unknown bin mark, and is refused if it does, and restores with its lines without coverage
+    /// derived from its devices (from where the latest outage started), their bins marked Unknown from there at its next step.
     /// </summary>
-    public const int CurrentVersion = 13;
+    public const int CurrentVersion = 14;
 
     /// <summary>The first version that may carry the queue engine's pending empty-queue check (ARV-114d).</summary>
     public const int PendingAnchorSinceVersion = 8;
@@ -211,6 +222,9 @@ public sealed record ZoneProcessorState
 
     /// <summary>The first version that may carry runs of position samples ahead of the clock (ARV-239).</summary>
     public const int AheadRunsSinceVersion = 13;
+
+    /// <summary>The first version that may carry lines without a live covering device and Unknown bin marks (ARV-259e1).</summary>
+    public const int LineCoverageSinceVersion = 14;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }
@@ -242,6 +256,12 @@ public sealed record ZoneProcessorState
 
     /// <summary>The minutes, not yet published live, that a full buffer may have shortened (ARV-231, version 12), in time order.</summary>
     public IReadOnlyList<DateTime> FullBufferMinutes { get; init; } = [];
+
+    /// <summary>The entry and exit lines without a live covering device now, with where it started (ARV-259e1, version 14).</summary>
+    public IReadOnlyList<LineCoverageState> Coverage { get; init; } = [];
+
+    /// <summary>Spells without coverage that ended but whose live minutes are not all published (ARV-259e1, version 14).</summary>
+    public IReadOnlyList<RecentUncoveredState> RecentUncovered { get; init; } = [];
 }
 
 /// <summary>
@@ -288,6 +308,7 @@ public sealed class ZoneProcessor
     private LineCounts _lines = new();
     private OverflowBands _bands;
     private DeviceLiveness _liveness;
+    private LineCoverage _coverage;
     private bool _watchDevices = true;
     private DeskTerm _desks;
 
@@ -306,6 +327,7 @@ public sealed class ZoneProcessor
         _bins = new BinAccumulator(geometry.QueueZone, profileVersion, _settings.Bins, geometry);
         _exits = new ExitRate();
         _liveness = NewLiveness(_settings);
+        _coverage = new LineCoverage(CoveredLines(geometry));
         _bands = new OverflowBands(geometry, _settings.Engine.OccupancyFreshFor);
         _deskZones = new DeskZoneReadings(geometry.DeskZones);
         _recent = new RecentBatches(_settings.MaxRememberedBatches, _settings.MaxRememberedBatchesPerDevice);
@@ -313,6 +335,10 @@ public sealed class ZoneProcessor
 
     private static DeviceLiveness NewLiveness(ZoneProcessorSettings settings) =>
         new(TimeSpan.FromSeconds(settings.DeviceSilenceSeconds), TimeSpan.FromHours(settings.DeviceForgetHours), settings.MaxDevices, settings.Engine.PushInterval);
+
+    /// <summary>The lines whose coverage F11 judges: the queue's entry and exit lines (ARV-259e1).</summary>
+    private static IEnumerable<string> CoveredLines(QueueZoneGeometry geometry) =>
+        (geometry.EntryLines ?? Enumerable.Empty<string>()).Concat(geometry.ExitLines ?? Enumerable.Empty<string>());
 
     public string ZoneKey { get; }
 
@@ -327,6 +353,12 @@ public sealed class ZoneProcessor
 
     /// <summary>The batches the zone remembers now (ARV-168).</summary>
     public int RememberedBatches => _recent.Count;
+
+    /// <summary>
+    /// Whether an entry or exit line of the zone has no live covering device now (ARV-259e1, formulas F11): the zone is Unknown
+    /// until a covering device is heard again.
+    /// </summary>
+    public bool UnknownNow => _coverage.AnyUncovered;
 
     /// <summary>What happened to the desk zones' readings (ARV-116), for health; not part of the saved state.</summary>
     public DeskZoneReadingCounters DeskZoneCounters => _deskZones.Counters;
@@ -383,8 +415,14 @@ public sealed class ZoneProcessor
         }
 
         // Every batch of a commissioned device says it was heard; a health report may say it is offline (ARV-036).
-        if (_liveness.Heard(ZoneKey, batch.DeviceCode, _reference, batch is not DeviceStatusBatch { Online: false }) is { } ended)
-            Ended(ended.Outage, ended.MarkFromUtc);
+        var changes = _liveness.Changes;
+        var ended = _liveness.Heard(ZoneKey, batch.DeviceCode, _reference, batch is not DeviceStatusBatch { Online: false });
+        if (ended is { } e)
+            Ended(e.Outage, e.MarkFromUtc);
+        // ARV-259e1: a device back, heard for the first time or reporting itself offline may change which lines a live device
+        // covers. A line covered again is covered from where the device's outage ended, or from the minute a new device's push
+        // covers (ARV-148).
+        Covered(changes, _reference, ended?.Outage.ToUtc ?? _liveness.CoveredFrom(_reference));
 
         // ARV-168: a batch this device sent before with the same id, still within its window, is a resend (the device
         // dropped the request, or Kafka delivered the push twice): it was heard, but its events were applied already.
@@ -564,16 +602,35 @@ public sealed class ZoneProcessor
         _recomputations.AddRange(_bins.Mark(markFromUtc, outage.ToUtc, BinQuality.Degraded));
     }
 
-    // At each new receive time, before its records and before the engine steps: the open outages are marked through the
-    // minutes known to be out (KnownThrough), so a bin becoming final at this receive time already carries them.
+    // ARV-259e1: after a change of the devices' live state, the lines that lost their last live covering device open a spell, and
+    // the lines a device covers again close theirs at closeAtUtc, their bins marked Unknown (F11) through the spell's end.
+    private void Covered(long changesBefore, DateTime openFallbackUtc, DateTime closeAtUtc)
+    {
+        if (_liveness.Changes == changesBefore)
+            return;
+        foreach (var (from, to) in LineCoverage.Union(_coverage.Recompute(_liveness, openFallbackUtc, closeAtUtc)))
+            _recomputations.AddRange(_bins.Mark(from, to, BinQuality.Unknown));
+    }
+
+    // At each new receive time, before its records and before the engine steps: the open outages, and the spells of lines
+    // without a live covering device (ARV-259e1), are marked through the minutes known to be out (KnownThrough), so a bin
+    // becoming final at this receive time already carries them.
     private void WatchDevices()
     {
         if (!_watchDevices || _reference == DateTime.MinValue)
             return;
-        foreach (var (outage, markFrom) in _liveness.Observe(ZoneKey, _reference))
+        var changes = _liveness.Changes;
+        var forgotten = _liveness.Observe(ZoneKey, _reference);
+        foreach (var (outage, markFrom) in forgotten)
             Ended(outage, markFrom);
-        foreach (var (from, to) in _liveness.MarksDue(KnownThrough()))
+        // A device gone out or forgotten may leave a line without a live covering device; a line left with no device tracked at all
+        // has been without one since the latest forgotten device's outage started.
+        Covered(changes, forgotten.Count > 0 ? forgotten.Max(f => f.Outage.FromUtc) : _reference, _reference);
+        var known = KnownThrough();
+        foreach (var (from, to) in _liveness.MarksDue(known))
             _recomputations.AddRange(_bins.Mark(from, to, BinQuality.Degraded));
+        foreach (var (from, to) in LineCoverage.Union(_coverage.MarksDue(known)))
+            _recomputations.AddRange(_bins.Mark(from, to, BinQuality.Unknown));
     }
 
     /// <summary>
@@ -632,6 +689,9 @@ public sealed class ZoneProcessor
         _lastLive = minute;
         var length = step.Length;
         var deviceOut = _liveness.OutDuring(minute);
+        // ARV-259e1 (F11): a minute in which an entry or exit line had no live covering device is Unknown, and so doubtful for
+        // every reader of its length and nowcast.
+        var unknown = _coverage.UncoveredDuring(minute);
         // ARV-231: a minute a full buffer may have shortened (events refused, or applied before their lateness was up).
         var full = _fullMinutes.Contains(minute);
         _fullMinutes.RemoveWhere(m => m <= minute);
@@ -648,13 +708,18 @@ public sealed class ZoneProcessor
             QueueLength = length.Count,
             ExitsInWindow = window.Complete ? window.Exits : null,
             ExitWindowMinutes = _settings.ExitWindowMinutes,
-            Degraded = length.Degraded || deviceOut || full || window.DegradedExits > 0
+            Degraded = length.Degraded || deviceOut || unknown || full || window.DegradedExits > 0
         }, desks, cycleExits, _settings.SensorCycle);
         var nowcast = Nowcast.Compute(published, _settings.Nowcast);
         // ARV-117: the shadow nowcast without AMAN inputs, beside the published one, for the validation comparison only.
-        _live.Add(new QueueLiveMinute(ZoneKey, minute, length.Count, length.FromSensors, length.Degraded || deviceOut || full, nowcast.Minutes, nowcast.Throughput,
-            nowcast.NoService, nowcast.Degraded) { Shadow = ShadowNowcast.From(Nowcast.Compute(shadow, _settings.Nowcast), cycle?.CycleMinutes) });
+        _live.Add(new QueueLiveMinute(ZoneKey, minute, length.Count, length.FromSensors, length.Degraded || deviceOut || unknown || full, nowcast.Minutes,
+            nowcast.Throughput, nowcast.NoService, nowcast.Degraded)
+        {
+            Shadow = ShadowNowcast.From(Nowcast.Compute(shadow, _settings.Nowcast), cycle?.CycleMinutes),
+            Unknown = unknown
+        });
         _liveness.Published(minute);
+        _coverage.Published(minute);
     }
 
     /// <summary>
@@ -668,6 +733,10 @@ public sealed class ZoneProcessor
         Tick(endUtc);
         foreach (var (open, markFrom) in _liveness.EndAll(ZoneKey, endUtc))
             Ended(open, markFrom);
+        // ARV-259e1: the spells without coverage still open end there too, their bins marked through the end; no Unknown is
+        // invented while the zone settles.
+        foreach (var (from, to) in LineCoverage.Union(_coverage.EndAll(endUtc)))
+            _recomputations.AddRange(_bins.Mark(from, to, BinQuality.Unknown));
 
         _watchDevices = false;
         // The range's end is not a silent band either (ARV-115): no band becomes Unknown while the zone settles.
@@ -747,10 +816,13 @@ public sealed class ZoneProcessor
     public ZoneProcessorState Capture()
     {
         var (devices, recent) = _liveness.Capture();
+        var (coverage, uncovered) = _coverage.Capture();
         return new ZoneProcessorState
         {
             Devices = devices,
             RecentOutages = recent,
+            Coverage = coverage,
+            RecentUncovered = uncovered,
             ZoneKey = ZoneKey,
             ProfileVersion = ProfileVersion,
             Engine = _engine.Capture(),
@@ -791,6 +863,9 @@ public sealed class ZoneProcessor
             (zone._batches, zone._uncommissioned, zone._wrongZone, zone._invalid, zone._otherZones, zone._repeated, zone._forgotten) = (c.Batches, c.Uncommissioned,
                 c.WrongZone, c.Invalid, Math.Max(0, c.OtherZones), Math.Max(0, c.RepeatedBatches), Math.Max(0, c.ForgottenBatches));
         zone._liveness.Restore(state.Devices, state.RecentOutages);
+        // ARV-259e1: a snapshot's lines without coverage must agree with its devices (CWE-501); an earlier one's are derived from them.
+        zone._coverage = LineCoverage.Restore(CoveredLines(geometry), state.Coverage, state.RecentUncovered, zone._liveness, zone._reference,
+            state.Version < ZoneProcessorState.LineCoverageSinceVersion);
         zone._lines = LineCounts.Restore(geometry, state.Lines, state.LinesReleasedEarlyThroughUtc);
         zone._bands = OverflowBands.Restore(geometry, state.OverflowOpen, state.OverflowBands, zone._settings.Engine.OccupancyFreshFor);
         zone._deskZones = DeskZoneReadings.Restore(geometry.DeskZones, state.DeskZones, notAfterUtc);

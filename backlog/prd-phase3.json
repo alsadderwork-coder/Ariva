@@ -1577,7 +1577,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3. Split from ARV-259e (2026-10-29): the engine first, under the default coverage. The owner accepted on 2026-10-29 that a zone whose every commissioned device is out is Unknown (docs/product/decisions.md). No sign-in code.",
       "dependsOn": [
         "ARV-259a"

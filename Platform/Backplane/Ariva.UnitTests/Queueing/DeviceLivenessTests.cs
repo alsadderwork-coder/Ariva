@@ -358,7 +358,9 @@ public sealed class DeviceLivenessTests
 
         zone.Tick(Start.AddMinutes(7));
 
-        zone.Drain().Bins.Where(b => b.StartUtc == Start).Should().NotBeEmpty().And.OnlyContain(b => b.Quality == BinQuality.Degraded);
+        // ARV-259e1: S-17 is the zone's only device, so its lines have no live covering device either: the bin takes the worse
+        // mark, Unknown, at the same step.
+        zone.Drain().Bins.Where(b => b.StartUtc == Start).Should().NotBeEmpty().And.OnlyContain(b => b.Quality == BinQuality.Unknown);
     }
 
     #endregion

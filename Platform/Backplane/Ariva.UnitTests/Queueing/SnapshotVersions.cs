@@ -29,8 +29,18 @@ internal static class SnapshotVersions
     /// ARV-239: the snapshot as a build before zone snapshot version 13 wrote it: no pending sample marked ahead of the clock. Only
     /// for states whose runs hold no sample ahead of the clock (that build buffered those samples instead).
     /// </summary>
-    public static ZoneProcessorState WrittenBefore13(this ZoneProcessorState state) => state with
+    public static ZoneProcessorState WrittenBefore13(this ZoneProcessorState state)
     {
-        Engine = state.Engine with { Runs = [.. state.Engine.Runs.Select(r => r with { PendingAhead = false })] }
-    };
+        var before14 = state.WrittenBefore14();
+        return before14 with
+        {
+            Engine = before14.Engine with { Runs = [.. before14.Engine.Runs.Select(r => r with { PendingAhead = false })] }
+        };
+    }
+
+    /// <summary>
+    /// ARV-259e1: the snapshot as a build before zone snapshot version 14 wrote it: no lines without coverage and no recent spells.
+    /// Only for states with no Unknown bin mark (nothing made one before that build).
+    /// </summary>
+    public static ZoneProcessorState WrittenBefore14(this ZoneProcessorState state) => state with { Coverage = [], RecentUncovered = [] };
 }

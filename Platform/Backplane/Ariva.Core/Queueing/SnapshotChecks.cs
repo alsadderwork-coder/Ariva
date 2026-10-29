@@ -258,6 +258,11 @@ public static class SnapshotChecks
             }
         }
 
+        // ARV-259e1: nothing marked a bin Unknown before the zone kept its lines' coverage (version 14).
+        if (state.Version < ZoneProcessorState.LineCoverageSinceVersion &&
+            ((bins.Marks ?? []).Any(m => m?.Quality == BinQuality.Unknown) || (bins.Open ?? []).Any(b => b?.Marked == BinQuality.Unknown)))
+            yield return $"A snapshot before version {ZoneProcessorState.LineCoverageSinceVersion} carries no Unknown bin mark.";
+
         foreach (var x in state.Exits ?? [])
         {
             if (x is null)
@@ -290,7 +295,10 @@ public static class SnapshotChecks
         var codes = new HashSet<string>(StringComparer.Ordinal);
         foreach (var d in state.Devices ?? [])
         {
-            if (d is null || !DeviceCodes.IsValid(d.DeviceCode) || !codes.Add(d.DeviceCode) || d.OutSinceUtc > d.LastHeardUtc || d.MarkedThroughUtc < d.OutSinceUtc)
+            // An outage is marked through the minutes known to be out, never past the zone's clock (ARV-259e1: a mark ahead of it
+            // would leave the outage's later marks, and its last one, marking nothing).
+            if (d is null || !DeviceCodes.IsValid(d.DeviceCode) || !codes.Add(d.DeviceCode) || d.OutSinceUtc > d.LastHeardUtc || d.MarkedThroughUtc < d.OutSinceUtc ||
+                d.MarkedThroughUtc > state.ReferenceUtc)
                 bad++;
             else
             {
@@ -304,12 +312,51 @@ public static class SnapshotChecks
 
         foreach (var r in state.RecentOutages ?? [])
         {
-            if (r is null || !DeviceCodes.IsValid(r.DeviceCode) || r.ToUtc <= r.FromUtc)
+            if (r is null || !DeviceCodes.IsValid(r.DeviceCode) || r.ToUtc <= r.FromUtc || EndsAfter(r.ToUtc, state.ReferenceUtc))
                 bad++;
             else
             {
                 Set(r.FromUtc);
                 Set(r.ToUtc);
+            }
+        }
+
+        // Lines without a live covering device (ARV-259e1): only a snapshot of version 14 or later carries them, within a profile's
+        // lines; each spell started no later than the zone's reference clock and marked no earlier than it started nor later than that
+        // clock, and an ended one ended no later than a minute after it. ZoneProcessor.Restore checks the names against the zone's entry
+        // and exit lines and the spells against its devices.
+        if (state.Coverage is { Count: > 0 } || state.RecentUncovered is { Count: > 0 })
+        {
+            if (state.Version < ZoneProcessorState.LineCoverageSinceVersion)
+                yield return $"A snapshot before version {ZoneProcessorState.LineCoverageSinceVersion} carries no lines without coverage.";
+            if ((state.Coverage?.Count ?? 0) > MaxCoveredLines || (state.RecentUncovered?.Count ?? 0) > MaxCoveredLines * 4)
+            {
+                yield return "The snapshot holds more lines without coverage than a zone keeps.";
+                yield break;
+            }
+
+            foreach (var c in state.Coverage ?? [])
+            {
+                if (c is null || !LineName(c.LineName) || c.UncoveredSinceUtc > state.ReferenceUtc || c.MarkedThroughUtc < c.UncoveredSinceUtc ||
+                    c.MarkedThroughUtc > state.ReferenceUtc)
+                    bad++;
+                else
+                {
+                    Set(c.UncoveredSinceUtc);
+                    if (c.MarkedThroughUtc is { } m)
+                        Set(m);
+                }
+            }
+
+            foreach (var r in state.RecentUncovered ?? [])
+            {
+                if (r is null || !LineName(r.LineName) || r.ToUtc <= r.FromUtc || EndsAfter(r.ToUtc, state.ReferenceUtc))
+                    bad++;
+                else
+                {
+                    Set(r.FromUtc);
+                    Set(r.ToUtc);
+                }
             }
         }
 
@@ -340,6 +387,17 @@ public static class SnapshotChecks
 
     /// <summary>Devices a snapshot may track at most (the largest <see cref="ZoneProcessorSettings.MaxDevices"/>).</summary>
     public const int MaxDevices = 4_096;
+
+    /// <summary>Lines without coverage a snapshot may hold at most (a profile's lines, ARV-259e1).</summary>
+    public const int MaxCoveredLines = Domain.Entities.ZoneProfile.MaxLines;
+
+    // An outage or a spell without coverage ends where a device is live again, at the latest the minute after the one its push
+    // arrived in (an outage reported and ended at the same receive time), so never more than a minute past the zone's clock.
+    // Compared as a difference, which cannot overflow at either end of the calendar.
+    private static bool EndsAfter(DateTime endUtc, DateTime referenceUtc) => endUtc - referenceUtc > TimeSpan.FromMinutes(1);
+
+    // A line's name as a profile keeps it: not empty, at most TopologyCodes.MaxNameLength characters.
+    private static bool LineName(string name) => !string.IsNullOrEmpty(name) && name.Length <= Domain.Entities.TopologyCodes.MaxNameLength;
 
     /// <summary>The largest count a snapshot may hold (a trillion people or events).</summary>
     public const long MaxCount = 1_000_000_000_000;

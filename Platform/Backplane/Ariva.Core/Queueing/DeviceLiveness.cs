@@ -38,10 +38,37 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
 
     public int Count => _devices.Count;
 
+    /// <summary>
+    /// How often a device's live state changed (tracked for the first time, gone out, live again, forgotten, or an outage ended at a
+    /// replay's end), so a follower of it (<see cref="LineCoverage"/>, ARV-259e1) looks again only after a change.
+    /// </summary>
+    public long Changes { get; private set; }
+
+    /// <summary>
+    /// What covers the zone's lines now (ARV-259e1: every device the zone tracks covers every entry and exit line until devices
+    /// declare theirs): whether a device the zone tracks is live, and where the latest outage of the devices it tracks started
+    /// (null when it tracks none, or none is out).
+    /// </summary>
+    public (bool AnyLive, DateTime? LatestOutSince) Covering()
+    {
+        var anyLive = false;
+        DateTime? latest = null;
+        foreach (var device in _devices.Values)
+        {
+            // As in MarksDue: no pattern variables in the conditions (ARV-069a).
+            if (device.OutSince.HasValue)
+                latest = latest.HasValue && latest.Value >= device.OutSince.Value ? latest : device.OutSince;
+            else
+                anyLive = true;
+        }
+
+        return (anyLive, latest);
+    }
+
     private static DateTime MinuteOf(DateTime t) => new(t.Ticks - t.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
 
     /// <summary>The start of the minute a push received at <paramref name="atUtc"/> covers: the push interval before it.</summary>
-    private DateTime CoveredFrom(DateTime atUtc) => MinuteOf(atUtc > DateTime.MinValue + pushInterval ? atUtc - pushInterval : DateTime.MinValue);
+    public DateTime CoveredFrom(DateTime atUtc) => MinuteOf(atUtc > DateTime.MinValue + pushInterval ? atUtc - pushInterval : DateTime.MinValue);
 
     /// <summary>
     /// The device was heard at <paramref name="atUtc"/>; returns the outage this ends, if any (at the start of the minute
@@ -55,13 +82,19 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
             if (_devices.Count >= maxDevices)
                 return null;
             _devices[code] = device = new Device { LastHeard = atUtc };
+            Changes++;
         }
 
         if (atUtc > device.LastHeard)
             device.LastHeard = atUtc;
         if (!online)
         {
-            device.OutSince ??= MinuteOf(atUtc);
+            if (device.OutSince is null)
+            {
+                device.OutSince = MinuteOf(atUtc);
+                Changes++;
+            }
+
             return null;
         }
 
@@ -75,6 +108,7 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
         var markFrom = device.MarkedThrough is { } marked && marked > from ? marked : from;
         device.OutSince = null;
         device.MarkedThrough = null;
+        Changes++;
         Remember(new RecentOutageState(code, from, to));
         return (new DeviceOutage(zoneKey, code, from, to), markFrom);
     }
@@ -91,10 +125,15 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
         {
             var quiet = referenceUtc - device.LastHeard;
             if (quiet > silence && device.OutSince is null)
+            {
                 device.OutSince = MinuteOf(device.LastHeard);
+                Changes++;
+            }
+
             if (quiet <= forget)
                 continue;
             (forgotten ??= []).Add(code);
+            Changes++;
             if (device.OutSince is { } from)
             {
                 var to = MinuteOf(device.LastHeard + forget);
@@ -190,6 +229,7 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
 
             device.OutSince = null;
             device.MarkedThrough = null;
+            Changes++;
         }
 
         return ended;
