@@ -1,0 +1,86 @@
+{
+  "alert": "Ariva displays stale (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "Enabled passenger displays whose board would be stale (the live snapshot of a queue zone they show missing, or older than the display's stale threshold) at a site, for the whole window (ARV-259d): those boards show the neutral message instead of the wait, or cannot be refreshed while Redis does not answer. A player that stopped asking for its board is not seen.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.displays.stale",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "site",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${displaysStale.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${displaysStale.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "site"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "displaysStale",
+    "environment": "${environment}",
+    "severity": "${displaysStale.severity}"
+  },
+  "annotations": {
+    "summary": "Passenger displays stale at site {{$site}}",
+    "description": "{{$value}} enabled displays of site {{$site}} have had stale data for ${displaysStale.minutes} minutes: their boards show the neutral message, or cannot be refreshed while Redis does not answer. Check whether the zones' live snapshots are published (the queue stream worker, Redis) and whether the displays name queue zones of the published profile.",
+    "runbook": "wiki/10-Operations-Runbook.md#48-display-board-stale"
+  },
+  "disabled": false
+}

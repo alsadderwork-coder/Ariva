@@ -22,6 +22,23 @@ public static class DeviceHealthExtensions
     }
 }
 
+/// <summary>
+/// The display stale sweep of Ariva.Api.Main (ARV-259d): counts, per site, the enabled displays whose board would be stale, as
+/// <c>ariva.displays.stale</c>; one sweep at a time across replicas.
+/// </summary>
+public static class DisplayStaleExtensions
+{
+    public static IServiceCollection AddArivaDisplayStaleMonitor(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<Ariva.Infra.Services.Displays.DisplayMetrics>();
+        services.TryAddScoped<Ariva.Core.Services.Displays.ISvcDisplayStaleness, Ariva.Infra.Services.Displays.SvcDisplayStaleness>();
+        services.AddHostedService<Ariva.Infra.Services.Displays.DisplayStaleMonitor>();
+        return services;
+    }
+}
+
 /// <summary>The raw sensing event archive (ARV-026).</summary>
 public static class SensingArchiveExtensions
 {

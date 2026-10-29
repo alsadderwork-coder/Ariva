@@ -57,7 +57,7 @@ internal sealed class SvcDisplayBoard(
             entries.Add(snapshot is null
                 ? new DisplayBoardEntryViewModel(entry.Labels, null, false, null, null)
                 : new DisplayBoardEntryViewModel(entry.Labels, snapshot.NowcastMinutes, snapshot.NowcastDegraded || snapshot.LengthDegraded, snapshot.NoService,
-                    Math.Max(0, Math.Round((now - snapshot.PublishedUtc.ToUniversalTime()).TotalSeconds, 1))));
+                    AgeSeconds(snapshot, now)));
         }
 
         var illustrative = await unitOfWork.StorageProvider.Query<Site>().AnyAsync(s => s.Code == display.SiteCode && s.IsIllustrative, ct);
@@ -80,6 +80,15 @@ internal sealed class SvcDisplayBoard(
             display.BandMinutes, display.HysteresisMinutes, display.StaleSeconds, display.FallbackMap, entries, now, illustrative, display.Layout.ToString(),
             display.QueueShare, secondRegion.ToString(), pinned is null ? null : Slide(pinned), rotation.Select(s => Slide(s)).ToList(), plan));
     }
+
+    /// <summary>A snapshot's age as the board gives it: seconds since it was published, by this server's clock, to a tenth, never negative.</summary>
+    internal static double AgeSeconds(LiveZoneSnapshot snapshot, DateTime now) => Math.Max(0, Math.Round((now - snapshot.PublishedUtc.ToUniversalTime()).TotalSeconds, 1));
+
+    /// <summary>
+    /// Whether an entry's data is stale as the player judges it (ARV-259d): it shows a band only while the age is at most the
+    /// display's stale threshold, so no snapshot, or one older than the threshold, shows the neutral message.
+    /// </summary>
+    internal static bool IsStale(LiveZoneSnapshot snapshot, DateTime now, int staleSeconds) => snapshot is null || AgeSeconds(snapshot, now) > staleSeconds;
 
     /// <summary>
     /// The playlist that applies to the display now (ARV-143a's precedence), with the items that may play: advertisements

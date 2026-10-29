@@ -139,6 +139,8 @@ builder.Services.AddArivaDemoSeed(builder.Configuration, builder.Environment.Env
 // Device heartbeats (ARV-025): a commissioned device not heard from for Devices:Health:HeartbeatTimeoutSeconds goes
 // Offline and its queue zone Degraded; one sweep at a time across replicas.
 builder.Services.AddArivaDeviceHealthMonitor();
+// Display staleness (ARV-259d): the enabled displays whose board would be stale, by site; one sweep a minute across replicas.
+builder.Services.AddArivaDisplayStaleMonitor();
 
 // AMAN: AddAppCaching, AddAppHealthChecks, AddAppRouting, AddAppOpenApi, AddAppSignalR.
 // SignalR (ARV-035): the live queue hub with session checks (ADR-0026), MessagePack beside JSON, bounded messages, and

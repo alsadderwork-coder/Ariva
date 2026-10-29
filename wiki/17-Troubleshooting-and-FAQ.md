@@ -59,7 +59,7 @@ Symptom, likely cause, check, fix. For longer incident procedures see the [Opera
 
 | Symptom | Likely cause | Check | Fix |
 |---|---|---|---|
-| Board shows the neutral message | Data stale beyond the threshold, no service, or zone `Unknown` | Nowcast age for the checkpoint | Fix the upstream cause |
+| Board shows the neutral message | Data stale beyond the threshold, no service, or zone `Unknown` | Nowcast age for the checkpoint; stale data is counted by site (`ariva.displays.stale`, rule `displaysStale`; wiki 10 section 4.8), no service is not | Fix the upstream cause |
 | Board changes rarely | Expected: 5-minute bands with hysteresis change only when the nowcast moves a full band | | None |
 | Board blank | Player cannot reach the display page on the display VLAN | Network path; kiosk browser | Fix the network; reload the kiosk page |
 | Arabic layout broken | Right-to-left not applied | Language order setting | Report as a defect; right-to-left must be tested for Arabic boards |

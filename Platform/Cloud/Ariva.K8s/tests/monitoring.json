@@ -30,7 +30,7 @@
     "consumedTopicMissing", "consumerUnconnected", "scannerSignaturesStale", "scannerNotAnswering", "queueRefused",
     "outboxBrokerStreak", "consumerHeld", "streamCheckpointStale", "devicesDegraded", "zonesDegraded", "aodbFeedStale",
     "amanCodesUnmapped", "integrationLockout", "clockUnreliable", "binsOverdue", "retentionFailed",
-    "policyJobsFailed"
+    "policyJobsFailed", "displaysStale"
   ],
   "severities": ["warning", "critical"],
   "runbook": "wiki/10-Operations-Runbook.md#"

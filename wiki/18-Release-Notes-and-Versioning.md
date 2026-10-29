@@ -146,6 +146,11 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-259d: the display stale rule (2026-10-29)
+
+- New metric: `ariva.displays.stale` (meter `Ariva.Displays`, by `site`): the enabled displays whose board would be stale now (a queue zone's live snapshot missing or older than the display's stale threshold), from a sweep Api.Main runs every minute on one replica (lock class 54). No setting, no script and no grant.
+- New rule: `displaysStale` (on by default, 5 minutes, Warning; wiki 10 section 4.8). Import the rules ConfigMap into SigNoz again after the upgrade (wiki 10 section 1.1). It does not model operating hours: a site whose zones publish nothing while it is closed and whose displays stay enabled raises it then; schedule a planned downtime in SigNoz, raise its minutes or turn it off there (wiki 10 section 3.1).
+
 ### ARV-259c: the retention rules (2026-10-28)
 
 - New metrics (meter `Ariva.Retention`, Cronz): `ariva.retention.problems` by `outcome` (the last relational retention run: data sets failed, without a period, or the run failed as a whole) and `ariva.retention.policy_jobs_failed` by `kind` (TimescaleDB's retention, compression and refresh jobs whose last run failed), the latter from a new TickerQ function `TimescalePolicyJobs` every 10 minutes. No script and no grant: the runtime login reads `timescaledb_information.job_stats` as it is.

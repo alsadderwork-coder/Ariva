@@ -534,6 +534,12 @@ monitoring:
     # finalisation fails. 15 minutes, a bin's length: a stream that lags by less finalises each bin before the next is
     # mature, so the count falls back to 0 between bins and does not page.
     binsOverdue: { enabled: true, minutes: 15, severity: warning }
+    # Enabled displays whose board would be stale (a queue zone's live snapshot missing or older than the display's own stale
+    # threshold, 60 to 1,800 seconds), any at a site, for the whole window (ARV-259d): those boards show the neutral message.
+    # The threshold has already passed when a display counts, so 5 minutes is five sweeps of boards showing it. A player that
+    # stopped asking for its board is not seen, and operating hours are not modelled (a site whose zones publish nothing
+    # overnight raises it): turn it off, or raise minutes, where that is expected.
+    displaysStale: { enabled: true, minutes: 5, severity: warning }
     # The last relational retention run (Cronz, daily) had data sets that failed or have no period, or failed as a whole (ARV-259c):
     # rows past their period are kept. Held a day and two hours after the run, so 5 minutes is enough to be sure.
     retentionFailed: { enabled: true, minutes: 5, severity: critical }

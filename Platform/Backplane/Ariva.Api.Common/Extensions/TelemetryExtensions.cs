@@ -49,6 +49,8 @@ public static class TelemetryExtensions
         Ariva.Infra.Storage.UploadScanMetrics.MeterName,
         // The relational retention run's outcome and TimescaleDB's failed policy jobs (ARV-259c), Ariva.Api.Cronz only.
         Ariva.Infra.Retention.RetentionMetrics.MeterName,
+        // The enabled displays whose board would be stale, by site (ARV-259d), Ariva.Api.Main only.
+        Ariva.Infra.Services.Displays.DisplayMetrics.MeterName,
         // Security events by kind and outcome, written or left out by the throttle (ARV-091).
         SecurityEventMetrics.MeterName
     ];

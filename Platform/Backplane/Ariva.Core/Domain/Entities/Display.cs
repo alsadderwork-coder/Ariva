@@ -90,7 +90,11 @@ public class Display : BaseSoftDeletableEntity<Display>, ISiteBound
 
     public virtual IReadOnlyList<string> LanguageList => (Languages ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries);
 
-    public virtual IReadOnlyList<DisplayEntry> EntryList => Entries is null ? [] : JsonSerializer.Deserialize<List<DisplayEntry>>(Entries, Json) ?? [];
+    public virtual IReadOnlyList<DisplayEntry> EntryList => EntriesOf(Entries);
+
+    /// <summary>The entries of a display's stored JSON (<see cref="Entries"/>), for a read that projects the column alone (ARV-259d).</summary>
+    public static IReadOnlyList<DisplayEntry> EntriesOf(string entries) =>
+        entries is null ? [] : JsonSerializer.Deserialize<List<DisplayEntry>>(entries, Json) ?? [];
 
     public virtual IReadOnlyDictionary<string, string> FallbackMap =>
         FallbackMessages is null ? new Dictionary<string, string>() : JsonSerializer.Deserialize<Dictionary<string, string>>(FallbackMessages, Json) ?? [];

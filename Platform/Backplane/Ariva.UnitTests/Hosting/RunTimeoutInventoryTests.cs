@@ -49,7 +49,7 @@ public sealed class RunTimeoutInventoryTests
     /// <summary>The loops each host must run with a run timeout (with the optional ones turned on below).</summary>
     private static readonly IReadOnlyDictionary<string, string[]> BoundedLoops = new Dictionary<string, string[]>
     {
-        [ArivaHosts.Main] = ["DeviceHeartbeatMonitor", "ValidationResultsFreezer", "ScannerSignatureMonitor"],
+        [ArivaHosts.Main] = ["DeviceHeartbeatMonitor", "ValidationResultsFreezer", "ScannerSignatureMonitor", "DisplayStaleMonitor"],
         [ArivaHosts.Stream] = ["AlertEvaluationWorker", "DeskFeedWorker", "BinMaturityMonitor"],
         [ArivaHosts.Integration] = ["IdempotencySweeper", "AcrisPoller", "AmanPoller", "FeedFreshnessMonitor", "EmailSenderWorker"],
         [ArivaHosts.Ingest] = [],

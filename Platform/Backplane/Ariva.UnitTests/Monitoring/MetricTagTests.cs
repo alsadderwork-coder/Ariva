@@ -125,6 +125,8 @@ public sealed partial class MetricTagTests
             retention.RunFinished(new RetentionRun(false, [new RetentionDataSetRun("email_message", 30, 0, 1, false, true), new RetentionDataSetRun("report_delivery", null, 0, 0, false, false)]), TimeSpan.FromHours(1));
             retention.PolicyJobs([(TimescalePolicyJobs.Compression, 0), (TimescalePolicyJobs.Refresh, 0), (TimescalePolicyJobs.Retention, 1)], TimeSpan.FromMinutes(1));
         },
+        [typeof(Ariva.Infra.Services.Displays.DisplayMetrics)] = m => ((Ariva.Infra.Services.Displays.DisplayMetrics)m).Stale(
+            [new Ariva.Core.Services.Displays.DisplayStaleSite("DMO", 12, 2), new Ariva.Core.Services.Displays.DisplayStaleSite("AUH-TA", 3, 0)], TimeSpan.FromMinutes(2)),
         [typeof(UploadScanMetrics)] = m => ((UploadScanMetrics)m).Report(
             new Ariva.Core.Services.Storage.MalwareSignatures("1.4.3", 27927, DateTime.UtcNow.AddHours(-3)), TimeSpan.FromMinutes(30)),
         [typeof(Ariva.Api.Common.Logging.SecurityEventMetrics)] = m =>
