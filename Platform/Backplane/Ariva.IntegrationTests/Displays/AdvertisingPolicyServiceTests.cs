@@ -218,6 +218,27 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         (await _host.AsCallerAsync(manager, s => Displays(s).DeleteAsync(id, Ct))).HasErrors.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Guard_Should_RefuseADisplayOfANullZone_When_TheBoardAsksWithOne()
+    {
+        // ARV-193: the board's check passes a null zone to the rule, which refuses it, as the policy's view and script 0057's
+        // trigger do; it used to drop it first (not reachable: a display never stores a null zone).
+        var admin = await AdminAsync("it.ad.null.admin");
+        // Two queue zones of DMO's profile as published now (other tests of this class publish new versions): one shown, one excluded.
+        var published = (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("DMO", Ct))).Data.PublishedQueueZones;
+        published.Should().HaveCountGreaterThanOrEqualTo(2);
+        var (shown, excluded) = (published[0], published[1]);
+        (await AllowAsync(admin, "DMO", excluded)).HasErrors.Should().BeFalse();
+        async Task<bool> AllowsAsync(params string[] zones) =>
+            await _host.AsCallerAsync(null, s => s.GetRequiredService<Ariva.Infra.Services.Displays.AdvertisingPolicyGuard>().AllowsAsync("DMO", zones, Ct));
+
+        (await AllowsAsync(shown)).Should().BeTrue();
+        (await AllowsAsync($" {shown} ")).Should().BeTrue("a zone is trimmed as the display's entries are");
+        (await AllowsAsync(shown, null)).Should().BeFalse("a null zone is no queue zone of the published profile");
+        (await AllowsAsync(new string[] { null })).Should().BeFalse();
+        (await AllowsAsync(excluded)).Should().BeFalse();
+    }
+
     [Theory]
     [InlineData("an excluded zone", "RT-AD-RES", "UPDATE display SET second_region = 'Advertising' WHERE code = 'RT-AD-RES'")]
     [InlineData("a display moved into an excluded zone", "RT-AD-CIT", "UPDATE display SET entries = replace(entries, 'A-CIT', 'A-RES') WHERE code = 'RT-AD-CIT'")]

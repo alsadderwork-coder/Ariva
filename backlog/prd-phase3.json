@@ -616,7 +616,7 @@
         "Functional tests: site change with the form open; a refresh bringing a newer profile while editing; node scripts/verify.mjs story passes"
       ],
       "priority": 56,
-      "passes": false,
+      "passes": true,
       "notes": "Size XS. Recorded 2026-10-17 with ARV-145 under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back).",
       "dependsOn": [
         "ARV-145"
@@ -1813,6 +1813,24 @@
       "passes": false,
       "notes": "Size XS. Phase 3. Filed 2026-10-28 by ARV-252 (found during ARV-270's gate). No sign-in code.",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-273",
+      "title": "[E21] Advertising policy saves confirmed after the screen moves on, and concurrent changes of a policy refused",
+      "description": "From the ARV-193 security review (2026-10-29, notes, not blocking). A save of a site's advertising policy that answers after the administrator moved the displays screen to another site now shows nothing (ARV-193 keeps it off the other site's panel), neither its success nor its refusal (409), so an administrator could believe a refused save went through; the server and the audit trail are right, and returning to the site shows its stored policy. And two administrators changing the same site's policy can overwrite each other: the only concurrency check is the zone profile the change was reviewed against, not the policy row itself; the audit keeps both changes. CWEs to review: CWE-863 (closest: a change made over another unseen).",
+      "acceptanceCriteria": [
+        "A save that answers after the screen moved to another site shows a toast naming the site it was for and its outcome (saved, or not saved with the reason), and changes nothing on the screen's own site",
+        "A change of a policy names the version of the policy it was made from (a row version or the last change's time); a change made from an older one is refused (409) with a message to reload, and the panel shows it like a stale profile review",
+        "Functional tests: the toast for a save held until the screen moved on, saved and refused; two changes from the same version, the second refused; integration test of the refusal; node scripts/verify.mjs story passes",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 317,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-10-29 by ARV-193. No sign-in code.",
+      "dependsOn": [
+        "ARV-193"
+      ]
     }
   ]
 }

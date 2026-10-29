@@ -37,12 +37,13 @@ public sealed class AdvertisingPolicyTests
     [InlineData(true, new[] { "A-RES" }, new[] { "a-res" }, false)]
     [InlineData(true, new string[0], new[] { "A-OLD" }, false)]
     [InlineData(true, new string[0], new string[0], true)]
+    [InlineData(true, new string[0], new[] { "A-CIT", null }, false)]
     [InlineData(false, new string[0], new[] { "A-CIT" }, false)]
     [InlineData(false, new string[0], new string[0], false)]
     public void AllowsDisplayOf_Should_NeedTheSiteAndEveryZone_When_ADisplayAsksForAdvertising(bool allowed, string[] excluded, string[] zones, bool expected)
     {
         // Zone names are exact, as a display's entries name them, and every one must be a queue zone of the published profile
-        // (A-OLD was dropped by it; security review of ARV-145, round 4).
+        // (A-OLD was dropped by it; security review of ARV-145, round 4). A null zone is none of them (ARV-193).
         var policy = new AdvertisingPolicy("DMO", Values(allowed, Reason, excluded), Profile);
         policy.AllowsDisplayOf(zones, ["A-CIT", "A-RES", "A-VIS"], Profile).Should().Be(expected);
     }

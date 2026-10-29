@@ -34,10 +34,11 @@ internal sealed class AdvertisingPolicyGuard(IUnitOfWork unitOfWork) : SvcDb(uni
         if (policy is not { Allowed: true })
             return false;
         // The zones of the profile read here, not of whatever is published by the next statement: the excluded ones and the
-        // display's own.
+        // display's own. A null zone goes to the rule, which refuses it, as the policy's view and script 0057's trigger do
+        // (ARV-193); only the lookup leaves it out.
         var profile = await PublishedProfileIdAsync(policy.SiteCode, ct);
-        var shown = (zones ?? []).Where(zone => zone is not null).Select(zone => zone.Trim()).ToList();
-        return policy.AllowsDisplayOf(shown, await QueueZonesOfProfileAsync(profile, [.. policy.ExcludedZoneList, .. shown], ct), profile);
+        var shown = (zones ?? []).Select(zone => zone?.Trim()).ToList();
+        return policy.AllowsDisplayOf(shown, await QueueZonesOfProfileAsync(profile, [.. policy.ExcludedZoneList, .. shown.Where(zone => zone is not null)], ct), profile);
     }
 
     /// <summary>The site's published zone profile (one per site, a unique index), or none.</summary>

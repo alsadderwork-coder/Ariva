@@ -11,8 +11,10 @@
 	 * queue zones where it stays off, the reason of the last change, and the displays set to advertising that show
 	 * instructions because of it. Holders of AdvertisingPolicy.Edit (system administrators) change it with a reason naming
 	 * who authorised it; the save asks for a second factor (Api.ts opens the step-up dialog) and names the zone profile version
-	 * shown here, so the server refuses it (409) when another version was published meanwhile; the panel then shows the new
-	 * version for a fresh review. Everything is shown as text.
+	 * shown here, so the server refuses it (409) when another version was published meanwhile. ARV-193: the form takes the
+	 * version it reviews, with its queue zones, when it opens, and keeps them: a newer version that a refresh or a refused save
+	 * brings is shown in a notice with an action to review it, never switched in silently. The screen keys the panel by its
+	 * site, so changing site closes the form. Everything is shown as text.
 	 */
 	interface Props {
 		siteCode: string;
@@ -29,19 +31,37 @@
 	let reason = $state('');
 	let problems = $state<string[]>([]);
 	let busy = $state(false);
-
 	/**
-	 * The queue zones of the profile version the save confirms (read with the policy, never from another request, so they
-	 * always match it), then any excluded zone no longer among them, so it can be taken off the list.
+	 * The zone profile version the open form reviews, taken from the policy when the form opens (or when the administrator
+	 * reviews a newer one): its id, which the save names, its version and its queue zones (read with the policy, never from
+	 * another request, so they always match it).
 	 */
-	const published = $derived(policy.publishedQueueZones ?? []);
+	let review = $state<{ profileId: string | null; version: number | null; zones: string[] } | null>(
+		null
+	);
+
+	/** The reviewed version's queue zones, then any excluded zone no longer among them, so it can be taken off the list. */
+	const published = $derived(review?.zones ?? []);
 	const offered = $derived([...published, ...excluded.filter((zone) => !published.includes(zone))]);
+	/** A version published since the form took its review: saving is refused (409) until the administrator reviews it. */
+	const stale = $derived(
+		editing && review !== null && policy.publishedProfileId !== review.profileId
+	);
+
+	function take(): void {
+		review = {
+			profileId: policy.publishedProfileId,
+			version: policy.publishedProfileVersion,
+			zones: [...(policy.publishedQueueZones ?? [])]
+		};
+		problems = [];
+	}
 
 	function edit(): void {
 		allowed = policy.allowed;
 		excluded = [...policy.excludedZones];
 		reason = '';
-		problems = [];
+		take();
 		editing = true;
 	}
 
@@ -53,22 +73,29 @@
 		event.preventDefault();
 		if (busy) return;
 		busy = true;
-		const reviewed = policy.publishedProfileId;
-		const result = await advertising.change(siteCode, {
+		// The site this save is for, kept across its awaits: the screen may move to another site meanwhile, and what comes back
+		// for this one is then not shown on the other (the screen checks it too).
+		const site = siteCode;
+		const reviewed = review?.profileId ?? null;
+		const result = await advertising.change(site, {
 			allowed,
 			excludedZones: [...excluded],
 			reason: reason.trim(),
 			reviewedProfileId: reviewed
 		});
 		busy = false;
+		if (siteCode !== site) return;
 		if (result.hasErrors || !result.data) {
 			problems = result.errorMessages;
-			// Another zone profile may have been published since the review: show it, so the next save reviews it.
-			const fresh = await advertising.get(siteCode);
+			// Another zone profile may have been published since the review: the notice shows it, and the form keeps the version
+			// it reviews until the administrator reviews the new one.
+			const fresh = await advertising.get(site);
+			if (siteCode !== site) return;
 			if (fresh.data && fresh.data.publishedProfileId !== reviewed) onChanged(fresh.data);
 			return;
 		}
 		editing = false;
+		review = null;
 		toast.success($_('advertising.messages.saved'));
 		onChanged(result.data);
 	}
@@ -160,10 +187,43 @@
 		{#if editing}
 			<form class="mt-2 flex flex-col gap-3" data-testid="advertising-form" onsubmit={save}>
 				<p class="text-xs text-muted-foreground" data-testid="advertising-profile-version">
-					{policy.publishedProfileVersion
-						? $_('advertising.reviewing', { values: { version: policy.publishedProfileVersion } })
+					{review?.version
+						? $_('advertising.reviewing', { values: { version: review.version } })
 						: $_('advertising.noProfile')}
 				</p>
+				{#if stale}
+					<div
+						class="flex flex-wrap items-center gap-2 rounded-md border border-status-warning-border bg-status-warning px-3 py-2 text-xs text-status-warning-foreground"
+						role="status"
+						data-testid="advertising-review-stale"
+					>
+						<p class="min-w-0 flex-1">
+							{#if policy.publishedProfileVersion === null}
+								{$_('advertising.reviewStaleGone')}
+							{:else if !review?.version}
+								{$_('advertising.reviewStaleFirst', {
+									values: { current: policy.publishedProfileVersion }
+								})}
+							{:else}
+								{$_('advertising.reviewStale', {
+									values: { current: policy.publishedProfileVersion, reviewed: review?.version }
+								})}
+							{/if}
+						</p>
+						{#if policy.publishedProfileVersion !== null}
+							<button
+								type="button"
+								data-testid="review-advertising"
+								onclick={take}
+								class="inline-flex h-8 items-center rounded-md border bg-card px-2.5 text-xs text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+							>
+								{$_('advertising.actions.review', {
+									values: { version: policy.publishedProfileVersion }
+								})}
+							</button>
+						{/if}
+					</div>
+				{/if}
 				<label class="inline-flex items-center gap-2 text-sm">
 					<input type="checkbox" data-testid="advertising-allowed" bind:checked={allowed} />
 					<span>{$_('advertising.fields.allowed')}</span>
@@ -229,7 +289,10 @@
 					</button>
 					<button
 						type="button"
-						onclick={() => (editing = false)}
+						onclick={() => {
+							editing = false;
+							review = null;
+						}}
 						class="inline-flex h-9 items-center rounded-md border bg-card px-3 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 					>
 						{$_('advertising.actions.cancel')}

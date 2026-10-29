@@ -55,6 +55,8 @@
 		const code = siteCode;
 		form = null;
 		issued = null;
+		// ARV-193: the last site's policy goes at once, so nothing on the panel stands for the new site until its own is read.
+		advertising = null;
 		loading = true;
 		const [found, profiles, policy] = await Promise.all([
 			displays.search(code),
@@ -348,15 +350,20 @@
 		{/if}
 	</section>
 	{#if advertising && siteCode}
-		<AdvertisingPanel
-			{siteCode}
-			policy={advertising}
-			canEdit={canEditAdvertising}
-			onChanged={async (policy) => {
-				advertising = policy;
-				await refresh();
-			}}
-		/>
+		<!-- ARV-193: keyed by the site, so a form open for one site closes when the screen moves to another. -->
+		{#key siteCode}
+			<AdvertisingPanel
+				{siteCode}
+				policy={advertising}
+				canEdit={canEditAdvertising}
+				onChanged={async (policy) => {
+					// A save that answers after the screen moved to another site is not this site's policy.
+					if (policy.siteCode !== siteCode) return;
+					advertising = policy;
+					await refresh();
+				}}
+			/>
+		{/key}
 		{#if advertising.allowed && canViewMedia}
 			<AdvertisingLibrary {siteCode} canManage={canManageMedia} canApprove={canApproveMedia} />
 		{/if}

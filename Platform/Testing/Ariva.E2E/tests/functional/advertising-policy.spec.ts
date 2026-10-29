@@ -12,7 +12,8 @@ import { expectStatus } from '../support/expect-status';
 // second factor, with a reason carrying markup that shows as text; a duty manager sees the policy without a change button,
 // and the screen mirrors in Arabic. The display form offers Advertising only where the site's policy allows every zone the
 // display shows (the policy read is answered by the test for DMO, whose own policy stays off; the API refuses it anyway,
-// api/advertising-policy.spec.ts).
+// api/advertising-policy.spec.ts). ARV-193: the form keeps the zone profile version it reviews while it is open, warns when a
+// newer one is published and reviews it only when asked, and closes when the screen moves to another site.
 
 test.skip(!databaseAvailable, 'needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -224,6 +225,207 @@ test('a save refused because another profile was published shows the new version
 	await form.getByTestId('save-advertising').click();
 	await expect(form.getByTestId('advertising-problems')).toBeVisible();
 	expect(sent[0].reviewedProfileId, 'the first save names the version reviewed').toBe(v12);
+	// ARV-193: the refusal brings version 13 in a notice; the form keeps version 12 until the administrator reviews 13.
+	await expect(form.getByTestId('advertising-review-stale')).toContainText('Zone profile version 13 has been published since this form opened on version 12');
+	await expect(form.getByTestId('advertising-profile-version')).toContainText('zone profile version 12');
+	await form.getByTestId('review-advertising').click();
+	await expect(form.getByTestId('advertising-review-stale')).toHaveCount(0);
+	await expect(form.getByTestId('advertising-problems')).toHaveCount(0);
+	await expect(form.getByTestId('advertising-profile-version')).toContainText('zone profile version 13');
+	await form.locator('[data-testid="advertising-zone"][data-zone="D-NEW"]').check();
+	await form.getByTestId('save-advertising').click();
+	await expect(panel).toHaveAttribute('data-allowed', 'true');
+	expect(sent[1]).toMatchObject({ reviewedProfileId: v13, excludedZones: ['D-NEW'] });
+	allowStatuses(guards, 409);
+	await guards.expectClean();
+});
+
+test('the policy form closes when the screen moves to another site, and keeps nothing of the site it was open for', async ({ page }) => {
+	// ARV-193: a save for one site never carries another site's selections.
+	const guards = await guardPage(page);
+	const sent: unknown[] = [];
+	await emptyLibrary(page);
+	await page.route('**/api/v1/admin/sites/DMO/advertising-policy', async (route) => {
+		if (route.request().method() !== 'GET') {
+			sent.push(route.request().postDataJSON());
+			return route.fulfill({ status: 409, contentType: 'application/problem+json', json: { status: 409, title: 'Conflict', detail: 'not expected' } });
+		}
+		return route.fulfill({
+			json: {
+				siteCode: 'DMO', allowed: false, excludedZones: [], reason: null, changedOn: null, unpublishedZones: [], displaysFallingBack: [], profileChanged: false,
+				publishedProfileId: '0199a000-0000-7000-8000-00000000b012', publishedProfileVersion: 12, confirmedProfileVersion: null,
+				publishedQueueZones: ['D-CIT', 'D-RES', 'D-VIS']
+			}
+		});
+	});
+	await signInThroughUi(page, accounts().webAdmin);
+	await openDisplays(page, 'DMO');
+	const panel = page.getByTestId('advertising-policy');
+	await panel.getByTestId('edit-advertising').click();
+	const form = panel.getByTestId('advertising-form');
+	await form.getByTestId('advertising-allowed').check();
+	await form.locator('[data-testid="advertising-zone"][data-zone="D-RES"]').check();
+	await form.getByTestId('advertising-reason-input').fill('Airport operator letter AO-WEB-193');
+
+	await page.locator('#displays-site').selectOption(site);
+	await expect(page.getByTestId('advertising-form')).toHaveCount(0);
+	await expect(page.getByTestId('advertising-policy').getByTestId('edit-advertising')).toBeVisible();
+
+	await page.locator('#displays-site').selectOption('DMO');
+	await expect(page.getByTestId('advertising-form')).toHaveCount(0);
+	await page.getByTestId('advertising-policy').getByTestId('edit-advertising').click();
+	const reopened = page.getByTestId('advertising-form');
+	await expect(reopened.getByTestId('advertising-allowed')).not.toBeChecked();
+	await expect(reopened.locator('[data-testid="advertising-zone"][data-zone="D-RES"]')).not.toBeChecked();
+	await expect(reopened.getByTestId('advertising-reason-input')).toHaveValue('');
+	expect(sent, 'nothing was saved').toHaveLength(0);
+	await guards.expectClean();
+});
+
+test('a save that answers after the screen moved to another site leaves nothing of the first site on the second', async ({ page }) => {
+	// ARV-193, security review round 1: DMO's save is held in flight while the administrator chooses the spec's site; its answer
+	// (DMO's policy, allowed) must not reach the other site's panel, nor start a refresh there.
+	const guards = await guardPage(page);
+	let release: () => void = () => {};
+	const held = new Promise<void>((resolve) => (release = resolve));
+	let siteReads = 0;
+	const dmo = {
+		siteCode: 'DMO', allowed: false, excludedZones: [], reason: null, changedOn: null, unpublishedZones: [], displaysFallingBack: [], profileChanged: false,
+		publishedProfileId: '0199a000-0000-7000-8000-00000000d012', publishedProfileVersion: 12, confirmedProfileVersion: null,
+		publishedQueueZones: ['D-CIT', 'D-RES', 'D-VIS']
+	};
+	await emptyLibrary(page);
+	await page.route('**/api/v1/admin/sites/DMO/advertising-policy', async (route) => {
+		if (route.request().method() === 'GET') return route.fulfill({ json: dmo });
+		await held;
+		return route.fulfill({
+			json: { ...dmo, allowed: true, excludedZones: ['D-RES'], reason: 'Airport operator letter AO-WEB-193D', changedOn: new Date().toISOString(), confirmedProfileVersion: 12 }
+		});
+	});
+	await page.route(`**/api/v1/admin/sites/${site}/advertising-policy`, (route) => {
+		if (route.request().method() !== 'GET') return route.fallback();
+		siteReads++;
+		return route.fulfill({
+			json: {
+				siteCode: site, allowed: false, excludedZones: [], reason: 'Site letter AO-WEB-193S', changedOn: new Date().toISOString(), unpublishedZones: [],
+				displaysFallingBack: [], profileChanged: false, publishedProfileId: null, publishedProfileVersion: null, confirmedProfileVersion: null,
+				publishedQueueZones: []
+			}
+		});
+	});
+	await signInThroughUi(page, accounts().webAdmin);
+	await openDisplays(page, 'DMO');
+	const panel = page.getByTestId('advertising-policy');
+	await panel.getByTestId('edit-advertising').click();
+	const form = panel.getByTestId('advertising-form');
+	await form.getByTestId('advertising-allowed').check();
+	await form.locator('[data-testid="advertising-zone"][data-zone="D-RES"]').check();
+	await form.getByTestId('advertising-reason-input').fill('Airport operator letter AO-WEB-193D');
+	const sent = page.waitForRequest((request) => request.method() === 'PUT' && request.url().includes('/sites/DMO/advertising-policy'));
+	await form.getByTestId('save-advertising').click();
+	await sent;
+
+	await page.locator('#displays-site').selectOption(site);
+	await expect(page.getByTestId('advertising-reason')).toContainText('AO-WEB-193S');
+	const answered = page.waitForResponse((response) => response.request().method() === 'PUT' && response.url().includes('/sites/DMO/advertising-policy'));
+	release();
+	await answered;
+	// Two frames for anything the answer would have rendered.
+	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+
+	const shown = page.getByTestId('advertising-policy');
+	await expect(shown).toHaveAttribute('data-allowed', 'false');
+	await expect(shown.getByTestId('advertising-reason')).toContainText('AO-WEB-193S');
+	await expect(shown).not.toContainText('AO-WEB-193D');
+	await expect(shown.getByTestId('advertising-excluded')).toHaveCount(0);
+	expect(siteReads, 'no refresh started for the other site').toBe(1);
+	await shown.getByTestId('edit-advertising').click();
+	const own = page.getByTestId('advertising-form');
+	await expect(own.getByTestId('advertising-allowed')).not.toBeChecked();
+	await expect(own).toContainText('The site has no published queue zones.');
+	await guards.expectClean();
+});
+
+test('a newer zone profile that a refresh brings while the form is open is shown in a notice, never switched in silently', async ({ page }) => {
+	// ARV-193: the screen refreshes the policy after a display action; the form keeps the version it reviews and its zones,
+	// the server refuses a save of it (409), and the newer version is reviewed only when the administrator asks.
+	const guards = await guardPage(page);
+	const v12 = '0199a000-0000-7000-8000-00000000c012';
+	const v13 = '0199a000-0000-7000-8000-00000000c013';
+	const displayId = '0199a000-0000-7000-8000-00000000c0d1';
+	let published = { id: v12, version: 12, zones: ['D-CIT', 'D-RES', 'D-VIS'] };
+	const sent: Record<string, unknown>[] = [];
+	let saved: Record<string, unknown> | null = null;
+	let deleted = false;
+	const policy = () => ({
+		siteCode: 'DMO', allowed: false, excludedZones: [], reason: null, changedOn: null, unpublishedZones: [], displaysFallingBack: [], profileChanged: false,
+		publishedProfileId: published.id, publishedProfileVersion: published.version, confirmedProfileVersion: null, publishedQueueZones: published.zones
+	});
+	await emptyLibrary(page);
+	await page.route('**/api/v1/admin/sites/DMO/advertising-policy', async (route) => {
+		if (route.request().method() === 'GET') return route.fulfill({ json: saved ?? policy() });
+		const body = route.request().postDataJSON() as Record<string, unknown>;
+		sent.push(body);
+		if (body.reviewedProfileId !== published.id)
+			return route.fulfill({ status: 409, contentType: 'application/problem+json', json: { status: 409, title: 'Conflict', detail: 'stale' } });
+		saved = { ...policy(), allowed: true, reason: body.reason, excludedZones: body.excludedZones, confirmedProfileVersion: published.version };
+		return route.fulfill({ json: saved });
+	});
+	// DMO's list is this test's own: one display, whose deletion the screen follows with a refresh.
+	await page.route(
+		(url) => url.pathname === '/api/v1/admin/displays' && url.searchParams.get('siteCode') === 'DMO',
+		(route) =>
+			route.fulfill({
+				json: deleted
+					? []
+					: [
+							{
+								id: displayId, siteCode: 'DMO', code: 'ARV193-1', name: 'Hall board', location: null, orientation: 'Landscape', languages: ['en'],
+								bandMinutes: 5, hysteresisMinutes: 1, staleSeconds: 150, entries: [{ zone: 'D-CIT', labels: { en: 'Citizens' } }],
+								fallback: { en: 'Please follow the signs' }, enabled: true, layout: 'Full', queueShare: 60, secondRegion: 'Instructions',
+								advertisingPauseMinutes: null, credentialPrefix: null, credentialIssuedOn: null, createdOn: null, modifiedOn: null
+							}
+						]
+			})
+	);
+	await page.route(`**/api/v1/admin/displays/${displayId}`, (route) => {
+		if (route.request().method() !== 'DELETE') return route.fallback();
+		deleted = true;
+		return route.fulfill({ status: 204 });
+	});
+	await signInThroughUi(page, accounts().webAdmin);
+	await openDisplays(page, 'DMO');
+	const panel = page.getByTestId('advertising-policy');
+	await panel.getByTestId('edit-advertising').click();
+	const form = panel.getByTestId('advertising-form');
+	await expect(form.getByTestId('advertising-profile-version')).toContainText('zone profile version 12');
+	await form.getByTestId('advertising-allowed').check();
+	await form.getByTestId('advertising-reason-input').fill('Airport operator letter AO-WEB-193B');
+
+	// Version 13 is published with a new zone; the deletion's refresh brings it while the form is open.
+	published = { id: v13, version: 13, zones: ['D-CIT', 'D-NEW', 'D-RES', 'D-VIS'] };
+	await page.getByTestId('delete-display').click();
+	await page.getByTestId('confirm-delete-display').click();
+	await expect(form.getByTestId('advertising-review-stale')).toContainText('Zone profile version 13 has been published since this form opened on version 12');
+	await expect(form.getByTestId('advertising-profile-version')).toContainText('zone profile version 12');
+	await expect(form.locator('[data-testid="advertising-zone"][data-zone="D-NEW"]')).toHaveCount(0);
+	await expect(form.getByTestId('advertising-allowed')).toBeChecked();
+	// The notice in Arabic, in the page's direction, then back to English.
+	await page.getByTestId('language-toggle').click();
+	await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+	await expect(form.getByTestId('advertising-review-stale')).toContainText('النسخة 13');
+	await expect(form.getByTestId('review-advertising')).toHaveText('مراجعة النسخة 13');
+	await page.getByTestId('language-toggle').click();
+	await expect(page.locator('html')).toHaveAttribute('dir', 'ltr');
+
+	// Saving what was reviewed names version 12, and the server refuses it.
+	await form.getByTestId('save-advertising').click();
+	await expect(form.getByTestId('advertising-problems')).toBeVisible();
+	expect(sent[0].reviewedProfileId).toBe(v12);
+	await expect(panel).toHaveAttribute('data-allowed', 'false');
+
+	// Reviewing version 13 offers its zones; the next save confirms it.
+	await form.getByTestId('review-advertising').click();
 	await expect(form.getByTestId('advertising-profile-version')).toContainText('zone profile version 13');
 	await form.locator('[data-testid="advertising-zone"][data-zone="D-NEW"]').check();
 	await form.getByTestId('save-advertising').click();

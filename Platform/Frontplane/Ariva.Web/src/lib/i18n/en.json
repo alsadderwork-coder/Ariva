@@ -1141,6 +1141,9 @@
 		"profileChangedFirst": "Zone profile version {current} has been published since this policy was saved, so advertising is off on every display of this site until a system administrator checks the excluded zones in it (their names and outlines) and saves the policy again.",
 		"noZones": "The site has no published queue zones.",
 		"reviewing": "You are confirming the excluded zones against zone profile version {version}: check their names and outlines in it before saving.",
+		"reviewStale": "Zone profile version {current} has been published since this form opened on version {reviewed}. Saving is refused until you review the zones in the new version.",
+		"reviewStaleFirst": "Zone profile version {current} has been published since this form opened. Saving is refused until you review its zones.",
+		"reviewStaleGone": "The zone profile this form reviews is no longer published. Saving is refused: cancel, and check the site's zone profiles.",
 		"noProfile": "The site has no published zone profile, so no display can show advertising yet.",
 		"fields": {
 			"allowed": "Allow advertising on this site's displays",
@@ -1153,7 +1156,8 @@
 		"actions": {
 			"change": "Change",
 			"save": "Save policy",
-			"cancel": "Cancel"
+			"cancel": "Cancel",
+			"review": "Review version {version}"
 		},
 		"messages": {
 			"saved": "Advertising policy saved"
