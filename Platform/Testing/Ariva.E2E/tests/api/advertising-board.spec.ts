@@ -165,8 +165,12 @@ test('the board carries the playable playlist, each item as often as its weight,
 		{ kind: 'Media', mediaId: media.first, contentType: 'image/png', seconds: 12, slide: null },
 		{ kind: 'Media', mediaId: media.second, contentType: 'image/png', seconds: 6, slide: null }
 	]);
-	// Nothing changes before the site's midnight, so the plan holds as long as the board may be shown: 150 seconds ahead.
-	expect(Date.parse(read.advertising.untilUtc) - Date.parse(read.serverUtc), 'the display stale threshold ahead').toBe(150_000);
+	// Nothing changes before the site's midnight, so the plan holds as long as the board may be shown: 150 seconds ahead of the
+	// time the board starts. Its server time is read once it is composed (ARV-197), a moment later, so the plan never outlives
+	// the display's stale threshold by the server's clock and falls short of it by the composing time only.
+	const ahead = Date.parse(read.advertising.untilUtc) - Date.parse(read.serverUtc);
+	expect(ahead, 'never past the display stale threshold').toBeLessThanOrEqual(150_000);
+	expect(ahead, 'the stale threshold less the composing time').toBeGreaterThan(145_000);
 	expect(JSON.stringify(read)).not.toContain(media.draft);
 
 	const shown = await fetchAsDisplay(player, media.first);

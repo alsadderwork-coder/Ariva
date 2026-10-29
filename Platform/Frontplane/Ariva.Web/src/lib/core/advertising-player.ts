@@ -1,5 +1,7 @@
 import type { Board, BoardAdvertising, BoardAdvertisingItem } from './displays';
+import { utcMilliseconds } from './board-clock';
 
+export { BoardClock, utcMilliseconds } from './board-clock';
 export { cacheLimits, MediaCache, type ObjectUrls } from './media-cache';
 
 /**
@@ -86,21 +88,6 @@ export function mediaIds(plan: BoardAdvertising | null): Set<string> {
 	const ids = new Set<string>();
 	for (const item of plan?.items ?? []) if (isPlayableMedia(item)) ids.add(item.mediaId);
 	return ids;
-}
-
-/**
- * An instant from the server as milliseconds. The server sends UTC with its zone; a text without one is read as UTC too, never
- * as the screen's local time. NaN when it is not a date.
- */
-export function utcMilliseconds(text: string | null | undefined): number {
-	if (typeof text !== 'string' || text.length === 0) return Number.NaN;
-	return Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text) ? text : `${text}Z`);
-}
-
-/** The server's clock now: the board's serverUtc plus the time since that board arrived (the screen's own clock may be wrong). */
-export function serverNow(serverUtc: string, boardAt: number, now: number): number {
-	const server = utcMilliseconds(serverUtc);
-	return Number.isFinite(server) ? server + Math.max(0, now - boardAt) : now;
 }
 
 /** Whether the plan has run out by the server's clock: a player without a newer board stops it then. */

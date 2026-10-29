@@ -18,6 +18,8 @@ namespace Ariva.Infra.Services.Displays;
 /// display's stale threshold. Nothing but the board's own labels, messages and numbers goes out. The second region is the
 /// one the site's advertising policy allows now (ARV-145): a display set to advertising shows instructions where it does not.
 /// Where it does, the board carries the playlist that applies to the display now (ARV-143b), with its playable items only.
+/// The board's server time is read once it is composed (ARV-197): the player takes it as the server's clock when the board
+/// arrives, so a time read before the board's queries would put that clock behind by however long they took.
 /// </summary>
 internal sealed class SvcDisplayBoard(
     IUnitOfWork unitOfWork,
@@ -76,8 +78,9 @@ internal sealed class SvcDisplayBoard(
         // ARV-143b: a plan plays only where the policy allows advertising now; a plan alone is never permission.
         var plan = secondRegion == DisplaySecondRegion.Advertising && display.Layout == DisplayLayout.Split ? await PlanAsync(display, now, ct) : null;
 
+        var composed = timeProvider.GetUtcNow().UtcDateTime;
         return new Result<DisplayBoardViewModel>(new DisplayBoardViewModel(display.Code, display.Name, display.Orientation.ToString(), display.LanguageList,
-            display.BandMinutes, display.HysteresisMinutes, display.StaleSeconds, display.FallbackMap, entries, now, illustrative, display.Layout.ToString(),
+            display.BandMinutes, display.HysteresisMinutes, display.StaleSeconds, display.FallbackMap, entries, composed, illustrative, display.Layout.ToString(),
             display.QueueShare, secondRegion.ToString(), pinned is null ? null : Slide(pinned), rotation.Select(s => Slide(s)).ToList(), plan));
     }
 

@@ -36,6 +36,13 @@
 	 * batches with this page's credential, one request at a time, every minute (sooner when a whole batch waits); never while
 	 * the board is refused, and not after a 401 until a good board comes back. As the page goes it tries once more with fetch
 	 * keepalive. The `playsEvery` query parameter (whole seconds, held to 12 to 60) shortens the turn for the functional test.
+	 *
+	 * ARV-197: every time the page measures (how old its last good board is, and the server's clock from the boards'
+	 * serverUtc) is on the monotonic clock, performance.now(), so a kiosk whose own clock is wrong, or is moved back while it
+	 * is offline, still goes stale and still ends a plan on time. The server's clock never moves back for a board that
+	 * arrived late (BoardClock). The board is also stale once the screen's own clock says its threshold has passed: the
+	 * monotonic clock may stand still while the kiosk sleeps, and stale is the safe side (the next good board clears it). The
+	 * screen's own clock does nothing else but print the time of the last good board in the header.
 	 */
 	const dictionaries: Record<string, Record<string, string>> = { en, ar, pt, sw };
 	const rtl = new Set(['ar']);
@@ -47,8 +54,12 @@
 	let board = $state<Board | null>(null);
 	let bands = $state<(Band | null)[]>([]);
 	let refused = $state(false);
+	/** When the last good board arrived, and the time now, on the monotonic clock (ARV-197). */
 	let lastOk = $state(0);
-	let now = $state(Date.now());
+	let now = $state(performance.now());
+	/** The screen's own time of the last good board: the header prints it, and the board goes stale by it too. */
+	let updatedAt = $state(0);
+	const server = new advertisingPlayer.BoardClock();
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let clock: ReturnType<typeof setInterval> | undefined;
 	/** ARV-144: the plays shown and not yet answered for; set again with the page's turn when it mounts. */
@@ -63,18 +74,29 @@
 	/** The split screen reads in its first language's direction, so the queue region is first for that reader. */
 	const direction = $derived(rtl.has(languages[0]) ? 'rtl' : 'ltr');
 	let secondLoaded = $state(0);
-	/** The whole board is stale when the last good answer is older than the display's stale threshold. */
-	const boardStale = $derived(!board || now - lastOk > (board?.staleSeconds ?? 150) * 1000);
+	/**
+	 * The whole board is stale when the last good answer is older than the display's stale threshold by either clock: the
+	 * monotonic one (a screen clock moved back) or the screen's own (a kiosk that slept, or a screen clock moved forward).
+	 * The screen's clock is read again with every tick of `now`.
+	 */
+	const boardStale = $derived.by(() => {
+		const threshold = (board?.staleSeconds ?? 150) * 1000;
+		return !board || now - lastOk > threshold || Date.now() - updatedAt > threshold;
+	});
 	/** ARV-143b: the wait rule holds advertising back (judged on each good board, held between them). */
 	let advertisingPaused = $state(false);
-	/** The server's clock: the last board's serverUtc plus the time since it arrived. */
-	const serverClock = $derived(
-		board ? advertisingPlayer.serverNow(board.serverUtc, lastOk, now) : now
-	);
+	/** The server's clock: the boards' serverUtc plus the time since they arrived (BoardClock). */
+	const serverClock = $derived(board ? serverTime(now) : Date.now());
 	/** The plan only while the board says the second region shows advertising; otherwise the instructions. */
 	const advertisingPlan = $derived(
 		board?.secondRegion === 'Advertising' ? (board.advertising ?? null) : null
 	);
+
+	/** The server's clock at `at` on the monotonic clock; the screen's own clock only before a board named a time. */
+	function serverTime(at: number): number {
+		const time = server.at(at);
+		return Number.isFinite(time) ? time : Date.now();
+	}
 
 	function words(
 		language: string,
@@ -94,7 +116,7 @@
 	async function poll(): Promise<void> {
 		if (!code || !credential) return;
 		const answer = await displays.board(code, credential);
-		now = Date.now();
+		now = performance.now();
 		if ('refused' in answer) {
 			refused = true;
 			return;
@@ -120,8 +142,10 @@
 			);
 		});
 		advertisingPaused = advertisingPlayer.nextPause(advertisingPaused, next);
+		server.observe(next.serverUtc, now);
 		board = next;
 		lastOk = now;
+		updatedAt = Date.now();
 	}
 
 	/** One advertisement for the second region, fetched with this display's credential (never handed to the component). */
@@ -142,10 +166,8 @@
 	 * millisecond.
 	 */
 	function playStarted(mediaId: string, slotSeconds: number): void {
-		const server = board
-			? advertisingPlayer.serverNow(board.serverUtc, lastOk, Date.now())
-			: Date.now();
-		log.start(mediaId, server, performance.now(), slotSeconds);
+		const at = performance.now();
+		log.start(mediaId, serverTime(at), at, slotSeconds);
 		syncPlays();
 	}
 
@@ -197,7 +219,7 @@
 		void poll();
 		timer = setInterval(() => void poll(), pollMs);
 		clock = setInterval(() => {
-			now = Date.now();
+			now = performance.now();
 			void sendPlays();
 		}, 1000);
 	});
@@ -281,7 +303,7 @@
 			dir="ltr"
 			data-testid="board-updated"
 		>
-			{new Date(lastOk).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+			{new Date(updatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
 		</p>
 	</header>
 	{#if current.illustrative === true}
@@ -358,6 +380,7 @@
 		data-layout="Split"
 		data-orientation={board.orientation}
 		data-state={boardStale ? 'stale' : 'live'}
+		data-server-clock={Math.round(serverClock)}
 		data-plays-queued={playsQueued}
 		data-plays-sent={playsSent}
 		data-plays-dropped={playsDropped}
@@ -412,6 +435,7 @@
 		data-layout="Full"
 		data-orientation={board?.orientation ?? 'Landscape'}
 		data-state={refused ? 'refused' : boardStale ? 'stale' : 'live'}
+		data-server-clock={board ? Math.round(serverClock) : null}
 		data-plays-queued={playsQueued}
 		data-plays-sent={playsSent}
 		data-plays-dropped={playsDropped}

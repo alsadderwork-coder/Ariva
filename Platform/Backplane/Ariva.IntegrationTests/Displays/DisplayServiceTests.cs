@@ -5,6 +5,7 @@ using Ariva.Core.Services;
 using Ariva.Core.Services.Administration;
 using Ariva.Core.Services.Displays;
 using Ariva.Core.Services.Topology;
+using Ariva.Infra.Live;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Seed;
 using Ariva.IntegrationTests.Security;
@@ -19,7 +20,8 @@ namespace Ariva.IntegrationTests.Displays;
 /// ARV-058 against PostgreSQL with script 0035: passenger displays round-trip through the service within the caller's
 /// sites, show only queue zones of the site's published profile, keep their code unique and their site fixed, are
 /// audited without the credential; a player is found only by the display's code and its current credential, and only
-/// while the display is live and enabled; the runtime role cannot delete a display.
+/// while the display is live and enabled; the runtime role cannot delete a display. The board carries the server's time once
+/// it is composed (ARV-197).
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposable
@@ -196,6 +198,34 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
     }
 
     [Fact]
+    public async Task Board_Should_CarryTheServerTimeOnceComposed_When_ItsReadsTakeTime()
+    {
+        // ARV-197: the player takes the board's server time as the server's clock when the board arrives, so a time read before
+        // the board's queries would put that clock behind by however long they took. Here each live snapshot read takes three
+        // seconds of the host's clock; the entry's age is still judged by the clock as the board starts.
+        var admin = await AdminAsync("it.display.clock.admin");
+        var manager = await ManagerAsync(admin, "it.display.clock.manager");
+        var created = (await _host.AsCallerAsync(manager, s => Displays(s).CreateAsync(Request("CLK-1"), Ct))).Data;
+        AccountsHost timed = null;
+        timed = new AccountsHost(fixture, database: TestDatabase.Displays,
+            configure: services => services.AddSingleton<ILiveSnapshotStore>(new SlowSnapshots(timed.Clock, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(10))));
+        try
+        {
+            await timed.CreateUserAsync("it.display.clock.reader");
+            var started = timed.Clock.GetUtcNow().UtcDateTime;
+            var board = await timed.AsCallerAsync(null, s => Board(s).GetAsync(created.Display.Id, created.Display.CredentialPrefix, Ct));
+
+            board.HasErrors.Should().BeFalse(string.Join(", ", board.ErrorMessages ?? []));
+            board.Data.ServerUtc.Should().Be(started.AddSeconds(3), "the server's time once the board is composed, after its one snapshot read");
+            board.Data.Entries.Should().ContainSingle().Which.AgeSeconds.Should().Be(10, "the age is judged as the board starts");
+        }
+        finally
+        {
+            await timed.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task Layout_Should_RoundTripAuditedAndReachTheBoard_When_ADisplayIsSplit()
     {
         var admin = await AdminAsync("it.display.layout.admin");
@@ -268,5 +298,20 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
         var delete = () => command.ExecuteNonQueryAsync(Ct);
         (await delete.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be("42501", "displays are soft deleted only");
         await transaction.RollbackAsync(Ct);
+    }
+
+    /// <summary>Live snapshots published <paramref name="age"/> before each read, each read taking <paramref name="takes"/> of the clock.</summary>
+    private sealed class SlowSnapshots(ManualClock clock, TimeSpan takes, TimeSpan age) : ILiveSnapshotStore
+    {
+        public Task PublishAsync(IReadOnlyCollection<LiveZoneSnapshot> snapshots, CancellationToken ct) => Task.CompletedTask;
+
+        public Task<LiveZoneSnapshot> GetAsync(string zoneKey, CancellationToken ct)
+        {
+            var now = clock.GetUtcNow().UtcDateTime;
+            clock.Advance(takes);
+            return Task.FromResult(new LiveZoneSnapshot(zoneKey, now.AddMinutes(-1), 12, true, false, 4, 3, null, false, now - age));
+        }
+
+        public Task SubscribeAsync(Func<LiveZoneSnapshot, Task> handler, CancellationToken ct) => Task.CompletedTask;
     }
 }

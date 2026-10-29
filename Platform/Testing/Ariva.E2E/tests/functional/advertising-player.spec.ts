@@ -22,6 +22,9 @@ import { expectStatus } from '../support/expect-status';
 // shows instructions at the next board, lets the cached bytes go and fetches nothing more.
 // ARV-144: the player reports the plays of the advertisements it showed (start by the server's clock, time on screen,
 // completed or cut short) in a batch with its own credential, and the server takes them once.
+// ARV-197: the player measures on the monotonic clock: a screen clock moved back while the network is down still lets the
+// board go stale and the plan stop, a screen clock moved forward (as after a sleep) makes it stale at once, and a board that
+// arrives late never moves the player's clock of the server back.
 
 test.skip(!databaseAvailable, 'needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -710,8 +713,8 @@ test("proof of play: the plays shown go in one batch, started by the server's cl
 					const body = await response.json();
 					// The board's server time as it reaches the player (this machine's clock): the time the server spends composing it
 					// and this route's own hop would put the player's clock behind by seconds on a slow runner, and the next, quicker
-					// board would move it ahead by as much, ending the plan seconds early (CI, 2026-10-18; a late board moving the
-					// clock back is ARV-197's).
+					// board would move it ahead by as much, ending the plan seconds early (CI, 2026-10-18; since ARV-197 a late
+					// board no longer moves the clock back, but a quicker one still moves it ahead).
 					body.serverUtc = new Date().toISOString();
 					boards.push(Date.parse(body.serverUtc));
 					if (body.advertising && !warm) {
@@ -968,6 +971,121 @@ test('a network loss: the items play on from the cache until the board goes stal
 		await expect(region).toHaveAttribute('data-cached', '2');
 		expect(media.filter((id) => id === imageA || id === imageB).length, 'still fetched once each').toBe(2);
 		dropAborted(guards);
+		await guards.expectClean();
+	} finally {
+		await player.close();
+	}
+});
+
+test('a screen clock moved back while the network is down: the board still goes stale and the plan stops at its threshold', async ({ browser }) => {
+	// ARV-197: the age of the last good board and the server's clock are measured on the monotonic clock. On the screen's own
+	// clock, one moved back while the kiosk was offline kept the old board live and the plan playing until it caught up.
+	test.setTimeout(180_000);
+	await plays(share);
+	const player = await openPlayer(browser, (page) => page.clock.install());
+	try {
+		const { page, guards } = player;
+		const board = page.getByTestId('board');
+		const region = page.getByTestId('board-advertising');
+		await expect(region).toHaveAttribute('data-state', 'playing', { timeout: 30_000 });
+		await expect(board).toHaveAttribute('data-state', 'live');
+		await page.route(
+			(url) => url.pathname.startsWith('/api/v1/display/'),
+			(route) => route.abort()
+		);
+		const serverClock = async () => Number(await board.getAttribute('data-server-clock'));
+		const before = await serverClock();
+		// The screen's clock goes back an hour (Date only: setSystemTime leaves performance.now() as it was), then the display's
+		// 60 seconds pass and more.
+		await page.clock.setSystemTime(Date.now() - 3_600_000);
+		await page.clock.fastForward(75_000);
+		await expect(board, 'stale by the monotonic clock').toHaveAttribute('data-state', 'stale', { timeout: 10_000 });
+		await expect(region).toHaveAttribute('data-state', 'fallback');
+		await expect(region).toHaveAttribute('data-reason', /^(stale|expired)$/);
+		await expect(page.getByTestId('board-entry').first()).toHaveAttribute('data-band', 'none');
+		await expect(region.getByTestId('board-second')).toBeVisible();
+		// The player's clock of the server, which ends a plan and stamps a play, ran on with the monotonic clock: 75 seconds
+		// forward (and the moments this test took), not an hour back nor stopped at the last board's time.
+		await expect
+			.poll(async () => (await serverClock()) - before, { message: "the player's clock of the server ran on", timeout: 10_000 })
+			.toBeGreaterThanOrEqual(74_000);
+		expect((await serverClock()) - before, 'not by the screen clock').toBeLessThan(120_000);
+		dropAborted(guards);
+		await guards.expectClean();
+	} finally {
+		await player.close();
+	}
+});
+
+test('a screen clock moved forward, or a kiosk that slept, while the network is down: the board goes stale at once', async ({ browser }) => {
+	// ARV-197: the monotonic clock may stand still while a kiosk sleeps, so the board is stale by the screen's own clock too
+	// (the safe side: the next good board clears it). The player's clock of the server stays on the monotonic clock.
+	test.setTimeout(120_000);
+	await plays(share);
+	const player = await openPlayer(browser, (page) => page.clock.install());
+	try {
+		const { page, guards } = player;
+		const board = page.getByTestId('board');
+		const region = page.getByTestId('board-advertising');
+		await expect(region).toHaveAttribute('data-state', 'playing', { timeout: 30_000 });
+		await expect(board).toHaveAttribute('data-state', 'live');
+		await page.route(
+			(url) => url.pathname.startsWith('/api/v1/display/'),
+			(route) => route.abort()
+		);
+		const serverClock = async () => Number(await board.getAttribute('data-server-clock'));
+		const before = await serverClock();
+		const started = Date.now();
+		// The screen's clock goes 75 seconds forward (Date only), as after a sleep the monotonic clock did not count.
+		await page.clock.setSystemTime(Date.now() + 75_000);
+		await expect(board, 'stale by the screen clock').toHaveAttribute('data-state', 'stale', { timeout: 5_000 });
+		await expect(region).toHaveAttribute('data-state', 'fallback');
+		await expect(region).toHaveAttribute('data-reason', 'stale');
+		await expect(page.getByTestId('board-entry').first()).toHaveAttribute('data-band', 'none');
+		expect((await serverClock()) - before, "the player's clock of the server did not jump with it").toBeLessThan(Date.now() - started + 5_000);
+		dropAborted(guards);
+		await guards.expectClean();
+	} finally {
+		await player.close();
+	}
+});
+
+test("a board that arrives late does not move the player's clock of the server back", async ({ browser }) => {
+	// ARV-197 (seen by the proof of play test, ARV-144): every other board here carries a server time 7 seconds old, as if it
+	// had been held that long on its way. Taken as it came, it put the player's clock of the server back 7 seconds, so a plan
+	// that had run out played again and a play was counted twice; the clock keeps the quicker boards' time instead.
+	test.setTimeout(120_000);
+	let late = false;
+	let lateBoards = 0;
+	const player = await openPlayer(browser, (page) =>
+		page.route(
+			(url) => url.pathname === '/api/v1/display/board',
+			async (route) => {
+				const response = await route.fetch();
+				if (response.status() !== 200) return route.fulfill({ response });
+				const body = await response.json();
+				body.serverUtc = new Date(Date.now() - (late ? 7_000 : 0)).toISOString();
+				if (late) lateBoards++;
+				late = !late;
+				return route.fulfill({ response, json: body });
+			}
+		)
+	);
+	try {
+		const { page, guards } = player;
+		const board = page.getByTestId('board');
+		await expect(board).toHaveAttribute('data-server-clock', /^\d+$/, { timeout: 30_000 });
+		// Three boards or more, read four times a second.
+		const seen: { at: number; clock: number }[] = [];
+		const until = Date.now() + 32_000;
+		while (Date.now() < until) {
+			seen.push({ at: Date.now(), clock: Number(await board.getAttribute('data-server-clock')) });
+			await page.waitForTimeout(250);
+		}
+		expect(lateBoards, 'late boards came').toBeGreaterThanOrEqual(1);
+		for (let i = 1; i < seen.length; i++) expect(seen[i].clock, `never back (read ${i})`).toBeGreaterThanOrEqual(seen[i - 1].clock);
+		// The page updates its clock every second, and a board's way through this route takes a moment.
+		for (const sample of seen) expect(Math.abs(sample.clock - sample.at), "the quicker boards' time").toBeLessThan(2_500);
 		await guards.expectClean();
 	} finally {
 		await player.close();

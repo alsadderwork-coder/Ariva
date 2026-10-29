@@ -126,6 +126,7 @@ public sealed record DisplayBoardAdvertisingViewModel(
 /// The layout (ARV-140) comes with every answer, so a change reaches a running player at its next poll, without a restart.
 /// So do the instruction slides that apply to the display (ARV-141): the pinned one, shown under the waits, and the ones the
 /// second region rotates. And the playlist the second region plays (ARV-143b), or null: instructions.
+/// <paramref name="ServerUtc"/> is this server's clock once the board is composed (ARV-197), which the player counts on from.
 /// </summary>
 public sealed record DisplayBoardViewModel(
     string Code,
