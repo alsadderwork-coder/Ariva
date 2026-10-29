@@ -1539,7 +1539,7 @@
     },
     {
       "id": "ARV-259e",
-      "title": "[E4] Queue engine line coverage: a zone with an entry or exit line no live device covers is Unknown, with its metric and rule",
+      "title": "[E4] Queue engine line coverage: a zone with an entry or exit line no live device covers is Unknown, with its metric and rule (split 2026-10-29 into ARV-259e1 to ARV-259e5)",
       "description": "Split from ARV-259a (2026-10-28). Formulas F11 says a zone whose entry or exit line has no coverage has an Unknown wait and screens show the neutral message; the engine never decides it: nothing maps devices to the lines they cover (QueueZoneGeometry has EntryLines and ExitLines only), BinQuality.Unknown is never produced from live data, and a device outage only marks the zone's bins Degraded. Model which devices cover each entry and exit line (from the line definitions or the device's mapping), have the engine mark the zone's live minutes and bins Unknown while a line has no live device, carry it to the live snapshot and the screens, and export the zones Unknown now as a gauge summed across Stream replicas (each owns its zones) with a rule (Critical, wiki 10 section 3). No measurement at all is Unknown by F11 too, which the engine does not produce either: docs/architecture/overview.md's whole-site-down row ('waits for the gap Unknown') says otherwise (ARV-259a review, round 2). With it, consider a tunable count for zonesDegraded (wiki 10 section 2's 'degraded count above normal'; ARV-259 review round 2, advisory 2). CWEs to review: CWE-400, CWE-532.",
       "acceptanceCriteria": [
         "The engine marks a zone Unknown while an entry or exit line has no live covering device, with table-driven unit tests from formulas F11 and a golden replay unchanged where every line stays covered",
@@ -1553,9 +1553,129 @@
       ],
       "priority": 40,
       "passes": false,
-      "notes": "Size M to L. Phase 3. Split from ARV-259a (2026-10-28): a domain change (the coverage model) before its metric. No sign-in code.",
+      "notes": "Size M to L. Phase 3. Split from ARV-259a (2026-10-28), and again on 2026-10-29 into ARV-259e1 (the engine, zone snapshot 14), ARV-259e2 (the live snapshot, the screens and the display board), ARV-259e3 (the gauge, the Critical rule and a tunable zonesDegraded count), ARV-259e4 (device line declarations in the registry) and ARV-259e5 (declarations in the engine); backlog/progress.md, the ARV-259e split entry. The owner decided on 2026-10-29 that this story passes when ARV-259e1 to ARV-259e3 pass; ARV-259e4 and ARV-259e5 are tracked on their own. No sign-in code.",
       "dependsOn": [
         "ARV-259a"
+      ]
+    },
+    {
+      "id": "ARV-259e1",
+      "title": "[E4] Queue engine line coverage: a zone with an entry or exit line no live device covers is Unknown (engine, zone snapshot 14)",
+      "description": "Split from ARV-259e (2026-10-29, backlog/progress.md). Formulas F11 makes a bin or minute Unknown when an entry or exit line has no coverage or there is no measurement at all; the engine never produces Unknown (only device outages mark bins Degraded). Add LineCoverage (Ariva.Core/Queueing, pure) beside DeviceLiveness in ZoneProcessor: a line is covered during a minute while the zone tracks a covering device that is not out by DeviceLiveness's rule; until devices declare their lines (ARV-259e4, ARV-259e5) every commissioned device of the zone covers every entry and exit line, so the zone is Unknown while every device it tracks is out (no measurement at all). Live minutes of an uncovered spell are Unknown (and LengthDegraded, NowcastDegraded); bins are marked Unknown over the spell through KnownThrough like device marks, the first mark finding a final bin asking for a recomputation; the replay's Finish ends open spells at the range's end. Zone snapshot version 14 carries the uncovered lines and recent spells; an earlier snapshot restores with them derived from its devices and is refused if it carries them or an Unknown mark; a snapshot whose uncovered lines disagree with its devices is refused. No Timescale script, no new setting, no new replay output. CWEs to review: CWE-400, CWE-532, CWE-501.",
+      "acceptanceCriteria": [
+        "The engine marks a zone's live minutes Unknown (with LengthDegraded and NowcastDegraded) and its bins Unknown while an entry or exit line has no live covering device, every commissioned device covering every entry and exit line of its zone until declarations exist, with table-driven unit tests from formulas F11 (healthy; one of two devices out stays Degraded; the only device silent or reporting itself offline; overlapping and disjoint outages of two devices; a device forgotten; a new device heard; an uncommissioned device; a degraded input with every device live)",
+        "Unknown bins become final with their flag (F6 condition 3); the first Unknown mark that finds a final bin returns a RecomputationRequest with the reason 'the zone was Unknown after the bin was final', each bin asked once per reason; BinRevisions writes revision r + 1 for a recomputed Unknown bin; tested",
+        "The replay ends an open uncovered spell at the range's end and invents no Unknown while the zone settles; the same records in another order of one receive time give the same outputs; tested",
+        "ZoneProcessorState.CurrentVersion is 14 (LineCoverageSinceVersion): the uncovered lines and recent spells are captured and restored; a snapshot written before version 14 restores with them derived from its devices; a snapshot before 14 carrying them or an Unknown mark, one naming a line that is not an entry or exit line or naming it twice, one whose uncovered lines disagree with its devices, or one out of bounds is refused with InvalidDataException; QueueEngineState and BinAccumulatorState stay at version 1; unit tests, with SnapshotVersions.WrittenBefore14",
+        "The golden replay of seed 9303 is unchanged where every line stays covered (replay-golden.json head 2b047dfce6d587d26ac5f99e4dd9c0817627b3b63d21792caf4f0a1cc6abd05e over 3,694 outputs, the head without health rows, replay-overflow.json and the AUH replay unchanged, the export carrying no Unknown), and a reference evening with S-15 and S-17 both silent from 18:20 to 18:30 marks the 18:15 bin and those live minutes Unknown",
+        "An integration test through Kafka and TimescaleDB stores queue_bin.quality 'Unknown' for a zone whose only device falls silent and continues the spell after a restart from the version 14 snapshot",
+        "docs/domain/formulas.md F11 (as implemented) and F6, docs/architecture/overview.md section 10 (One sensor offline; Whole site down, which is now true for a network or Kafka outage), wiki 02, 10 (4.1, 4.2, section 3.1's note that the rule follows in ARV-259e3), 12 and 17, and wiki 18 (snapshot 14, rollback starts zones afresh) say what the engine does",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M. Phase 3. Split from ARV-259e (2026-10-29): the engine first, under the default coverage. The owner accepted on 2026-10-29 that a zone whose every commissioned device is out is Unknown (docs/product/decisions.md). No sign-in code.",
+      "dependsOn": [
+        "ARV-259a"
+      ]
+    },
+    {
+      "id": "ARV-259e2",
+      "title": "[E4] Zone Unknown on the live snapshot, the live and immigration screens and the display board",
+      "description": "Split from ARV-259e (2026-10-29). ARV-259e1 marks live minutes Unknown; the screens show them as degraded numbers. Carry Unknown to LiveZoneSnapshot (an init property, JSON 'unknown') with no nowcast, throughput or no-service reason (LiveMinuteSnapshots), refuse an Unknown snapshot carrying numbers (LiveZones.Plausible, CWE-501), give the board no nowcast for an Unknown zone (SvcDisplayBoard, so the player shows the neutral message, an old player included), and show 'Not measured' with its hint on the live operations screen, its floor plan and the immigration screen, with no number and outside the waiting total (F11). A fresh Unknown snapshot is not stale for the ARV-259d sweep. CWEs to review: CWE-400, CWE-532, CWE-501, CWE-79.",
+      "acceptanceCriteria": [
+        "LiveZoneSnapshot carries Unknown; an Unknown live minute's snapshot has no nowcast, throughput or no-service reason and keeps LengthDegraded and NowcastDegraded true; LiveZones.Plausible refuses an Unknown snapshot carrying any of them; unit tests and an integration test through Redis",
+        "The display board gives an Unknown zone's entry no nowcast, so the player shows the display's neutral message in every language and never a number; the display stale sweep does not count a fresh Unknown snapshot; integration tests",
+        "The live operations screen, its floor plan and the immigration screen show an Unknown zone as 'Not measured' (English and Arabic, with its hint), with no queue length or wait number, never within target, and outside the waiting total; Live.svelte.ts refuses an unknown that is not a boolean",
+        "API end-to-end tests: the live hub's JoinZone and the display board answer for a planted Unknown snapshot; Playwright functional tests for the live operations, immigration and display screens (Unknown shown as F11 says, RTL, no console errors, no CSP violations)",
+        "node scripts/verify.mjs web passes and svelte-autofixer reports nothing on the touched components",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (wiki 12 user guide, wiki 10 4.2 and 4.8; node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S to M. Phase 3. Split from ARV-259e (2026-10-29). No sign-in code.",
+      "dependsOn": [
+        "ARV-259e1"
+      ]
+    },
+    {
+      "id": "ARV-259e3",
+      "title": "[E17] Zone Unknown: a gauge summed across Stream replicas and a Critical alert rule; a tunable count for zonesDegraded",
+      "description": "Split from ARV-259e (2026-10-29). Wiki 10 section 3's alarm 'zone Unknown' (Critical) has no metric. Each Stream replica reports, every checkpoint interval and for a minute, the zones it holds whose entry or exit line has no live covering device now (ZoneProcessor.UnknownNow, ARV-259e1) by site, as the gauge ariva.stream.zones_unknown (meter Ariva.Stream, tag site, 0 for a held site with none, at most 100 sites), so a dashboard and the rule sum the replicas' copies per site. The chart's rule zonesUnknown (on by default, 5 minutes, Critical, by site) reads it. The zonesDegraded rule gains a tunable count (zones, 0 by default: any) now that a zone without coverage has its own rule. Wiki 10 section 3.1 says what the rule does not see: a zone not loaded since a Stream restart or rebalance (zones load on their first record), a device that pushes while its counting fails, and, until ARV-259e5, any live device of the zone keeping every line covered. CWEs to review: CWE-400, CWE-532.",
+      "acceptanceCriteria": [
+        "Stream reports the zones Unknown now as a gauge summed across replicas (ariva.stream.zones_unknown by site, each replica its own zones, freshness from the checkpoint interval, cleared when the worker stops), with MetricTagTests driving it, unit tests of the count by site (zeros, order, bound, freshness) and an integration test in which a zone's only device falls silent and is heard again",
+        "The zonesUnknown rule (Critical) ships in the chart with a render test in chart-security.mjs (its metric, sum across replicas, grouping and notification by site, threshold above 0, window and severity from values) and in tests/monitoring.json",
+        "The zonesDegraded rule's threshold is monitoring.alerts.zonesDegraded.zones (a whole number from 0 to 10,000, 0 by default), refused otherwise by templates/validate.yaml, with a render test of a set value and of the refusals",
+        "Wiki 10 sections 2, 2a, 3, 3.1 and 4.2 say what the gauge and the rule watch, how copies combine (sum per site; a crashed replica's copy lapses in a minute), what to do when it fires, and what the rule does not see; wiki 18 notes that a Critical rule is on by default after the upgrade",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S to M. Phase 3. Split from ARV-259e (2026-10-29); the tunable zonesDegraded count is the ARV-259 review's round 2 advisory 2. The owner set zonesUnknown Critical, 5 minutes, on by default (2026-10-29, docs/product/decisions.md). No sign-in code.",
+      "dependsOn": [
+        "ARV-259e1"
+      ]
+    },
+    {
+      "id": "ARV-259e4",
+      "title": "[E4] Device line coverage declarations in the registry: API, devices screen, validation against the published profile",
+      "description": "Split from ARV-259e (2026-10-29). F11's 'entry or exit line without coverage' needs to know which device covers which line; under ARV-259e1 every device covers every line of its zone. A device declares its lines: All (the default, every entry and exit line of its queue zone), Listed (named entry and exit lines of its zone) or None (a desk zone or band sensor). PUT api/v1/admin/devices/{id}/coverage (EditDevice, site-scoped, strict JSON, at most 16 names of at most 200 characters), audited, raising DeviceRegistryChanged (CoverageChanged) without recommissioning; names must be entry or exit lines of the device's queue zone (published profile, else the draft it was registered against); a footprint that does not reach a named line (Geometry.SegmentReaches) is a warning. Script 0066 adds device.line_coverage and device.covered_lines. The devices screen gets the form; the device health answer lists each zone's entry and exit lines no commissioned device covers. The engine does not read it yet (ARV-259e5). CWEs to review: CWE-862, CWE-863, CWE-501, CWE-79, CWE-89, CWE-120, CWE-400, CWE-532.",
+      "acceptanceCriteria": [
+        "Device.CoverLines(mode, lines, utcNow) keeps the declaration (All, Listed with 1 to 16 distinct names, None), raises CoverageChanged and never recommissions; unit tests",
+        "PUT api/v1/admin/devices/{id}/coverage with [Permission(EditDevice)] on the site-scoped controller accepts only entry and exit lines of the device's queue zone, answers a warning for a line the footprint does not reach (Geometry.SegmentReaches, unit tested in every direction), writes an audit entry and answers 404 outside the caller's sites; integration tests",
+        "Script 0066 (device.line_coverage with its CHECK and default 'All', device.covered_lines with the Listed CHECK) with its SHA-256 in checksums.lock; NHibernate maps both by convention; the migration and schema tests pass",
+        "The device health answer lists, per zone, the entry and exit lines of the published profile that no commissioned device covers by its declaration; integration test",
+        "API end-to-end tests for the endpoint: authorization (EditDevice, another site's device, a pending account) and attack payloads (unknown or repeated members, long, control or bidirectional names, too many names, SQL and XSS payloads as names); the permission matrix agrees",
+        "The devices screen's 'Lines it counts' form (All lines, These lines, No lines) with Playwright functional tests (happy path, warning, Arabic and RTL, an XSS probe through a line name, no console errors, no CSP violations); node scripts/verify.mjs web passes",
+        "ADR-0027 (Proposed) records the coverage model and the ADR index lists it; wiki 07 or 11 (declaring a device's lines), docs/architecture/sensor-adapters.md (the registry) and wiki 18 (script 0066) updated",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M. Phase 3. Split from ARV-259e (2026-10-29). The owner decided on 2026-10-29 (docs/product/decisions.md): coverage declared per device, All for a device that declares nothing; a declared line the device's footprint does not reach is a warning, not a refusal; a published profile that drops or renames a declared line is a warning in the publish answer and on the device list, not a refusal. Site configuration export and import of declarations left out (a follow-up). No sign-in code.",
+      "dependsOn": [
+        "ARV-259a"
+      ]
+    },
+    {
+      "id": "ARV-259e5",
+      "title": "[E4] Declared line coverage in the queue engine: carried on health reports, archived, zone snapshot 15",
+      "description": "Split from ARV-259e (2026-10-29). Make the engine use ARV-259e4's declarations without reading the registry from Stream, so live, replay and recomputation agree: Ingest stamps the authenticated device's declaration (null for All, empty for None, the names for Listed) on every DeviceHealthReported from its DeviceCredentialRecord; the health archive keeps it (script 0067, device_health_event.covered_lines text[]); DeviceStatusBatch and ArchivedDeviceHealth carry it; DeviceLiveness keeps each device's latest declaration and LineCoverage counts a device as covering only its declared lines (names that are not entry or exit lines of the zone are ignored and counted). Zone snapshot version 15 carries each device's declaration; an earlier snapshot restores every device as All. Optionally, events naming an entry or exit line a device does not declare are counted and named in the push answer's problems (the owner's decision of 2026-10-29), never refused. CWEs to review: CWE-501, CWE-400, CWE-532, CWE-89, CWE-120.",
+      "acceptanceCriteria": [
+        "Ingest stamps the registry's declaration on every health report and a push cannot set it (strict canonical JSON refuses a coverage member); unit tests",
+        "Script 0067 adds device_health_event.covered_lines (at most 64) with its SHA-256 in checksums.lock; the archive writes and reads it with parameters, a row from before reads as All, and a compressed chunk takes the column; integration tests",
+        "The engine marks a zone Unknown when a line's only declared covering devices are out while others are live (S-17 alone declared for the exit and out), counts a None device as covering nothing, ignores and counts names outside the zone's entry and exit lines, and applies a declaration change at its receive time; table-driven unit tests from formulas F11",
+        "ZoneProcessorState.CurrentVersion is 15 (DeclaredCoverageSinceVersion): each device's declaration is captured and restored; an earlier snapshot restores every device as All; a snapshot before 15 with declarations, or with too many, repeated or unknown names, is refused; unit tests",
+        "The golden replay is unchanged when S-15 declares both lines and S-17 none, a declared case where S-17 alone covers the exit changes only the 18:15 bin and the 18:20 to 18:29 live minutes, and the archived declared case replays to the in-memory hash; unit and integration tests",
+        "docs/domain/formulas.md F11, docs/architecture/sensor-adapters.md (health reports and the archive), docs/architecture/overview.md section 5 (the health topic's additive field) and wiki 10 sections 3.1 and 4.2 updated",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size M. Phase 3. Split from ARV-259e (2026-10-29). The owner decided on 2026-10-29 (docs/product/decisions.md) that events naming an entry or exit line a device does not declare are counted and named in the push answer's problems, not refused in Ingest. No sign-in code.",
+      "dependsOn": [
+        "ARV-259e1",
+        "ARV-259e4"
       ]
     },
     {
