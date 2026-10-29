@@ -1202,6 +1202,14 @@
 			"confirmRetire": "Retire: it never plays again",
 			"loadVideo": "Load the video"
 		},
+		"review": {
+			"title": "Approve this advertisement",
+			"hint": "Check the advertisement at its full size before approving: once approved, it plays on the site's displays within its dates.",
+			"noPreview": "Its picture is not loaded, so it cannot be approved here.",
+			"loadingPreview": "Its picture is loading.",
+			"loadVideoFirst": "Load the video to see it before approving.",
+			"notShown": "It could not be shown in this browser, so it cannot be approved here."
+		},
 		"messages": {
 			"uploaded": "Advertisement uploaded as a draft",
 			"changed": "Advertisement saved",

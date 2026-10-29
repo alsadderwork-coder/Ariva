@@ -632,7 +632,7 @@
         "Functional tests: a draft whose preview fails offers no approval; the full-size view opens before approving; node scripts/verify.mjs story passes"
       ],
       "priority": 57,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Recorded 2026-10-17 with ARV-142a under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back).",
       "dependsOn": [
         "ARV-142a"

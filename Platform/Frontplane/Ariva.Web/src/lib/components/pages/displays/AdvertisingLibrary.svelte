@@ -20,7 +20,11 @@
 	 * the buttons only follow it.
 	 * Previews are fetched with the user's token and shown through object URLs, revoked when the list changes: images for
 	 * the newest items as the list loads, a video only when asked (it can be 100 MB), played muted in a video element from
-	 * its object URL (media-src blob:). Every word is shown as text.
+	 * its object URL (media-src blob:). ARV-194: drafts' previews are fetched first, whatever their age; Approve is offered only
+	 * for a draft whose preview loaded, and opens it at its full size (or the screen's) on the board's background in a dialog,
+	 * whose own Approve sends the approval once the browser has decoded the picture there (a video: its first frame, not the
+	 * whole of it watched). The review token proves the details did not change since the list; the dialog only puts the
+	 * picture in front of the approver before they confirm. Every word is shown as text.
 	 */
 	interface Props {
 		siteCode: string;
@@ -45,6 +49,14 @@
 	let edited = $state<MediaDetails>(blank());
 	let editProblems = $state<string[]>([]);
 	let generation = 0;
+	/** The draft shown at full size before its approval is sent (ARV-194), and its dialog. */
+	let reviewing = $state<AdvertisingMedia | null>(null);
+	let reviewDialog = $state<HTMLDialogElement>();
+	let reviewCancel = $state<HTMLButtonElement>();
+	/** Whether the browser decoded the reviewed picture (or a video's first frame) in the dialog. */
+	let reviewShown = $state<'loading' | 'shown' | 'failed'>('loading');
+	/** While the list's pictures are being fetched, a draft without one yet is loading, not missing. */
+	let fetchingPreviews = $state(false);
 
 	/** A day of this browser's calendar as "yyyy-MM-dd" (a starting value only: the site's own days decide what plays). */
 	function day(offset = 0): string {
@@ -71,8 +83,11 @@
 		loading = true;
 		const result = await media.list(code);
 		if (mine !== generation) return;
+		// The review shows a preview's object URL, which goes with the list.
+		closeReview();
 		revokeAll();
 		items = result.data ?? [];
+		fetchingPreviews = true;
 		loading = false;
 		if (result.hasErrors)
 			toast.error(
@@ -81,12 +96,18 @@
 				})
 			);
 		const images = items.filter((i) => i.status !== 'Retired' && !media.isVideoType(i.contentType));
-		for (const item of images.slice(0, maxPreviews)) {
+		// Drafts first, whatever their age, so a draft waiting for approval has its picture to be judged by.
+		const ordered = [
+			...images.filter((i) => i.status === 'Draft'),
+			...images.filter((i) => i.status !== 'Draft')
+		];
+		for (const item of ordered.slice(0, maxPreviews)) {
 			const blob = await media.content(code, item.id);
 			if (mine !== generation) return;
 			if (!blob.hasErrors && blob.data instanceof Blob)
 				previews = { ...previews, [item.id]: URL.createObjectURL(blob.data) };
 		}
+		fetchingPreviews = false;
 	}
 
 	/** The videos being fetched now: a second click waits for the first fetch rather than leaking its object URL. */
@@ -131,9 +152,67 @@
 		untrack(() => {
 			editing = null;
 			problems = [];
+			closeReview();
 			void load(code);
 		});
 	});
+
+	// The review opens as soon as it is shown: a native modal, so focus stays inside it and the page behind is inert. It
+	// waits for Cancel to be bound too, so focus starts there (not on a video's controls) and a stray Enter does not approve.
+	$effect(() => {
+		if (reviewing && reviewDialog && reviewCancel && !reviewDialog.open) {
+			reviewDialog.showModal();
+			reviewCancel.focus();
+		}
+	});
+
+	/** Shows a draft at full size before its approval; only a draft whose preview loaded can be reviewed. */
+	function review(item: AdvertisingMedia): void {
+		if (!previews[item.id]) return;
+		reviewShown = 'loading';
+		reviewing = item;
+	}
+
+	/**
+	 * Judges the reviewed picture once the browser answers for it (load, loadeddata and error are queued as tasks, so the
+	 * handlers attached as the element is made hear them): shown only when it decoded to a picture of some size. An image
+	 * is decoded in full (`decode()`, not only its header); a video once its first frame is there. An answer from a dialog
+	 * already closed (its element is out of the page) or that comes after another review began says nothing of this one.
+	 */
+	function judged(event: Event): void {
+		const element = event.currentTarget;
+		const item = reviewing;
+		const current = () => reviewing === item && element instanceof Element && element.isConnected;
+		if (!item || !current()) return;
+		if (event.type === 'error') reviewShown = 'failed';
+		else if (element instanceof HTMLImageElement)
+			element.decode().then(
+				() => {
+					if (current()) reviewShown = element.naturalWidth > 0 ? 'shown' : 'failed';
+				},
+				() => {
+					if (current()) reviewShown = 'failed';
+				}
+			);
+		else if (element instanceof HTMLVideoElement)
+			reviewShown =
+				element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && element.videoWidth > 0
+					? 'shown'
+					: 'failed';
+	}
+
+	function closeReview(): void {
+		reviewing = null;
+		if (reviewDialog?.open) reviewDialog.close();
+	}
+
+	/** Sends the approval of the draft in the review, which closes first (the step-up dialog may follow). */
+	async function approveReviewed(): Promise<void> {
+		const item = reviewing;
+		if (!item || !previews[item.id] || reviewShown !== 'shown') return;
+		closeReview();
+		await act(item, 'approve');
+	}
 
 	onDestroy(() => {
 		generation++;
@@ -529,17 +608,30 @@
 								{/if}
 							</span>
 							<span class="flex flex-wrap justify-end gap-2">
-								{#if canApprove && item.canApprove}
+								{#if canApprove && item.canApprove && previews[item.id]}
 									<button
 										type="button"
 										data-testid="media-approve"
 										disabled={busy}
-										onclick={() => act(item, 'approve')}
+										onclick={() => review(item)}
 										class={buttonClass}
 									>
 										<Check class="size-4" aria-hidden="true" />
 										{$_('advertisingMedia.actions.approve')}
 									</button>
+								{:else if canApprove && item.canApprove}
+									<span
+										class="max-w-56 text-end text-xs text-muted-foreground"
+										data-testid="media-approve-unavailable"
+									>
+										{$_(
+											media.isVideoType(item.contentType)
+												? 'advertisingMedia.review.loadVideoFirst'
+												: fetchingPreviews
+													? 'advertisingMedia.review.loadingPreview'
+													: 'advertisingMedia.review.noPreview'
+										)}
+									</span>
 								{/if}
 								{#if canManage && item.status !== 'Retired'}
 									{#if editing !== item.id}
@@ -569,4 +661,100 @@
 			</ul>
 		{/if}
 	</div>
+	{#if reviewing}
+		<dialog
+			bind:this={reviewDialog}
+			data-testid="media-review-dialog"
+			aria-labelledby="media-review-title"
+			aria-describedby="media-review-hint"
+			oncancel={(event) => {
+				event.preventDefault();
+				closeReview();
+			}}
+			onclose={() => (reviewing = null)}
+			class="m-auto max-h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] overflow-auto rounded-xl border bg-card p-0 text-card-foreground shadow-xl backdrop:bg-black/60"
+		>
+			<div class="flex flex-col gap-3 p-4">
+				<h2 id="media-review-title" class="text-lg font-semibold">
+					{$_('advertisingMedia.review.title')}
+				</h2>
+				<p id="media-review-hint" class="text-sm text-muted-foreground">
+					{$_('advertisingMedia.review.hint')}
+				</p>
+				<p class="text-sm">
+					<span class="font-medium break-words" data-testid="media-review-advertiser"
+						>{reviewing.advertiser}</span
+					>{' · '}<span class="break-words" data-testid="media-review-campaign"
+						>{reviewing.campaign}</span
+					>
+				</p>
+				<!-- The board's own background (a video on black, as the board plays it), so the picture is judged as the displays show it. -->
+				<div class="flex justify-center overflow-auto rounded-md border bg-[#0b1220]">
+					{#if media.isVideoType(reviewing.contentType)}
+						<!-- preload="auto": the object URL is already in memory, and its first frame must decode to be judged. -->
+						<video
+							src={previews[reviewing.id]}
+							controls
+							muted
+							playsinline
+							preload="auto"
+							onloadeddata={judged}
+							onerror={judged}
+							aria-label={$_('advertisingMedia.videoLabel', {
+								values: { advertiser: reviewing.advertiser, campaign: reviewing.campaign }
+							})}
+							class="max-h-[70dvh] max-w-full bg-black object-contain"
+							data-testid="media-review-video"
+						></video>
+					{:else}
+						<img
+							src={previews[reviewing.id]}
+							alt={$_('advertisingMedia.previewAlt', {
+								values: { advertiser: reviewing.advertiser, campaign: reviewing.campaign }
+							})}
+							class="max-h-[70dvh] max-w-full object-contain"
+							data-testid="media-review-image"
+							onload={judged}
+							onerror={judged}
+						/>
+					{/if}
+				</div>
+				<p class="text-xs text-muted-foreground" data-testid="media-review-details">
+					{$_('advertisingMedia.dates', {
+						values: { first: reviewing.startsOn, last: reviewing.endsOn }
+					})}
+					{' · '}
+					{$_('advertisingMedia.size', {
+						values: { width: reviewing.widthPixels, height: reviewing.heightPixels }
+					})}
+				</p>
+				{#if reviewShown === 'failed'}
+					<p class="text-sm text-destructive" role="alert" data-testid="media-review-failed">
+						{$_('advertisingMedia.review.notShown')}
+					</p>
+				{/if}
+				<div class="flex flex-wrap justify-end gap-2">
+					<button
+						type="button"
+						data-testid="media-review-cancel"
+						bind:this={reviewCancel}
+						onclick={closeReview}
+						class={buttonClass}
+					>
+						{$_('advertisingMedia.actions.cancel')}
+					</button>
+					<button
+						type="button"
+						data-testid="media-approve-confirm"
+						disabled={busy || reviewShown !== 'shown'}
+						onclick={approveReviewed}
+						class="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60"
+					>
+						<Check class="size-4" aria-hidden="true" />
+						{$_('advertisingMedia.actions.approve')}
+					</button>
+				</div>
+			</div>
+		</dialog>
+	{/if}
 </section>
