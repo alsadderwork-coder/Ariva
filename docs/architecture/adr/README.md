@@ -32,3 +32,4 @@ Format per ADR: title, Status, Date, Source, Context, Decision, Consequences, Al
 | [ADR-0024](ADR-0024-web-frontend-stack.md) | Web front end: SvelteKit 2, Svelte 5, Tailwind 4, bits-ui, ECharts, svelte-i18n | Accepted | 2026-10-01 | Product owner decision, 2026-10-01; D5 asked to use the same framework as Aman.Web |
 | [ADR-0025](ADR-0025-simulation-host-and-reference-scenario.md) | Simulation host and reference scenario | Accepted | 2026-10-01 | Product owner decision, 2026-10-01; D6 Phase 0; product decision 11 |
 | [ADR-0026](ADR-0026-local-accounts-totp-server-side-sessions.md) | Local username and password accounts with TOTP, server-side sessions | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 (ARV-010 grilling) |
+| [ADR-0027](ADR-0027-device-line-coverage.md) | Device line coverage declared per device | Proposed | 2026-10-30 | Product owner decisions, 2026-10-29 (ARV-259e split); ARV-259e4 |

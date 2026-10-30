@@ -197,5 +197,50 @@ public sealed class GeometryTests
         }
     }
 
+    [Theory]
+    [InlineData(5, 5, 15, 5, true, "a line crossing the footprint")]
+    [InlineData(1, 1, 2, 2, true, "a line wholly inside")]
+    [InlineData(4, 2, 8, 2, true, "a line along an edge")]
+    [InlineData(10, 5, 15, 5, true, "a line ending on an edge")]
+    [InlineData(10.005, 5, 15, 5, true, "5 mm from an edge: within a centimetre, it reaches")]
+    [InlineData(10.02, 5, 15, 5, false, "2 cm from the footprint")]
+    [InlineData(11, -5, 11, 15, false, "a metre beside it, the full height")]
+    [InlineData(9, 11, 11, 9, true, "across a corner")]
+    public void SegmentReaches_Should_GiveOneAnswer_When_TheRingStartsElsewhereOrEitherRunsBackwards(double ax, double ay, double bx, double by, bool expected,
+        string because)
+    {
+        // ARV-259e4: a device's footprint reaches a line it declares, or the registry warns.
+        var (a, b) = (new FloorPoint(ax, ay), new FloorPoint(bx, by));
+
+        foreach (var footprint in EveryStart(Ring("0 0,10 0,10 10,0 10")))
+        {
+            Geometry.SegmentReaches(footprint, a, b).Should().Be(expected, "{0}, as {1}", because, Geometry.FormatRing(footprint));
+            Geometry.SegmentReaches(footprint, b, a).Should().Be(expected, "{0}, the line backwards", because);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(45)]
+    [InlineData(90)]
+    [InlineData(135)]
+    [InlineData(180)]
+    [InlineData(225)]
+    [InlineData(270)]
+    [InlineData(315)]
+    public void SegmentReaches_Should_FollowTheFootprintsOrientation_When_TheDeviceTurns(double orientation)
+    {
+        // A 10 x 2 m footprint at (50, 50): a line through its centre is reached whichever way it points; a line 4.5 m from
+        // the centre across the x axis is reached only while the footprint's length points along x.
+        var ring = CoverageFootprint.FromVendor(10, 2, null).Ring(new FloorPoint(50, 50), orientation);
+
+        Geometry.SegmentReaches(ring, new FloorPoint(49, 49), new FloorPoint(51, 51)).Should().BeTrue();
+        Geometry.SegmentReaches(ring, new FloorPoint(54.5, 40), new FloorPoint(54.5, 60)).Should().Be(orientation is 0 or 180,
+            "x = 54.5 is within the half length (5 m) along x; turned 45 degrees the footprint reaches 4.24 m along x, turned 90 the half width (1 m)");
+        Geometry.SegmentReaches(ring, new FloorPoint(70, 70), new FloorPoint(80, 80)).Should().BeFalse();
+        Geometry.SegmentReaches(null, new FloorPoint(0, 0), new FloorPoint(1, 1)).Should().BeFalse();
+        Geometry.SegmentReaches([new FloorPoint(0, 0), new FloorPoint(1, 1)], new FloorPoint(0, 0), new FloorPoint(1, 1)).Should().BeFalse("not a ring");
+    }
+
     #endregion
 }

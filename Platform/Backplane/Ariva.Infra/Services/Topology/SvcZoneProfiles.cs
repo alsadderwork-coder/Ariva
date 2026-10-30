@@ -3,6 +3,7 @@ using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
+using Ariva.Core.Sensing;
 using Ariva.Core.Services.Topology;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Foundation;
@@ -267,7 +268,7 @@ internal sealed class SvcZoneProfiles(
                 return Result.Error<ZoneProfileSummaryViewModel>(refused.Prepend(ZoneProfileErrors.NotPublishable).ToList());
             await UpdateAsync(draft, ct);
             await AuditAsync("Published", draft, before, ct);
-            return new Result<ZoneProfileSummaryViewModel>(Summary(draft));
+            return new Result<ZoneProfileSummaryViewModel>(Summary(draft) with { Warnings = await DeclarationWarningsAsync(draft, ct) });
         });
 
     public Task<Result<bool>> DiscardAsync(Guid id, CancellationToken ct = default) =>
@@ -285,6 +286,38 @@ internal sealed class SvcZoneProfiles(
         });
 
     #region Helpers
+
+    /// <summary>The most devices a publish answer names (ARV-259e4); the devices screen lists every one.</summary>
+    private const int MaxDeclarationWarnings = 100;
+
+    /// <summary>
+    /// The site's devices that list lines the just published version does not hold as entry or exit lines of their zone
+    /// (ARV-259e4): a warning, never a refusal (the owner's decision of 2026-10-29); the devices screen shows the same.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> DeclarationWarningsAsync(ZoneProfile published, CancellationToken ct)
+    {
+        var zoneLines = published.Lines.Where(l => l.Zone is not null && l.Role is LineRole.Entry or LineRole.Exit)
+            .GroupBy(l => l.Zone.Name, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => (IReadOnlySet<string>)g.Select(l => l.Name).ToHashSet(StringComparer.Ordinal), StringComparer.Ordinal);
+        var devices = await QueryAsNoTracking<Device>()
+            .Where(d => d.SiteCode == published.SiteCode && d.LineCoverage == DeviceLineCoverage.Listed && d.State != DeviceState.Retired)
+            .OrderBy(d => d.Code).ToListAsync(ct);
+        var warnings = new List<string>();
+        foreach (var device in devices)
+        {
+            var missing = LineDeclarations.NotInZone(device.LineCoverage, device.CoveredLineNames,
+                zoneLines.GetValueOrDefault(device.QueueZoneName) ?? new HashSet<string>(StringComparer.Ordinal));
+            if (missing.Count > 0)
+            {
+                warnings.Add($"Device {device.Code} lists lines that zone {ZoneProfile.Label(device.QueueZoneName)} no longer has " +
+                             $"({string.Join(", ", missing.Select(ZoneProfile.Label))}); review the lines it counts.");
+            }
+        }
+
+        return warnings.Count <= MaxDeclarationWarnings
+            ? warnings
+            : [.. warnings.Take(MaxDeclarationWarnings), $"And {warnings.Count - MaxDeclarationWarnings} more devices; the devices screen lists them."];
+    }
 
     /// <summary>Runs <paramref name="work"/> on a draft of the caller's sites; NotFound or NotADraft otherwise.</summary>
     private Task<Result<T>> DraftAsync<T>(Guid id, CancellationToken ct, Func<ZoneProfile, Task<Result<T>>> work) =>

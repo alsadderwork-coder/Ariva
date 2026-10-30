@@ -5,6 +5,7 @@ using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
+using Ariva.Core.Sensing;
 using Ariva.Core.Services.Sensing;
 using Ariva.Core.Services.Topology;
 using Ariva.Infra.Security;
@@ -71,11 +72,12 @@ internal sealed class SvcDevices(
         var pageIndex = Math.Max(1, criteria.PageIndex);
         var total = await query.CountAsync(ct);
         var rows = await query.OrderBy(d => d.SiteCode).ThenBy(d => d.Code).Skip((pageIndex - 1) * pageSize).Take(pageSize).ToListAsync(ct);
-        return new Result<PageViewModel<DeviceViewModel>>(new PageViewModel<DeviceViewModel>([.. rows.Select(View)], total, pageIndex, pageSize));
+        var published = await PublishedLinesAsync(rows, ct);
+        return new Result<PageViewModel<DeviceViewModel>>(new PageViewModel<DeviceViewModel>([.. rows.Select(d => View(d, published))], total, pageIndex, pageSize));
     }
 
     public async Task<Result<DeviceViewModel>> GetAsync(Guid id, CancellationToken ct = default) =>
-        await ScopedAsync(id, ct) is { } device ? new Result<DeviceViewModel>(View(device)) : Result.Error<DeviceViewModel>(TopologyErrors.NotFound);
+        await ScopedAsync(id, ct) is { } device ? new Result<DeviceViewModel>(await ViewAsync(device, ct)) : Result.Error<DeviceViewModel>(TopologyErrors.NotFound);
 
     public async Task<Result<IReadOnlyList<CalibrationViewModel>>> CalibrationsAsync(Guid id, CancellationToken ct = default)
     {
@@ -129,7 +131,7 @@ internal sealed class SvcDevices(
             device.IssueCredential(issued.Prefix, issued.Hash, UtcNow);
             await SaveAsync(device, ct);
             await AuditAsync("Registered", device, null, ct);
-            return new Result<DeviceCredentialViewModel>(new DeviceCredentialViewModel(View(device), issued.Credential));
+            return new Result<DeviceCredentialViewModel>(new DeviceCredentialViewModel(await ViewAsync(device, ct), issued.Credential));
         });
 
     public Task<Result<DeviceViewModel>> UpdateAsync(Guid id, UpdateDeviceRequest request, CancellationToken ct = default) =>
@@ -143,10 +145,10 @@ internal sealed class SvcDevices(
             device.UpdateDetails(request.Model, Parse<DeviceTransport>(request.Transport), Parse<DeviceDialect>(request.Dialect), Parse<ClockSource>(request.ClockSource), UtcNow,
                 request.MappingName);
             if (before == Summary(device))
-                return new Result<DeviceViewModel>(View(device));
+                return new Result<DeviceViewModel>(await ViewAsync(device, ct));
             await UpdateAsync(device, ct);
             await AuditAsync("Updated", device, before, ct);
-            return new Result<DeviceViewModel>(View(device));
+            return new Result<DeviceViewModel>(await ViewAsync(device, ct));
         });
 
     public Task<Result<DeviceViewModel>> MoveAsync(Guid id, DevicePlacement request, CancellationToken ct = default) =>
@@ -164,11 +166,11 @@ internal sealed class SvcDevices(
             var stateBefore = device.State;
             device.Move(level, request.X, request.Y, request.MountingHeightMetres, request.OrientationDegrees, footprint, request.QueueZoneName, UtcNow);
             if (before == Summary(device) && stateBefore == device.State)
-                return new Result<DeviceViewModel>(View(device));
+                return new Result<DeviceViewModel>(await ViewAsync(device, ct));
 
             await UpdateAsync(device, ct);
             await AuditAsync("Moved", device, before, ct);
-            return new Result<DeviceViewModel>(View(device));
+            return new Result<DeviceViewModel>(await ViewAsync(device, ct));
         });
 
     public Task<Result<DeviceCredentialViewModel>> RotateCredentialAsync(Guid id, CancellationToken ct = default) =>
@@ -179,7 +181,7 @@ internal sealed class SvcDevices(
             device.IssueCredential(issued.Prefix, issued.Hash, UtcNow);
             await UpdateAsync(device, ct);
             await AuditAsync("CredentialRotated", device, before, ct);
-            return new Result<DeviceCredentialViewModel>(new DeviceCredentialViewModel(View(device), issued.Credential));
+            return new Result<DeviceCredentialViewModel>(new DeviceCredentialViewModel(await ViewAsync(device, ct), issued.Credential));
         });
 
     public Task<Result<CalibrationViewModel>> RecordCalibrationAsync(Guid id, RecordCalibrationRequest request, CancellationToken ct = default) =>
@@ -214,7 +216,7 @@ internal sealed class SvcDevices(
             device.Retire(UtcNow);
             await UpdateAsync(device, ct);
             await AuditAsync("Retired", device, before, ct);
-            return new Result<DeviceViewModel>(View(device));
+            return new Result<DeviceViewModel>(await ViewAsync(device, ct));
         });
 
     public Task<Result<DeviceViewModel>> SetAccessAsync(Guid id, SetDeviceAccessRequest request, CancellationToken ct = default) =>
@@ -223,10 +225,45 @@ internal sealed class SvcDevices(
             var before = Summary(device);
             device.SetAccess(request.AllowedSources, request.ClientCertificateSha256, UtcNow);
             if (before == Summary(device))
-                return new Result<DeviceViewModel>(View(device));
+                return new Result<DeviceViewModel>(await ViewAsync(device, ct));
             await UpdateAsync(device, ct);
             await AuditAsync("AccessChanged", device, before, ct);
-            return new Result<DeviceViewModel>(View(device));
+            return new Result<DeviceViewModel>(await ViewAsync(device, ct));
+        });
+
+    public Task<Result<DeviceCoverageViewModel>> SetCoverageAsync(Guid id, SetDeviceCoverageRequest request, CancellationToken ct = default) =>
+        ChangeAsync(id, ct, async device =>
+        {
+            if (!TryKind<DeviceLineCoverage>(request.Mode, out var coverage))
+                return Result.Error<DeviceCoverageViewModel>(DeviceErrors.UnknownCoverage);
+            // The shape first (count, names, repeats), then the names against the zone: a long list is refused before any read.
+            var names = Device.DeclaredLines(coverage, request.Lines);
+            List<string> warnings = [];
+            if (names.Count > 0)
+            {
+                // The lines of the device's queue zone in the published profile, else the draft it was registered against.
+                // The site lock keeps a publish from changing them while this runs.
+                await LockSiteAsync(device.SiteCode, ct);
+                if (await QueueZoneAsync(device.SiteCode, device.QueueZoneName, ct) is not { } zone)
+                    return Result.Error<DeviceCoverageViewModel>(DeviceErrors.ZoneNotFound);
+                var lines = zone.Lines.ToDictionary(l => l.Name, StringComparer.Ordinal);
+                if (names.Any(name => !lines.ContainsKey(name)))
+                    return Result.Error<DeviceCoverageViewModel>(DeviceErrors.NotAZoneLine);
+                // A line the footprint does not reach is a warning (the owner's decision of 2026-10-29): a vendor footprint
+                // can be conservative, and the installer may know better.
+                warnings.AddRange(names.Where(name => lines[name].LevelId != device.Level?.Id ||
+                                                      !Geometry.SegmentReaches(device.FootprintRing, lines[name].Start, lines[name].End))
+                    .Select(name => $"The device's footprint does not reach line {ZoneProfile.Label(name)}; check its placement, or the lines it counts."));
+            }
+
+            var before = Summary(device);
+            if (device.CoverLines(coverage, names, UtcNow))
+            {
+                await UpdateAsync(device, ct);
+                await AuditAsync("CoverageChanged", device, before, ct);
+            }
+
+            return new Result<DeviceCoverageViewModel>(new DeviceCoverageViewModel(await ViewAsync(device, ct), warnings));
         });
 
     public Task<Result<bool>> RemoveAsync(Guid id, CancellationToken ct = default) =>
@@ -293,9 +330,10 @@ internal sealed class SvcDevices(
 
     /// <summary>
     /// The queue zone of that name in the site's published profile, else in its draft, with the zones that hang off it
-    /// (overflow, service, staff). Null when neither has a queue zone of that name.
+    /// (overflow, service, staff) and its entry and exit lines. Null when neither has a queue zone of that name.
     /// </summary>
-    private async Task<(Zone Queue, IReadOnlyList<Zone> Process, bool Published)?> QueueZoneAsync(string siteCode, string name, CancellationToken ct)
+    private async Task<(Zone Queue, IReadOnlyList<Zone> Process, bool Published, IReadOnlyList<Line> Lines)?> QueueZoneAsync(string siteCode, string name,
+        CancellationToken ct)
     {
         var profiles = await Query<ZoneProfile>()
             .Where(p => p.SiteCode == siteCode && (p.Status == ZoneProfileStatus.Published || p.Status == ZoneProfileStatus.Draft))
@@ -304,7 +342,10 @@ internal sealed class SvcDevices(
         {
             var queue = profile.Zones.FirstOrDefault(z => z.Kind == ZoneKind.Queue && string.Equals(z.Name, name, StringComparison.Ordinal));
             if (queue is not null)
-                return (queue, [queue, .. profile.Zones.Where(z => z.QueueZone == queue)], profile.Status == ZoneProfileStatus.Published);
+            {
+                return (queue, [queue, .. profile.Zones.Where(z => z.QueueZone == queue)], profile.Status == ZoneProfileStatus.Published,
+                    [.. profile.Lines.Where(l => l.Zone == queue && l.Role is LineRole.Entry or LineRole.Exit)]);
+            }
         }
 
         return null;
@@ -395,19 +436,47 @@ internal sealed class SvcDevices(
     private static string Summary(Device d) => string.Create(CultureInfo.InvariantCulture,
         $"code={d.Code}; family={d.Family}; model={Escape(d.Model)}; transport={d.Transport}; dialect={d.Dialect}; mapping={d.MappingName}; clock={d.ClockSource}; state={d.State}; " +
         $"level={d.Level?.Id}; x={d.X}; y={d.Y}; height={d.MountingHeightMetres}; orientation={d.OrientationDegrees}; footprint={d.Footprint.Text} ({d.FootprintSource}); " +
-        $"zone={Escape(d.QueueZoneName)}; credential={d.CredentialPrefix}; credentialIssued={d.CredentialIssuedOn:O}; sources={d.AllowedSources}; certificate={d.ClientCertificateSha256}");
+        $"zone={Escape(d.QueueZoneName)}; credential={d.CredentialPrefix}; credentialIssued={d.CredentialIssuedOn:O}; sources={d.AllowedSources}; certificate={d.ClientCertificateSha256}; " +
+        $"coverage={d.LineCoverage}; lines={string.Join(',', d.CoveredLineNames.Select(name => Escape(name).Replace(",", "\\,", StringComparison.Ordinal)))}");
 
     private static string Escape(string text) => text?.Replace("\\", "\\\\", StringComparison.Ordinal).Replace(";", "\\;", StringComparison.Ordinal).Replace("=", "\\=", StringComparison.Ordinal);
 
+    /// <summary>
+    /// The published entry and exit lines of the zones the listed devices name, read only when one of them lists its lines
+    /// (ARV-259e4): at most a page's devices (500) name their sites and zones, and the read is bounded besides.
+    /// </summary>
+    private async Task<PublishedZoneLines> PublishedLinesAsync(IReadOnlyCollection<Device> devices, CancellationToken ct)
+    {
+        var listing = devices.Where(d => d.LineCoverage == DeviceLineCoverage.Listed).ToList();
+        if (listing.Count == 0)
+            return null;
+        var sites = listing.Select(d => d.SiteCode).Distinct(StringComparer.Ordinal).ToList();
+        var zones = listing.Select(d => d.QueueZoneName).Distinct(StringComparer.Ordinal).ToList();
+        return await PublishedZoneLines.LoadAsync(QueryAsNoTracking<ZoneProfile>().Where(p => sites.Contains(p.SiteCode)), QueryAsNoTracking<Line>(), zones, ct);
+    }
+
+    private async Task<DeviceViewModel> ViewAsync(Device device, CancellationToken ct) => View(device, await PublishedLinesAsync([device], ct));
+
+    /// <summary>
+    /// The lines a listed device names that its zone in the site's published profile does not hold (all of them when the
+    /// zone is not in it); none while the site has no published profile, for a device that lists none, or when the read was
+    /// cut (the zone may be among those it left out).
+    /// </summary>
+    private static IReadOnlyList<string> NotInZone(Device d, PublishedZoneLines published) =>
+        published is null || published.Truncated || !published.Published(d.SiteCode)
+            ? []
+            : LineDeclarations.NotInZone(d.LineCoverage, d.CoveredLineNames, published.Of(d.SiteCode, d.QueueZoneName));
+
     private static FootprintViewModel View(CoverageFootprint f) => new(f.LengthMetres, f.WidthMetres, f.RadiusMetres, f.Source.ToString(), f.Text, f.Note);
 
-    private static DeviceViewModel View(Device d)
+    private static DeviceViewModel View(Device d, PublishedZoneLines published)
     {
         var last = d.Calibrations.OrderByDescending(c => c.PerformedOn).FirstOrDefault();
         return new DeviceViewModel(d.Id.GetValueOrDefault(), d.Code, d.SiteCode, d.Family.ToString(), d.Model, d.Transport.ToString(), d.Dialect.ToString(),
             d.ClockSource.ToString(), d.State.ToString(), d.Level?.Id ?? Guid.Empty, d.X, d.Y, d.MountingHeightMetres, d.OrientationDegrees, View(d.Footprint),
             d.QueueZoneName, d.CredentialPrefix, d.CredentialIssuedOn, last?.PerformedOn, last?.Passed, d.RetiredOn, d.CreatedOn,
-            string.IsNullOrEmpty(d.AllowedSources) ? [] : d.AllowedSources.Split(','), d.ClientCertificateSha256, d.MappingName);
+            string.IsNullOrEmpty(d.AllowedSources) ? [] : d.AllowedSources.Split(','), d.ClientCertificateSha256, d.MappingName,
+            d.LineCoverage.ToString(), d.CoveredLineNames, NotInZone(d, published));
     }
 
     private static CalibrationViewModel View(DeviceCalibration c, Device d) => new(

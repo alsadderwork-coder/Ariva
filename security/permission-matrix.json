@@ -2454,6 +2454,26 @@
       }
     },
     {
+      "host": "main",
+      "method": "PUT",
+      "route": "/api/v1/admin/devices/{id:guid}/coverage",
+      "access": "permission",
+      "permissions": [
+        "EditDevice"
+      ],
+      "body": {
+        "mode": "None"
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
       "host": "ingest",
       "method": "GET",
       "route": "/api/v1/ingest/device",

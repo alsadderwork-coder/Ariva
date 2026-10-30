@@ -25,6 +25,12 @@ public static class DeviceErrors
     public const string UnknownClockSource = "Unknown clock source.";
     public const string UnknownMethod = "Unknown calibration method.";
     public const string UnknownState = "Unknown device state.";
+    public const string UnknownCoverage = "Unknown line coverage: All, Listed or None.";
+
+    /// <summary>A listed line that is not an entry or exit line of the device's queue zone (ARV-259e4); the name is not repeated.</summary>
+    public const string NotAZoneLine =
+        "Every line listed is an entry or exit line of the device's queue zone, in the site's published zone profile (else its draft).";
+
     public const string UnknownMapping = "The declarative dialect needs a mapping from the catalog shipped with Ariva (GET devices/mappings); other dialects take none.";
 
     /// <summary>Errors that mean the request conflicts with the device's state (409).</summary>
@@ -51,6 +57,12 @@ public interface ISvcDevices : ISvcScoped
 
     /// <summary>Where the device may push from and the client certificate it must present (ARV-022).</summary>
     Task<Result<DeviceViewModel>> SetAccessAsync(Guid id, SetDeviceAccessRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Which entry and exit lines of its queue zone the device counts (ARV-259e4): All, Listed with the lines named, or None.
+    /// A listed line its footprint does not reach is a warning in the answer, not a refusal.
+    /// </summary>
+    Task<Result<DeviceCoverageViewModel>> SetCoverageAsync(Guid id, SetDeviceCoverageRequest request, CancellationToken ct = default);
     Task<Result<bool>> RemoveAsync(Guid id, CancellationToken ct = default);
 
     /// <summary>The BOQ's assumed footprint for a family and mounting height, for the registration form's preview.</summary>

@@ -33,7 +33,11 @@ internal sealed class SvcDeviceHealth(
 
     #region Reads
 
-    public async Task<Result<DeviceHealthOverviewViewModel>> OverviewAsync(string siteCode, CancellationToken ct = default)
+    public Task<Result<DeviceHealthOverviewViewModel>> OverviewAsync(string siteCode, CancellationToken ct = default) =>
+        OverviewAsync(siteCode, MaxDeclarations, ct);
+
+    /// <summary>The overview with the declarations read at most <paramref name="maxDeclarations"/> (a test sets it low).</summary>
+    internal async Task<Result<DeviceHealthOverviewViewModel>> OverviewAsync(string siteCode, int maxDeclarations, CancellationToken ct)
     {
         var access = await siteScope.GetAsync(ct);
         if (!string.IsNullOrWhiteSpace(siteCode) && !access.Allows(siteCode))
@@ -55,12 +59,44 @@ internal sealed class SvcDeviceHealth(
         var truncated = deviceRows.Count > MaxRows || zoneRows.Count > MaxRows;
         deviceRows = [.. deviceRows.Take(MaxRows)];
         var heartbeats = await HeartbeatsAsync(deviceRows.Select(d => d.SiteCode), ct);
+        var (uncovered, cut) = await UncoveredLinesAsync(access, siteCode, devices, maxDeclarations, ct);
+        truncated |= cut || uncovered.Count > MaxRows;
         var now = UtcNow;
         return new Result<DeviceHealthOverviewViewModel>(new DeviceHealthOverviewViewModel(
             settings.Value.HeartbeatTimeoutSeconds,
             [.. deviceRows.Select(d => View(d, heartbeats.GetValueOrDefault(d.Id.GetValueOrDefault()), now))],
             [.. zoneRows.Take(MaxRows).Select(View)],
-            truncated));
+            truncated,
+            [.. uncovered.Take(MaxRows)]));
+    }
+
+    /// <summary>The most commissioned devices' declarations the overview reads (CWE-400): ten times its device rows.</summary>
+    internal const int MaxDeclarations = 20_000;
+
+    /// <summary>
+    /// The queue zones of the published zone profiles (of the caller's sites, or of one) with an entry or exit line no
+    /// commissioned device declares it counts (ARV-259e4), at most one more than <see cref="MaxRows"/>. A declaration, not
+    /// a measurement: an offline device still counts as covering what it declares (the zone's health says it is out). Both
+    /// reads are bounded (<see cref="PublishedZoneLines.MaxLines"/> lines, <see cref="MaxDeclarations"/> declarations); a
+    /// cut read answers nothing rather than lines a device it left out may cover, and says it was cut.
+    /// </summary>
+    private async Task<(List<UncoveredLinesViewModel> Zones, bool Cut)> UncoveredLinesAsync(SiteAccess access, string siteCode, IQueryable<Device> devices,
+        int maxDeclarations, CancellationToken ct)
+    {
+        var profiles = QueryAsNoTracking<ZoneProfile>().WithinSites(access);
+        if (!string.IsNullOrWhiteSpace(siteCode))
+            profiles = profiles.Where(p => p.SiteCode == siteCode);
+        var published = await PublishedZoneLines.LoadAsync(profiles, QueryAsNoTracking<Line>(), null, ct);
+        var read = await devices.Where(d => d.State == DeviceState.Online || d.State == DeviceState.Degraded || d.State == DeviceState.Offline)
+            .OrderBy(d => d.Id).Select(d => new { d.SiteCode, d.QueueZoneName, d.LineCoverage, d.CoveredLines }).Take(maxDeclarations + 1).ToListAsync(ct);
+        if (read.Count > maxDeclarations)
+            return ([], true);
+        var declarations = read.ToLookup(d => (d.SiteCode, d.QueueZoneName));
+        return ([.. published.Zones
+            .Select(z => new UncoveredLinesViewModel(z.Site, z.Zone,
+                LineDeclarations.Uncovered(z.Lines, declarations[(z.Site, z.Zone)].Select(d => (d.LineCoverage, Device.SplitCoveredLines(d.CoveredLines))))))
+            .Where(z => z.Lines.Count > 0)
+            .Take(MaxRows + 1)], published.Truncated);
     }
 
     public async Task<Result<DeviceHealthViewModel>> GetAsync(Guid deviceId, CancellationToken ct = default)

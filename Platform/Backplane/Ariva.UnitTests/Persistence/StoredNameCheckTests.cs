@@ -107,7 +107,7 @@ public sealed class StoredNameCheckTests
         foreach (var place in new[]
                  {
                      "SITE.NAME", "AIRPORT.NAME", "TERMINAL.NAME", "LEVEL.NAME", "CHECKPOINT.NAME", "DESK.NAME", "FLOOR_PLAN.ORIGINAL_FILE_NAME", "ZONE_PROFILE.NAME", "ZONE.NAME", "ZONE.POLYGON",
-                     "LINE.NAME", "DEVICE.QUEUE_ZONE_NAME", "DEVICE.MODEL", "DEVICE_CALIBRATION.NOTES", "ALERT_RULE.NAME", "ALERT_RULE.SCOPE_ZONES",
+                     "LINE.NAME", "DEVICE.QUEUE_ZONE_NAME", "DEVICE.MODEL", "DEVICE.COVERED_LINES", "DEVICE_CALIBRATION.NOTES", "ALERT_RULE.NAME", "ALERT_RULE.SCOPE_ZONES",
                      "ALERT_RULE.ESCALATION_CONTACT", "ALERT.ACKNOWLEDGED_NOTE", "ALERT.ESCALATED_NOTE", "ALERT.RESOLUTION_NOTE", "DISPLAY.NAME", "DISPLAY.LOCATION",
                      "DISPLAY.ENTRIES", "DISPLAY.FALLBACK_MESSAGES", "INTEGRATION_CLIENT.NAME", "OUTBOUND_ENDPOINT.NAME", "REPORT_SCHEDULE.NAME", "USER.DISPLAY_NAME",
                      "OPERATING_DAY_EXCEPTION.REASON", "MAINTENANCE_WINDOW.REASON", "VALIDATION_CAMPAIGN.NAME", "MANUAL_COUNT.REASON", "DESK_OBSERVATION.REASON"
@@ -131,6 +131,7 @@ public sealed class StoredNameCheckTests
         ["line.name"] = (StoredNameCheck.NameRule, false),
         ["device.queue_zone_name"] = (StoredNameCheck.NameRule, false),
         ["device.model"] = (StoredNameCheck.TextRule, false),
+        ["device.covered_lines"] = (StoredNameCheck.ListRule, false),
         ["device_calibration.notes"] = (StoredNameCheck.NoteRule, true),
         ["alert_rule.name"] = (StoredNameCheck.TextRule, false),
         ["alert_rule.scope_zones"] = (StoredNameCheck.ListRule, false),

@@ -11,6 +11,9 @@ import { expectStatus } from '../support/expect-status';
 // Online after a calibration at or above 95 percent and back to Commissioning when moved; a supervisor cannot retire
 // and an administrator retires only with a recent second factor;
 // a retired device keeps no credential and changes no more; other sites and other roles see nothing.
+// ARV-259e4: a device declares the entry and exit lines of its zone it counts (PUT coverage, EditDevice, not critical):
+// other lines and malformed names are refused, a line the footprint does not reach is a warning, and the health answer
+// lists the zone's lines no commissioned device declares.
 
 test.skip(!databaseAvailable, 'devices need the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -117,6 +120,61 @@ test('a calibration at 95 percent sets the device online and a move sends it bac
 	expect((await (await call('GET', `${api}/${deviceId}/calibrations`, { token: passwordOnly })).json()).length).toBe(2);
 });
 
+test('a device declares the lines of its zone it counts; other lines and malformed names are refused (ARV-259e4)', async () => {
+	const url = `${api}/${deviceId}/coverage`;
+	const cover = (data: unknown, token = passwordOnly) => call('PUT', url, { token, data });
+	const before = await (await call('GET', `${api}/${deviceId}`, { token: passwordOnly })).json();
+	expect(before.lineCoverage, 'a device that declared nothing counts every line').toBe('All');
+
+	expect((await call('PUT', url, { data: { mode: 'None' } })).status(), 'anonymous').toBe(401);
+	const pending = await call('PUT', url, { token: (await signIn(accounts().pending)).accessToken, data: { mode: 'None' } });
+	expect(pending.status(), 'a pending account').toBe(403);
+	expect((await pending.json()).type).toBe('https://ariva/problems/account-pending');
+	expect((await cover({ mode: 'None' }, (await signIn(accounts().HandlerStationManager)).accessToken)).status(), 'a role without EditDevice').toBe(403);
+	expect((await cover({ mode: 'None' }, (await signIn(accounts().siteUser)).accessToken)).status(), "another site's device").toBe(404);
+
+	// At (24, 16) turned 45 degrees the footprint reaches neither line: a warning each, never a refusal.
+	const listed = await cover({ mode: 'Listed', lines: ['Exit A', 'Entry A'] });
+	await expectStatus(listed, 200);
+	const answer = await listed.json();
+	expect(answer.device.lineCoverage).toBe('Listed');
+	expect(answer.device.coveredLines).toEqual(['Entry A', 'Exit A']);
+	expect(answer.device.state, 'a declaration never recommissions').toBe(before.state);
+	expect(answer.warnings.join(' ')).toContain('does not reach line Entry A');
+	expect(answer.warnings.join(' ')).toContain('does not reach line Exit A');
+
+	const refused: Array<[unknown, string]> = [
+		[{ mode: 'Listed', lines: ['Exit A'], extra: true }, 'an unknown member'],
+		[{ mode: 1 }, 'a number for the mode'],
+		[{ mode: 'Some' }, 'an unknown mode'],
+		[{ mode: 'None', lines: ['Exit A'] }, 'None names no line'],
+		[{ mode: 'Listed', lines: 'Exit A' }, 'a string for the lines'],
+		[{ mode: 'Listed', lines: [] }, 'Listed names a line'],
+		[{ mode: 'Listed', lines: ['Overflow A'] }, 'a name that is not an entry or exit line of the zone'],
+		[{ mode: 'Listed', lines: ["Exit A'; DROP TABLE device; --"] }, 'SQL as a name'],
+		[{ mode: 'Listed', lines: ['<img src=x onerror=alert(1)>'] }, 'markup as a name'],
+		[{ mode: 'Listed', lines: ['Exit\u202EA'] }, 'a right-to-left override'],
+		[{ mode: 'Listed', lines: ['Exit\u0007A'] }, 'a control character'],
+		[{ mode: 'Listed', lines: ['x'.repeat(201)] }, 'a name over 200 characters'],
+		[{ mode: 'Listed', lines: Array.from({ length: 17 }, (_, i) => `Line ${i}`) }, 'more than 16 names'],
+		[{ mode: 'Listed', lines: ['Exit A', 'Exit A'] }, 'a line listed twice']
+	];
+	for (const [data, because] of refused) {
+		const response = await cover(data);
+		expect(response.status(), because).toBe(400);
+		expect(await response.text(), `${because}: the name is not repeated`).not.toContain('onerror');
+	}
+	const repeated = await call('PUT', url, { token: passwordOnly, raw: '{"mode":"None","mode":"All"}', headers: { 'Content-Type': 'application/json' } });
+	expect(repeated.status(), 'a member sent twice').toBe(400);
+	expect((await (await call('GET', `${api}/${deviceId}`, { token: passwordOnly })).json()).coveredLines, 'the refusals changed nothing').toEqual(['Entry A', 'Exit A']);
+
+	const health = await (await call('GET', `${api}/health?siteCode=${site}`, { token: passwordOnly })).json();
+	expect(health.uncoveredLines, 'the device is commissioning after its move, so no line is counted').toEqual([
+		{ siteCode: site, queueZoneName: 'Snake A', lines: ['Entry A', 'Exit A'] }
+	]);
+	expect((await (await cover({ mode: 'All' })).json()).device.coveredLines).toEqual([]);
+});
+
 test('rotation replaces the credential, other sites see nothing, and retiring revokes it', async () => {
 	expect((await call('POST', `${api}/${deviceId}/credential`, { token: passwordOnly })).status(), 'rotation without a second factor').toBe(401);
 	const rotated = await call('POST', `${api}/${deviceId}/credential`, { token: withSecondFactor });
@@ -132,6 +190,7 @@ test('rotation replaces the credential, other sites see nothing, and retiring re
 	const retired = await call('POST', `${api}/${deviceId}/retire`, { token: withSecondFactor });
 	expect((await retired.json()).state).toBe('Retired');
 	expect((await call('PUT', `${api}/${deviceId}`, { token: passwordOnly, data: { model: 'PC3', transport: 'Mqtt', dialect: 'Xovis', clockSource: 'Ptp' } })).status()).toBe(409);
+	expect((await call('PUT', `${api}/${deviceId}/coverage`, { token: passwordOnly, data: { mode: 'None' } })).status(), 'a retired device declares nothing').toBe(409);
 	const search = await (await call('GET', `${api}?siteCode=${site}&state=Retired`, { token: passwordOnly })).json();
 	expect(search.totalCount).toBe(1);
 });

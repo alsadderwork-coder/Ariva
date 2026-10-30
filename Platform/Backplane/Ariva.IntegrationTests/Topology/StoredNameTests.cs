@@ -141,6 +141,8 @@ public sealed class StoredNameTests(PostgresFixture fixture) : IAsyncDisposable
             """, secret: "Entry\x0007A");
         await _host.ReadAsync<int>("UPDATE device SET queue_zone_name = @secret WHERE site_code = 'XSND' RETURNING 1", secret: "Snake A" + Tag);
         await _host.ReadAsync<int>("UPDATE device SET model = @secret WHERE site_code = 'XSND' RETURNING 1", secret: "PC2" + Override + "SE");
+        await _host.ReadAsync<int>("UPDATE device SET line_coverage = 'Listed', covered_lines = @secret WHERE site_code = 'XSND' RETURNING 1",
+            secret: "Exit A\nEntry" + Override + "B");
         await _host.ReadAsync<int>("UPDATE \"user\" SET display_name = @secret WHERE id = @id RETURNING 1", admin, "Admin" + Tag);
         await _host.ReadAsync<int>("""
             INSERT INTO floor_plan (id, level_id, site_code, storage_key, content_type, size_bytes, sha256, original_file_name, metres_per_pixel, origin_x, origin_y)
@@ -162,6 +164,7 @@ public sealed class StoredNameTests(PostgresFixture fixture) : IAsyncDisposable
             ("line.name", "draft", "Entry\\u0007A"),
             ("device.queue_zone_name", "live", "Snake A\\U000E0041"),
             ("device.model", "live", "PC2\\u202ESE"),
+            ("device.covered_lines", "live", "Entry\\u202EB"),
             ("floor_plan.original_file_name", "live", "arrivals\\U000E0041.svg")
         });
         result.Findings.Should().ContainSingle(f => f.SiteCode == null).Which.Should().Be(new StoredNameFinding("user.display_name", null, admin, "live", "U+E0041 at 6 (text not shown)"));

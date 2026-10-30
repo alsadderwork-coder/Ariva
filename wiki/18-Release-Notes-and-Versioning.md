@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-259e4: devices declare the lines they count (script 0066, 2026-10-30)
+
+- Script 0066 adds `device.line_coverage` (`All` by default, so every existing device keeps counting every line of its zone) and `device.covered_lines` (the migration job applies it). Nothing to migrate.
+- New endpoint `PUT api/v1/admin/devices/{id}/coverage` (EditDevice, not a critical action) and the devices screen's Lines it counts; the device answer carries `lineCoverage`, `coveredLines` and `linesNotInZone`, the health answer `uncoveredLines`, a publish answer `warnings`. A web app before ARV-259e4 ignores them.
+- The queue engine does not read declarations yet (ARV-259e5): declaring lines changes no wait, bin or alert until then. Site configuration export and import do not carry them.
+
 ### ARV-259e3: the zones Unknown gauge and a Critical rule, on by default; a tunable degraded zones count (2026-10-30)
 
 - **Act after the release:** a new Critical rule, `zonesUnknown`, is on by default (the owner's decision of 2026-10-29): it pages when any queue zone of a site has had no measurement for 5 minutes (every device of the zone out; `ariva.stream.zones_unknown` by `site`, summed over the Stream replicas). Import the rules again into SigNoz after the upgrade (wiki 10 section 1.1), and check where the pages go (`monitoring.channels`). It pages for zones whose sensors are switched off on a schedule (a hall closed overnight): schedule a planned downtime for those hours in SigNoz, or turn the rule off (`monitoring.alerts.zonesUnknown.enabled: false`). After retiring a zone or moving its last sensor, roll the Stream deployment, or the zone pages until 24 hours after its devices were last heard (wiki 10 section 3.1). Right after this upgrade, zones already dark are not counted until a record of them arrives (ARV-274 loads them at assignment).

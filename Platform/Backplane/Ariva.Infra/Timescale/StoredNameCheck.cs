@@ -86,6 +86,8 @@ public sealed class StoredNameCheck(DatabaseSettings database)
         UNION ALL SELECT 'line.name', p.site_code, l.id, l.name, lower(p.status), 'name', false, NULL FROM line l JOIN zone_profile p ON p.id = l.profile_id
         UNION ALL SELECT 'device.queue_zone_name', site_code, id, queue_zone_name, CASE WHEN deleted_on IS NULL THEN 'live' ELSE 'deleted' END, 'name', false, NULL FROM device
         UNION ALL SELECT 'device.model', site_code, id, model, CASE WHEN deleted_on IS NULL THEN 'live' ELSE 'deleted' END, 'text', false, NULL FROM device
+        UNION ALL SELECT 'device.covered_lines', site_code, id, covered_lines, CASE WHEN deleted_on IS NULL THEN 'live' ELSE 'deleted' END, 'list', false, NULL
+                    FROM device WHERE covered_lines IS NOT NULL
         UNION ALL SELECT 'device_calibration.notes', site_code, id, notes, 'live', 'note', true, NULL FROM device_calibration WHERE notes IS NOT NULL
         UNION ALL SELECT 'alert_rule.name', site_code, id, name, CASE WHEN deleted_on IS NULL THEN 'live' ELSE 'deleted' END, 'text', false, NULL FROM alert_rule
         UNION ALL SELECT 'alert_rule.scope_zones', site_code, id, scope_zones, CASE WHEN deleted_on IS NULL THEN 'live' ELSE 'deleted' END, 'list', false, NULL FROM alert_rule

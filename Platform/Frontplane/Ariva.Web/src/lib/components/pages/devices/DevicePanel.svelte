@@ -17,6 +17,8 @@
 		health: DeviceHealth | null;
 		levels: Level[];
 		queueZones: Record<string, string[]>;
+		/** The entry and exit line names of each queue zone, by zone name (ARV-259e4). */
+		zoneLines: Record<string, string[]>;
 		mappings: Mapping[];
 		onChanged: (device: Device | null) => void | Promise<void>;
 		onIssued: (issued: Issued) => void;
@@ -29,6 +31,7 @@
 		health,
 		levels,
 		queueZones,
+		zoneLines,
 		mappings,
 		onChanged,
 		onIssued,
@@ -60,6 +63,10 @@
 	);
 	let sources = $state((start.allowedSources ?? []).join('\n'));
 	let certificate = $state(start.clientCertificateSha256 ?? '');
+	let coverage = $state<devices.LineCoverage>(start.lineCoverage ?? 'All');
+	let coveredLines = $state<string[]>([...(start.coveredLines ?? [])]);
+	/** The warnings of the last declaration (a listed line the footprint does not reach). */
+	let coverageWarnings = $state<string[]>([]);
 	let calibrations = $state<Calibration[]>([]);
 	let method = $state<string>('ManualCountTally');
 	let sampleSize = $state(100);
@@ -69,6 +76,10 @@
 	let busy = $state(false);
 
 	const retired = $derived(device.state === 'Retired');
+	/** The lines of the device's zone it can list (own properties only, so a zone named like an Object member finds none). */
+	const lines = $derived(
+		Object.hasOwn(zoneLines, device.queueZoneName) ? zoneLines[device.queueZoneName] : []
+	);
 	const canEdit = $derived(auth.can('Device.Edit') && !retired);
 	const canCreate = $derived(auth.can('Device.Create') && !retired);
 	const canDelete = $derived(auth.can('Device.Delete') && !retired);
@@ -152,6 +163,25 @@
 			async (d) => {
 				toast.success($_('devices.messages.accessSaved'));
 				await onChanged(d);
+			}
+		);
+	};
+
+	const saveCoverage = (event: SubmitEvent) => {
+		event.preventDefault();
+		return run(
+			// Only lines the zone still has: a line a publish dropped is not offered, so it is not sent either.
+			() =>
+				devices.setCoverage(
+					device.id,
+					coverage,
+					coveredLines.filter((name) => lines.includes(name))
+				),
+			async (answer) => {
+				coverageWarnings = answer.warnings;
+				if (answer.warnings.length) toast.warning(answer.warnings[0]);
+				else toast.success($_('devices.messages.coverageSaved'));
+				await onChanged(answer.device);
 			}
 		);
 	};
@@ -410,6 +440,66 @@
 				</form>
 			{/if}
 		</section>
+
+		<form class="flex flex-col gap-2.5" onsubmit={saveCoverage} data-testid="device-coverage">
+			<h3 class="text-sm font-semibold">{$_('devices.sections.coverage')}</h3>
+			<p class="text-xs text-muted-foreground">{$_('devices.coverage.hint')}</p>
+			<fieldset class="flex flex-col gap-2" disabled={!canEdit}>
+				<legend class="sr-only">{$_('devices.sections.coverage')}</legend>
+				<div class="flex flex-wrap gap-4 text-sm">
+					{#each devices.lineCoverages as mode (mode)}
+						<label class="flex items-center gap-1.5">
+							<input
+								type="radio"
+								name="device-coverage"
+								value={mode}
+								bind:group={coverage}
+								data-testid={`coverage-${mode}`}
+							/>
+							{$_(`devices.coverage.${mode}`)}
+						</label>
+					{/each}
+				</div>
+				{#if coverage === 'Listed'}
+					{#if lines.length === 0}
+						<p class="text-xs text-muted-foreground">{$_('devices.coverage.noLines')}</p>
+					{:else}
+						<ul class="flex flex-col gap-1 text-sm" data-testid="coverage-lines">
+							{#each lines as line (line)}
+								<li>
+									<label class="flex items-center gap-1.5">
+										<input type="checkbox" value={line} bind:group={coveredLines} />
+										{line}
+									</label>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				{/if}
+			</fieldset>
+			{#if device.linesNotInZone?.length}
+				<p class="text-xs text-status-warning-foreground" data-testid="coverage-not-in-zone">
+					{$_('devices.coverage.notInZone', {
+						values: { lines: device.linesNotInZone.join(', ') }
+					})}
+				</p>
+			{/if}
+			{#if coverageWarnings.length}
+				<ul
+					class="flex flex-col gap-1 text-xs text-status-warning-foreground"
+					data-testid="coverage-warnings"
+				>
+					{#each coverageWarnings as warning, i (i)}
+						<li>{warning}</li>
+					{/each}
+				</ul>
+			{/if}
+			{#if canEdit}
+				<button type="submit" disabled={busy} class={buttonClass}
+					>{$_('devices.actions.setCoverage')}</button
+				>
+			{/if}
+		</form>
 
 		<div class="flex flex-col gap-5">
 			{#if canEdit}

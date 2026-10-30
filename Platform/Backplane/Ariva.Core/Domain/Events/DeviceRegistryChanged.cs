@@ -15,7 +15,10 @@ public sealed class DeviceRegistryChanged : EventBase
     public string SiteCode { get; set; }
     public string Code { get; set; }
 
-    /// <summary>Registered, Moved, CredentialRotated, CalibrationPassed, CalibrationFailed, HealthOnline, HealthDegraded, HealthOffline or Retired.</summary>
+    /// <summary>
+    /// Registered, Updated, Moved, CredentialRotated, AccessChanged, CoverageChanged (ARV-259e4: the lines it counts),
+    /// CalibrationPassed, CalibrationFailed, HealthOnline, HealthDegraded, HealthOffline, Removed or Retired.
+    /// </summary>
     public string Change { get; set; }
 
     /// <summary>The device's state after the change.</summary>

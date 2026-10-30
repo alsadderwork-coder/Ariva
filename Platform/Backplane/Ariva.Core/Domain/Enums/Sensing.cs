@@ -57,6 +57,18 @@ public enum DeviceState
     Retired
 }
 
+/// <summary>
+/// Which entry and exit lines of its queue zone a device counts (ARV-259e4, ADR-0027): <c>All</c> (the default: every entry
+/// and exit line of the zone), <c>Listed</c> (the lines it names) or <c>None</c> (a desk zone or band sensor that counts no
+/// queue line). Stored by name.
+/// </summary>
+public enum DeviceLineCoverage
+{
+    All,
+    Listed,
+    None
+}
+
 /// <summary>The device's time source; offsets are measured against the site reference (F19).</summary>
 public enum ClockSource
 {

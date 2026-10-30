@@ -20,6 +20,9 @@ export const transports = ['HttpsPush', 'Mqtt'] as const;
 export const dialects = ['Canonical', 'Xovis', 'Declarative'] as const;
 export const clockSources = ['Ntp', 'Ptp'] as const;
 export const calibrationMethods = ['ManualCountTally', 'ManualCountTwoObservers'] as const;
+/** Which entry and exit lines of its queue zone a device counts (ARV-259e4): every one, those listed, or none. */
+export const lineCoverages = ['All', 'Listed', 'None'] as const;
+export type LineCoverage = (typeof lineCoverages)[number];
 
 export interface Footprint {
 	lengthMetres: number | null;
@@ -56,6 +59,17 @@ export interface Device {
 	allowedSources: string[] | null;
 	clientCertificateSha256: string | null;
 	mappingName: string | null;
+	/** ARV-259e4: the lines it counts; a device that declares nothing counts every line (All). */
+	lineCoverage: LineCoverage;
+	coveredLines: string[] | null;
+	/** The lines it lists that its zone, in the published zone profile, no longer has (a publish dropped them). */
+	linesNotInZone: string[] | null;
+}
+
+/** A device after its lines were declared, with the warnings (a listed line its footprint does not reach). */
+export interface DeviceCoverage {
+	device: Device;
+	warnings: string[];
 }
 
 export interface Placement {
@@ -108,11 +122,19 @@ export interface ZoneHealth {
 	changedOn: string;
 }
 
+/** A published queue zone's entry and exit lines no commissioned device declares it counts (ARV-259e4). */
+export interface UncoveredLines {
+	siteCode: string;
+	queueZoneName: string;
+	lines: string[];
+}
+
 export interface HealthOverview {
 	heartbeatTimeoutSeconds: number;
 	devices: DeviceHealth[];
 	zones: ZoneHealth[];
 	truncated: boolean;
+	uncoveredLines: UncoveredLines[] | null;
 }
 
 export interface Mapping {
@@ -188,6 +210,20 @@ export function setAccess(
 ): Promise<Result<Device>> {
 	return at(id, (i) =>
 		Api.put<Device>(`${base}/${i}/access`, { allowedSources, clientCertificateSha256 })
+	);
+}
+
+/** ARV-259e4: the entry and exit lines of its queue zone the device counts; the names only for Listed. */
+export function setCoverage(
+	id: string,
+	mode: LineCoverage,
+	lines: string[]
+): Promise<Result<DeviceCoverage>> {
+	return at(id, (i) =>
+		Api.put<DeviceCoverage>(`${base}/${i}/coverage`, {
+			mode,
+			lines: mode === 'Listed' ? lines : []
+		})
 	);
 }
 

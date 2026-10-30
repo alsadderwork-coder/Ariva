@@ -128,6 +128,20 @@ public sealed class DevicesController(ISvcDevices devices) : ControllerBase
     public async Task<IActionResult> SetAccess(Guid id, [FromBody] SetDeviceAccessRequest request, CancellationToken ct) =>
         TopologyAnswers.Ok(this, await devices.SetAccessAsync(id, request, ct));
 
+    /// <summary>
+    /// The entry and exit lines of its queue zone the device counts (ARV-259e4): All, Listed with the lines named (entry or
+    /// exit lines of its zone), or None. Never sends the device back to commissioning; a listed line its footprint does not
+    /// reach is answered as a warning.
+    /// </summary>
+    [HttpPut("{id:guid}/coverage")]
+    [Permission(nameof(Global.Defaults.Permissions.EditDevice))]
+    [ProducesResponseType<DeviceCoverageViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> SetCoverage(Guid id, [FromBody] SetDeviceCoverageRequest request, CancellationToken ct) =>
+        TopologyAnswers.Ok(this, await devices.SetCoverageAsync(id, request, ct));
+
     [HttpGet("{id:guid}/calibrations")]
     [Permission(nameof(Global.Defaults.Permissions.ViewDevice))]
     [ProducesResponseType<IReadOnlyList<CalibrationViewModel>>(StatusCodes.Status200OK)]

@@ -178,6 +178,13 @@ Content-Type: application/json
 
 { "method": "ManualCountTally", "sampleSize": 200, "countingAccuracyPercent": 96.5, "waitTimeErrorMinutes": 0.4, "notes": "Morning peak, two hours" }
 
+### ARV-259e4: the lines of its queue zone the device counts (EditDevice): All, Listed (entry and exit lines of its zone) or None
+PUT {{Ariva.Api.Main_HostAddress}}/api/v1/admin/devices/{{deviceId}}/coverage
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "mode": "Listed", "lines": ["Exit A-VIS"] }
+
 ### Rotate the credential (CreateDevice; critical); the old one stops working at once
 POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/devices/{{deviceId}}/credential
 Authorization: Bearer {{accessToken}}

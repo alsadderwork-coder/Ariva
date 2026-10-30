@@ -245,6 +245,7 @@ public sealed class FakeDevices : Ariva.Core.Services.Sensing.ISvcDevices, Ariva
     public Task<Fluentx.Result<CalibrationViewModel>> RecordCalibrationAsync(Guid id, RecordCalibrationRequest request, CancellationToken ct = default) => Missing<CalibrationViewModel>();
     public Task<Fluentx.Result<DeviceViewModel>> RetireAsync(Guid id, CancellationToken ct = default) => Missing<DeviceViewModel>();
     public Task<Fluentx.Result<DeviceViewModel>> SetAccessAsync(Guid id, SetDeviceAccessRequest request, CancellationToken ct = default) => Missing<DeviceViewModel>();
+    public Task<Fluentx.Result<DeviceCoverageViewModel>> SetCoverageAsync(Guid id, SetDeviceCoverageRequest request, CancellationToken ct = default) => Missing<DeviceCoverageViewModel>();
     public Task<Fluentx.Result<bool>> RemoveAsync(Guid id, CancellationToken ct = default) => Missing<bool>();
 
     /// <summary>Like the real service: an unknown family is refused before anything else.</summary>

@@ -99,6 +99,76 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
         return mappingName;
     }
 
+    /// <summary>
+    /// Which entry and exit lines of its queue zone the device counts (ARV-259e4, ADR-0027): every one (the default), the
+    /// ones listed in <see cref="CoveredLines"/>, or none. A declaration, not a measurement: the queue engine reads it from
+    /// ARV-259e5 on.
+    /// </summary>
+    public virtual DeviceLineCoverage LineCoverage { get; protected set; }
+
+    /// <summary>
+    /// The lines a <see cref="DeviceLineCoverage.Listed"/> device counts, 1 to <see cref="MaxCoveredLines"/> names in
+    /// ordinal order separated by line feeds (a name holds no control character, ARV-159); null for the other kinds.
+    /// </summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(CoveredLinesLength)]
+    public virtual string CoveredLines { get; protected set; }
+
+    public const int MaxCoveredLines = 16;
+
+    /// <summary>The longest <see cref="CoveredLines"/>: every name at its longest with a separator (script 0066's column).</summary>
+    public const int CoveredLinesLength = MaxCoveredLines * (TopologyCodes.MaxNameLength + 1);
+
+    /// <summary>The lines a <see cref="DeviceLineCoverage.Listed"/> device names; empty for the other kinds.</summary>
+    public virtual IReadOnlyList<string> CoveredLineNames => SplitCoveredLines(CoveredLines);
+
+    /// <summary>The names a stored <see cref="CoveredLines"/> holds; empty for none.</summary>
+    public static IReadOnlyList<string> SplitCoveredLines(string coveredLines) => coveredLines is null ? [] : coveredLines.Split('\n');
+
+    /// <summary>
+    /// The names a declaration keeps (ARV-259e4): for <see cref="DeviceLineCoverage.Listed"/>, 1 to
+    /// <see cref="MaxCoveredLines"/> distinct line names (trimmed, by the name rule, ARV-159) in ordinal order; none for the
+    /// others, which name no line. Throws <see cref="ArgumentException"/> otherwise, before anything changes. Whether the
+    /// names are entry or exit lines of the device's zone is the registry's check, which knows the zone profiles.
+    /// </summary>
+    public static IReadOnlyList<string> DeclaredLines(DeviceLineCoverage coverage, IReadOnlyList<string> lines)
+    {
+        Defined(coverage, nameof(coverage));
+        var given = lines ?? [];
+        if (coverage != DeviceLineCoverage.Listed)
+        {
+            return given.Count == 0
+                ? []
+                : throw new ArgumentException("Lines are named only when the device counts the lines listed.", nameof(lines));
+        }
+
+        if (given.Count is < 1 or > MaxCoveredLines)
+            throw new ArgumentException($"A device lists 1 to {MaxCoveredLines} lines.", nameof(lines));
+        if (given.Any(string.IsNullOrWhiteSpace))
+            throw new ArgumentException("A line name is 1 to 200 characters.", nameof(lines));
+        var names = given.Select(name => TopologyCodes.RequireName(name, nameof(lines))).Order(StringComparer.Ordinal).ToList();
+        if (names.Distinct(StringComparer.Ordinal).Count() != names.Count)
+            throw new ArgumentException("A line is listed once.", nameof(lines));
+        return names;
+    }
+
+    /// <summary>
+    /// Declares which entry and exit lines of its queue zone the device counts (ARV-259e4). Never sends the device back to
+    /// commissioning: what it measures is unchanged, only which of the zone's lines its counts stand for. Returns false when
+    /// the declaration is the one it had.
+    /// </summary>
+    public virtual bool CoverLines(DeviceLineCoverage coverage, IReadOnlyList<string> lines, DateTime utcNow)
+    {
+        EnsureNotRetired();
+        var names = DeclaredLines(coverage, lines);
+        var text = names.Count == 0 ? null : string.Join('\n', names);
+        if (coverage == LineCoverage && string.Equals(text, CoveredLines, StringComparison.Ordinal))
+            return false;
+        LineCoverage = coverage;
+        CoveredLines = text;
+        Raise("CoverageChanged", utcNow);
+        return true;
+    }
+
     /// <summary>The first characters of the credential, stored in clear to find the device for a presented key (ARV-022).</summary>
     public virtual string CredentialPrefix { get; protected set; }
 
@@ -208,8 +278,9 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
 
     /// <summary>
     /// Moves, re-aims or reassigns the sensor. Anything that changes what it sees or whose events they are sends it back
-    /// to <see cref="DeviceState.Commissioning"/> until a new calibration passes (wiki/11 "Replace or move").
-    /// Returns true when the device went back to commissioning.
+    /// to <see cref="DeviceState.Commissioning"/> until a new calibration passes (wiki/11 "Replace or move"). A device
+    /// assigned to another queue zone that listed its lines counts every line again (ARV-259e4): the names were the old
+    /// zone's. Returns true when the device went back to commissioning.
     /// </summary>
     public virtual bool Move(Level level, double x, double y, double mountingHeightMetres, double orientationDegrees, CoverageFootprint footprint, string queueZoneName, DateTime utcNow)
     {
@@ -228,6 +299,8 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
 
         var recommission = State != DeviceState.Commissioning;
         State = DeviceState.Commissioning;
+        if (LineCoverage == DeviceLineCoverage.Listed && !string.Equals(before.QueueZoneName, QueueZoneName, StringComparison.Ordinal))
+            (LineCoverage, CoveredLines) = (DeviceLineCoverage.All, null);
         Raise("Moved", utcNow);
         return recommission;
     }

@@ -77,7 +77,7 @@ These periods are migration-job parameters (`Database:Retention`; in the cluster
 
 | Object | Kind | Category | Personal data | Retention | Where set | Owner |
 |---|---|---|---|---|---|---|
-| `device` | Table | Configuration | None: a sensor's registry entry, position and footprint, its credential as a prefix and a SHA-256; audit columns | Indefinite, soft deleted | D5; script 0013 | Device Management (Ariva.Api.Main) |
+| `device` | Table | Configuration | None: a sensor's registry entry, position and footprint, the lines of its zone it counts (script 0066), its credential as a prefix and a SHA-256; audit columns | Indefinite, soft deleted | D5; scripts 0013, 0066 | Device Management (Ariva.Api.Main) |
 | `device_calibration` | Table | Evidence | Possibly: notes in free text; who recorded it (audit columns) | Indefinite: evidence, never changed or deleted | D5; script 0013 | Device Management (Ariva.Api.Main) |
 | `device_heartbeat` | Table | Operational state | None: a device's latest health report | Overwritten (one row per device) | Script 0016 | Device Management (Ariva.Api.Main) |
 | `zone_health` | Table | Operational state | None: a queue zone's latest health from its devices | Overwritten (one row per zone) | Script 0016 | Device Management (Ariva.Api.Main) |

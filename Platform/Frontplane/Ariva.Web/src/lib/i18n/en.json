@@ -580,7 +580,8 @@
 			"placement": "Placement",
 			"access": "Network access",
 			"calibration": "Calibration",
-			"danger": "Retire or remove"
+			"danger": "Retire or remove",
+			"coverage": "Lines it counts"
 		},
 		"actions": {
 			"save": "Save",
@@ -591,7 +592,8 @@
 			"confirmRetire": "Retire {code} for good",
 			"remove": "Remove",
 			"confirmRemove": "Remove {code} (registered by mistake)",
-			"close": "Close"
+			"close": "Close",
+			"setCoverage": "Save the lines"
 		},
 		"moveHint": "Moving, re-aiming or reassigning the device takes it back to Commissioning until a calibration passes.",
 		"calibrationHint": "At or above the threshold (95 % unless set) the device goes Online.",
@@ -610,7 +612,8 @@
 			"recorded": "Calibration recorded: {result}.",
 			"retired": "{code} retired.",
 			"removed": "{code} removed.",
-			"rotated": "New credential issued for {code}."
+			"rotated": "New credential issued for {code}.",
+			"coverageSaved": "Lines saved"
 		},
 		"plan": "Coverage on the plan",
 		"planLabel": "Floor plan with the queue zones and the devices' coverage",
@@ -626,6 +629,16 @@
 			"raised": "raised {time}",
 			"more": "The site has more open alerts than one page: the newest 500 are read.",
 			"failed": "The alarms could not be read"
+		},
+		"coverage": {
+			"All": "All lines",
+			"Listed": "These lines",
+			"None": "No lines",
+			"hint": "Which entry and exit lines of its queue zone the device counts. A desk zone or band sensor counts none.",
+			"noLines": "Its queue zone has no entry or exit lines in the zone profile yet.",
+			"notInZone": "Lines it lists that its zone no longer has: {lines}",
+			"uncovered": "Lines no commissioned device counts",
+			"uncoveredRow": "{zone}: {lines}"
 		}
 	},
 	"csvImport": {

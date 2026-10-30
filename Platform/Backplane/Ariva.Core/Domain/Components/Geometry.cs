@@ -133,6 +133,26 @@ public static class Geometry
     }
 
     /// <summary>
+    /// True when the segment a-b shares any point with the ring: it touches or crosses an edge (as
+    /// <see cref="SegmentsIntersect"/> says, within <see cref="Tolerance"/>), or lies inside. Used to warn when a device's
+    /// footprint does not reach a line it declares it counts (ARV-259e4); the answer is the same for either direction of the
+    /// segment and any start or direction of the ring.
+    /// </summary>
+    public static bool SegmentReaches(IReadOnlyList<FloorPoint> ring, FloorPoint a, FloorPoint b)
+    {
+        if (ring is null || ring.Count < 3)
+            return false;
+        for (int i = 0, j = ring.Count - 1; i < ring.Count; j = i++)
+        {
+            if (SegmentsIntersect(ring[j], ring[i], a, b))
+                return true;
+        }
+
+        // No edge touched: the segment is wholly inside or wholly outside, and either end says which.
+        return ContainsPoint(ring, a);
+    }
+
+    /// <summary>
     /// A simple polygon: at least three finite, distinct vertices, no repeated vertex, non-zero area, a minimum width (every
     /// vertex at least <see cref="Tolerance"/> from each edge it is not part of, ARV-170), and no two edges touching
     /// except neighbours at their shared vertex. Edges that are not neighbours touch as <see cref="SegmentsIntersect"/>

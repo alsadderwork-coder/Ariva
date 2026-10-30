@@ -45,6 +45,14 @@ public sealed record SetDeviceAccessRequest(
     [Required, MaxLength(16)] IReadOnlyList<string> AllowedSources,
     [Required(AllowEmptyStrings = true), MaxLength(95)] string ClientCertificateSha256);
 
+/// <summary>
+/// The entry and exit lines of its queue zone a device counts (ARV-259e4): <c>All</c>, <c>Listed</c> with 1 to 16 line
+/// names of at most 200 characters, or <c>None</c>; the lines are left out or empty for All and None.
+/// </summary>
+public sealed record SetDeviceCoverageRequest(
+    [Required, MaxLength(16)] string Mode,
+    [MaxLength(16)] IReadOnlyList<string> Lines = null);
+
 public sealed record RecordCalibrationRequest(
     [Required, MaxLength(32)] string Method,
     [Range(50, 5000)] int SampleSize,

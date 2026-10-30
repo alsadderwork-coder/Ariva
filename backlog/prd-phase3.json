@@ -1647,7 +1647,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3. Split from ARV-259e (2026-10-29). The owner decided on 2026-10-29 (docs/product/decisions.md): coverage declared per device, All for a device that declares nothing; a declared line the device's footprint does not reach is a warning, not a refusal; a published profile that drops or renames a declared line is a warning in the publish answer and on the device list, not a refusal. Site configuration export and import of declarations left out (a follow-up). No sign-in code.",
       "dependsOn": [
         "ARV-259a"
@@ -1718,6 +1718,28 @@
       "passes": false,
       "notes": "Size S. Phase 3. Filed 2026-10-30 from the ARV-259e3 security review (advisory A); predates ARV-259e3 (streamConsumerLag has the same dependency). No sign-in code.",
       "dependsOn": []
+    },
+    {
+      "id": "ARV-276",
+      "title": "[E15] Site configuration export and import carry each device's line declaration",
+      "description": "Filed with ARV-259e4 (2026-10-30), whose notes left it as a follow-up: a site's configuration bundle (ARV-122a, ARV-122b) exports and imports its devices without the lines each counts (device.line_coverage and device.covered_lines, script 0066), so an imported site's devices all count every line (All) and the declarations must be made again by hand, which the administration guide says. Carry the declaration in the bundle's device part (an additive member, absent read as All), check the listed names against the imported zone profile as PUT devices/{id}/coverage does (entry or exit lines of the device's zone; a footprint that does not reach one a warning), and show it in the import preview. CWEs to review: CWE-501, CWE-20 (CWE-400 for the bounds), CWE-89, CWE-79.",
+      "acceptanceCriteria": [
+        "The bundle's device part carries lineCoverage and coveredLines (at most 16 names of at most 200 characters, by the name rule); a bundle without them imports every device as All; unit tests of the parts and the rules",
+        "Import refuses a listed name that is not an entry or exit line of the device's zone in the imported profile, with the row and no repeated name, and warns of one the footprint does not reach; integration tests through SvcSiteConfiguration",
+        "Export then import of a site with Listed and None devices gives the same declarations; integration test",
+        "Wiki 11 sections 2d and 6 updated; wiki 18",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S to M. Phase 3. Filed 2026-10-30 with ARV-259e4 (its notes: 'Site configuration export and import of declarations left out (a follow-up)'). No sign-in code.",
+      "dependsOn": [
+        "ARV-259e4"
+      ]
     },
     {
       "id": "ARV-260",

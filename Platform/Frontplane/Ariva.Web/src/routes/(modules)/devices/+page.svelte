@@ -28,6 +28,7 @@
 	let list = $state<Device[]>([]);
 	let overview = $state<HealthOverview | null>(null);
 	let profileZones = $state<Zone[]>([]);
+	let profileLines = $state<zones.Line[]>([]);
 	let mappings = $state<Mapping[]>([]);
 	let selectedId = $state<string | null>(null);
 	let registering = $state(false);
@@ -70,6 +71,23 @@
 			])
 		);
 	});
+	/**
+	 * The entry and exit line names of each queue zone, by zone name (ARV-259e4): the lines a device of the zone can declare
+	 * it counts. Built with Object.fromEntries: own properties only.
+	 */
+	const zoneLines = $derived.by(() =>
+		Object.fromEntries(
+			profileZones
+				.filter((z) => z.kind === 'Queue')
+				.map((z) => [
+					z.name,
+					profileLines
+						.filter((l) => l.zoneId === z.id && (l.role === 'Entry' || l.role === 'Exit'))
+						.map((l) => l.name)
+						.sort()
+				])
+		)
+	);
 	const planZones = $derived(
 		profileZones
 			.filter((z) => z.kind === 'Queue' && z.levelId === levelId)
@@ -112,9 +130,10 @@
 		const pick =
 			(history.data ?? []).find((p) => p.status === 'Published') ??
 			(history.data ?? []).find((p) => p.status === 'Draft');
-		const picked = pick ? ((await zones.get(pick.id)).data?.zones ?? []) : [];
+		const picked = pick ? (await zones.get(pick.id)).data : null;
 		if (mine !== generation) return;
-		profileZones = picked;
+		profileZones = picked?.zones ?? [];
+		profileLines = picked?.lines ?? [];
 	}
 
 	async function loadSite(): Promise<void> {
@@ -124,6 +143,7 @@
 		list = [];
 		overview = null;
 		profileZones = [];
+		profileLines = [];
 		levels = [];
 		levelId = '';
 		plans = {};
@@ -361,7 +381,17 @@
 										>{$_(`devices.families.${device.family}`, { default: device.family })}</span
 									>
 								</th>
-								<td class="px-4 py-2">{device.queueZoneName}</td>
+								<td class="px-4 py-2"
+									>{device.queueZoneName}{#if device.linesNotInZone?.length}
+										<span
+											class="block text-xs text-status-warning-foreground"
+											data-testid="lines-not-in-zone"
+											>{$_('devices.coverage.notInZone', {
+												values: { lines: device.linesNotInZone.join(', ') }
+											})}</span
+										>
+									{/if}</td
+								>
 								<td class="px-4 py-2"
 									><StatusBadge
 										tone={tone[device.state] ?? 'neutral'}
@@ -393,6 +423,20 @@
 				<p class="mt-2 text-xs text-muted-foreground">
 					{$_('devices.heartbeat', { values: { seconds: overview.heartbeatTimeoutSeconds } })}
 				</p>
+			</div>
+		{/if}
+		{#if overview?.uncoveredLines?.length}
+			<div class="border-t px-5 py-3">
+				<h3 class="mb-2 text-sm font-semibold">{$_('devices.coverage.uncovered')}</h3>
+				<ul class="flex flex-col gap-1 text-xs" data-testid="uncovered-lines">
+					{#each overview.uncoveredLines as zone (zone.queueZoneName)}
+						<li>
+							{$_('devices.coverage.uncoveredRow', {
+								values: { zone: zone.queueZoneName, lines: zone.lines.join(', ') }
+							})}
+						</li>
+					{/each}
+				</ul>
 			</div>
 		{/if}
 	</section>
@@ -445,6 +489,7 @@
 				health={healthOf.get(selected.id) ?? null}
 				{levels}
 				{queueZones}
+				{zoneLines}
 				{mappings}
 				onChanged={changed}
 				onIssued={reveal}

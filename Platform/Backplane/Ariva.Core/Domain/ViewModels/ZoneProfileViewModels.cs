@@ -1,6 +1,10 @@
 namespace Ariva.Core.Domain.ViewModels;
 
-/// <summary>One version of a site's zone profile, for the history and the list (ARV-017).</summary>
+/// <summary>
+/// One version of a site's zone profile, for the history and the list (ARV-017). <see cref="Warnings"/> is set by a publish
+/// only (ARV-259e4): the devices whose listed lines the published version no longer holds as entry or exit lines of their
+/// zone; the publish goes ahead.
+/// </summary>
 public sealed record ZoneProfileSummaryViewModel(
     Guid Id,
     string SiteCode,
@@ -15,7 +19,8 @@ public sealed record ZoneProfileSummaryViewModel(
     DateTime? PublishedOn,
     DateTime? RetiredOn,
     int ZoneCount,
-    int LineCount);
+    int LineCount,
+    IReadOnlyList<string> Warnings = null);
 
 public sealed record ZoneViewModel(Guid Id, string Name, string Kind, Guid LevelId, Guid? QueueZoneId, Guid? DeskId, string Polygon, double AreaSquareMetres, string LaneCategory = null,
     int? PhysicalCapacity = null);

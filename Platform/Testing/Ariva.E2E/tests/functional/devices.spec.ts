@@ -10,6 +10,8 @@ import { allowStatuses, databaseAvailable, earlyInStep, fillSecret, fillSignIn, 
 // registers a sensor at the demo airport after a step-up; its credential is shown once with a copy action, works at the
 // Ingest host, and is never shown again; a calibration takes it Online; a new credential replaces the old one at once.
 // Handler station managers have no devices screen and the server refuses them. Text from the registry is text.
+// ARV-259e4: a duty manager declares the lines the sensor counts (All, These lines, No lines); a line its footprint does
+// not reach is a warning; a line name from the zone profile is text; the list names lines a publish dropped.
 
 test.skip(!databaseAvailable, 'the devices screen needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -150,6 +152,133 @@ test('the coverage plan draws the demo devices at their zones; Arabic mirrors th
 	await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
 	await expect(page.getByRole('heading', { level: 1 })).toHaveText('الأجهزة');
 	allowStatuses(guards, 404);
+	await guards.expectClean();
+});
+
+/** True when the segment a-b touches the axis-aligned rectangle (Liang and Barsky's clip). */
+function touches(rect: { x0: number; y0: number; x1: number; y1: number }, a: [number, number], b: [number, number]): boolean {
+	const [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+	let [lo, hi] = [0, 1];
+	for (const [p, q] of [
+		[-dx, a[0] - rect.x0],
+		[dx, rect.x1 - a[0]],
+		[-dy, a[1] - rect.y0],
+		[dy, rect.y1 - a[1]]
+	]) {
+		if (p === 0) {
+			if (q < 0) return false;
+			continue;
+		}
+		const t = q / p;
+		if (p < 0) lo = Math.max(lo, t);
+		else hi = Math.min(hi, t);
+		if (lo > hi) return false;
+	}
+	return true;
+}
+
+test('a duty manager declares the lines a sensor counts; a line out of reach warns; names are text; Arabic mirrors the form (ARV-259e4)', async ({ page }) => {
+	const guards = await guardPage(page);
+	const zone = await demoZone();
+	const token = (await signIn(accounts().webAdmin)).accessToken;
+	const found = await (await call('GET', `${hosts.main}/api/v1/admin/devices?siteCode=DMO&text=${code}`, { token })).json();
+	const device = (found.data as { id: string; code: string; x: number; y: number; orientationDegrees: number; footprint: { lengthMetres: number; widthMetres: number } }[])
+		.find((d) => d.code === code)!;
+	expect(device.orientationDegrees, 'registered facing along x').toBe(0);
+	const history = (await (await call('GET', `${hosts.main}/api/v1/admin/zone-profiles?siteCode=DMO`, { token })).json()) as { id: string; status: string }[];
+	const profile = await (await call('GET', `${hosts.main}/api/v1/admin/zone-profiles/${history.find((h) => h.status === 'Published')!.id}`, { token })).json();
+	const queue = (profile.zones as { id: string; name: string; levelId: string }[]).find((z) => z.name === zone.name)!;
+	const lines = (profile.lines as { name: string; role: string; zoneId: string; startX: number; startY: number; endX: number; endY: number }[]).filter(
+		(l) => l.zoneId === queue.id && (l.role === 'Entry' || l.role === 'Exit')
+	);
+	const [hl, hw] = [device.footprint.lengthMetres / 2, device.footprint.widthMetres / 2];
+	const rect = { x0: device.x - hl, y0: device.y - hw, x1: device.x + hl, y1: device.y + hw };
+	const reached = lines.filter((l) => touches(rect, [l.startX, l.startY], [l.endX, l.endY]));
+	const beyond = lines.filter((l) => !reached.includes(l));
+	expect(beyond.length, 'the demo zone has a line the footprint at its centre does not reach').toBeGreaterThan(0);
+
+	// The line names reach the screen from the zone profile: one more, named with markup, is added to that answer here, so
+	// the screen shows it as text (the server would refuse to save it: it is not a line of the zone).
+	await page.route(/\/api\/v1\/admin\/zone-profiles\/[0-9a-f-]{36}$/, async (route) => {
+		const response = await route.fetch();
+		const body = await response.json();
+		body.lines = [...body.lines, { ...lines[0], id: crypto.randomUUID(), name: xssPayloads[1] }];
+		await route.fulfill({ response, json: body });
+	});
+	// The uncovered lines come from the health answer and the warnings from the declaration's answer: markup is added to
+	// both here, so the list, the warnings and the toast are shown to be text.
+	await page.route(/\/api\/v1\/admin\/devices\/health\?siteCode=DMO/, async (route) => {
+		const response = await route.fetch();
+		const body = await response.json();
+		body.uncoveredLines = [{ siteCode: 'DMO', queueZoneName: xssPayloads[0], lines: [xssPayloads[1], 'Exit Z'] }];
+		await route.fulfill({ response, json: body });
+	});
+	await page.route(new RegExp(`/api/v1/admin/devices/${device.id}/coverage$`), async (route) => {
+		const response = await route.fetch();
+		if (response.status() !== 200) return route.fulfill({ response });
+		const body = await response.json();
+		if (body.warnings.length) body.warnings = [xssPayloads[4], ...body.warnings];
+		await route.fulfill({ response, json: body });
+	});
+	await signInThroughUi(page, accounts().web);
+	await page.goto('/devices');
+	await expect(page.getByTestId('uncovered-lines')).toContainText(`${xssPayloads[0]}: ${xssPayloads[1]}, Exit Z`);
+	await expect(page.locator('img[src="x"], svg[onload], iframe, [onerror], [onload]')).toHaveCount(0);
+	await page.getByTestId('devices-table').getByRole('button', { name: code }).click();
+	const form = page.getByTestId('device-coverage');
+	await expect(form.getByRole('heading', { name: 'Lines it counts' })).toBeVisible();
+	await expect(form.getByLabel('All lines')).toBeChecked();
+	await form.getByLabel('These lines').check();
+	await expect(form.getByTestId('coverage-lines').getByRole('checkbox')).toHaveCount(lines.length + 1);
+	await expect(form.getByTestId('coverage-lines')).toContainText(xssPayloads[1]);
+	await expect(page.locator('img[src="x"], svg[onload], iframe, [onerror], [onload]')).toHaveCount(0);
+
+	// A line the footprint does not reach: saved, with a warning.
+	await form.getByLabel(beyond[0].name, { exact: true }).check();
+	await form.getByRole('button', { name: 'Save the lines' }).click();
+	await expect(form.getByTestId('coverage-warnings')).toContainText(`does not reach line ${beyond[0].name}`);
+	await expect(form.getByTestId('coverage-warnings')).toContainText(xssPayloads[4]);
+	await expect(page.locator('[data-sonner-toast]').filter({ hasText: xssPayloads[4] })).toBeVisible();
+	await expect(page.locator('img[src="x"], svg[onload], iframe, [onerror], [onload]')).toHaveCount(0);
+	const saved = await (await call('GET', `${hosts.main}/api/v1/admin/devices/${device.id}`, { token })).json();
+	expect([saved.lineCoverage, saved.coveredLines]).toEqual(['Listed', [beyond[0].name]]);
+	expect(saved.state, 'a declaration never recommissions').toBe('Online');
+
+	// The markup line is not a line of the zone: refused, and the refusal does not repeat it.
+	await form.getByLabel(xssPayloads[1], { exact: true }).check();
+	await form.getByRole('button', { name: 'Save the lines' }).click();
+	await expect(page.getByText(/entry or exit line of the device's queue zone/)).toBeVisible();
+	await expect(page.locator('img[src="x"], svg[onload], iframe, [onerror], [onload]')).toHaveCount(0);
+	await form.getByLabel(xssPayloads[1], { exact: true }).uncheck();
+
+	// No lines: saved without a warning.
+	await form.getByLabel('No lines').check();
+	await form.getByRole('button', { name: 'Save the lines' }).click();
+	await expect(page.getByText('Lines saved')).toBeVisible();
+	await expect(form.getByTestId('coverage-warnings')).toHaveCount(0);
+
+	// The list names lines a publish dropped (the answer says so here; the integration and API tests publish one).
+	await page.route(/\/api\/v1\/admin\/devices\?siteCode=DMO&/, async (route) => {
+		const response = await route.fetch();
+		const body = await response.json();
+		for (const d of body.data) if (d.code === code) d.linesNotInZone = ['Exit Z', xssPayloads[2]];
+		await route.fulfill({ response, json: body });
+	});
+	await page.reload();
+	const row = page.getByTestId('devices-table').getByRole('row', { name: new RegExp(code) });
+	await expect(row.getByTestId('lines-not-in-zone')).toContainText(`Exit Z, ${xssPayloads[2]}`);
+
+	await page.getByTestId('language-toggle').click();
+	await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+	await page.getByTestId('devices-table').getByRole('button', { name: code }).click();
+	await expect(page.getByTestId('device-coverage').getByRole('heading', { name: 'الخطوط التي يعدّها' })).toBeVisible();
+	await expect(page.getByTestId('device-coverage').getByLabel('كل الخطوط')).toBeVisible();
+	await expect(page.locator('img[src="x"], svg[onload], iframe, [onerror], [onload]')).toHaveCount(0);
+
+	// Back to every line, for the suites after this one.
+	await page.getByTestId('language-toggle').click();
+	expect((await call('PUT', `${hosts.main}/api/v1/admin/devices/${device.id}/coverage`, { token, data: { mode: 'All' } })).status()).toBe(200);
+	allowStatuses(guards, 400, 404);
 	await guards.expectClean();
 });
 
