@@ -292,13 +292,19 @@ public static class SnapshotChecks
             yield break;
         }
 
+        // The lines each device declared it counts (ARV-259e5): only a snapshot of version 15 or later carries them, each in the
+        // registry's shape (at most 16 distinct names a profile could hold); ZoneProcessor.Restore checks the names against the zone's
+        // entry and exit lines.
+        if (state.Version < ZoneProcessorState.DeclaredCoverageSinceVersion && (state.Devices ?? []).Any(d => d?.CoveredLines is not null))
+            yield return $"A snapshot before version {ZoneProcessorState.DeclaredCoverageSinceVersion} carries no lines a device declared it counts.";
+
         var codes = new HashSet<string>(StringComparer.Ordinal);
         foreach (var d in state.Devices ?? [])
         {
             // An outage is marked through the minutes known to be out, never past the zone's clock (ARV-259e1: a mark ahead of it
             // would leave the outage's later marks, and its last one, marking nothing).
             if (d is null || !DeviceCodes.IsValid(d.DeviceCode) || !codes.Add(d.DeviceCode) || d.OutSinceUtc > d.LastHeardUtc || d.MarkedThroughUtc < d.OutSinceUtc ||
-                d.MarkedThroughUtc > state.ReferenceUtc)
+                d.MarkedThroughUtc > state.ReferenceUtc || !LineDeclarations.IsWellFormed(d.CoveredLines))
                 bad++;
             else
             {

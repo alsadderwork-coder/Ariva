@@ -28,6 +28,42 @@ public static class LineDeclarations
         return coverage == DeviceLineCoverage.Listed ? [.. (listed ?? []).Where(name => !zoneLines.Contains(name))] : [];
     }
 
+    /// <summary>
+    /// A declaration as a health report or a snapshot carries it (ARV-259e5): null for every line (All), empty for none (None), else
+    /// the names (Listed). From the registry's kind and its stored names.
+    /// </summary>
+    public static IReadOnlyList<string> Carried(DeviceLineCoverage coverage, IReadOnlyList<string> listed) => coverage switch
+    {
+        DeviceLineCoverage.All => null,
+        DeviceLineCoverage.Listed => [.. listed ?? []],
+        _ => []
+    };
+
+    /// <summary>
+    /// Whether a carried declaration has the registry's shape (ARV-259e5, CWE-501: a health report and a snapshot are data from beyond a
+    /// trust boundary): null, or at most <see cref="Domain.Entities.Device.MaxCoveredLines"/> distinct names (ordinal) of 1 to
+    /// <see cref="Domain.Entities.TopologyCodes.MaxNameLength"/> characters, each a name by the registry's rule
+    /// (<see cref="Domain.Entities.TopologyCodes.IsName"/>) with no control or invisible character anywhere, not even at its ends (no line
+    /// feed, so the health archive's line feed join of the names is lossless, and what a replay reads back is what the stream saw).
+    /// Whether the names are lines of the zone is not its question.
+    /// </summary>
+    public static bool IsWellFormed(IReadOnlyList<string> carried)
+    {
+        if (carried is null)
+            return true;
+        if (carried.Count > Domain.Entities.Device.MaxCoveredLines)
+            return false;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var name in carried)
+        {
+            if (string.IsNullOrEmpty(name) || name.Length > Domain.Entities.TopologyCodes.MaxNameLength || !Domain.Entities.TopologyCodes.IsName(name) ||
+                !Domain.Components.DisplayText.IsClean(name) || !seen.Add(name))
+                return false;
+        }
+
+        return true;
+    }
+
     /// <summary>The zone's entry and exit lines none of the declarations covers, in ordinal order.</summary>
     public static IReadOnlyList<string> Uncovered(IReadOnlySet<string> zoneLines, IEnumerable<(DeviceLineCoverage Coverage, IReadOnlyList<string> Listed)> declarations)
     {

@@ -47,7 +47,9 @@ public sealed record DeviceMappingViewModel(string Name, string Title, string So
 
 /// <summary>
 /// What the device authentication handler needs about a presented credential's device (ARV-022): never sent to a
-/// client. Cached briefly under the "devices" tag, which every registry change evicts.
+/// client. Cached briefly under the "devices" tag, which every registry change evicts. <see cref="CoveredLines"/> is the
+/// lines the device declares it counts (ARV-259e5: null for All, empty for None, the names for Listed), which Ingest stamps
+/// on its health reports.
 /// </summary>
 public sealed record DeviceCredentialRecord(
     Guid DeviceId,
@@ -63,7 +65,8 @@ public sealed record DeviceCredentialRecord(
     double Y = 0,
     double OrientationDegrees = 0,
     string MappingName = null,
-    string Transport = "HttpsPush");
+    string Transport = "HttpsPush",
+    IReadOnlyList<string> CoveredLines = null);
 
 /// <summary>
 /// The published geometry of a device's queue zone (ARV-022): the queue zone, the zones that hang off it and their

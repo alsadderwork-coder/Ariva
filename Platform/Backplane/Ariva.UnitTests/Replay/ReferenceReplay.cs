@@ -205,7 +205,41 @@ internal static class ReferenceReplay
     }
 
     public static ArchivedDeviceHealth Archived(DeviceHealthReported r) =>
-        new(r.ReceivedUtc, r.SiteCode, r.QueueZoneName, r.DeviceId, r.DeviceCode, r.Id, r.Status?.Online ?? true, r.Commissioned, r.Status?.TimeUtc, r.Clock?.State);
+        new(r.ReceivedUtc, r.SiteCode, r.QueueZoneName, r.DeviceId, r.DeviceCode, r.Id, r.Status?.Online ?? true, r.Commissioned, r.Status?.TimeUtc, r.Clock?.State,
+            r.CoveredLines);
+
+    /// <summary>The declared case (ARV-259e5): S-15 counts the Visitors entry and S-17 alone the exit; S-50, at island C, every line.</summary>
+    public static IReadOnlyList<string> ExitAlone(string device) => device switch
+    {
+        "S-15" => ["A-VIS entry"],
+        "S-17" => ["A-VIS exit"],
+        _ => null
+    };
+
+    /// <summary>
+    /// The evening with each device's health reports carrying the lines <paramref name="declared"/> gives for its code (ARV-259e5: as
+    /// Ingest stamps them from the registry; null for every line), the same reports otherwise (ids, times and statuses kept).
+    /// </summary>
+    public static (IReadOnlyList<SensingBatch> Batches, IReadOnlyList<DeviceHealthReported> Health) Declared(Func<string, IReadOnlyList<string>> declared)
+    {
+        var (batches, health) = Ingested;
+        return (batches, [.. health.Select(r => new DeviceHealthReported
+        {
+            Id = r.Id,
+            OccurredOn = r.OccurredOn,
+            CorrelationId = r.CorrelationId,
+            CausationId = r.CausationId,
+            DeviceId = r.DeviceId,
+            DeviceCode = r.DeviceCode,
+            SiteCode = r.SiteCode,
+            QueueZoneName = r.QueueZoneName,
+            Status = r.Status,
+            Clock = r.Clock,
+            ReceivedUtc = r.ReceivedUtc,
+            Commissioned = r.Commissioned,
+            CoveredLines = declared(r.DeviceCode)
+        })]);
+    }
 
     /// <summary>
     /// A zone's inputs in the stream's order, from the evening as the archive holds it and as the replay command reads it

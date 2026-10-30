@@ -8,8 +8,12 @@ namespace Ariva.Core.Queueing;
 /// </summary>
 public sealed record DeviceOutage(string ZoneKey, string DeviceCode, DateTime FromUtc, DateTime ToUtc, bool Closed = true);
 
-/// <summary>A device as the zone last heard it, in a snapshot.</summary>
-public sealed record DeviceLivenessState(string DeviceCode, DateTime LastHeardUtc, DateTime? OutSinceUtc, DateTime? MarkedThroughUtc);
+/// <summary>
+/// A device as the zone last heard it, in a snapshot; since version 15 with the zone's entry and exit lines it declared it counts
+/// (ARV-259e5: null for every line, the default and every device of an earlier snapshot; empty for none).
+/// </summary>
+public sealed record DeviceLivenessState(string DeviceCode, DateTime LastHeardUtc, DateTime? OutSinceUtc, DateTime? MarkedThroughUtc,
+    IReadOnlyList<string> CoveredLines = null);
 
 /// <summary>An outage that ended but whose minutes may not all have been published live yet, in a snapshot.</summary>
 public sealed record RecentOutageState(string DeviceCode, DateTime FromUtc, DateTime ToUtc);
@@ -22,7 +26,8 @@ public sealed record RecentOutageState(string DeviceCode, DateTime FromUtc, Date
 /// covers (the minute the push interval before its receive time falls in, ARV-148), so the minute after an outage is
 /// judged again. Pure and driven by the zone's reference clock only, so a replay of the same records gives the same
 /// outages. A device silent beyond the forget limit is treated as removed: its outage ends there and it is no longer
-/// tracked.
+/// tracked. Each device keeps the zone's entry and exit lines its latest health report declared it counts (ARV-259e5), every
+/// line until a report says otherwise.
 /// </summary>
 internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxDevices, TimeSpan pushInterval)
 {
@@ -31,6 +36,9 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
         public DateTime LastHeard;
         public DateTime? OutSince;
         public DateTime? MarkedThrough;
+
+        // The zone's entry and exit lines it declared it counts, in ordinal order; null for every line (ARV-259e5).
+        public string[] Lines;
     }
 
     private readonly SortedDictionary<string, Device> _devices = new(StringComparer.Ordinal);
@@ -39,31 +47,78 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
     public int Count => _devices.Count;
 
     /// <summary>
-    /// How often a device's live state changed (tracked for the first time, gone out, live again, forgotten, or an outage ended at a
-    /// replay's end), so a follower of it (<see cref="LineCoverage"/>, ARV-259e1) looks again only after a change.
+    /// How often a device's live state or declared lines changed (tracked for the first time, gone out, live again, forgotten, an
+    /// outage ended at a replay's end, or another declaration, ARV-259e5), so a follower of it (<see cref="LineCoverage"/>, ARV-259e1)
+    /// looks again only after a change.
     /// </summary>
     public long Changes { get; private set; }
 
     /// <summary>
-    /// What covers the zone's lines now (ARV-259e1: every device the zone tracks covers every entry and exit line until devices
-    /// declare theirs): whether a device the zone tracks is live, and where the latest outage of the devices it tracks started
-    /// (null when it tracks none, or none is out).
+    /// What covers each of <paramref name="lines"/> (the zone's entry and exit lines, in ordinal order) now: whether a device the zone
+    /// tracks that counts the line is live, and where the latest outage of those devices started (null when none counts it, or none
+    /// of them is out). A device counts every line until it declares its own (ARV-259e5); one that declares none counts none. One
+    /// pass over the devices (CWE-400): those counting every line fold into one cover, merged into each line once, and each other
+    /// device looks up its declared lines (at most 16), so the cost is the devices, the lines and the declared names, never their product.
     /// </summary>
-    public (bool AnyLive, DateTime? LatestOutSince) Covering()
+    public (bool AnyLive, DateTime? LatestOutSince)[] Covering(string[] lines)
     {
-        var anyLive = false;
-        DateTime? latest = null;
+        ArgumentNullException.ThrowIfNull(lines);
+        var covering = new (bool AnyLive, DateTime? LatestOutSince)[lines.Length];
+        (bool AnyLive, DateTime? LatestOutSince) every = default;
         foreach (var device in _devices.Values)
         {
-            // As in MarksDue: no pattern variables in the conditions (ARV-069a).
-            if (device.OutSince.HasValue)
-                latest = latest.HasValue && latest.Value >= device.OutSince.Value ? latest : device.OutSince;
-            else
-                anyLive = true;
+            if (device.Lines is null)
+            {
+                every = With(every, device);
+                continue;
+            }
+
+            foreach (var line in device.Lines)
+            {
+                var i = Array.BinarySearch(lines, line, StringComparer.Ordinal);
+                if (i >= 0)
+                    covering[i] = With(covering[i], device);
+            }
         }
 
-        return (anyLive, latest);
+        for (var i = 0; i < covering.Length; i++)
+            covering[i] = Merged(covering[i], every);
+        return covering;
     }
+
+    // Two covers of one line: live if either is, out since the later of their latest outages. As in MarksDue (ARV-069a).
+    private static (bool AnyLive, DateTime? LatestOutSince) Merged((bool AnyLive, DateTime? LatestOutSince) a, (bool AnyLive, DateTime? LatestOutSince) b)
+    {
+        var latest = a.LatestOutSince;
+        if (b.LatestOutSince.HasValue && (!latest.HasValue || b.LatestOutSince.Value > latest.Value))
+            latest = b.LatestOutSince;
+        return (a.AnyLive || b.AnyLive, latest);
+    }
+
+    // A line's cover with one more device that counts it. As in MarksDue: no pattern variables in the conditions (ARV-069a).
+    private static (bool AnyLive, DateTime? LatestOutSince) With((bool AnyLive, DateTime? LatestOutSince) cover, Device device)
+    {
+        if (!device.OutSince.HasValue)
+            return (true, cover.LatestOutSince);
+        var latest = cover.LatestOutSince;
+        return (cover.AnyLive, latest.HasValue && latest.Value >= device.OutSince.Value ? latest : device.OutSince);
+    }
+
+    /// <summary>
+    /// The device's latest health report declared it counts <paramref name="lines"/> (ARV-259e5): the zone's entry and exit lines it
+    /// names, in ordinal order, or null for every line. A different declaration counts as a change; a device the zone does not track
+    /// (it keeps at most its bound) is left alone.
+    /// </summary>
+    public void Declare(string code, string[] lines)
+    {
+        if (!_devices.TryGetValue(code, out var device) || SameLines(device.Lines, lines))
+            return;
+        device.Lines = lines;
+        Changes++;
+    }
+
+    private static bool SameLines(string[] a, string[] b) =>
+        a is null ? b is null : b is not null && a.AsSpan().SequenceEqual(b, StringComparer.Ordinal);
 
     private static DateTime MinuteOf(DateTime t) => new(t.Ticks - t.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
 
@@ -236,17 +291,26 @@ internal sealed class DeviceLiveness(TimeSpan silence, TimeSpan forget, int maxD
     }
 
     public (IReadOnlyList<DeviceLivenessState> Devices, IReadOnlyList<RecentOutageState> Recent) Capture() =>
-        ([.. _devices.Select(d => new DeviceLivenessState(d.Key, d.Value.LastHeard, d.Value.OutSince, d.Value.MarkedThrough))], [.. _recent]);
+        ([.. _devices.Select(d => new DeviceLivenessState(d.Key, d.Value.LastHeard, d.Value.OutSince, d.Value.MarkedThrough, d.Value.Lines))], [.. _recent]);
 
-    public void Restore(IEnumerable<DeviceLivenessState> devices, IEnumerable<RecentOutageState> recent)
+    /// <summary>
+    /// The devices and outages a snapshot holds. Each device's declared lines must be entry or exit lines of the zone
+    /// (<paramref name="zoneLines"/>, CWE-501: <see cref="SnapshotChecks"/> already bounded their number, names and repeats); any other
+    /// is an <see cref="InvalidDataException"/>. They are kept in ordinal order.
+    /// </summary>
+    public void Restore(IEnumerable<DeviceLivenessState> devices, IEnumerable<RecentOutageState> recent, IReadOnlySet<string> zoneLines)
     {
+        ArgumentNullException.ThrowIfNull(zoneLines);
         foreach (var d in (devices ?? []).Where(d => d is not null).Take(maxDevices))
         {
+            if (d.CoveredLines is { } declared && !declared.All(zoneLines.Contains))
+                throw new InvalidDataException("The zone snapshot says a device counts a line that is not one of the zone's entry or exit lines.");
             _devices[d.DeviceCode] = new Device
             {
                 LastHeard = DateTime.SpecifyKind(d.LastHeardUtc, DateTimeKind.Utc),
                 OutSince = d.OutSinceUtc is { } o ? DateTime.SpecifyKind(o, DateTimeKind.Utc) : null,
-                MarkedThrough = d.MarkedThroughUtc is { } m ? DateTime.SpecifyKind(m, DateTimeKind.Utc) : null
+                MarkedThrough = d.MarkedThroughUtc is { } m ? DateTime.SpecifyKind(m, DateTimeKind.Utc) : null,
+                Lines = d.CoveredLines is { } lines ? [.. lines.Order(StringComparer.Ordinal)] : null
             };
         }
 

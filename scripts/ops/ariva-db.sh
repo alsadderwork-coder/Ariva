@@ -250,7 +250,7 @@ readonly ARIVA_VIEWS="line_minute_15m=line_minute;overflow_bin_15m=overflow_minu
 # ARIVA_SCHEMA_AT, the latest script (any script may change them), so a trigger, constraint, grant or function a forged dump
 # left out, changed or added is reported even where no other line looks. OpsScriptTests holds ARIVA_SCHEMA_AT at the
 # latest script; BackupRestoreTests holds the list equal to a database the release's migration job migrated (and prints it).
-readonly ARIVA_SCHEMA_AT="0066_device_line_coverage.sql"
+readonly ARIVA_SCHEMA_AT="0067_device_health_covered_lines.sql"
 readonly ARIVA_SCHEMA="advertising_media=2cb17c8c169d81de441d4192fdc21b0c;\
 advertising_media_guard()=0c14e39356e12f186a82b88895cc130a;\
 advertising_play=d5f1179d8cfaccdcc0d9c7d9c3634258;\
@@ -293,7 +293,7 @@ desk_zone_reading=a204ce21cdfc0d3efb69de85b4b2e2db;\
 device=b59745ec0348bfad4a9194b8e545ad93;\
 device_calibration=8df606c26b6e3ab383f5867afd132b32;\
 device_calibration_immutable()=898d61ed2d4d8bed0d1c463c86f4abe9;\
-device_health_event=0c163b26b148eac8bd9c460e6a30bc1f;\
+device_health_event=54f0a7662277a2dcbddbc26a0b41b6a0;\
 device_heartbeat=0cd33743e6e2f39b0940afd5349aa485;\
 display=3e2ccabac8fa244989f46e9e8768f3f1;\
 display_advertising_allowed()=5420d3348838bb6c035cad53f5684d8c;\

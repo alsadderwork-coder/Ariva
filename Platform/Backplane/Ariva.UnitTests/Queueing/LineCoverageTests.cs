@@ -9,10 +9,10 @@ using FluentAssertions;
 namespace Ariva.UnitTests.Queueing;
 
 /// <summary>
-/// ARV-259e1 (formulas F11): a queue zone whose entry or exit line has no live covering device is Unknown. Until devices declare
-/// their lines every device the zone tracks covers every entry and exit line, so the zone is Unknown while every device it tracks
-/// is out (no measurement at all): its live minutes are Unknown (and degraded), its bins are marked Unknown over the spell, and the
-/// spell survives a snapshot. One device out of two leaves the zone Degraded, as before.
+/// ARV-259e1 (formulas F11): a queue zone whose entry or exit line has no live covering device is Unknown. A device that declares
+/// nothing (every device here; declarations are DeclaredCoverageTests', ARV-259e5) covers every entry and exit line, so the zone is
+/// Unknown while every device it tracks is out (no measurement at all): its live minutes are Unknown (and degraded), its bins are
+/// marked Unknown over the spell, and the spell survives a snapshot. One device out of two leaves the zone Degraded, as before.
 /// </summary>
 public sealed class LineCoverageTests
 {
@@ -487,7 +487,6 @@ public sealed class LineCoverageTests
         var covered = live.Capture();
         const string Disagree = "*do not agree with its devices*";
         const string NotTheZones = "*not one of the zone's entry or exit lines, or names one twice*";
-        const string NotOneSpell = "*do not share one spell*";
 
         foreach (var (bad, reason, because) in new (ZoneProcessorState, string, string)[]
                  {
@@ -497,10 +496,8 @@ public sealed class LineCoverageTests
                          Disagree, "a live device covers the lines: a snapshot cannot make them uncovered"),
                      (state with { Coverage = [entry, exit, entry] }, NotTheZones, "a line named twice"),
                      (state with { Coverage = [entry, exit with { LineName = "A-VIS count" }] }, NotTheZones, "a line that is not an entry or exit line"),
-                     (state with { Coverage = [entry, exit with { MarkedThroughUtc = null }] }, NotOneSpell, "every line is marked through the same minute"),
-                     (state with { Coverage = [entry, exit with { UncoveredSinceUtc = entry.UncoveredSinceUtc.AddMinutes(1) }] }, NotOneSpell,
-                         "every line loses its coverage at the same moment"),
-                     (state with { Devices = [], RecentOutages = [], Coverage = [entry] }, NotOneSpell, "nor, in a zone that tracks no device, only some lines"),
+                     (state with { Devices = [], RecentOutages = [], Coverage = [entry] }, "*a zone that tracks none has every line without coverage, or none*",
+                         "nor, in a zone that tracks no device, only some lines"),
                      (state with { RecentUncovered = [new RecentUncoveredState("elsewhere", Start, Start.AddMinutes(5))] }, "*names a recent spell of a line that is not*",
                          "a spell of another line")
                  })
@@ -511,6 +508,15 @@ public sealed class LineCoverageTests
         }
 
         zone.UnknownNow.Should().BeTrue();
+
+        // ARV-259e5: lines lose and regain their coverage one by one once devices declare theirs, so each line's spell is taken as
+        // written, its own start and mark (within SnapshotChecks' bounds).
+        foreach (var own in new[]
+                 {
+                     state with { Coverage = [entry, exit with { MarkedThroughUtc = null }] },
+                     state with { Coverage = [entry, exit with { UncoveredSinceUtc = entry.UncoveredSinceUtc.AddMinutes(1) }] }
+                 })
+            ZoneProcessor.Restore(ZoneKey, Geometry, 12, new ZoneProcessorSettings(), own, notAfter).Capture().Coverage.Should().Equal(own.Coverage);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.ViewModels;
+using Ariva.Core.Sensing;
 using Ariva.Core.Services.Sensing;
 using Ariva.Core.Services.Topology;
 using Ariva.Infra.Services.Foundation;
@@ -41,7 +42,7 @@ internal sealed class SvcDeviceGateway(IUnitOfWork unitOfWork, IFusionCache cach
                 : new DeviceCredentialRecord(device.Id.GetValueOrDefault(), device.Code, device.SiteCode, device.QueueZoneName, device.State.ToString(),
                     device.CredentialHash, string.IsNullOrEmpty(device.AllowedSources) ? [] : device.AllowedSources.Split(','), device.ClientCertificateSha256,
                     device.Dialect.ToString(), device.X, device.Y, device.OrientationDegrees, device.MappingName,
-                    device.Transport.ToString());
+                    device.Transport.ToString(), LineDeclarations.Carried(device.LineCoverage, device.CoveredLineNames));
         }, options =>
         {
             // A credential decision must never come from a stale copy: no fail-safe (which would serve an expired entry

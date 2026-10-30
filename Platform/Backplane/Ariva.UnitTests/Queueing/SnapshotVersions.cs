@@ -42,5 +42,11 @@ internal static class SnapshotVersions
     /// ARV-259e1: the snapshot as a build before zone snapshot version 14 wrote it: no lines without coverage and no recent spells.
     /// Only for states with no Unknown bin mark (nothing made one before that build).
     /// </summary>
-    public static ZoneProcessorState WrittenBefore14(this ZoneProcessorState state) => state with { Coverage = [], RecentUncovered = [] };
+    public static ZoneProcessorState WrittenBefore14(this ZoneProcessorState state) => state.WrittenBefore15() with { Coverage = [], RecentUncovered = [] };
+
+    /// <summary>The state as a build before version 15 wrote it (ARV-259e5): no device's declared lines.</summary>
+    public static ZoneProcessorState WrittenBefore15(this ZoneProcessorState state) => state with
+    {
+        Devices = [.. state.Devices.Select(d => d with { CoveredLines = null })]
+    };
 }

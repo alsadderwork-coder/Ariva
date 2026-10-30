@@ -205,8 +205,10 @@ public sealed record ZoneProcessorState
     /// whose live minutes are not all published (<see cref="Coverage"/>, <see cref="RecentUncovered"/>, ARV-259e1); an earlier
     /// snapshot carries neither, nor an Unknown bin mark, and is refused if it does, and restores with its lines without coverage
     /// derived from its devices (from where the latest outage started), their bins marked Unknown from there at its next step.
+    /// 15 adds the lines each device declared it counts (<see cref="DeviceLivenessState.CoveredLines"/>, ARV-259e5); an earlier
+    /// snapshot carries none and is refused if it does, and restores with every device counting every line, as it did.
     /// </summary>
-    public const int CurrentVersion = 14;
+    public const int CurrentVersion = 15;
 
     /// <summary>The first version that may carry the queue engine's pending empty-queue check (ARV-114d).</summary>
     public const int PendingAnchorSinceVersion = 8;
@@ -225,6 +227,9 @@ public sealed record ZoneProcessorState
 
     /// <summary>The first version that may carry lines without a live covering device and Unknown bin marks (ARV-259e1).</summary>
     public const int LineCoverageSinceVersion = 14;
+
+    /// <summary>The first version that may carry the lines each device declared it counts (ARV-259e5).</summary>
+    public const int DeclaredCoverageSinceVersion = 15;
 
     public int Version { get; init; } = CurrentVersion;
     public string ZoneKey { get; init; }
@@ -406,7 +411,9 @@ public sealed class ZoneProcessor
             return;
         }
 
-        if (!Plausible(batch.ReceivedUtc) || !DeviceCodes.IsValid(batch.DeviceCode))
+        // ARV-259e5: a health report's declared lines in the registry's shape (Ingest stamps them from it), or the report is invalid.
+        var status = batch as DeviceStatusBatch;
+        if (!Plausible(batch.ReceivedUtc) || !DeviceCodes.IsValid(batch.DeviceCode) || !LineDeclarations.IsWellFormed(status?.CoveredLines))
         {
             _invalid++;
             return;
@@ -426,10 +433,14 @@ public sealed class ZoneProcessor
         var ended = _liveness.Heard(ZoneKey, batch.DeviceCode, _reference, batch is not DeviceStatusBatch { Online: false });
         if (ended is { } e)
             Ended(e.Outage, e.MarkFromUtc);
-        // ARV-259e1: a device back, heard for the first time or reporting itself offline may change which lines a live device
-        // covers. A line covered again is covered from where the device's outage ended, or from the minute a new device's push
-        // covers (ARV-148).
-        Covered(changes, _reference, ended?.Outage.ToUtc ?? _liveness.CoveredFrom(_reference));
+        // ARV-259e5: a health report says which lines its device counts from its receive time on.
+        if (status is not null)
+            Declare(batch.DeviceCode, status.CoveredLines);
+        // ARV-259e1: a device back, heard for the first time, reporting itself offline or declaring other lines may change which lines
+        // a live device covers. A line covered again is covered from where the device's outage ended, or from the minute a new
+        // device's push, or a report newly declaring the line, covers (ARV-148); a line the report leaves without one lost it at the
+        // minute the report was received in.
+        Covered(changes, _reference, ended?.Outage.ToUtc ?? _liveness.CoveredFrom(_reference), byRecord: true);
 
         // ARV-168: a batch this device sent before with the same id, still within its window, is a resend (the device
         // dropped the request, or Kafka delivered the push twice): it was heard, but its events were applied already.
@@ -609,14 +620,34 @@ public sealed class ZoneProcessor
         _recomputations.AddRange(_bins.Mark(markFromUtc, outage.ToUtc, BinQuality.Degraded));
     }
 
-    // ARV-259e1: after a change of the devices' live state, the lines that lost their last live covering device open a spell, and
-    // the lines a device covers again close theirs at closeAtUtc, their bins marked Unknown (F11) through the spell's end.
-    private void Covered(long changesBefore, DateTime openFallbackUtc, DateTime closeAtUtc)
+    // ARV-259e1: after a change of the devices' live state or declared lines, the lines that lost their last live covering device open
+    // a spell, and the lines a device covers again close theirs at closeAtUtc, their bins marked Unknown (F11) through the spell's end.
+    private void Covered(long changesBefore, DateTime openFallbackUtc, DateTime closeAtUtc, bool byRecord = false)
     {
         if (_liveness.Changes == changesBefore)
             return;
-        foreach (var (from, to) in LineCoverage.Union(_coverage.Recompute(_liveness, openFallbackUtc, closeAtUtc)))
+        foreach (var (from, to) in LineCoverage.Union(_coverage.Recompute(_liveness, openFallbackUtc, closeAtUtc, byRecord)))
             _recomputations.AddRange(_bins.Mark(from, to, BinQuality.Unknown));
+    }
+
+    /// <summary>The refusal kind that counts declared line names that are not entry or exit lines of the zone (ARV-259e5).</summary>
+    public const string DeclaredLineNotInZone = "DeclaredLineNotInZone";
+
+    // ARV-259e5: the device's declaration as its health report carries it (null for every line), kept as the zone's entry and exit
+    // lines it names in ordinal order; a name the zone does not hold (a publish dropped or renamed the line, or another zone's) is
+    // ignored and counted with the engine's refusals, so the metric shows a declaration the registry should correct.
+    private void Declare(string device, IReadOnlyList<string> declared)
+    {
+        string[] lines = null;
+        if (declared is not null)
+        {
+            lines = [.. declared.Where(_coverage.IsLine).Order(StringComparer.Ordinal)];
+            var ignored = declared.Count - lines.Length;
+            if (ignored > 0)
+                _refusals[DeclaredLineNotInZone] = _refusals.GetValueOrDefault(DeclaredLineNotInZone) + ignored;
+        }
+
+        _liveness.Declare(device, lines);
     }
 
     // At each new receive time, before its records and before the engine steps: the open outages, and the spells of lines
@@ -869,7 +900,7 @@ public sealed class ZoneProcessor
         if (state.Counters is { } c)
             (zone._batches, zone._uncommissioned, zone._wrongZone, zone._invalid, zone._otherZones, zone._repeated, zone._forgotten) = (c.Batches, c.Uncommissioned,
                 c.WrongZone, c.Invalid, Math.Max(0, c.OtherZones), Math.Max(0, c.RepeatedBatches), Math.Max(0, c.ForgottenBatches));
-        zone._liveness.Restore(state.Devices, state.RecentOutages);
+        zone._liveness.Restore(state.Devices, state.RecentOutages, new HashSet<string>(zone._coverage.Lines, StringComparer.Ordinal));
         // ARV-259e1: a snapshot's lines without coverage must agree with its devices (CWE-501); an earlier one's are derived from them.
         zone._coverage = LineCoverage.Restore(CoveredLines(geometry), state.Coverage, state.RecentUncovered, zone._liveness, zone._reference,
             state.Version < ZoneProcessorState.LineCoverageSinceVersion);

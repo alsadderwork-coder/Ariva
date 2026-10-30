@@ -310,6 +310,9 @@ public sealed class SensingIngest(
         Clock = clock,
         ReceivedUtc = receivedUtc,
         Commissioned = device.State is "Online" or "Degraded" or "Offline",
+        // ARV-259e5: the lines the device declares it counts come from the registry (the authenticated device's record), never from
+        // the push, whose strict canonical form has no member for them.
+        CoveredLines = device.CoveredLines,
         OccurredOn = status.TimeUtc
     };
 

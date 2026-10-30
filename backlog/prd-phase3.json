@@ -1671,7 +1671,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3. Split from ARV-259e (2026-10-29). The owner decided on 2026-10-29 (docs/product/decisions.md) that events naming an entry or exit line a device does not declare are counted and named in the push answer's problems, not refused in Ingest. No sign-in code.",
       "dependsOn": [
         "ARV-259e1",
@@ -1739,6 +1739,28 @@
       "notes": "Size S to M. Phase 3. Filed 2026-10-30 with ARV-259e4 (its notes: 'Site configuration export and import of declarations left out (a follow-up)'). No sign-in code.",
       "dependsOn": [
         "ARV-259e4"
+      ]
+    },
+    {
+      "id": "ARV-277",
+      "title": "[E4] The push answer names events on entry or exit lines its device does not declare it counts",
+      "description": "Filed with ARV-259e5 (2026-10-30), whose acceptance made it optional: the owner decided on 2026-10-29 (docs/product/decisions.md, the ARV-259e split: 'warn, count and name, warn') that events naming an entry or exit line a device does not declare it counts (ARV-259e4, ADR-0027) are counted and named in the push answer's problems, never refused. Ingest knows the authenticated device's declaration (DeviceCredentialRecord.CoveredLines, ARV-259e5) and the zone's lines (the published geometry it already checks names against): count, per push, the crossings and interval readings on an entry or exit line outside a Listed or None declaration, add one problem per such line (the name quoted in the safe form problems already use, at most the answer's problem bound), and count them in a metric by site. The events are still accepted and published: the queue engine counts them, since coverage and counting are separate questions. CWEs to review: CWE-20, CWE-79 (a name in the answer), CWE-400 (the problem and metric bounds), CWE-532.",
+      "acceptanceCriteria": [
+        "A push from a Listed or None device with crossings or interval readings on an entry or exit line it does not declare is accepted whole, and its answer's problems name each such line once (safe form, bounded) with its count; an All device's push has no such problem; unit tests in SensingIngestTests",
+        "A metric by site counts such events (bounded tags); unit test",
+        "E2E: a declared device's push on an undeclared line answers 202 with the problem, the name never echoed unsafely",
+        "docs/architecture/sensor-adapters.md (the push answer), wiki 06 and wiki 10 section 4.22 or 4.1 updated",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 45,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-10-30 with ARV-259e5, which left the push answer's problems out (its acceptance said optionally). No sign-in code.",
+      "dependsOn": [
+        "ARV-259e5"
       ]
     },
     {

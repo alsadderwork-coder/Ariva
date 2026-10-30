@@ -707,12 +707,16 @@ public sealed class QueueStreamWorker(
         return crc ^ 0xFFFFFFFFu;
     }
 
-    // Only the first events of a batch are used (Ingest's limit); the rest is not kept while the record waits.
-    private static void Trim(SensingBatch batch)
+    // Only the first events of a batch are used (Ingest's limit); the rest is not kept while the record waits. A health report's declared
+    // lines beyond the registry's bound are cut to one more than it (ARV-259e5), which the zone still refuses as out of shape.
+    internal static void Trim(SensingBatch batch)
     {
         const int max = ZoneProcessor.MaxEventsPerBatch;
         switch (batch)
         {
+            case DeviceStatusBatch { CoveredLines.Count: > Ariva.Core.Domain.Entities.Device.MaxCoveredLines + 1 } s:
+                s.CoveredLines = [.. s.CoveredLines.Take(Ariva.Core.Domain.Entities.Device.MaxCoveredLines + 1)];
+                break;
             case VendorLineCrossingBatch { Crossings.Count: > max } c:
                 c.Crossings = [.. c.Crossings.Take(max)];
                 break;

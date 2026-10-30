@@ -212,6 +212,48 @@ public sealed class SensingIngestTests
         sink.Published.OfType<DeviceHealthReported>().Should().HaveCount(3, "at 0, 10 and 20 seconds");
     }
 
+    public static TheoryData<string, string[]> Declarations => new()
+    {
+        // The registry's declaration as the device's record carries it (ARV-259e5): null for All, empty for None, the names for Listed.
+        { "All", null },
+        { "None", [] },
+        { "Listed", ["Exit A"] },
+        { "Listed, two lines", ["Entry A", "Exit A"] }
+    };
+
+    [Theory]
+    [MemberData(nameof(Declarations))]
+    public async Task Ingest_Should_StampTheRegistrysDeclarationOnEveryHealthReport_When_TheDevicePushes(string name, string[] lines)
+    {
+        var (ingest, sink, _) = Create();
+        var device = Device() with { CoveredLines = lines };
+        var status = """, "status": { "online": false, "timeUtc": "2026-10-02T14:05:00Z" }""";
+
+        await ingest.IngestAsync(device, DeviceDialect.Canonical, Json(Push()), Received, CancellationToken.None);
+        await ingest.IngestAsync(device, DeviceDialect.Canonical, Json(Push(extra: status, package: 4712)), Received.AddSeconds(2), CancellationToken.None);
+
+        var reports = sink.Published.OfType<DeviceHealthReported>().ToList();
+        reports.Should().HaveCount(2, $"{name}: a synthesised report and a pushed status");
+        reports.Should().OnlyContain(r => lines == null ? r.CoveredLines == null : r.CoveredLines != null && r.CoveredLines.SequenceEqual(lines), name);
+        DeviceStatusBatch.From(reports[1]).CoveredLines.Should().BeEquivalentTo(lines, o => o.WithStrictOrdering(), "the stream's batch carries it too");
+    }
+
+    [Theory]
+    [InlineData("""{ "coveredLines": ["Exit A"], "tracks": [] }""")]
+    [InlineData("""{ "status": { "online": true, "timeUtc": "2026-10-02T14:05:00Z", "coveredLines": [] } }""")]
+    [InlineData("""{ "status": { "online": true, "timeUtc": "2026-10-02T14:05:00Z", "lineCoverage": "None" } }""")]
+    public async Task Ingest_Should_RefuseThePush_When_ItTriesToDeclareItsOwnLines(string json)
+    {
+        // ARV-259e5: a device's declaration comes from the registry only; the strict canonical form has no member for it, so a push
+        // naming one is refused whole and no report carries what it said.
+        var (ingest, sink, _) = Create();
+
+        var outcome = await ingest.IngestAsync(Device() with { CoveredLines = ["Entry A"] }, DeviceDialect.Canonical, Json(json), Received, CancellationToken.None);
+
+        outcome.HasErrors.Should().BeTrue();
+        sink.Published.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task Ingest_Should_MapXovisWithTheDevicePose()
     {

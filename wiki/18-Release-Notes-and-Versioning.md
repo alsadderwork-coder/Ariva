@@ -146,11 +146,19 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-259e5: the queue engine reads the lines devices declare (script 0067, zone snapshot version 15, 2026-10-30)
+
+- Script 0067 adds `device_health_event.covered_lines` (a text array, at most 64 names; the migration job applies it, compressed chunks included). Every report archived before reads as All. Nothing to migrate.
+- Ingest stamps every device health report with the device's declaration (`coveredLines` on `ariva.device.health.v1`, an additive member: a Stream or Main before ARV-259e5 ignores it, so the hosts roll out in any order). Roll out Ingest before relying on declarations: until it runs, reports carry none and every device counts every line.
+- Behaviour: a device covers only the entry and exit lines it declares it counts (formulas F11). A zone whose devices declared their lines in ARV-259e4 can now turn `Unknown` while some of its devices are live: when the devices that count one of its lines are all out (an exit sensor beside a live snake sensor), or when no device counts a line at all. Before the upgrade, check the zones' sensing health on the devices screen: a line no commissioned device counts keeps its zone `Unknown` (and `zonesUnknown` paging) from the first report after the upgrade. A declared line a zone no longer holds is ignored and counted (`DeclaredLineNotInZone` on `ariva.stream.queue_refused`, wiki 10 section 4.22).
+- Ariva.Api.Stream writes zone snapshot version 15 (each device's declaration). A version 14 snapshot restores as it is, every device counting every line until its next health report; a rollback to a build before ARV-259e5 refuses version 15 snapshots and starts the zones afresh, as for version 11 (below).
+- Not in this release: a push answer naming events on lines its device does not declare (the owner's optional item, ARV-277).
+
 ### ARV-259e4: devices declare the lines they count (script 0066, 2026-10-30)
 
 - Script 0066 adds `device.line_coverage` (`All` by default, so every existing device keeps counting every line of its zone) and `device.covered_lines` (the migration job applies it). Nothing to migrate.
 - New endpoint `PUT api/v1/admin/devices/{id}/coverage` (EditDevice, not a critical action) and the devices screen's Lines it counts; the device answer carries `lineCoverage`, `coveredLines` and `linesNotInZone`, the health answer `uncoveredLines`, a publish answer `warnings`. A web app before ARV-259e4 ignores them.
-- The queue engine does not read declarations yet (ARV-259e5): declaring lines changes no wait, bin or alert until then. Site configuration export and import do not carry them.
+- The queue engine reads declarations since ARV-259e5 (above); in a release with ARV-259e4 alone, declaring lines changes no wait, bin or alert. Site configuration export and import do not carry them (ARV-276).
 
 ### ARV-259e3: the zones Unknown gauge and a Critical rule, on by default; a tunable degraded zones count (2026-10-30)
 
@@ -169,7 +177,7 @@ Changes since the last release that an operator must act on when upgrading, newe
 - Ariva.Api.Stream writes zone snapshot version 14: the zone's entry and exit lines without a live covering device and the ended spells whose live minutes are not all published yet. A version 13 snapshot restores as it is, its spells derived from its devices; a rollback to a build before ARV-259e1 refuses version 14 snapshots and starts the zones afresh, as for version 11 (below).
 - Behaviour: a zone whose every device is out (offline, or silent beyond 180 seconds) is `Unknown` where it was `Degraded` (formulas F11, the owner's decision of 2026-10-29): its bins are stored `Unknown` for the spell, so a single-sensor zone's bins over an outage read `Unknown` in reports, exports and the weekly summary's Unknown count. A zone with another live device stays `Degraded`. Bins made final before the release keep their revision; a recomputation over a range with such a spell writes revision r + 1 for them.
 - The screens and boards follow in ARV-259e2, the gauge and the `zonesUnknown` rule in ARV-259e3 (both above).
-- Nothing to configure: until devices declare the lines they cover (ARV-259e4, ARV-259e5), every device of a zone covers all its lines.
+- Nothing to configure: a device that declares no lines (ARV-259e4, read by the engine since ARV-259e5) covers all the lines of its zone.
 
 ### ARV-259d: the display stale rule (2026-10-29)
 

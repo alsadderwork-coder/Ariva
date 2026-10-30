@@ -231,4 +231,24 @@ public sealed class DeviceLineCoverageTests(PostgresFixture fixture) : IAsyncDis
         over.Data.Truncated.Should().BeTrue("two declarations, one read at most");
         over.Data.UncoveredLines.Should().BeEmpty("no line is called uncovered from a cut read");
     }
+
+    [Fact]
+    public async Task Gateway_Should_CarryTheDeclarationForIngest_When_TheDeviceAuthenticates()
+    {
+        // ARV-259e5: Ingest stamps the authenticated device's declaration on its health reports from the record the credential lookup
+        // gives (null for All, empty for None, the names for Listed); a declaration evicts the cached record at once.
+        var (admin, level) = await SiteAsync("DLG");
+        var registered = (await _host.AsCallerAsync(admin, s => Devices(s).RegisterAsync(
+            new RegisterDeviceRequest("S-1", "StereoVision", "PC2SE", "HttpsPush", "Xovis", "Ntp", new DevicePlacement(level, 22, 16, 5, 0, "Snake A")), Ct))).Data;
+        var prefix = registered.Credential[..Ariva.Infra.Security.DeviceCredentials.PrefixLength];
+        Task<DeviceCredentialRecord> FoundAsync() => _host.AsCallerAsync(null, s => s.GetRequiredService<ISvcDeviceGateway>().FindByPrefixAsync(prefix, Ct));
+
+        (await FoundAsync()).CoveredLines.Should().BeNull("a device that declares nothing counts every line");
+        (await CoverAsync(admin, registered.Device.Id, "Listed", "Exit A", "Entry A")).HasErrors.Should().BeFalse();
+        (await FoundAsync()).CoveredLines.Should().Equal("Entry A", "Exit A");
+        (await CoverAsync(admin, registered.Device.Id, "None")).HasErrors.Should().BeFalse();
+        (await FoundAsync()).CoveredLines.Should().NotBeNull().And.BeEmpty();
+        (await CoverAsync(admin, registered.Device.Id, "All")).HasErrors.Should().BeFalse();
+        (await FoundAsync()).CoveredLines.Should().BeNull();
+    }
 }

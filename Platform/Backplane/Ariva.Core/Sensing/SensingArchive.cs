@@ -67,8 +67,9 @@ public interface ISensingArchive
 }
 
 /// <summary>
-/// One device health report as archived (ARV-036): when Ariva received it, for which zone and device, and whether the
-/// device said it was online. <see cref="ToBatch"/> gives the status batch the queue stream processed.
+/// One device health report as archived (ARV-036): when Ariva received it, for which zone and device, whether the device
+/// said it was online, and the lines it declared it counts (ARV-259e5: null for All, a row archived before it included).
+/// <see cref="ToBatch"/> gives the status batch the queue stream processed.
 /// </summary>
 public sealed record ArchivedDeviceHealth(
     DateTime ReceivedUtc,
@@ -80,7 +81,8 @@ public sealed record ArchivedDeviceHealth(
     bool Online,
     bool Commissioned,
     DateTime? StatusUtc,
-    ClockState? ClockState)
+    ClockState? ClockState,
+    IReadOnlyList<string> CoveredLines = null)
 {
     public DeviceStatusBatch ToBatch() => new()
     {
@@ -94,7 +96,8 @@ public sealed record ArchivedDeviceHealth(
         Commissioned = Commissioned,
         ReceivedUtc = ReceivedUtc,
         Clock = ClockState is { } state ? new ClockReading(0, state != Sensing.ClockState.Unreliable, state) : null,
-        Online = Online
+        Online = Online,
+        CoveredLines = CoveredLines
     };
 }
 

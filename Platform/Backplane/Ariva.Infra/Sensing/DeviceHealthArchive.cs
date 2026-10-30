@@ -11,8 +11,9 @@ namespace Ariva.Infra.Sensing;
 /// <summary>
 /// The device health archive on PostgreSQL and TimescaleDB (ARV-036, script 0019): every report as received, so that a
 /// replay sees the same device liveness the queue stream saw. Reports are checked again (they crossed Kafka): site, zone
-/// and device as Ingest writes them, received within the archive's window; others are skipped and counted. A report is
-/// archived once (its event id and receive time). Every value is a parameter; no SQL is built from input (CWE-89).
+/// and device as Ingest writes them, received within the archive's window, and the lines the device declared it counts
+/// (ARV-259e5, script 0067) in the registry's shape; others are skipped and counted. A report is archived once (its event id
+/// and receive time). Every value is a parameter; no SQL is built from input (CWE-89).
 /// </summary>
 public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider timeProvider, ILogger<DeviceHealthArchive> logger = null,
     SensingArchiveMetrics metrics = null) : IDeviceHealthArchive
@@ -40,8 +41,10 @@ public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider 
         await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var insert = new NpgsqlCommand("""
-            INSERT INTO device_health_event (received_utc, site_code, queue_zone_name, device_id, device_code, event_id, online, commissioned, status_utc, clock_state)
-            SELECT * FROM unnest(@received, @sites, @zones, @devices, @codes, @ids, @online, @commissioned, @status, @clocks)
+            INSERT INTO device_health_event (received_utc, site_code, queue_zone_name, device_id, device_code, event_id, online, commissioned, status_utc, clock_state,
+                covered_lines)
+            SELECT r, s, z, d, c, i, o, m, t, k, CASE WHEN l IS NULL THEN NULL ELSE string_to_array(l, E'\n') END
+            FROM unnest(@received, @sites, @zones, @devices, @codes, @ids, @online, @commissioned, @status, @clocks, @lines) AS u (r, s, z, d, c, i, o, m, t, k, l)
             ON CONFLICT (event_id, received_utc) DO NOTHING
             """, connection);
         insert.Parameters.AddWithValue("received", usable.Select(r => Utc(r.ReceivedUtc)).ToArray());
@@ -54,6 +57,13 @@ public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider 
         insert.Parameters.AddWithValue("commissioned", usable.Select(r => r.Commissioned).ToArray());
         insert.Parameters.AddWithValue("status", usable.Select(r => r.Status is { } s && s.TimeUtc.Kind == DateTimeKind.Utc ? (DateTime?)s.TimeUtc : null).ToArray());
         insert.Parameters.AddWithValue("clocks", usable.Select(r => r.Clock?.State.ToString()).ToArray());
+        // ARV-259e5: one text per report, the names joined by line feeds and split back into the array column in SQL (unnest takes no
+        // array of arrays). Lossless because Usable took only declarations LineDeclarations.IsWellFormed passes, whose names hold no line
+        // feed or other control character (the registry's name rule, ARV-159). NULL for All, an empty text for None (an empty array).
+        insert.Parameters.Add(new NpgsqlParameter("lines", NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Text)
+        {
+            Value = usable.Select(r => r.CoveredLines is null ? null : string.Join('\n', r.CoveredLines)).ToArray()
+        });
         return await insert.ExecuteNonQueryAsync(ct);
     }
 
@@ -67,7 +77,7 @@ public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider 
         await using var connection = PostgresConnections.Create(database.BuildConnectionString());
         await connection.OpenAsync(ct);
         await using var command = new NpgsqlCommand("""
-            SELECT received_utc, site_code, queue_zone_name, device_id, device_code, event_id, online, commissioned, status_utc, clock_state
+            SELECT received_utc, site_code, queue_zone_name, device_id, device_code, event_id, online, commissioned, status_utc, clock_state, covered_lines
             FROM device_health_event
             WHERE site_code = @site AND queue_zone_name = @zone AND received_utc >= @from AND received_utc < @to
             ORDER BY received_utc, event_id
@@ -89,7 +99,8 @@ public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider 
                 reader.GetBoolean(6),
                 reader.GetBoolean(7),
                 reader.IsDBNull(8) ? null : DateTime.SpecifyKind(reader.GetDateTime(8), DateTimeKind.Utc),
-                reader.IsDBNull(9) ? null : Enum.Parse<ClockState>(reader.GetString(9)));
+                reader.IsDBNull(9) ? null : Enum.Parse<ClockState>(reader.GetString(9)),
+                reader.IsDBNull(10) ? null : reader.GetFieldValue<string[]>(10));
         }
     }
 
@@ -102,7 +113,7 @@ public sealed class DeviceHealthArchive(DatabaseSettings database, TimeProvider 
         if (r.SiteCode is not { Length: >= 2 and <= 17 } || !Site.IsValidCode(r.SiteCode) || r.QueueZoneName is not { Length: >= 1 and <= 200 } ||
             !Ariva.Core.Domain.Components.DisplayText.IsClean(r.QueueZoneName))
             return false;
-        if (!DeviceCodes.IsValid(r.DeviceCode))
+        if (!DeviceCodes.IsValid(r.DeviceCode) || !LineDeclarations.IsWellFormed(r.CoveredLines))
             return false;
         return r.ReceivedUtc > now - MaxLate && r.ReceivedUtc < now + MaxAhead;
     }

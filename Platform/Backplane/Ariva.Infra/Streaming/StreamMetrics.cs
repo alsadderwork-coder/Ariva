@@ -10,7 +10,8 @@ namespace Ariva.Infra.Streaming;
 /// next offset it reads), so it costs no broker call. Each instance reports only its own partitions, so the instances of a
 /// group add up; a measurement older than its freshness window, or one from a worker that stopped, is not reported.
 /// <see cref="QueueRefusedName"/> (ARV-231) counts the events each zone's queue engine refused or applied early, tagged with the
-/// <c>kind</c> (a <c>QueueRejections</c> property: BufferFull, DeviceShareFull, ForcedAdvances, Late and the others) and the
+/// <c>kind</c> (a <c>QueueRejections</c> property: BufferFull, DeviceShareFull, ForcedAdvances, Late and the others; or, counting
+/// declared line names rather than events, the zone's <c>DeclaredLineNotInZone</c>, ARV-259e5: a fixed set either way) and the
 /// <c>site</c> code, added once a checkpoint has written the zone's outputs. <see cref="CheckpointAgeName"/> (ARV-258) is the
 /// seconds since this instance's queue engine last wrote everything it owed (a checkpoint, or nothing to write), tagged with the
 /// consumer <c>group</c>: a checkpoint that keeps failing while the database answers (a statement timeout, a lock wait, a

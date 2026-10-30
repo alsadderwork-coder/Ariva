@@ -8,12 +8,14 @@ public sealed record RecentUncoveredState(string LineName, DateTime FromUtc, Dat
 
 /// <summary>
 /// Which entry and exit lines of a queue zone have no live covering device (ARV-259e1, formulas F11: such a line, or no
-/// measurement at all, makes the zone Unknown). Until devices declare the lines they cover (ARV-259e4, ARV-259e5) every
-/// device the zone tracks covers every entry and exit line, so a line is uncovered exactly when every device the zone tracks
-/// is out, or it tracks none. A spell starts where the last covering device's outage started (the latest one, back-dated as
-/// outages are) and ends where the first covering device is live again (where its outage ends, or the minute the push of a
-/// device heard for the first time covers); a spell of no length is dropped. Pure, and judged at the same moments as device
-/// liveness (<see cref="Recompute"/> after every change of it), so a replay of the same records gives the same spells.
+/// measurement at all, makes the zone Unknown). A device covers the lines its latest health report declared it counts (ARV-259e5,
+/// ADR-0027), every line until one says otherwise and none for a device that declares none, so a line is uncovered when every
+/// device the zone tracks that counts it is out, or none does. A spell starts where the last covering device's outage started (the
+/// latest one, back-dated as outages are), or where a report left the line without a live covering device (its device reporting
+/// itself offline, or no longer declaring the line), and ends where the first covering device is live again (where its outage
+/// ends, or the minute the push of a device heard for the first time, or newly declaring the line, covers); a spell of no length
+/// is dropped. Pure, and judged at the same moments as device liveness (<see cref="Recompute"/> after every change of it), so a
+/// replay of the same records gives the same spells.
 /// </summary>
 internal sealed class LineCoverage
 {
@@ -24,6 +26,7 @@ internal sealed class LineCoverage
     }
 
     private readonly string[] _lines;
+    private readonly HashSet<string> _known;
     private readonly SortedDictionary<string, Spell> _open = new(StringComparer.Ordinal);
     private readonly List<RecentUncoveredState> _recent = [];
     private readonly int _maxRecent;
@@ -31,11 +34,15 @@ internal sealed class LineCoverage
     public LineCoverage(IEnumerable<string> lines)
     {
         _lines = [.. (lines ?? []).Where(l => !string.IsNullOrEmpty(l)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
+        _known = new HashSet<string>(_lines, StringComparer.Ordinal);
         _maxRecent = 4 * Math.Max(1, _lines.Length);
     }
 
     /// <summary>The entry and exit lines of the zone, in ordinal order.</summary>
     public IReadOnlyList<string> Lines => _lines;
+
+    /// <summary>Whether <paramref name="name"/> is an entry or exit line of the zone (ordinal, as the profile names it).</summary>
+    public bool IsLine(string name) => name is not null && _known.Contains(name);
 
     /// <summary>Whether a line has no live covering device now.</summary>
     public bool AnyUncovered => _open.Count > 0;
@@ -43,23 +50,31 @@ internal sealed class LineCoverage
     private static DateTime MinuteOf(DateTime t) => new(t.Ticks - t.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc);
 
     /// <summary>
-    /// After a change of the zone's device liveness: lines that lost their last live covering device open a spell (where the
-    /// latest of their covering devices' outages started, or <paramref name="openFallbackUtc"/> when the zone tracks none of
-    /// them), and lines a device covers again close theirs at <paramref name="closeAtUtc"/>. Returns where the closed spells'
-    /// bins still need marking (the part after the marks made while they were open).
+    /// After a change of the zone's device liveness or declared lines: lines that lost their last live covering device open a spell
+    /// (where the latest of their covering devices' outages started, or <paramref name="openFallbackUtc"/> when the zone tracks none
+    /// of them), and lines a device covers again close theirs at <paramref name="closeAtUtc"/>. After a record of the zone
+    /// (<paramref name="byRecord"/>, ARV-259e5; only a health report can leave a line without a live covering device there, its device
+    /// reporting itself offline or no longer declaring the line), such a line lost its coverage no earlier than the minute of
+    /// <paramref name="openFallbackUtc"/> (the record's receive time): a device that stops declaring a line was covering it until then,
+    /// whenever the line's other devices went out. Returns where the closed spells' bins still need marking (the part after the marks
+    /// made while they were open).
     /// </summary>
-    public IReadOnlyList<(DateTime FromUtc, DateTime ToUtc)> Recompute(DeviceLiveness liveness, DateTime openFallbackUtc, DateTime closeAtUtc)
+    public IReadOnlyList<(DateTime FromUtc, DateTime ToUtc)> Recompute(DeviceLiveness liveness, DateTime openFallbackUtc, DateTime closeAtUtc, bool byRecord = false)
     {
-        // Every device the zone tracks covers every line until devices declare theirs (ARV-259e5), so one look at the devices
-        // judges every line: the cost is the devices and the lines once, and only when the devices' live state changed.
-        var (anyLive, latestOutSince) = liveness.Covering();
+        ArgumentNullException.ThrowIfNull(liveness);
+        // One look at the devices judges every line: the cost is the devices and their declared lines once, and only when the devices'
+        // live state or declarations changed.
+        var covering = liveness.Covering(_lines);
+        var fallback = MinuteOf(openFallbackUtc);
         List<(DateTime, DateTime)> closed = null;
-        foreach (var line in _lines)
+        for (var i = 0; i < _lines.Length; i++)
         {
-            var covered = anyLive;
+            var line = _lines[i];
+            var covered = covering[i].AnyLive;
+            var latestOutSince = covering[i].LatestOutSince;
             var open = _open.TryGetValue(line, out var spell);
             if (!covered && !open)
-                _open[line] = new Spell { Since = latestOutSince ?? MinuteOf(openFallbackUtc) };
+                _open[line] = new Spell { Since = Since(latestOutSince, fallback, byRecord) };
             else if (covered && open)
             {
                 _open.Remove(line);
@@ -73,6 +88,15 @@ internal sealed class LineCoverage
         }
 
         return closed ?? [];
+    }
+
+    // Where a line that just lost its last live covering device lost it: the latest outage of its covering devices, else the fallback;
+    // after a record, never before the record's minute. Nullable values read through HasValue and Value (ARV-069a).
+    private static DateTime Since(DateTime? latestOutSince, DateTime fallback, bool byRecord)
+    {
+        if (!latestOutSince.HasValue)
+            return fallback;
+        return byRecord && fallback > latestOutSince.Value ? fallback : latestOutSince.Value;
     }
 
     /// <summary>
@@ -156,13 +180,13 @@ internal sealed class LineCoverage
 
     /// <summary>
     /// The coverage a snapshot says, checked against the zone's lines and its restored devices (CWE-501): each line an entry or
-    /// exit line of the zone, once; while the zone tracks a device, a line is uncovered exactly when no device the zone tracks is
-    /// live; the open lines are none or all, sharing one start and one mark; and <see cref="SnapshotChecks"/> bounds every time
-    /// by the zone's clock. Within those bounds the start and the mark are taken as written, and so are the spells of a zone that
-    /// tracks no device (it has either never heard one or forgotten them all after a day's silence, its spell opened when they
-    /// went out). A snapshot written before the zone kept coverage (<paramref name="derive"/>) carries none: its spells are
-    /// derived from its devices, from where the latest outage started, and marked from their start at the next step. Any
-    /// problem is an <see cref="InvalidDataException"/>.
+    /// exit line of the zone, once; while the zone tracks a device, a line is uncovered exactly when no device the zone tracks that
+    /// counts it (by the declarations the snapshot restored, ARV-259e5) is live; and <see cref="SnapshotChecks"/> bounds every time
+    /// by the zone's clock. Within those bounds the start and the mark are taken as written, line by line (lines lose and regain their
+    /// coverage at different times once devices declare theirs), and so are the spells of a zone that tracks no device (it has either
+    /// never heard one or forgotten them all after a day's silence, its spells opened when they went out). A snapshot written before
+    /// the zone kept coverage (<paramref name="derive"/>) carries none: its spells are derived from its devices, from where the
+    /// latest outage started, and marked from their start at the next step. Any problem is an <see cref="InvalidDataException"/>.
     /// </summary>
     public static LineCoverage Restore(IEnumerable<string> lines, IReadOnlyList<LineCoverageState> open, IReadOnlyList<RecentUncoveredState> recent,
         DeviceLiveness liveness, DateTime referenceUtc, bool derive)
@@ -176,10 +200,9 @@ internal sealed class LineCoverage
             return coverage;
         }
 
-        var known = new HashSet<string>(coverage._lines, StringComparer.Ordinal);
         foreach (var state in open ?? [])
         {
-            if (state is null || !known.Contains(state.LineName) || coverage._open.ContainsKey(state.LineName))
+            if (state is null || !coverage.IsLine(state.LineName) || coverage._open.ContainsKey(state.LineName))
                 throw new InvalidDataException("The zone snapshot names a line without coverage that is not one of the zone's entry or exit lines, or names one twice.");
             coverage._open[state.LineName] = new Spell
             {
@@ -188,27 +211,22 @@ internal sealed class LineCoverage
             };
         }
 
-        var (anyLive, _) = liveness.Covering();
-        foreach (var line in coverage._lines)
+        // The start is not bound by the devices' outages: a device first heard reporting itself offline during a spell goes out after
+        // it started, the device whose outage started it may have been forgotten since, and a declaration may have moved it.
+        var covering = liveness.Covering(coverage._lines);
+        for (var i = 0; i < coverage._lines.Length; i++)
         {
-            if (tracked && coverage._open.ContainsKey(line) == anyLive)
+            if (tracked && coverage._open.ContainsKey(coverage._lines[i]) == covering[i].AnyLive)
                 throw new InvalidDataException("The zone snapshot's lines without coverage do not agree with its devices.");
         }
 
-        // Every device covers every line until devices declare theirs (ARV-259e5 relaxes this), so the lines lose and regain their
-        // coverage together: either none is open or all are, from one start and marked through one minute. The start is not bound
-        // by the devices' outages: a device first heard reporting itself offline during a spell goes out after it started, and the
-        // device whose outage started it may have been forgotten since.
-        if (coverage._open.Count > 0)
-        {
-            var first = coverage._open.Values.First();
-            if (coverage._open.Count != coverage._lines.Length || coverage._open.Values.Any(s => s.Since != first.Since || s.MarkedThrough != first.MarkedThrough))
-                throw new InvalidDataException("The zone snapshot's lines without coverage do not share one spell, as lines covered by every device do.");
-        }
+        // A zone that tracks no device has never heard one (no line without coverage) or has forgotten them all (every line lost it).
+        if (!tracked && coverage._open.Count > 0 && coverage._open.Count != coverage._lines.Length)
+            throw new InvalidDataException("The zone snapshot's lines without coverage do not agree with its devices: a zone that tracks none has every line without coverage, or none.");
 
         foreach (var r in (recent ?? []).Take(coverage._maxRecent))
         {
-            if (r is null || !known.Contains(r.LineName))
+            if (r is null || !coverage.IsLine(r.LineName))
                 throw new InvalidDataException("The zone snapshot names a recent spell of a line that is not one of the zone's entry or exit lines.");
             coverage._recent.Add(r with { FromUtc = DateTime.SpecifyKind(r.FromUtc, DateTimeKind.Utc), ToUtc = DateTime.SpecifyKind(r.ToUtc, DateTimeKind.Utc) });
         }

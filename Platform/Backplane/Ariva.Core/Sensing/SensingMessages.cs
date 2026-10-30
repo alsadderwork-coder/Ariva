@@ -111,6 +111,13 @@ public sealed class DeviceHealthReported : EventBase
     /// <summary>Whether the device was commissioned (out of commissioning, ARV-023); only commissioned devices count for a zone.</summary>
     public bool Commissioned { get; set; }
 
+    /// <summary>
+    /// The entry and exit lines of its queue zone the device declares it counts (ARV-259e5, ADR-0027), stamped by Ingest from the
+    /// registry, never taken from the push: null when it counts every line (All), empty when it counts none (None), else the names
+    /// (Listed). An additive member: a report written before it reads as All.
+    /// </summary>
+    public IReadOnlyList<string> CoveredLines { get; set; }
+
     public string ZoneKey => ZoneKeys.For(SiteCode, QueueZoneName);
 
     public override string GetPartitionKey() => ZoneKey;
@@ -124,6 +131,9 @@ public sealed class DeviceHealthReported : EventBase
 public sealed class DeviceStatusBatch : SensingBatch
 {
     public bool Online { get; set; }
+
+    /// <summary>The lines the device declares it counts, as the report carries them (<see cref="DeviceHealthReported.CoveredLines"/>, ARV-259e5).</summary>
+    public IReadOnlyList<string> CoveredLines { get; set; }
 
     public static DeviceStatusBatch From(DeviceHealthReported report)
     {
@@ -140,7 +150,8 @@ public sealed class DeviceStatusBatch : SensingBatch
             Commissioned = report.Commissioned,
             ReceivedUtc = report.ReceivedUtc,
             Clock = report.Clock,
-            Online = report.Status?.Online ?? true
+            Online = report.Status?.Online ?? true,
+            CoveredLines = report.CoveredLines
         };
     }
 }

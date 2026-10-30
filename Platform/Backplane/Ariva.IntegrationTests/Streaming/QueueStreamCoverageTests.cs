@@ -194,7 +194,7 @@ public sealed class QueueStreamCoverageTests(PostgresFixture postgres, KafkaFixt
             reader.Observe(StreamMetrics.ZonesUnknownName).Should().BeEmpty("a worker that stopped reports nothing");
         }
 
-        (await RowsAsync(database, Saved, at)).Should().Equal(["14|2"], "both lines are without a live covering device when the stream stops");
+        (await RowsAsync(database, Saved, at)).Should().Equal(["15|2"], "both lines are without a live covering device when the stream stops");
 
         await ProduceAsync(after);
         using (var host = Host(database, "it-coverage", settings))
@@ -214,6 +214,6 @@ public sealed class QueueStreamCoverageTests(PostgresFixture postgres, KafkaFixt
             ORDER BY start_utc, revision
             """;
         (await RowsAsync(database, Finals, at)).Should().Equal(["17:00|Unknown", "17:15|Unknown", "17:30|Good"], "no measurement at all from 17:12 to 17:25 (F11)");
-        (await RowsAsync(database, Saved, at)).Should().Equal(["14|0"], "the spell ended with S-74's reading of 17:25");
+        (await RowsAsync(database, Saved, at)).Should().Equal(["15|0"], "the spell ended with S-74's reading of 17:25");
     }
 }
