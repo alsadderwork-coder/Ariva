@@ -1,0 +1,86 @@
+{
+  "alert": "Ariva queue zones unknown (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "Queue zones Unknown at a site for the whole window (ARV-259e3; wiki 10 section 3, zone Unknown; formulas F11): an entry or exit line of each has no live covering device, so the zone has no measurement at all and its screens show Not measured. Until devices declare the lines they cover (ARV-259e5) every device of a zone covers all its lines, so a zone is Unknown when every device it tracks is out. A zone whose devices have all been silent for 24 hours is taken as out of use and not counted. Each Stream replica reports the zones it holds, so the copies are summed per site.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.stream.zones_unknown",
+                "timeAggregation": "max",
+                "spaceAggregation": "sum"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "site",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${zonesUnknown.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${zonesUnknown.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "site"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "zonesUnknown",
+    "environment": "${environment}",
+    "severity": "${zonesUnknown.severity}"
+  },
+  "annotations": {
+    "summary": "Queue zones unknown at site {{$site}}",
+    "description": "{{$value}} queue zones of site {{$site}} have had no measurement for ${zonesUnknown.minutes} minutes: every sensor of each is out, so their screens show Not measured and boards their neutral message. Check the zones' devices (the devices rules, the device list).",
+    "runbook": "wiki/10-Operations-Runbook.md#42-zone-degraded-or-unknown"
+  },
+  "disabled": false
+}

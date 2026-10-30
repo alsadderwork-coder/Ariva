@@ -360,6 +360,13 @@ public sealed class ZoneProcessor
     /// </summary>
     public bool UnknownNow => _coverage.AnyUncovered;
 
+    /// <summary>
+    /// Whether the zone counts in the Stream's gauge of zones Unknown (ARV-259e3): Unknown now while it still tracks a device. A
+    /// zone whose devices have all been silent for the forget limit (24 hours) tracks none: it is taken as out of use (retired from
+    /// the profile, its sensors moved or removed) and no longer pages, though it stays Unknown (<see cref="UnknownNow"/>).
+    /// </summary>
+    public bool UnknownInUse => _coverage.AnyUncovered && _liveness.Count > 0;
+
     /// <summary>What happened to the desk zones' readings (ARV-116), for health; not part of the saved state.</summary>
     public DeskZoneReadingCounters DeskZoneCounters => _deskZones.Counters;
 

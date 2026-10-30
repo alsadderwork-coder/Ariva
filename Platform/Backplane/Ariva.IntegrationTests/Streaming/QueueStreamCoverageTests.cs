@@ -167,12 +167,31 @@ public sealed class QueueStreamCoverageTests(PostgresFixture postgres, KafkaFixt
         var settings = new Dictionary<string, string> { ["Stream:Sites:DMO:LatenessSeconds"] = "90", ["Stream:Sites:DMO:PushIntervalSeconds"] = "60" };
         var at = new Dictionary<string, object> { ["zone"] = "DMO/" + zone };
         const string Saved = "SELECT state->>'version', jsonb_array_length(state->'coverage') FROM stream_zone_state WHERE zone_key = @zone";
+        // ARV-259e3: the worker's gauge of the zones it holds that are Unknown now, by site, read as a collector reads it.
+        async Task<double?> UnknownAtDmo(InstrumentReader reader, double expected)
+        {
+            double? seen = null;
+            var until = DateTime.UtcNow.AddSeconds(30);
+            do
+            {
+                seen = reader.Observe(StreamMetrics.ZonesUnknownName).Where(m => m.Tags["site"] == "DMO").Select(m => (double?)m.Value).LastOrDefault();
+                if (seen == expected)
+                    break;
+                await Task.Delay(200, Ct);
+            }
+            while (DateTime.UtcNow < until);
+            return seen;
+        }
+
         await ProduceAsync(before);
         using (var host = Host(database, "it-coverage", settings))
         {
+            using var reader = new InstrumentReader(host.Services.GetRequiredService<StreamMetrics>().Meter);
             await host.StartAsync(Ct);
             await WaitForAsync(database, "ariva-it-coverage.queue-engine");
+            (await UnknownAtDmo(reader, 1)).Should().Be(1, "S-74, the zone's only device, reported itself offline");
             await host.StopAsync(Ct);
+            reader.Observe(StreamMetrics.ZonesUnknownName).Should().BeEmpty("a worker that stopped reports nothing");
         }
 
         (await RowsAsync(database, Saved, at)).Should().Equal(["14|2"], "both lines are without a live covering device when the stream stops");
@@ -180,8 +199,10 @@ public sealed class QueueStreamCoverageTests(PostgresFixture postgres, KafkaFixt
         await ProduceAsync(after);
         using (var host = Host(database, "it-coverage", settings))
         {
+            using var reader = new InstrumentReader(host.Services.GetRequiredService<StreamMetrics>().Meter);
             await host.StartAsync(Ct);
             await WaitForAsync(database, "ariva-it-coverage.queue-engine");
+            (await UnknownAtDmo(reader, 0)).Should().Be(0, "S-74 was heard again: the site still has a zone, none of them Unknown");
             await host.StopAsync(Ct);
         }
 

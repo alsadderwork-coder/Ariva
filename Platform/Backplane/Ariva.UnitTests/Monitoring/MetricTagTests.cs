@@ -118,6 +118,7 @@ public sealed partial class MetricTagTests
             ((StreamMetrics)m).Refused("AUH-TA", nameof(Ariva.Core.Queueing.QueueRejections.BufferFull), 3);
             ((StreamMetrics)m).Checkpointed("ariva-stream.queue-engine");
             ((StreamMetrics)m).OverdueBins([("DMO", 2)], TimeSpan.FromMinutes(1));
+            ((StreamMetrics)m).ZonesUnknown([("DMO", true), ("AUH-TA", false)], TimeSpan.FromMinutes(1));
         },
         [typeof(RetentionMetrics)] = m =>
         {

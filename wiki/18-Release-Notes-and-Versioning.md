@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-259e3: the zones Unknown gauge and a Critical rule, on by default; a tunable degraded zones count (2026-10-30)
+
+- **Act after the release:** a new Critical rule, `zonesUnknown`, is on by default (the owner's decision of 2026-10-29): it pages when any queue zone of a site has had no measurement for 5 minutes (every device of the zone out; `ariva.stream.zones_unknown` by `site`, summed over the Stream replicas). Import the rules again into SigNoz after the upgrade (wiki 10 section 1.1), and check where the pages go (`monitoring.channels`). It pages for zones whose sensors are switched off on a schedule (a hall closed overnight): schedule a planned downtime for those hours in SigNoz, or turn the rule off (`monitoring.alerts.zonesUnknown.enabled: false`). After retiring a zone or moving its last sensor, roll the Stream deployment, or the zone pages until 24 hours after its devices were last heard (wiki 10 section 3.1). Right after this upgrade, zones already dark are not counted until a record of them arrives (ARV-274 loads them at assignment).
+- `zonesDegraded` fires above `monitoring.alerts.zonesDegraded.zones` degraded zones (0 by default, any, as before; a whole number from 0 to 10,000, refused otherwise, and refused on any other rule). Nothing changes unless it is set.
+- Ariva.Api.Stream exports `ariva.stream.zones_unknown` (`Ariva.Stream`, by `site`). Nothing to configure.
+
 ### ARV-259e2: a zone without measurement is Not measured on the screens and boards (2026-10-29)
 
 - The live snapshot in Redis and on the live hub carries `unknown` (the zone had no measurement in its minute, formulas F11); such a snapshot has no nowcast, throughput or no-service reason and both flags set, and one claiming `unknown` with any of them is refused on its way to a screen. A snapshot stored before the release reads as measured.
@@ -156,7 +162,7 @@ Changes since the last release that an operator must act on when upgrading, newe
 
 - Ariva.Api.Stream writes zone snapshot version 14: the zone's entry and exit lines without a live covering device and the ended spells whose live minutes are not all published yet. A version 13 snapshot restores as it is, its spells derived from its devices; a rollback to a build before ARV-259e1 refuses version 14 snapshots and starts the zones afresh, as for version 11 (below).
 - Behaviour: a zone whose every device is out (offline, or silent beyond 180 seconds) is `Unknown` where it was `Degraded` (formulas F11, the owner's decision of 2026-10-29): its bins are stored `Unknown` for the spell, so a single-sensor zone's bins over an outage read `Unknown` in reports, exports and the weekly summary's Unknown count. A zone with another live device stays `Degraded`. Bins made final before the release keep their revision; a recomputation over a range with such a spell writes revision r + 1 for them.
-- Not yet: the `zonesUnknown` rule (ARV-259e3); the screens and boards follow in ARV-259e2 (above).
+- The screens and boards follow in ARV-259e2, the gauge and the `zonesUnknown` rule in ARV-259e3 (both above).
 - Nothing to configure: until devices declare the lines they cover (ARV-259e4, ARV-259e5), every device of a zone covers all its lines.
 
 ### ARV-259d: the display stale rule (2026-10-29)

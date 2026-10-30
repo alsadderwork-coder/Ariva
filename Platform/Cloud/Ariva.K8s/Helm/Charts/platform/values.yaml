@@ -521,10 +521,14 @@ monitoring:
     devicesOffline: { enabled: true, minutes: 5, share: 0.2, severity: warning }
     # Commissioned devices reporting themselves Degraded, any, for the whole window (ARV-259).
     devicesDegraded: { enabled: true, minutes: 5, severity: warning }
-    # Queue zones Degraded, any, for the whole window (ARV-259; wiki 10 section 2, the degraded count): a device of the zone
-    # is offline or degraded. A line without coverage (zone Unknown) has no rule: the queue engine has no line coverage model
-    # yet (ARV-259e).
-    zonesDegraded: { enabled: true, minutes: 5, severity: warning }
+    # Queue zones Degraded, more than zones (0 by default: any; a whole number up to 10,000), for the whole window (ARV-259;
+    # wiki 10 section 2, the degraded count above normal; zones tunable since ARV-259e3): a device of the zone is offline or
+    # degraded. Raise zones where some zones are known to run degraded, so the rule pages on a change from normal.
+    zonesDegraded: { enabled: true, minutes: 5, zones: 0, severity: warning }
+    # Queue zones Unknown at a site, any, for the whole window (ARV-259e3, the owner's decision of 2026-10-29: Critical, 5
+    # minutes, on by default; formulas F11): an entry or exit line without a live covering device, so no measurement at all
+    # (every device of the zone out, until devices declare their lines). Stream's replicas report their own zones, summed.
+    zonesUnknown: { enabled: true, minutes: 5, severity: critical }
     # Devices heard within the heartbeat timeout whose clock is unreliable (off by more than 500 ms and unstable, formulas
     # F19), any, for the whole window (ARV-259a): their events are not corrected and their zones' numbers are flagged. 15
     # minutes, so a clock that settles within a few pushes does not page.

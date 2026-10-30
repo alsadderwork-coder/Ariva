@@ -14,7 +14,7 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   RetentionSettings in Ariva.Infra), and no other key is given.
 - The monitoring thresholds (ARV-125b) are in range: minutes 1 to 1440, a severity of warning or critical, usedPercent
   1 to 99, share above 0 and at most 1, criticalDays below warningDays (both 1 to 365), hours 6 to 168 (ARV-092c, the bounds of
-  the hosts' MalwareScan:MaxSignatureAgeHours), records 0 or more, claims,
+  the hosts' MalwareScan:MaxSignatureAgeHours), records 0 or more, zones a whole number from 0 to 10,000 and only for zonesDegraded (ARV-259e3), claims,
   services and namespaces Kubernetes names, namespaceLabel namespace or exported_namespace, channels and the monitoring
   environment plain names; every rule source has its values and no values name an unknown rule.
 - The servers' CA secrets (ARV-082a, databaseCaSecretName and redisCaSecretName; empty means the default name) are
@@ -638,6 +638,13 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if and (eq $field "records") (or (not $number) (lt (float64 $value) 0.0) (ne (float64 $value) (float64 (int $value)))) }}
 {{- fail (printf "monitoring.alerts.%s.records must be a whole number, 0 or more" $key) }}
+{{- end }}
+{{- /* ARV-259e3: a count of queue zones the rule fires above, 0 to 10,000 (a profile's zones are far fewer); zonesDegraded's only. */}}
+{{- if and (eq $field "zones") (ne $key "zonesDegraded") }}
+{{- fail (printf "monitoring.alerts.%s.zones is not a setting of that rule: only zonesDegraded fires above a zones count (ARV-259e3)" $key) }}
+{{- end }}
+{{- if and (eq $field "zones") (or (not $number) (lt (float64 $value) 0.0) (gt (float64 $value) 10000.0) (ne (float64 $value) (float64 (int $value)))) }}
+{{- fail (printf "monitoring.alerts.%s.zones must be a whole number from 0 to 10,000 (ARV-259e3)" $key) }}
 {{- end }}
 {{- /* ARV-254: the consumer hold rule's limit, in whole seconds, a minute to a day. */}}
 {{- if and (eq $field "holdLimit") (or (not $number) (lt (float64 $value) 60.0) (gt (float64 $value) 86400.0) (ne (float64 $value) (float64 (int $value)))) }}

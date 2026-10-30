@@ -1552,7 +1552,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size M to L. Phase 3. Split from ARV-259a (2026-10-28), and again on 2026-10-29 into ARV-259e1 (the engine, zone snapshot 14), ARV-259e2 (the live snapshot, the screens and the display board), ARV-259e3 (the gauge, the Critical rule and a tunable zonesDegraded count), ARV-259e4 (device line declarations in the registry) and ARV-259e5 (declarations in the engine); backlog/progress.md, the ARV-259e split entry. The owner decided on 2026-10-29 that this story passes when ARV-259e1 to ARV-259e3 pass; ARV-259e4 and ARV-259e5 are tracked on their own. No sign-in code.",
       "dependsOn": [
         "ARV-259a"
@@ -1622,7 +1622,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. Phase 3. Split from ARV-259e (2026-10-29); the tunable zonesDegraded count is the ARV-259 review's round 2 advisory 2. The owner set zonesUnknown Critical, 5 minutes, on by default (2026-10-29, docs/product/decisions.md). No sign-in code.",
       "dependsOn": [
         "ARV-259e1"
@@ -1677,6 +1677,47 @@
         "ARV-259e1",
         "ARV-259e4"
       ]
+    },
+    {
+      "id": "ARV-274",
+      "title": "[E17] Stream loads a partition's zones at assignment, so a zone whose devices are all silent is counted Unknown after a restart",
+      "description": "Filed by the ARV-259e3 security review (2026-10-30), named as a follow-up in the ARV-259e split entry. The queue stream worker loads a zone from its snapshot only when a record of it arrives, so after a Stream restart or a rebalance a zone whose devices all stay silent is not held: it is not idle-ticked, its spell without coverage is not carried on, and ariva.stream.zones_unknown does not count it, so the Critical zonesUnknown rule cannot see zones that were already dark (wiki 10 section 3.1). On assignment the worker restores the zones of the assigned partitions that have a stored snapshot (stream_zone_state, those whose key hashes to the partition, under their published profile version, bounded by Stream:MaxZones), as it restores one on its first record today.",
+      "acceptanceCriteria": [
+        "On partitions assigned, the worker restores every zone of those partitions that has a stored snapshot under its current published profile version (a zone whose profile moved on starts afresh only when a record of it arrives, as today), at most Stream:MaxZones, logging any it skips; a zone of another partition is never loaded",
+        "A restored zone with an open spell is idle-ticked, keeps its spell and counts in ariva.stream.zones_unknown at once; integration test: a zone's only device goes offline, the stream restarts, no record of the zone arrives, and the gauge counts it while its bins are marked Unknown, then leaves it out once its devices are forgotten (Stream:DeviceForgetHours; the ARV-259e3 review's round 2 advisory 2)",
+        "A zone retired from the profile is not restored; unit and integration tests",
+        "Wiki 10 section 3.1 and 4.5b, wiki 18",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S to M. Phase 3. Filed 2026-10-30 from the ARV-259e3 security review (finding 4). No sign-in code.",
+      "dependsOn": [
+        "ARV-259e3"
+      ]
+    },
+    {
+      "id": "ARV-275",
+      "title": "[E17] Each pod's metrics told apart: service.instance.id from the pod name, so gauges summed across replicas add up",
+      "description": "Filed by the ARV-259e3 security review (advisory A, 2026-10-30). Wiki 10 says the resource attributes carry service.instance.id and the pod name, but the chart's OTEL_RESOURCE_ATTRIBUTES sets neither and ServiceDefaults turns the generated instance id off, so unless the site collector adds k8s.pod.name the replicas of a host export indistinguishable series. A gauge each replica reports for its own share (ariva.stream.zones_unknown, ariva.stream.consumer_lag) is then read as interleaved samples, not their sum: a rule above 0 still fires, but the value it reports is too low. The chart sets service.instance.id from the pod name (K8S_POD_NAME declared first), with a chart test, and the docs say which attributes tell copies apart.",
+      "acceptanceCriteria": [
+        "Every Ariva workload's OTEL_RESOURCE_ATTRIBUTES carries service.instance.id from the pod's name (the downward API variable declared before it), and no workload exports without it; chart-security.mjs renders every environment and refuses a workload without it",
+        "ServiceDefaults keeps an instance id the environment sets, and sets none of its own; unit test",
+        "Wiki 10 sections 1 and 2a say how copies of one metric are told apart and summed; wiki 18",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-10-30 from the ARV-259e3 security review (advisory A); predates ARV-259e3 (streamConsumerLag has the same dependency). No sign-in code.",
+      "dependsOn": []
     },
     {
       "id": "ARV-260",

@@ -1,7 +1,7 @@
 {
   "alert": "Ariva queue zones degraded (${environment})",
   "alertType": "METRIC_BASED_ALERT",
-  "description": "Queue zones Degraded for the whole window (ARV-259; wiki 10 section 2, the degraded count above normal): a device of each is offline or degraded, so its numbers are flagged. Device-driven: one device out in a zone is enough, overlapping sensors or not; a zone whose entry or exit line has no coverage (the alarm zone Unknown) has no rule: the queue engine has no line coverage model yet (ARV-259e).",
+  "description": "Queue zones Degraded for the whole window (ARV-259; wiki 10 section 2, the degraded count above normal): a device of each is offline or degraded, so its numbers are flagged. Device-driven: one device out in a zone is enough, overlapping sensors or not. Fires above monitoring.alerts.zonesDegraded.zones zones (0 by default, ARV-259e3). A zone with no measurement at all (every device out) is Unknown and has its own rule, zonesUnknown.",
   "ruleType": "threshold_rule",
   "version": "v5",
   "schemaVersion": "v2alpha1",
@@ -38,7 +38,7 @@
           "name": "${zonesDegraded.severity}",
           "op": "above",
           "matchType": "all_the_times",
-          "target": 0,
+          "target": "${zonesDegraded.zones}",
           "channels": "${channels}"
         }
       ]
@@ -70,7 +70,7 @@
   },
   "annotations": {
     "summary": "Queue zones degraded",
-    "description": "{{$value}} queue zones have been Degraded for ${zonesDegraded.minutes} minutes: a device of each is offline or degraded (see the devices rules), so their numbers are flagged.",
+    "description": "{{$value}} queue zones have been Degraded for ${zonesDegraded.minutes} minutes, more than ${zonesDegraded.zones}: a device of each is offline or degraded (see the devices rules), so their numbers are flagged.",
     "runbook": "wiki/10-Operations-Runbook.md#41-sensor-offline"
   },
   "disabled": false

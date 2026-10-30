@@ -1564,6 +1564,12 @@ for (const [label, file, sets, message, annotation] of [
 	['a consumer hold limit under a minute', 'values-k8s-dev.yaml', ['monitoring.alerts.consumerHeld.holdLimit=59'], 'monitoring.alerts.consumerHeld.holdLimit must be a whole number of seconds from 60 to 86400'],
 	['a consumer hold limit over a day', 'values-k8s-dev.yaml', ['monitoring.alerts.consumerHeld.holdLimit=86401'], 'must be a whole number of seconds from 60 to 86400'],
 	['a consumer hold limit in part seconds', 'values-k8s-dev.yaml', ['monitoring.alerts.consumerHeld.holdLimit=420.5'], 'must be a whole number of seconds from 60 to 86400'],
+	// ARV-259e3: the degraded zones count the rule fires above is a whole number from 0 to 10,000.
+	['a negative degraded zones count', 'values-k8s-dev.yaml', ['monitoring.alerts.zonesDegraded.zones=-1'], 'monitoring.alerts.zonesDegraded.zones must be a whole number from 0 to 10,000'],
+	['a degraded zones count over 10,000', 'values-k8s-dev.yaml', ['monitoring.alerts.zonesDegraded.zones=10001'], 'must be a whole number from 0 to 10,000'],
+	['a degraded zones count in part zones', 'values-k8s-dev.yaml', ['monitoring.alerts.zonesDegraded.zones=2.5'], 'must be a whole number from 0 to 10,000'],
+	['a degraded zones count that is not a number', 'values-k8s-dev.yaml', ['monitoring.alerts.zonesDegraded.zones=some'], 'must be a whole number from 0 to 10,000'],
+	['a zones count on a rule that takes none', 'values-k8s-dev.yaml', ['monitoring.alerts.zonesUnknown.zones=1'], 'monitoring.alerts.zonesUnknown.zones is not a setting of that rule'],
 	['a rule window of 0 minutes', 'values-k8s-dev.yaml', ['monitoring.alerts.hostDown.minutes=0']],
 	// ARV-257: the AMAN feed rule's window is 2 minutes at least, above a healthy feed's age.
 	['an AMAN feed rule window of 1 minute', 'values-k8s-dev.yaml', ['monitoring.alerts.amanFeedStale.minutes=1'], 'monitoring.alerts.amanFeedStale.minutes must be 2 or more'],
@@ -2477,7 +2483,9 @@ for (const [label, file, sets, message, annotation] of [
 			retentionFailed: ['ariva.retention.problems', 'max', 'all_the_times', '5m', 'critical', ['outcome']],
 			policyJobsFailed: ['ariva.retention.policy_jobs_failed', 'max', 'all_the_times', '30m', 'critical', ['kind']],
 			// ARV-259d: the enabled displays whose board would be stale, a gauge of Api.Main's leader sweep, per site.
-			displaysStale: ['ariva.displays.stale', 'max', 'all_the_times', '5m', 'warning', ['site']]
+			displaysStale: ['ariva.displays.stale', 'max', 'all_the_times', '5m', 'warning', ['site']],
+			// ARV-259e3: the queue zones Unknown, a gauge every Stream replica reports for its own zones, so summed per site.
+			zonesUnknown: ['ariva.stream.zones_unknown', 'sum', 'all_the_times', '5m', 'critical', ['site']]
 		};
 		for (const [key, [metric, space, match, window, severity, groups]] of Object.entries(existing)) {
 			const rule = JSON.parse(monitoringRule(docs, `${key}.json`) || 'null');
@@ -2494,6 +2502,20 @@ for (const [label, file, sets, message, annotation] of [
 				findings.push(`${key}'s threshold is not above 0, ${match}, ${severity}: ${JSON.stringify(threshold)}`);
 			if (rule.evaluation?.spec?.evalWindow !== window) findings.push(`${key} does not evaluate over ${window}`);
 		}
+	}
+	// ARV-259e3: the zones rules' window, severity and count come from their values.
+	const zones = render('values-k8s-dev.yaml', ['monitoring.alerts.zonesUnknown.minutes=12', 'monitoring.alerts.zonesUnknown.severity=warning',
+		'monitoring.alerts.zonesDegraded.zones=3']);
+	if (zones.status !== 0) findings.push(`the zones rules set: template failed\n${zones.stderr}`);
+	else {
+		const docs = parse(zones.stdout);
+		const unknown = JSON.parse(monitoringRule(docs, 'zonesUnknown.json') || 'null');
+		if (unknown?.evaluation?.spec?.evalWindow !== '12m') findings.push('zonesUnknown does not evaluate over monitoring.alerts.zonesUnknown.minutes');
+		if (unknown?.condition?.thresholds?.spec?.[0]?.name !== 'warning' || unknown?.labels?.severity !== 'warning')
+			findings.push('zonesUnknown does not take monitoring.alerts.zonesUnknown.severity');
+		const degraded = JSON.parse(monitoringRule(docs, 'zonesDegraded.json') || 'null');
+		if (degraded?.condition?.thresholds?.spec?.[0]?.target !== 3) findings.push('zonesDegraded does not fire above monitoring.alerts.zonesDegraded.zones');
+		if (!String(degraded?.annotations?.description).includes('more than 3')) findings.push("zonesDegraded's description does not name its zones count");
 	}
 	// The default scopes: the release's environment and namespace.
 	const own = render('values-k8s-dev.yaml', [], 'ariva-site');

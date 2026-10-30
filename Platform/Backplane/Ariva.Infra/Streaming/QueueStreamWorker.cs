@@ -353,6 +353,8 @@ public sealed class QueueStreamWorker(
                 {
                     nextLag = timeProvider.GetUtcNow() + every;
                     ReportLag(consumer, every);
+                    // ARV-259e3: the zones this instance holds that are Unknown now and still in use, by site; every instance its own zones.
+                    metrics.ZonesUnknown(_zones.Select(z => (Ariva.Infra.Live.LiveZones.SiteOf(z.Key), z.Value.Zone.UnknownInUse)), MeasurementFreshFor(every));
                 }
 
                 if (full || (timeProvider.GetUtcNow() >= next && _positions.Count > 0))
@@ -434,9 +436,11 @@ public sealed class QueueStreamWorker(
             return;
         }
 
-        // Reported for a minute (at least 12 intervals), longer than a checkpoint the database holds to its command timeout.
-        metrics.Report(GroupId, StreamMetrics.LagByTopic(partitions), TimeSpan.FromSeconds(Math.Max(60, every.TotalSeconds * 12)));
+        metrics.Report(GroupId, StreamMetrics.LagByTopic(partitions), MeasurementFreshFor(every));
     }
+
+    // Reported for a minute (at least 12 intervals), longer than a checkpoint the database holds to its command timeout.
+    private static TimeSpan MeasurementFreshFor(TimeSpan every) => TimeSpan.FromSeconds(Math.Max(60, every.TotalSeconds * 12));
 
     /// <summary>
     /// The four topics must have the same number of partitions, or a zone's records would land on different partition

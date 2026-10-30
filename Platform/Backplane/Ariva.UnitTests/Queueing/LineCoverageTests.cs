@@ -167,8 +167,14 @@ public sealed class LineCoverageTests
     {
         // A device silent beyond the forget limit is no longer tracked; a zone that tracks no device has no measurement at all.
         var settings = new ZoneProcessorSettings { DeviceForgetHours = 1 };
-        var zone = Play([("S-17", m => m is > 10 and < 100)], minutes: 90, settings);
+        var inUse = new Dictionary<int, (bool Unknown, bool InUse)>();
+        var zone = Play([("S-17", m => m is > 10 and < 100)], minutes: 90, settings, each: (z, m) => inUse[m] = (z.UnknownNow, z.UnknownInUse));
         zone.UnknownNow.Should().BeFalse("the replay's end closed the spell");
+        // ARV-259e3: the Stream's gauge counts the zone while it still tracks its device, and no longer once it is forgotten: a zone
+        // whose devices have all been silent for the forget limit is taken as out of use, though it stays Unknown.
+        inUse[30].Should().Be((true, true), "out, and still tracked");
+        inUse[85].Should().Be((true, false), "forgotten at 19:10: Unknown, but no longer counted");
+        inUse[5].Should().Be((false, false), "live");
         var outputs = zone.Drain();
 
         outputs.Outages.Should().ContainSingle().Which.ToUtc.Should().Be(Start.AddMinutes(70), "forgotten an hour after it was last heard");
