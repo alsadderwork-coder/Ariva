@@ -142,7 +142,7 @@ public static class MqttExtensions
             HandshakeTimeout = handshakeTimeout
         };
         // CipherSuitesPolicy is a Linux feature of SslStream (the images run on Linux); one policy for every handshake.
-        var suites = OperatingSystem.IsLinux() ? new CipherSuitesPolicy(PodTransportExtensions.CipherSuites) : null;
+        var suites = Ariva.Infra.Security.ModernTls.CipherSuitesPolicy;
         options.OnAuthenticate = (_, authentication) =>
         {
             CertificateDownloads.Refuse(authentication);

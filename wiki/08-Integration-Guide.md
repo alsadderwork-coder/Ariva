@@ -617,7 +617,7 @@ Every topic Ariva produces or consumes, with AMAN's feed, is described in AsyncA
 
 ## 11. Outbound connections
 
-Ariva calls other systems only through `OutboundEndpoint` records created by administrators with step-up MFA: base URL, allowed CIDRs, TLS settings (optional client certificate, optional pinned CA), timeout, retry and circuit breaker policy, and one authentication handler.
+Ariva calls other systems only through `OutboundEndpoint` records created by administrators with step-up MFA: base URL, allowed CIDRs, TLS settings (optional client certificate, optional pinned CA), timeout, retry and circuit breaker policy, and one authentication handler. Every outbound call speaks TLS 1.2 or 1.3 only and, where Ariva runs on Linux (the pods), offers only the suites Ariva's own listeners offer: TLS 1.3's three, and for TLS 1.2 ECDHE with AES-GCM or ChaCha20-Poly1305 (ARV-205). A partner system that offers only TLS 1.1 or older is refused at the handshake, and on Linux so is one that offers only CBC suites, static RSA key exchange or finite field DHE; the call fails as any connection failure does. Elsewhere than Linux (a developer's machine) the suites are the operating system's TLS configuration's.
 
 | Handler | Behaviour |
 |---|---|

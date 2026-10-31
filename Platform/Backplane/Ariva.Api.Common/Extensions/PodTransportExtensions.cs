@@ -61,7 +61,7 @@ public static class PodTransportExtensions
     /// settings declare, the code makes no protocol choice of its own (CA5398), the settings file does. A listener declared in code
     /// takes the same names (<see cref="Protocols"/>).
     /// </summary>
-    private static readonly string[] ModernNames = ["Tls12", "Tls13"];
+    private static readonly IReadOnlyList<string> ModernNames = Ariva.Infra.Security.ModernTls.ProtocolNames;
 
     #endregion
 
@@ -70,27 +70,17 @@ public static class PodTransportExtensions
     /// <summary>
     /// TLS 1.2 and 1.3 as one value, for a TLS listener Ariva declares in code rather than in Kestrel:Endpoints (Ingest's MQTT
     /// listener, ARV-084; ASVS V12.1.1): parsed from the names the configured endpoints are checked against, so the pods and the
-    /// listener offer the same versions. Pinned on purpose, not left to the operating system: a newer version needs a change here.
+    /// listener offer the same versions, and so do Ariva's outbound calls (ARV-205): one value, <see cref="Ariva.Infra.Security.ModernTls"/>.
     /// </summary>
-    public static SslProtocols Protocols { get; } = Enum.Parse<SslProtocols>(string.Join(", ", ModernNames));
+    public static SslProtocols Protocols => Ariva.Infra.Security.ModernTls.Protocols;
 
     /// <summary>
     /// The suites the pod's https endpoints offer on Linux: TLS 1.3's three, and for TLS 1.2 ECDHE (forward secrecy) with an AEAD
     /// cipher, for ECDSA and RSA certificates alike. No CBC suite, no static RSA key exchange and no finite field DHE, matching
-    /// the database's ssl_ciphers ECDHE+AESGCM:ECDHE+CHACHA20 (ARV-082a). Ingest's MQTT listener offers the same (ARV-084).
+    /// the database's ssl_ciphers ECDHE+AESGCM:ECDHE+CHACHA20 (ARV-082a). Ingest's MQTT listener offers the same (ARV-084), and
+    /// Ariva's outbound calls accept no other (ARV-205): one list, <see cref="Ariva.Infra.Security.ModernTls"/>.
     /// </summary>
-    public static IReadOnlyList<TlsCipherSuite> CipherSuites { get; } =
-    [
-        TlsCipherSuite.TLS_AES_128_GCM_SHA256,
-        TlsCipherSuite.TLS_AES_256_GCM_SHA384,
-        TlsCipherSuite.TLS_CHACHA20_POLY1305_SHA256,
-        TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-        TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-        TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-        TlsCipherSuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-        TlsCipherSuite.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-        TlsCipherSuite.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
-    ];
+    public static IReadOnlyList<TlsCipherSuite> CipherSuites => Ariva.Infra.Security.ModernTls.CipherSuites;
 
     #endregion
 
@@ -116,7 +106,7 @@ public static class PodTransportExtensions
         if (OperatingSystem.IsLinux())
         {
             // One policy for every handshake; Kestrel applies the https defaults to the configured endpoints before their own settings.
-            var policy = new CipherSuitesPolicy(CipherSuites);
+            var policy = Ariva.Infra.Security.ModernTls.CipherSuitesPolicy;
             services.AddOptions<KestrelServerOptions>().Configure(kestrel => kestrel.ConfigureHttpsDefaults(https => RestrictCipherSuites(https, policy)));
         }
 

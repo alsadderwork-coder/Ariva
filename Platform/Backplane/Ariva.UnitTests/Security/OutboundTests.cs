@@ -30,7 +30,8 @@ namespace Ariva.UnitTests.Security;
 /// ARV-045 (CWE-918, CWE-306): outbound endpoints are reached only at registered URLs, only at addresses inside their
 /// networks and never at this host, link-local or cloud metadata, multicast or reserved ranges, checked for the address
 /// actually dialled (DNS rebinding); redirects are refused; retries, timeouts and the circuit breaker behave; each
-/// authentication handler sends what it should; ACRIS flights are read strictly and mapped to the site's side.
+/// authentication handler sends what it should; ACRIS flights are read strictly and mapped to the site's side. ARV-205: a call
+/// offers TLS 1.2 and 1.3 only and, on Linux, the pods' suites alone, read from the ClientHello it sends.
 /// </summary>
 public sealed class OutboundTests
 {
@@ -462,10 +463,12 @@ public sealed class OutboundTests
         return issued.CopyWithPrivateKey(key);
     }
 
-    private static X509Certificate2 Leaf(X509Certificate2 issuer, string dns, DateTimeOffset? notAfter = null, string aia = null, bool serverAuth = true)
+    private static X509Certificate2 Leaf(X509Certificate2 issuer, string dns, DateTimeOffset? notAfter = null, string aia = null, bool serverAuth = true,
+        bool rsa = false)
     {
-        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        var request = new CertificateRequest($"CN={dns}", key, HashAlgorithmName.SHA256);
+        using var key = rsa ? null : ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var rsaKey = rsa ? RSA.Create(2048) : null;
+        var request = rsa ? new CertificateRequest($"CN={dns}", rsaKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1) : new CertificateRequest($"CN={dns}", key, HashAlgorithmName.SHA256);
         var names = new SubjectAlternativeNameBuilder();
         names.AddDnsName(dns);
         request.CertificateExtensions.Add(names.Build());
@@ -473,11 +476,15 @@ public sealed class OutboundTests
         if (aia is not null)
             request.CertificateExtensions.Add(new X509AuthorityInformationAccessExtension(null, [aia]));
         var until = notAfter ?? Today.AddDays(30);
+        // An RSA leaf under the ECDSA test CAs is signed with the issuer's ECDSA key through a generator (Create(issuer) wants one algorithm).
+        using var issuerKey = rsa && issuer is not null ? issuer.GetECDsaPrivateKey() : null;
         using var issued = issuer is null
             ? request.CreateSelfSigned(Today.AddDays(-10), until)
-            : request.Create(issuer, Today.AddDays(-10), until, RandomNumberGenerator.GetBytes(8));
+            : rsa
+                ? request.Create(issuer.SubjectName, X509SignatureGenerator.CreateForECDsa(issuerKey), Today.AddDays(-10), until, RandomNumberGenerator.GetBytes(8))
+                : request.Create(issuer, Today.AddDays(-10), until, RandomNumberGenerator.GetBytes(8));
         // Through PKCS#12 so the key is usable by the TLS stack on every platform.
-        using var withKey = issued.HasPrivateKey ? null : issued.CopyWithPrivateKey(key);
+        using var withKey = issued.HasPrivateKey ? null : rsa ? issued.CopyWithPrivateKey(rsaKey) : issued.CopyWithPrivateKey(key);
         return X509CertificateLoader.LoadPkcs12((withKey ?? issued).Export(X509ContentType.Pkcs12), null);
     }
 
@@ -612,6 +619,189 @@ public sealed class OutboundTests
         OutboundRules.CheckSecret(new OutboundSecretRequest(CertificatePfxBase64: "abc", CertificatePassword: "pw"), OutboundAuthKind.MutualTls).Should().BeEmpty();
         OutboundRules.CheckSecret(new OutboundSecretRequest(CertificatePassword: "pw"), OutboundAuthKind.MutualTls).Should().NotBeEmpty("the certificate is required");
         OutboundRules.CheckSecret(new OutboundSecretRequest(CertificatePfxBase64: "abc", ApiKey: "an-api-key-1"), OutboundAuthKind.MutualTls).Should().NotBeEmpty("no other kind's field");
+    }
+
+    #endregion
+
+    #region TLS versions and cipher suites (ARV-205)
+
+    /// <summary>
+    /// A test partner's https options held to some versions and, on Linux, some suites. The versions are names parsed at run time,
+    /// as the configured endpoints are: a test server weak on purpose, never a literal Ariva could copy (CA5397, CA5398).
+    /// </summary>
+    private static Microsoft.AspNetCore.Server.Kestrel.Https.HttpsConnectionAdapterOptions Restricted(X509Certificate2 leaf, string versions,
+        params System.Net.Security.TlsCipherSuite[] suites)
+    {
+        var https = Https(leaf);
+        https.SslProtocols = Enum.Parse<System.Security.Authentication.SslProtocols>(versions);
+        var policy = suites.Length > 0 && OperatingSystem.IsLinux() ? new System.Net.Security.CipherSuitesPolicy(suites) : null;
+        if (policy is not null)
+            https.OnAuthenticate = (_, options) => options.CipherSuitesPolicy = policy;
+        return https;
+    }
+
+    /// <summary>
+    /// A handshake with the platform's own versions and suites, trusting the test root alone: the suite a partner would get without
+    /// Ariva's list. A raw TLS stream rather than an HTTP client, as the other transport tests use, since outbound HTTP goes through
+    /// the outbound transport only (SEC-020, SEC-023).
+    /// </summary>
+    private static async Task<System.Net.Security.TlsCipherSuite> PlatformSuiteAsync(int port, X509Certificate2 root)
+    {
+        var policy = new X509ChainPolicy { TrustMode = X509ChainTrustMode.CustomRootTrust, RevocationMode = X509RevocationMode.NoCheck, DisableCertificateDownloads = true };
+        policy.CustomTrustStore.Add(root);
+        using var tcp = new TcpClient();
+        await tcp.ConnectAsync(IPAddress.Loopback, port, Ct);
+        await using var tls = new System.Net.Security.SslStream(tcp.GetStream());
+        await tls.AuthenticateAsClientAsync(new System.Net.Security.SslClientAuthenticationOptions { TargetHost = "aodb.test", CertificateChainPolicy = policy }, Ct);
+        return tls.NegotiatedCipherSuite;
+    }
+
+    [Fact]
+    public void Transport_Should_AllowOnlyTls12And13AndThePodsSuites_When_Created()
+    {
+        var (clients, target) = Tls(443, null);
+        clients.Dispose();
+        using var handler = OutboundTransport.Create(target, new Resolver([IPAddress.Loopback]), true, null);
+
+        handler.SslOptions.EnabledSslProtocols.ToString().Should().Be("Tls12, Tls13", "TLS 1.0 and 1.1 are never offered, whatever the platform allows");
+        Ariva.Api.Common.Extensions.PodTransportExtensions.CipherSuites.Should().BeSameAs(ModernTls.CipherSuites, "one list for the pods and the outbound calls");
+        Ariva.Api.Common.Extensions.PodTransportExtensions.Protocols.Should().Be(ModernTls.Protocols);
+        if (OperatingSystem.IsLinux())
+            handler.SslOptions.CipherSuitesPolicy.AllowedCipherSuites.Should().Equal(ModernTls.CipherSuites, "on Linux the pods' suites alone");
+        else
+            handler.SslOptions.CipherSuitesPolicy.Should().BeNull("only Linux restricts suites per connection; elsewhere the platform's TLS configuration decides");
+    }
+
+    [Fact]
+    public async Task Tls_Should_RefuseThePartner_When_ItOffersOnlyTls11()
+    {
+        // OpenSSL 3 refuses TLS 1.1 at its default security level on both sides as well, so this refusal would hold without
+        // Ariva's list: what Ariva offers is read from its ClientHello (the next test) and its options (the test above).
+        var root = Authority("Ariva test root");
+        await using var server = await LoopbackServer.StartAsync(c => c.Response.WriteAsync("ok", Ct), Restricted(Leaf(root, "aodb.test"), "Tls11"));
+        var (clients, target) = Tls(server.Port, root);
+        using (clients)
+        {
+            var call = () => clients.For(target).GetAsync("x", Ct);
+            (await call.Should().ThrowAsync<HttpRequestException>("a partner that offers only TLS 1.1")).Which.InnerException
+                .Should().BeOfType<System.Security.Authentication.AuthenticationException>("refused at the handshake, not by another failure");
+        }
+    }
+
+    [Fact]
+    public async Task Transport_Should_OfferOnlyTls12And13AndThePodsSuites_When_ItSaysHello()
+    {
+        // A listener that reads the first record of the ClientHello Ariva sends, then closes: what Ariva offers any partner, whatever
+        // the partner would accept (RFC 8446 section 4.1.2: legacy_version, cipher_suites, supported_versions).
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var (clients, target) = Tls(((IPEndPoint)listener.LocalEndpoint).Port, Authority("Ariva test root"));
+        byte[] record;
+        using (clients)
+        {
+            var call = clients.For(target).GetAsync("x", Ct);
+            using (var peer = await listener.AcceptTcpClientAsync(Ct))
+                record = await FirstRecordAsync(peer.GetStream());
+            await FluentActions.Awaiting(() => call).Should().ThrowAsync<HttpRequestException>("the listener closes after the hello");
+        }
+
+        var hello = ClientHelloOf(record);
+        hello.LegacyVersion.Should().Be(0x0303, "TLS 1.2 in the legacy field, as TLS 1.3 requires");
+        hello.SupportedVersions.Should().BeEquivalentTo([(ushort)0x0303, (ushort)0x0304], "TLS 1.2 and 1.3 only: never 1.0 or 1.1");
+        if (OperatingSystem.IsLinux())
+        {
+            var listed = ModernTls.CipherSuites.Select(suite => (ushort)suite).Append((ushort)0x00FF).ToHashSet();
+            hello.CipherSuites.Should().OnlyContain(suite => listed.Contains(suite), "the pods' suites and the renegotiation SCSV, nothing else")
+                .And.Contain((ushort)System.Net.Security.TlsCipherSuite.TLS_AES_128_GCM_SHA256);
+        }
+    }
+
+    /// <summary>Reads one whole TLS record (its 5 byte header and its body) from a stream, at most 16 KB.</summary>
+    private static async Task<byte[]> FirstRecordAsync(Stream stream)
+    {
+        var header = new byte[5];
+        await stream.ReadExactlyAsync(header, Ct);
+        var length = (header[3] << 8) | header[4];
+        length.Should().BeInRange(1, 16 * 1024, "a TLS record");
+        var body = new byte[length];
+        await stream.ReadExactlyAsync(body, Ct);
+        return [.. header, .. body];
+    }
+
+    /// <summary>The fields of a ClientHello this test reads (RFC 5246 section 7.4.1.2, RFC 8446 section 4.1.2 and 4.2.1).</summary>
+    private static (ushort LegacyVersion, IReadOnlyList<ushort> CipherSuites, IReadOnlyList<ushort> SupportedVersions) ClientHelloOf(byte[] record)
+    {
+        record[0].Should().Be(0x16, "a handshake record");
+        var at = 5;
+        record[at].Should().Be(0x01, "a ClientHello");
+        at += 4;
+        ushort Read16() { var value = (ushort)((record[at] << 8) | record[at + 1]); at += 2; return value; }
+        var legacy = Read16();
+        at += 32;
+        at += 1 + record[at];
+        var suitesEnd = at + 2 + ((record[at] << 8) | record[at + 1]);
+        at += 2;
+        var suites = new List<ushort>();
+        while (at < suitesEnd)
+            suites.Add(Read16());
+        at += 1 + record[at];
+        var extensionsEnd = at + 2 + ((record[at] << 8) | record[at + 1]);
+        at += 2;
+        var versions = new List<ushort>();
+        while (at < extensionsEnd)
+        {
+            var type = Read16();
+            var length = Read16();
+            var next = at + length;
+            if (type == 0x002b)
+            {
+                var listEnd = at + 1 + record[at];
+                at += 1;
+                while (at < listEnd)
+                    versions.Add(Read16());
+            }
+
+            at = next;
+        }
+
+        return (legacy, suites, versions);
+    }
+
+    [Fact]
+    public async Task Tls_Should_RefuseThePartner_When_ItOffersOnlyASuiteOutsideThePodsList()
+    {
+        Assert.SkipUnless(OperatingSystem.IsLinux(), "Only Linux restricts the suites per connection; elsewhere the platform's TLS configuration decides.");
+
+        // An ECDHE suite with CBC and HMAC-SHA256: one the platform's own client accepts, and the pods' list leaves out.
+        var root = Authority("Ariva test root");
+        await using var server = await LoopbackServer.StartAsync(c => c.Response.WriteAsync("ok", Ct),
+            Restricted(Leaf(root, "aodb.test"), "Tls12", System.Net.Security.TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256));
+        (await PlatformSuiteAsync(server.Port, root)).Should().Be(System.Net.Security.TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+            "the platform's own handshake takes the suite, so the refusal below is Ariva's list");
+
+        var (clients, target) = Tls(server.Port, root);
+        using (clients)
+        {
+            var call = () => clients.For(target).GetAsync("x", Ct);
+            (await call.Should().ThrowAsync<HttpRequestException>("a partner that offers only a suite outside the pods' list")).Which.InnerException
+                .Should().BeOfType<System.Security.Authentication.AuthenticationException>("refused at the handshake, not by another failure");
+        }
+    }
+
+    [Theory]
+    [InlineData("Tls13", false)]
+    [InlineData("Tls12", false)]
+    [InlineData("Tls12", true)]
+    public async Task Tls_Should_ReachThePartner_When_ItOffersTls12Or13WithAListedSuite(string versions, bool rsa)
+    {
+        var root = Authority("Ariva test root");
+        System.Net.Security.TlsCipherSuite[] suites = versions != "Tls12" ? []
+            : rsa ? [System.Net.Security.TlsCipherSuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256]
+            : [System.Net.Security.TlsCipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256];
+        await using var server = await LoopbackServer.StartAsync(c => c.Response.WriteAsync("ok", Ct), Restricted(Leaf(root, "aodb.test", rsa: rsa), versions, suites));
+        var (clients, target) = Tls(server.Port, root);
+        using (clients)
+            (await clients.For(target).GetAsync("x", Ct)).StatusCode.Should().Be(HttpStatusCode.OK, $"a partner on {versions} ({(rsa ? "RSA" : "ECDSA")}) with a suite of the pods' list");
     }
 
     #endregion

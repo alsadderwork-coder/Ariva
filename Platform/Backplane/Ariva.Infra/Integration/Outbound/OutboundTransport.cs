@@ -3,14 +3,16 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using Ariva.Core.Integration;
+using Ariva.Infra.Security;
 
 namespace Ariva.Infra.Integration.Outbound;
 
 /// <summary>
 /// The transport of every outbound call (ARV-045, CWE-918): no proxy, no redirects, a connection only to an address the
 /// host resolved to in this very call and every one of which is allowed (<see cref="OutboundRules.AddressRefusal"/>), so
-/// a DNS answer that changes between a check and the connection (rebinding) cannot reach another address; TLS validated
-/// against the system roots or, when the endpoint pins one, only its CA; a client certificate for mutual TLS.
+/// a DNS answer that changes between a check and the connection (rebinding) cannot reach another address; TLS 1.2 or 1.3
+/// only, and on Linux only the suites the pods offer (ARV-205, <see cref="ModernTls"/>); TLS validated against the system roots
+/// or, when the endpoint pins one, only its CA; a client certificate for mutual TLS.
 /// </summary>
 public static class OutboundTransport
 {
@@ -45,8 +47,11 @@ public static class OutboundTransport
         handler.SslOptions = new SslClientAuthenticationOptions
         {
             CertificateChainPolicy = policy,
-            // The operating system's choice of protocol versions (TLS 1.2 and 1.3 on supported systems). Any error (an
-            // untrusted chain, a name mismatch, no certificate) refuses the connection.
+            // TLS 1.2 and 1.3 and, on Linux, the pods' suites alone (ARV-205): a partner that offers only an older version or
+            // only a suite outside the list is refused at the handshake, whatever the platform would allow by default.
+            EnabledSslProtocols = ModernTls.Protocols,
+            CipherSuitesPolicy = ModernTls.CipherSuitesPolicy,
+            // Any error (an untrusted chain, a name mismatch, no certificate) refuses the connection.
             RemoteCertificateValidationCallback = (_, _, _, errors) => errors == SslPolicyErrors.None,
             ClientCertificates = clientCertificate is null ? null : [clientCertificate]
         };

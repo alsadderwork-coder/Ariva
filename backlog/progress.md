@@ -4294,3 +4294,57 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - Retry a create only on the conflict that means "taken" (its detail), never on any 409: imports answer 409 for a busy site too.
   - `call` (Node fetch) reads the body once and caches it, so a helper may read `json()` and then `text()` of the same answer.
   - Two Playwright runs back to back can collide on a host's port while the first run's hosts stop; a gate starts from recreated services, and so should any second run that is meant to count.
+
+## 2026-10-31: ARV-205 [E17] Outbound calls pinned to TLS 1.2 and 1.3 and the platform suites
+
+- What changed:
+  - New `Ariva.Infra/Security/ModernTls.cs` holds the TLS versions and suites Ariva speaks, in one place for both directions:
+    - `ProtocolNames` (`Tls12`, `Tls13`) and `Protocols`, parsed from the names so no protocol literal appears in code (CA5397, CA5398);
+    - `CipherSuites`: TLS 1.3's three, and for TLS 1.2 ECDHE with AES-GCM or ChaCha20-Poly1305 for ECDSA and RSA certificates (the pods' nine);
+    - `CipherSuitesPolicy`: that list as a policy on Linux, null elsewhere (.NET restricts suites per connection only on Linux).
+  - `PodTransportExtensions` (`ModernNames`, `Protocols`, `CipherSuites`) and `MqttExtensions` now forward to `ModernTls`, so the listeners and the outbound calls share one list.
+  - `OutboundTransport`'s `SslOptions` sets `EnabledSslProtocols = ModernTls.Protocols` and `CipherSuitesPolicy = ModernTls.CipherSuitesPolicy`. Before, the platform's defaults applied.
+  - Tests in `OutboundTests`, region "TLS versions and cipher suites (ARV-205)":
+    - `Transport_Should_AllowOnlyTls12And13AndThePodsSuites_When_Created`: the handler's options.
+    - `Transport_Should_OfferOnlyTls12And13AndThePodsSuites_When_ItSaysHello`: a TcpListener reads the ClientHello the transport sends. Asserted: legacy version 0x0303, supported_versions exactly 0x0303 and 0x0304, and on Linux the suites within `ModernTls` plus the renegotiation SCSV.
+    - `Tls_Should_RefuseThePartner_When_ItOffersOnlyTls11`.
+    - `Tls_Should_RefuseThePartner_When_ItOffersOnlyASuiteOutsideThePodsList` (Linux only): a raw SslStream control negotiates the CBC suite first, so the refusal is the policy's.
+    - `Tls_Should_ReachThePartner_When_ItOffersTls12Or13WithAListedSuite`: TLS 1.3, and TLS 1.2 with an ECDSA or an RSA leaf.
+  - Probe: removing `EnabledSslProtocols` fails only the options test, since this platform's OpenSSL offers TLS 1.2 and 1.3 alone by default; removing `CipherSuitesPolicy` fails the options test and the ClientHello test. The docs say which test holds which pin.
+  - Docs: crypto-inventory A14, A15 and section 5 item 14; data-classification row L1 to L4 and item 11 (Done); asvs-l2 V11.2.3, V12.1.1, V12.1.2, V14.2.4 and the ARV-094 row; wiki 08 section 11, wiki 13 section 6, wiki 18 (release note with the partner checks).
+  - Filed ARV-280: the other TLS clients (the collector clients, Redis, SMTP, PostgreSQL, Kafka) still take their libraries' defaults for versions and suites.
+- Files: Ariva.Infra `Security/ModernTls.cs` (new), `Integration/Outbound/OutboundTransport.cs`; Ariva.Api.Common `Extensions/PodTransportExtensions.cs`; Ariva.Api.Ingest `Mqtt/MqttExtensions.cs`; Ariva.UnitTests `Security/OutboundTests.cs`; the docs above; backlog/prd-phase3.json.
+- Gates: `node scripts/verify.mjs story` PASS. It was wide (Api.Common changed), so it ran: build, unit 8,429 (0 failed), security scan, audits, docs, chart; integration 870 (0 failed, 1 skipped); E2E API and functional 944 passed (no retry); visual skipped (no web change). Unit classes on a fresh build before it: OutboundTests 76, CryptoInventoryTests 2, PodTransportTests 73, MqttTransportTests 36, DataInventoryTests 11. `verify.mjs docs` PASS; `verify.mjs quick` PASS before the commit.
+- Security review (CWE-319, CWE-327, CWE-295, CWE-918; ASVS V12.1.1, V12.1.2, V11.2.3, V14.2.4):
+  - Round 1 FAIL.
+    - High: `CryptoInventoryTests` failed, because the new `ModernTls.cs` uses crypto APIs and the inventory did not name it.
+    - Medium:
+      - the evidence said the TLS 1.1 test proved the version pin, which it passes without;
+      - V12.1.1 and V12.1.2 named nothing as Remaining for the other TLS clients, which are still unpinned.
+    - Lows: the wiki wording (wiki 08 said CBC is refused everywhere, not on Linux only; wiki 13 had no outbound sentence; wiki 18 linked no section and checked no TLS 1.3).
+    - Advisories:
+      - a null policy off Linux, acceptable since the pods run on Linux;
+      - one shared `CipherSuitesPolicy` instance, safe since it is immutable;
+      - an AuthenticationException could be treated as not retryable;
+      - k8s-prd could refuse to start off Linux.
+  - Fixed:
+    - `ModernTls.cs` is named in A14 and A15;
+    - the evidence says which test holds which pin;
+    - the Remaining lists name the clients and ARV-280;
+    - data-classification item 11 is in the Done form;
+    - V14.2.4 and the ARV-094 row are updated;
+    - the wiki wording is fixed.
+  - The first gate run was stopped once the High was reported.
+  - Advisories not taken:
+    - the null policy and the shared instance: as built, for the reasons above;
+    - the retry and k8s-prd ones are outside this story's criteria and change no protection: a refused handshake is retried under the endpoint's own retry policy and fails each time.
+  - Round 2 PASS. Its advisories:
+    - ARV-280's wording: Npgsql's handshake already has Ariva's callback, and a refused TLS 1.1 server proves no pin on this platform. Taken: the story names the callback and makes the options test and a ClientHello capture the proof.
+    - `BeOfType<AuthenticationException>` could see an IOException on a platform whose peer closes without an alert. Not taken: it is stable on Linux, where the pods and CI run.
+    - The round 1 retry and k8s-prd advisories, carried over: not taken, as above. The macOS one (whether .NET restricts suites per connection there too) is not verified; the policy stays Linux only, since the pods run on Linux and a null policy elsewhere keeps the platform's defaults.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - A test that a refused TLS 1.1 handshake proves the version pin is wrong on a modern OpenSSL: the platform refuses TLS 1.1 by itself. Pin with the options test and read the ClientHello for what goes on the wire.
+  - The policy test needs a control: a raw SslStream client without the policy must negotiate the CBC suite against the same server, or a refusal proves nothing.
+  - An RSA leaf under an ECDSA issuer needs `X509SignatureGenerator.CreateForECDsa(issuer key)`; `CertificateRequest.Create(issuer, ...)` refuses a mismatched public key algorithm.
+  - `scan.mjs` refuses a new HttpClient or SocketsHttpHandler in tests too (SEC-020, SEC-023), and CA5359 refuses an always-true certificate callback: use raw SslStream controls with a validating callback.

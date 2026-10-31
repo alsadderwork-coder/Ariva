@@ -797,7 +797,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 300,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-19 from the ARV-094 documents (Low; Phase 3 by the owner rule for Low findings).",
       "dependsOn": []
     },
@@ -2070,6 +2070,26 @@
       "notes": "Size S to M. Phase 3. Filed 2026-10-31 from ARV-196's second E2E pass (log kept in the session scratchpad only). No sign-in code.",
       "dependsOn": [
         "ARV-196"
+      ]
+    },
+    {
+      "id": "ARV-280",
+      "title": "[E17] The other TLS clients pinned to TLS 1.2 and 1.3 and the platform suites",
+      "description": "Found in the ARV-205 review (2026-10-31): ARV-205 pinned the outbound integration calls to ModernTls (Ariva.Infra/Security: TLS 1.2 and 1.3, and on Linux the pods' nine suites), but the other TLS clients a host opens still take their library's or the platform's defaults for versions and suites: the Loki and OTLP collector clients (Ariva.ServiceDefaults/CollectorTrust.cs, Ariva.Api.Common/Logging/CollectorClients.cs), Redis (Ariva.Infra/Caching/RedisConnection.cs, whose SslClientAuthenticationOptions set neither), SMTP (Ariva.Infra/Notifications/SmtpRelayClient.cs, MailKit), PostgreSQL (Ariva.Infra/Settings/PostgresConnections.cs; the production server already refuses below TLS 1.2 and serves ECDHE with AEAD only, ARV-082a) and Kafka (librdkafka through Ariva.Di/Extensions/MessagingExtensions.cs; the brokers decide today). Ariva.ServiceDefaults references no Ariva project (ARV-066), so the collector clients need the list from a place both can reach (for example Ariva.Utilities) or a copy held equal by a test. Known: Npgsql's handshake already goes through Ariva's SslClientAuthenticationOptionsCallback (PostgresConnections), so its versions and suites can be set there; Redis's SslClientAuthenticationOptions are Ariva's too. To check before building: whether MailKit's MailService takes a CipherSuitesPolicy beside SslProtocols (believed so, unconfirmed), and which librdkafka settings bound the versions and suites (ssl.cipher.suites; no minimum version setting is known). CWEs to review: CWE-319 and CWE-327 (transport), CWE-918 (no certificate download, ARV-226, must stay).",
+      "acceptanceCriteria": [
+        "Every TLS client a host opens (the collector clients, Redis, SMTP, PostgreSQL, Kafka) allows TLS 1.2 and 1.3 only and, on Linux, the ModernTls suites where its library lets Ariva set them; a client whose library cannot is named in the crypto inventory row A15 with the reason and what the server side enforces instead",
+        "Unit tests per client: its options hold exactly the versions and, on Linux, the suites (the proof of the pin, since this platform's OpenSSL already refuses TLS 1.1, so a refused TLS 1.1 server proves nothing alone), and where the client can be driven against a listener, the ClientHello it sends offers TLS 1.2 and 1.3 only and, on Linux, the listed suites only (as OutboundTests does for ARV-205; raw SslStream or TcpListener controls, no new HttpClient or SocketsHttpHandler, SEC-020 and SEC-023); the ARV-226 tests that no certificate is downloaded still pass",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md V12.1.1 and V12.1.2, docs/security/crypto-inventory.md A15 and docs/security/data-classification.md updated with the new evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 301,
+      "passes": false,
+      "notes": "Size M. Phase 3. Filed 2026-10-31 from the ARV-205 review (round 1, the Remaining of V12.1.1 and V12.1.2). No sign-in code; the Redis and PostgreSQL connections carry no session or account logic.",
+      "dependsOn": [
+        "ARV-205"
       ]
     }
   ]

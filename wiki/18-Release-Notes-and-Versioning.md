@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-205: outbound calls take TLS 1.2 and 1.3 and the pods' cipher suites only (2026-10-31)
+
+- Behaviour: every outbound integration call (AODB, ACRIS and AMAN pulls, any registered endpoint) now offers TLS 1.2 and 1.3 only and, on Linux, the same suites the pods' listeners offer (TLS 1.3's three; for TLS 1.2 ECDHE with AES-GCM or ChaCha20-Poly1305). Before, the platform's defaults applied.
+- Before the upgrade: check that each partner endpoint accepts TLS 1.2 with an ECDHE AEAD suite, or TLS 1.3, from a machine that can reach it: `openssl s_client -connect <host>:<port> -tls1_2 -cipher 'ECDHE+AESGCM:ECDHE+CHACHA20'` for TLS 1.2 and `openssl s_client -connect <host>:<port> -tls1_3` for TLS 1.3 (one of the two must complete its handshake). A partner that offers only an older version, or only CBC suites, is refused after the upgrade, as a failed call ([Integration guide](08-Integration-Guide.md) section 11).
+- Not changed: the other connections a host opens (the log and trace collector, Redis, SMTP, PostgreSQL, Kafka) keep their libraries' TLS defaults until ARV-280.
+
 ### ARV-277: the push answer names events on lines their device does not declare it counts (2026-10-31)
 
 - Behaviour: a push from a device that declares the lines it counts (Listed or None) with accepted crossings or interval readings on another entry or exit line of its zone answers 202 as before, and its `problems` now also name each such line once with its count (`undeclared line '<name>': <n> events accepted on an entry or exit line this device does not declare it counts`), at most 10 such problems apart from the refusals (nine lines named, the tenth summing up the rest). The events are still published and counted. A device that declared nothing has no such problem.
