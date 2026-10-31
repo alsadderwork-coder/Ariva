@@ -1735,7 +1735,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. Phase 3. Filed 2026-10-30 with ARV-259e4 (its notes: 'Site configuration export and import of declarations left out (a follow-up)'). No sign-in code.",
       "dependsOn": [
         "ARV-259e4"

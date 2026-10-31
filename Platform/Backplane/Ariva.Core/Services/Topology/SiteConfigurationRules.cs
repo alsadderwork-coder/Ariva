@@ -146,8 +146,26 @@ public static class SiteConfigurationRules
                                  !IsKind<DeviceDialect>(d.Dialect) || !IsKind<ClockSource>(d.ClockSource) || !IsText(d.Model, Device.ModelLength) ||
                                  !(d.MappingName is null || IsText(d.MappingName, Device.MappingNameLength)) || !levels.Contains(LevelKey(d.Terminal, d.Level)) ||
                                  !IsCoordinate(d.X) || !IsCoordinate(d.Y) || !Within(d.MountingHeightMetres, 0, 100) || !Within(d.OrientationDegrees, 0, 360) ||
-                                 !IsName(d.QueueZone) || !IsFootprint(d.FootprintLengthMetres) || !IsFootprint(d.FootprintWidthMetres) || !IsFootprint(d.FootprintRadiusMetres)) &&
+                                 !IsName(d.QueueZone) || !IsFootprint(d.FootprintLengthMetres) || !IsFootprint(d.FootprintWidthMetres) || !IsFootprint(d.FootprintRadiusMetres) ||
+                                 !IsDeclaration(d.LineCoverage, d.CoveredLines)) &&
                Unique(devices.Select(d => d.Code));
+    }
+
+    /// <summary>
+    /// A device's line declaration as the registry keeps it (ARV-276, CWE-501): none at all (a bundle from before ARV-276: All),
+    /// <c>All</c> or <c>None</c> by exact name with no line, or <c>Listed</c> with 1 to 16 distinct names, each by the name rule on
+    /// its raw text (no control or invisible character, not even at its ends). Whether they are lines of the device's zone is
+    /// the plan's check, against the bundle's zone profile.
+    /// </summary>
+    public static bool IsDeclaration(string coverage, IReadOnlyList<string> lines)
+    {
+        if (coverage is null)
+            return lines is null || lines.Count == 0;
+        if (ParseKind<DeviceLineCoverage>(coverage) is not { } kind)
+            return false;
+        return kind == DeviceLineCoverage.Listed
+            ? lines is { Count: >= 1 } && Ariva.Core.Sensing.LineDeclarations.IsWellFormed(lines)
+            : lines is null || lines.Count == 0;
     }
 
     /// <summary>

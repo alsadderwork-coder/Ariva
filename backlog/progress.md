@@ -4180,3 +4180,39 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - The five API hosts ship logs through Serilog's OTLP sink, which reads `OTEL_RESOURCE_ATTRIBUTES` from configuration. Only the simulator uses OpenTelemetry's logging provider (`ExportLogs`). A resource test of `LoggerProvider` therefore proves nothing about the hosts' logs.
   - `ProviderExtensions.GetResource(BaseProvider)` reads the resource of the tracer, meter and logger providers alike.
   - A text search of an OTLP body cannot tell which attribute a value belongs to when two carry it: look for the key followed within a few bytes of protobuf framing by the value.
+
+## 2026-10-31: ARV-276 [E15] Site configuration export and import carry each device's line declaration
+
+- What changed:
+  - A site configuration bundle's device rows carry the lines each device counts: `lineCoverage` (All, None or Listed) and `coveredLines`, a list only for Listed. Both are optional init members of `DevicePartRow`, so a bundle exported before ARV-276 still reads, and its devices count every line.
+  - `SiteConfigurationRules.IsDeclaration`, in `AreDevices`, holds the declaration to the registry's shape: the kind by exact name; for Listed, 1 to 16 distinct names checked by `LineDeclarations.IsWellFormed` on their raw text; no lines for the other kinds.
+  - `SiteConfigurationTransfer.Plan` refuses a device whose listed line is not an entry or exit line of its own queue zone in the bundle's profile, before anything is written. Names compare ordinally. The refusal is `DeviceLineNotInProfile(row)`: 400, naming the device's row, never the line.
+  - After all devices are registered and flushed, the import applies each Listed or None declaration through `ISvcDevices.SetCoverageAsync`, with the registry's own checks and its `Device.CoverageChanged` audit. Devices whose footprint does not reach a listed line are named in the answer's new `devicesWithLinesOutOfReach`, with a note; this is a warning and the declaration is kept.
+  - The export refuses (409, `DeviceLinesNotImportable`) a device that lists a line its zone no longer has in the published profile, so every export still imports.
+  - The bundle format version stays 1. There is no import preview for the bundle (API only), so the answer and wiki 11 are where the declarations show.
+- Files:
+  - Ariva.Core: `SiteConfigurationRequests`, `SiteConfigurationViewModels`, `ISvcSiteConfiguration` (errors and note), `SiteConfigurationRules`, `SiteConfigurationTransfer`.
+  - Ariva.Infra: `SvcSiteConfiguration`.
+  - Unit tests: `SiteConfigurationRulesTests` (8 Broken cases and the `IsDeclaration` theory), `SiteConfigurationPartsTests`, `SiteConfigurationTransferTests` (a second queue zone fixture; export and plan cases, by row, cross-zone and case).
+  - Integration: `SiteConfigurationTests`, three new tests:
+    - the round trip with Listed and None devices and the footprint warning;
+    - an older bundle importing as All;
+    - eight refusals that write nothing and echo no line.
+  - E2E: `site-configuration.spec.ts` (the row's keys, three hostile cases, the answer's new member).
+  - Docs: wiki 11 sections 2d and 6, wiki 18, cwe-controls.md CWE-501, asvs-l2.md V1.5.2.
+- Gates: `node scripts/verify.mjs story --specs tests/api/site-configuration.spec.ts --integration "FullyQualifiedName~SiteConfiguration"` PASS on the final tree: build, unit 8,414 of 8,414, integration 25 of 25 (the story filter), E2E 353 passed in the 6 spec files the plan chose, security scan 0 errors, docs, chart and release guards. One earlier run was stopped for the review fixes.
+- Security review (CWE-501, CWE-20, CWE-400, CWE-89, CWE-79):
+  - Round 1 FAIL:
+    - Medium: the scoping to the device's own zone was untested, since both fixtures had one queue zone.
+    - Low: the V1.5.2 row still said every member of a row is required.
+  - Fixed:
+    - a second queue zone in both fixtures, with cross-zone and wrong-case cases in the plan, export and import tests;
+    - the row names the later optional members.
+  - Advisories taken: the refusal after registration is commented as defence in depth, and the E2E pins `devicesWithLinesOutOfReach`.
+  - Round 2: PASS.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - `RespectRequiredConstructorParameters` makes every constructor member of a part row required. A member added later goes in as an init property, or as a constructor parameter with a default, so older bundles still read.
+  - A record's equality compares list members by reference. An export that always wrote a list would break every `Should().Equal` on rows. Write a list only where it means something (Listed) and null otherwise.
+  - The registry's coverage path (`SetCoverageAsync`) takes a row lock with raw SQL, so flush the registered devices before calling it in the same transaction.
+  - A fixture with one queue zone cannot tell "this zone's lines" from "any queue zone's lines": add a second zone to test scoping.

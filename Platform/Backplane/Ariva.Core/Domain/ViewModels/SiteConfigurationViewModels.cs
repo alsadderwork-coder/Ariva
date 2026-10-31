@@ -47,7 +47,9 @@ public sealed record SiteConfigurationExportViewModel(
 /// An import's answer: the bundle hash it verified, the bundle's claimed source site (not authenticated), the draft zone
 /// profile it created (publish it with the existing step-up action) and that draft's portable geometry hash, the counts,
 /// each device's new credential (shown this once), the codes of the devices whose access settings (source networks,
-/// certificate pin) and of the alert rules whose escalation contact must be set again, and fixed notes. Never cached.
+/// certificate pin) and of the alert rules whose escalation contact must be set again, and fixed notes. Since ARV-276 also
+/// the codes of the devices whose footprint does not reach a line they count (a warning, as when the lines are declared by
+/// hand; the declaration is kept). Never cached.
 /// </summary>
 public sealed record SiteConfigurationImportViewModel(
     string BundleSha256,
@@ -58,4 +60,5 @@ public sealed record SiteConfigurationImportViewModel(
     IReadOnlyList<SiteConfigurationDeviceCredentialViewModel> DeviceCredentials,
     IReadOnlyList<string> DevicesNeedingAccessSettings,
     IReadOnlyList<string> RulesNeedingEscalationContact,
-    IReadOnlyList<string> Notes);
+    IReadOnlyList<string> Notes,
+    IReadOnlyList<string> DevicesWithLinesOutOfReach = null);

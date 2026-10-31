@@ -100,7 +100,20 @@ public sealed record DevicePartRow(
     double? FootprintLengthMetres,
     double? FootprintWidthMetres,
     double? FootprintRadiusMetres,
-    bool AccessSettingsWithheld);
+    bool AccessSettingsWithheld)
+{
+    /// <summary>
+    /// The lines the device counts (ARV-259e4, carried since ARV-276): <c>All</c>, <c>None</c> or <c>Listed</c>, by exact name.
+    /// Optional, unlike the members above: a bundle made before ARV-276 leaves it out, and its devices count every line (All).
+    /// </summary>
+    public string LineCoverage { get; init; }
+
+    /// <summary>
+    /// The entry and exit lines of its queue zone a <c>Listed</c> device counts: 1 to 16 distinct names by the name rule; empty or
+    /// left out for the other kinds. The import checks them against the bundle's zone profile.
+    /// </summary>
+    public IReadOnlyList<string> CoveredLines { get; init; }
+}
 
 /// <summary>
 /// An alert rule (ARV-122b): its code and values, zones by name, roles from the built-in list. Its escalation contact is

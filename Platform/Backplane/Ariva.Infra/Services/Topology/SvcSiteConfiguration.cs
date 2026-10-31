@@ -276,6 +276,7 @@ internal sealed class SvcSiteConfiguration(
             return await RefuseImportAsync(siteCode, SiteConfigurationErrors.DisplayCodeTaken, bundle);
 
         var credentials = new List<SiteConfigurationDeviceCredentialViewModel>();
+        var linesOutOfReach = new List<string>();
         try
         {
             await SaveAsync(plan, floorPlans, ct);
@@ -285,12 +286,31 @@ internal sealed class SvcSiteConfiguration(
 
             // ARV-122b: each device through the registration path itself (its rules, its credential issuing, its audit entry),
             // in this transaction: Commissioning, a new credential shown once.
+            var registeredDevices = new List<DeviceViewModel>(plan.Devices.Count);
             foreach (var registration in plan.Devices)
             {
                 var registered = await devices.RegisterAsync(registration, ct);
                 if (registered.HasErrors)
                     return await RefuseImportAsync(siteCode, SiteConfigurationErrors.InvalidDevices, bundle);
                 credentials.Add(new SiteConfigurationDeviceCredentialViewModel(registered.Data.Device.Code, registered.Data.Credential));
+                registeredDevices.Add(registered.Data.Device);
+            }
+
+            await FlushAsync(ct);
+
+            // ARV-276: each device's line declaration through the registry's own path (its checks against the imported draft, its
+            // audit entry); a device that counts every line keeps the registration's default. A line its footprint does not reach
+            // is a warning, as when the lines are declared by hand: the device is listed in the answer, the declaration kept.
+            for (var row = 0; row < plan.DeviceLines.Count; row++)
+            {
+                if (string.Equals(plan.DeviceLines[row].Mode, nameof(DeviceLineCoverage.All), StringComparison.Ordinal))
+                    continue;
+                var covered = await devices.SetCoverageAsync(registeredDevices[row].Id, plan.DeviceLines[row], ct);
+                // Defence in depth: the plan has checked the lines against the same draft, so the registry refuses none here.
+                if (covered.HasErrors)
+                    return await RefuseImportAsync(siteCode, SiteConfigurationErrors.DeviceLineNotInProfile(row + 1), bundle);
+                if (covered.Data.Warnings.Count > 0)
+                    linesOutOfReach.Add(registeredDevices[row].Code);
             }
 
             await FlushAsync(ct);
@@ -326,8 +346,10 @@ internal sealed class SvcSiteConfiguration(
             notes.Add(SiteConfigurationErrors.RulesAndDisplaysWaitForPublication);
         if (plan.RulesNeedingEscalationContact.Count > 0)
             notes.Add(SiteConfigurationErrors.EscalationContactsWithheld);
+        if (linesOutOfReach.Count > 0)
+            notes.Add(SiteConfigurationErrors.DeviceLinesOutOfReach);
         return new Result<SiteConfigurationImportViewModel>(new SiteConfigurationImportViewModel(bundle.BundleSha256, bundle.SourceSite, plan.Draft?.Id,
-            plan.PortableGeometryHash, plan.Counts, credentials, plan.DevicesNeedingAccessSettings, plan.RulesNeedingEscalationContact, notes));
+            plan.PortableGeometryHash, plan.Counts, credentials, plan.DevicesNeedingAccessSettings, plan.RulesNeedingEscalationContact, notes, linesOutOfReach));
     }
 
     /// <summary>Parents before children; queue zones before the zones that hang off them; each file stored before its record, removed on rollback.</summary>

@@ -120,6 +120,14 @@ public sealed class SiteConfigurationRulesTests
         { "a device without a queue zone", SiteConfigurationErrors.InvalidDevices },
         { "a footprint beyond 1000 m", SiteConfigurationErrors.InvalidDevices },
         { "a device model with a NUL", SiteConfigurationErrors.InvalidDevices },
+        { "a line coverage in lower case", SiteConfigurationErrors.InvalidDevices },
+        { "a line coverage that does not exist", SiteConfigurationErrors.InvalidDevices },
+        { "listed lines without a list", SiteConfigurationErrors.InvalidDevices },
+        { "a listed line twice", SiteConfigurationErrors.InvalidDevices },
+        { "seventeen listed lines", SiteConfigurationErrors.InvalidDevices },
+        { "a listed line with a line feed", SiteConfigurationErrors.InvalidDevices },
+        { "lines named by a device that counts none", SiteConfigurationErrors.InvalidDevices },
+        { "lines named without a coverage", SiteConfigurationErrors.InvalidDevices },
         { "no alert rules list", SiteConfigurationErrors.InvalidAlertRules },
         { "a rule code not of the R-nnn form", SiteConfigurationErrors.InvalidAlertRules },
         { "a rule code with a leading zero too many", SiteConfigurationErrors.InvalidAlertRules },
@@ -220,6 +228,14 @@ public sealed class SiteConfigurationRulesTests
             "a device without a queue zone" => Content(devices: [Device() with { QueueZone = " " }]),
             "a footprint beyond 1000 m" => Content(devices: [Device() with { FootprintRadiusMetres = 1000.5 }]),
             "a device model with a NUL" => Content(devices: [Device() with { Model = "Xovis\0" }]),
+            "a line coverage in lower case" => Content(devices: [Device() with { LineCoverage = "listed", CoveredLines = ["Exit A"] }]),
+            "a line coverage that does not exist" => Content(devices: [Device() with { LineCoverage = "Some" }]),
+            "listed lines without a list" => Content(devices: [Device() with { LineCoverage = "Listed" }]),
+            "a listed line twice" => Content(devices: [Device() with { LineCoverage = "Listed", CoveredLines = ["Exit A", "Exit A"] }]),
+            "seventeen listed lines" => Content(devices: [Device() with { LineCoverage = "Listed", CoveredLines = [.. Enumerable.Range(1, 17).Select(n => $"Line {n}")] }]),
+            "a listed line with a line feed" => Content(devices: [Device() with { LineCoverage = "Listed", CoveredLines = ["Exit A\nEntry A"] }]),
+            "lines named by a device that counts none" => Content(devices: [Device() with { LineCoverage = "None", CoveredLines = ["Exit A"] }]),
+            "lines named without a coverage" => Content(devices: [Device() with { CoveredLines = ["Exit A"] }]),
             "no alert rules list" => Content() with { AlertRules = null },
             "a rule code not of the R-nnn form" => Content(rules: [Rule("RULE-1")]),
             "a rule code with a leading zero too many" => Content(rules: [Rule("R-0001")]),
@@ -417,6 +433,34 @@ public sealed class SiteConfigurationRulesTests
         SiteConfigurationRules.IsName(Hall).Should().BeTrue();
         SiteConfigurationRules.IsName("Hall" + "\x202E").Should().BeFalse();
     }
+
+    #endregion
+
+    #region Line declarations (ARV-276)
+
+    public static TheoryData<string, string, string[], bool> Declarations => new()
+    {
+        { "none at all (a bundle from before ARV-276)", null, null, true },
+        { "none, with an empty list", null, [], true },
+        { "All", "All", null, true },
+        { "None, with an empty list", "None", [], true },
+        { "one listed line", "Listed", ["Exit A"], true },
+        { "sixteen listed lines", "Listed", [.. Enumerable.Range(1, 16).Select(n => $"Line {n}")], true },
+        { "a listed line of 200 characters", "Listed", [new string('l', 200)], true },
+        { "Listed without a line", "Listed", [], false },
+        { "Listed without a list", "Listed", null, false },
+        { "a line of 201 characters", "Listed", [new string('l', 201)], false },
+        { "a blank line", "Listed", ["  "], false },
+        { "a null line", "Listed", [null], false },
+        { "a right-to-left override in a line", "Listed", ["Exit A" + "\x202E"], false },
+        { "a coverage by number", "2", ["Exit A"], false },
+        { "All with a line", "All", ["Exit A"], false }
+    };
+
+    [Theory]
+    [MemberData(nameof(Declarations))]
+    public void IsDeclaration_Should_TakeTheRegistrysShapeOnly_When_ADeviceRowCarriesItsLines(string name, string coverage, string[] lines, bool valid) =>
+        SiteConfigurationRules.IsDeclaration(coverage, lines).Should().Be(valid, name);
 
     #endregion
 }

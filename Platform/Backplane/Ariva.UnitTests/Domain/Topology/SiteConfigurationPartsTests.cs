@@ -96,6 +96,33 @@ public sealed class SiteConfigurationPartsTests
         content.Data.Displays.Should().ContainSingle().Which.Entries.Should().ContainSingle();
     }
 
+    [Fact]
+    public void Read_Should_ReadTheLineDeclarationAsOptional_When_ARowLeavesItOutOrCarriesIt()
+    {
+        // ARV-276: a bundle made before ARV-276 has no declaration; its devices read as counting every line.
+        var rows = JsonSerializer.Deserialize<List<Dictionary<string, JsonElement>>>(DeviceRows)!;
+        rows[0].Remove("lineCoverage").Should().BeTrue("an export writes the member");
+        rows[0].Remove("coveredLines").Should().BeTrue();
+        var older = SiteConfigurationParts.Read(Bundle(devices: JsonSerializer.Serialize(rows)));
+        older.HasErrors.Should().BeFalse(string.Join(", ", older.ErrorMessages ?? []));
+        older.Data.Devices.Single().Should().Match<DevicePartRow>(d => d.LineCoverage == null && d.CoveredLines == null);
+
+        var listed = Encoding.UTF8.GetString(SiteConfigurationParts.Write(new[]
+        {
+            new DevicePartRow("S01", "StereoVision", "Xovis", "HttpsPush", "Xovis", "Ntp", null, "T1", "L0", 20, 16, 5, 0, "Snake A", null, null, null, false)
+            {
+                LineCoverage = "Listed", CoveredLines = ["Entry A", "Exit A"]
+            }
+        }));
+        var read = SiteConfigurationParts.Read(Bundle(devices: listed)).Data.Devices.Single();
+        read.LineCoverage.Should().Be("Listed");
+        read.CoveredLines.Should().Equal("Entry A", "Exit A");
+
+        // Strict as every member: a list where a text is expected is not a row of its kind.
+        SiteConfigurationParts.Read(Bundle(devices: listed.Replace("\"lineCoverage\":\"Listed\"", "\"lineCoverage\":[\"Listed\"]", StringComparison.Ordinal)))
+            .ErrorMessages.Should().Equal([SiteConfigurationErrors.PartNotReadable]);
+    }
+
     public static TheoryData<string, string> SecretMembers => new()
     {
         { "devices", "credential" },

@@ -59,7 +59,14 @@ public sealed record SiteConfigurationPlan(
     IReadOnlyList<Display> Displays,
     IReadOnlyList<string> DevicesNeedingAccessSettings,
     IReadOnlyList<string> RulesNeedingEscalationContact,
-    SiteConfigurationCountsViewModel Counts);
+    SiteConfigurationCountsViewModel Counts)
+{
+    /// <summary>
+    /// Each device's line declaration (ARV-276), in the order of <see cref="Devices"/>: applied through the registry's own
+    /// coverage path once the device is registered.
+    /// </summary>
+    public IReadOnlyList<SetDeviceCoverageRequest> DeviceLines { get; init; } = [];
+}
 
 /// <summary>
 /// The two directions of a site configuration bundle (ARV-122a), pure: no database, no files. An export names every
@@ -175,6 +182,12 @@ public static class SiteConfigurationTransfer
         // belong to a border role, refuses the export instead, so every export still imports.
         if (rules.Any(r => (r.Values() with { EscalationContact = null }).Problems().Count > 0))
             return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.RulesNotImportable);
+        // ARV-276: a device's listed lines travel; one no longer an entry or exit line of its zone in the published profile (the
+        // profile changed after the declaration) would be refused by the import, so the export refuses it now.
+        var publishedLines = EntryExitLines(profile);
+        if (devices.Any(d => d.LineCoverage == DeviceLineCoverage.Listed &&
+                             (!publishedLines.TryGetValue(d.QueueZoneName, out var own) || d.CoveredLineNames.Any(name => !own.Contains(name)))))
+            return Result.Error<ExportedSiteConfiguration>(SiteConfigurationErrors.DeviceLinesNotImportable);
 
         var levelRowsById = levels.ToDictionary(l => l.Id.GetValueOrDefault());
         var deviceRows = devices.Select(d =>
@@ -184,7 +197,12 @@ public static class SiteConfigurationTransfer
             return new DevicePartRow(d.Code, d.Family.ToString(), d.Model, d.Transport.ToString(), d.Dialect.ToString(), d.ClockSource.ToString(), d.MappingName,
                 level.Terminal.Code, level.Code, d.X, d.Y, d.MountingHeightMetres, d.OrientationDegrees, d.QueueZoneName,
                 vendor ? d.FootprintLengthMetres : null, vendor ? d.FootprintWidthMetres : null, vendor ? d.FootprintRadiusMetres : null,
-                !string.IsNullOrEmpty(d.AllowedSources) || !string.IsNullOrEmpty(d.ClientCertificateSha256));
+                !string.IsNullOrEmpty(d.AllowedSources) || !string.IsNullOrEmpty(d.ClientCertificateSha256))
+            {
+                // ARV-276: the lines it counts, as the registry keeps them: a list only for a device that lists them.
+                LineCoverage = d.LineCoverage.ToString(),
+                CoveredLines = d.LineCoverage == DeviceLineCoverage.Listed ? [.. d.CoveredLineNames] : null
+            };
         }).ToList();
         var ruleRows = rules.Select(r => new AlertRulePartRow(r.Code, r.Name, [.. r.Zones], r.Metric.ToString(), r.Comparator.ToString(), r.Threshold, r.MinQueueLength,
             r.ClearThreshold, r.SustainMinutes, r.ClearAfterMinutes, r.Severity.ToString(), r.OwnerRole, r.EscalateAfterMinutes, r.EscalateToRole,
@@ -293,6 +311,20 @@ public static class SiteConfigurationTransfer
             new DevicePlacement(levels[SiteConfigurationRules.LevelKey(d.Terminal, d.Level)].Id, d.X, d.Y, d.MountingHeightMetres, d.OrientationDegrees, d.QueueZone,
                 d.FootprintLengthMetres, d.FootprintWidthMetres, d.FootprintRadiusMetres), d.MappingName)).ToList();
 
+        // ARV-276: each device's line declaration (its shape checked by the rules; a device without one counts every line), its
+        // listed lines entry or exit lines of its queue zone in the bundle's profile. The registry applies it once the device is
+        // registered, with its own checks and its footprint warnings.
+        var draftLines = EntryExitLines(draft);
+        var declarations = new List<SetDeviceCoverageRequest>(content.Devices.Count);
+        for (var row = 0; row < content.Devices.Count; row++)
+        {
+            var device = content.Devices[row];
+            var listed = device.CoveredLines ?? [];
+            if (listed.Count > 0 && (!draftLines.TryGetValue(device.QueueZone.Trim(), out var own) || listed.Any(name => !own.Contains(name))))
+                return Result.Error<SiteConfigurationPlan>(SiteConfigurationErrors.DeviceLineNotInProfile(row + 1));
+            declarations.Add(new SetDeviceCoverageRequest(device.LineCoverage ?? nameof(DeviceLineCoverage.All), [.. listed]));
+        }
+
         // Alert rules and displays: the entities' own checks, then their zones against the imported draft (owner decision
         // 2026-10-11): queue zones and overflow bands for rules (queue zones only for health checks and open desks below recommendation), queue
         // zones for displays.
@@ -344,8 +376,14 @@ public static class SiteConfigurationTransfer
         var counts = new SiteConfigurationCountsViewModel(terminals.Count, levels.Count, checkpoints.Count, desks.Count, mappings.Count,
             draft?.Zones.Count ?? 0, draft?.Lines.Count ?? 0, plans.Count, devices.Count, rules.Count, displays.Count);
         return new Result<SiteConfigurationPlan>(new SiteConfigurationPlan([.. terminals.Values], [.. levels.Values], [.. checkpoints.Values], [.. desks.Values],
-            mappings, draft, portable, plans, devices, rules, displays, needAccess, needContact, counts));
+            mappings, draft, portable, plans, devices, rules, displays, needAccess, needContact, counts) { DeviceLines = declarations });
     }
+
+    /// <summary>The entry and exit lines of each queue zone of a profile (none without one), by the zone's name (ARV-276).</summary>
+    private static Dictionary<string, HashSet<string>> EntryExitLines(ZoneProfile profile) =>
+        profile?.Lines.Where(l => l.Zone is { Kind: ZoneKind.Queue } && l.Role is LineRole.Entry or LineRole.Exit)
+            .GroupBy(l => l.Zone.Name, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(l => l.Name).ToHashSet(StringComparer.Ordinal), StringComparer.Ordinal) ?? [];
 
     /// <summary>An empty role is no role, as the rule service reads one.</summary>
     private static string Blank(string role) => string.IsNullOrWhiteSpace(role) ? null : role.Trim();

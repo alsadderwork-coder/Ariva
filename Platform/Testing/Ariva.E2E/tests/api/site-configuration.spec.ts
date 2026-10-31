@@ -306,9 +306,10 @@ test('the export carries the published profile with both hashes, every part in t
 	}
 	expect(Object.keys(decoded(bundle, 'devices')[0]).sort()).toEqual(
 		['code', 'family', 'model', 'transport', 'dialect', 'clockSource', 'mappingName', 'terminal', 'level', 'x', 'y', 'mountingHeightMetres', 'orientationDegrees',
-			'queueZone', 'footprintLengthMetres', 'footprintWidthMetres', 'footprintRadiusMetres', 'accessSettingsWithheld'].sort()
+			'queueZone', 'footprintLengthMetres', 'footprintWidthMetres', 'footprintRadiusMetres', 'accessSettingsWithheld', 'lineCoverage', 'coveredLines'].sort()
 	);
-	expect(decoded(bundle, 'devices')[0]).toMatchObject({ code: 'S01', terminal: 'T1', level: 'L0', queueZone: 'Snake A', accessSettingsWithheld: true });
+	// ARV-276: the lines the device counts travel (every line by default, so no list).
+	expect(decoded(bundle, 'devices')[0]).toMatchObject({ code: 'S01', terminal: 'T1', level: 'L0', queueZone: 'Snake A', accessSettingsWithheld: true, lineCoverage: 'All', coveredLines: null });
 	expect(Object.keys(bundle.parts).some((part) => Buffer.from(bundle.parts[part], 'base64').toString('utf8').includes('10.20.0.0')), 'no source network travels').toBe(false);
 	const rules = decoded(bundle, 'alertRules');
 	expect(rules.map((r: any) => [r.code, r.escalationContactWithheld])).toEqual([['R-001', true], ['R-002', false]]);
@@ -408,6 +409,10 @@ test('a tampered bundle is refused with a fixed text and writes nothing', async 
 		['a predicted nowcast below its threshold without an owner', predictedBreach(bundle, { ownerRole: null, comparator: 'LessThan', zones: ['Overflow A'] }), 400],
 		['a device row without its access settings flag', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map(({ accessSettingsWithheld, ...row }: any) => row)))), 400],
 		['a device on a level outside the bundle', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map((d: any) => ({ ...d, level: 'L9' }))))), 400],
+		// ARV-276: a device's lines are lines of its zone in the bundle's profile, by the registry's shape.
+		['a device listing a line its zone lacks, named with markup', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map((d: any) => ({ ...d, lineCoverage: 'Listed', coveredLines: [hostileZone] }))))), 400],
+		['a device listing a line twice', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map((d: any) => ({ ...d, lineCoverage: 'Listed', coveredLines: [hostileZone, hostileZone] }))))), 400],
+		['a device line coverage that does not exist', rehashed(bundle, 'devices', Buffer.from(JSON.stringify(decoded(bundle, 'devices').map((d: any) => ({ ...d, lineCoverage: hostileTerminal }))))), 400],
 		['an unknown part named with markup', { ...bundle, manifest: { ...bundle.manifest, [hostileTerminal]: sha256(devices) }, parts: { ...bundle.parts, [hostileTerminal]: devices.toString('base64') } }, 400],
 		['format version 2', { ...bundle, formatVersion: 2 }, 400],
 		['a zone profile that names a level outside the bundle', rehashed(bundle, 'zoneProfile', Buffer.from(JSON.stringify(decoded(bundle, 'zoneProfile').map((p: any) => ({ ...p, zones: p.zones.map((z: any) => ({ ...z, level: hostileTerminal })) }))))), 400],
@@ -529,6 +534,8 @@ test('a round trip between two sites gives the same portable geometry hash once 
 
 	// Alert rules: their codes, no escalation contact; the answer lists the rule that needs one, by code only.
 	expect(answer.rulesNeedingEscalationContact).toEqual(['R-001']);
+	// ARV-276: the source's device counts every line, so no footprint warning about the lines it counts.
+	expect(answer.devicesWithLinesOutOfReach).toEqual([]);
 	const rules = await call('GET', `${admin}/alert-rules?siteCode=${target}&pageSize=500`, { token: stepped });
 	expect(rules.headers()['content-type']).toContain('application/json');
 	expect(rules.headers()['x-content-type-options']).toBe('nosniff');

@@ -101,6 +101,20 @@ public static class SiteConfigurationErrors
     public const string RulesNotImportable =
         "An alert rule of the site fails the checks an import applies (for example a rule on open desks below recommendation or predicted nowcast that does not belong to a border role), which an import refuses; change or delete it first.";
 
+    /// <summary>
+    /// ARV-276: a device of the site lists a line that is no longer an entry or exit line of its queue zone in the published
+    /// profile (the profile changed after the declaration), which an import refuses (409).
+    /// </summary>
+    public const string DeviceLinesNotImportable =
+        "A device of the site lists a line that is not an entry or exit line of its queue zone in the published zone profile, which an import refuses; correct the lines it counts first.";
+
+    /// <summary>
+    /// ARV-276: the device at <paramref name="row"/> (from 1, in the devices part's order) lists a line that is not an entry or
+    /// exit line of its queue zone in the bundle's zone profile. Names the row, never the line (CWE-79).
+    /// </summary>
+    public static string DeviceLineNotInProfile(int row) => string.Create(System.Globalization.CultureInfo.InvariantCulture,
+        $"Device {row} of the devices part lists a line that is not an entry or exit line of its queue zone in the bundle's zone profile.");
+
     /// <summary>Notes of the answers (fixed texts).</summary>
     public const string NoPublishedProfile = "The site has no published zone profile, so the bundle carries none.";
     public const string ProfileArrivesAsDraft = "The zone profile arrived as a draft: review it and publish it with a recent second factor.";
@@ -110,13 +124,15 @@ public static class SiteConfigurationErrors
     public const string DisplaysArriveUnpaired = "Displays arrived unpaired: issue each player's credential with the display's credential action.";
     public const string RulesAndDisplaysWaitForPublication = "Alert rules and displays act once the imported zone profile is published.";
     public const string EscalationContactsWithheld = "Escalation contacts are never exported: type them again for the rules listed in rulesNeedingEscalationContact.";
+    public const string DeviceLinesOutOfReach =
+        "The footprints of the devices listed in devicesWithLinesOutOfReach do not reach a line they count: check their placement, or the lines they count.";
 
     /// <summary>Errors that mean the site's state does not allow the action (409).</summary>
     public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal)
     {
         SiteNotEmpty, SiteBusy, TerminalTaken, AmbiguousTerminals, ProfileOnRemovedTopology, TooManyRecords, TooLargeToExport, FloorPlanFileUnreadable, DisplayCodeTaken,
         ReferencesOutsideProfile, DeviceOnRemovedLevel, RuleCodesBeyondImportBound, TopologyNamesNotImportable, ProfileNotImportable, TextsNotImportable,
-        FloorPlanNamesNotImportable, RulesNotImportable
+        FloorPlanNamesNotImportable, RulesNotImportable, DeviceLinesNotImportable
     };
 }
 

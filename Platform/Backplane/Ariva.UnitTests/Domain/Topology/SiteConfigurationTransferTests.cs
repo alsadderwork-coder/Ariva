@@ -37,7 +37,7 @@ public sealed class SiteConfigurationTransferTests
     /// mappings, a published profile with a queue zone and its overflow band, a plan; two devices with credentials and access
     /// settings, two alert rules (one with an escalation contact) and a paired display.
     /// </summary>
-    private static SiteConfigurationSource Source(string siteCode = "SRC", string iata = "AAA", string queueName = "Snake A")
+    private static SiteConfigurationSource Source(string siteCode = "SRC", string iata = "AAA", string queueName = "Snake A", bool secondQueue = false)
     {
         var airport = WithId(new Airport(iata, null, "Source airport", "Asia/Dubai"));
         var terminal = WithId(airport.AddTerminal("T1", "Terminal <b>1</b>", siteCode));
@@ -61,6 +61,13 @@ public sealed class SiteConfigurationTransferTests
         profile.AddLine("Exit A", LineRole.Exit, arrivals, new FloorPoint(30, 22), new FloorPoint(34, 22), queue);
         profile.AddLine("Overflow entry A", LineRole.OverflowEntry, arrivals, new FloorPoint(10, 25), new FloorPoint(10, 27), overflow);
         profile.AddLine("Count hall", LineRole.Count, departures, new FloorPoint(1, 1), new FloorPoint(1, 9));
+        if (secondQueue)
+        {
+            // ARV-276: another queue zone with lines of its own, so a device's lines are checked against its own zone only.
+            var other = profile.AddZone("Snake B", ZoneKind.Queue, arrivals, Rect(46, 20, 12, 8));
+            profile.AddLine("Entry B", LineRole.Entry, arrivals, new FloorPoint(46, 22), new FloorPoint(46, 26), other);
+            profile.AddLine("Exit B", LineRole.Exit, arrivals, new FloorPoint(58, 22), new FloorPoint(58, 26), other);
+        }
         var levels = new Dictionary<Guid, Level> { [arrivals.Id!.Value] = arrivals, [departures.Id!.Value] = departures };
         profile.Publish(3, levels, "admin", Now).Should().BeEmpty();
 
@@ -240,8 +247,8 @@ public sealed class SiteConfigurationTransferTests
         var data = SiteConfigurationTransfer.Export(source).Data;
 
         data.Devices.Should().Equal(
-            new DevicePartRow("S01", "StereoVision", "Xovis <PC2>", "HttpsPush", "Xovis", "Ntp", null, "T1", "L0", 20, 16, 5, 0, "Snake A", null, null, null, true),
-            new DevicePartRow("S02", "Lidar", "Ouster", "HttpsPush", "Canonical", "Ptp", null, "T1", "L0", 22, 16, 6, 90, "Snake A", null, null, 8, false));
+            new DevicePartRow("S01", "StereoVision", "Xovis <PC2>", "HttpsPush", "Xovis", "Ntp", null, "T1", "L0", 20, 16, 5, 0, "Snake A", null, null, null, true) { LineCoverage = "All" },
+            new DevicePartRow("S02", "Lidar", "Ouster", "HttpsPush", "Canonical", "Ptp", null, "T1", "L0", 22, 16, 6, 90, "Snake A", null, null, 8, false) { LineCoverage = "All" });
         data.AlertRules.Select(r => (r.Code, r.Zones.Single(), r.EscalationContactWithheld)).Should().Equal(("R-001", "Snake A", true), ("R-003", "Overflow A", false));
         var withContact = data.AlertRules[0];
         withContact.Should().Match<AlertRulePartRow>(r => r.Metric == "Nowcast" && r.Comparator == "GreaterThan" && r.Threshold == 20 &&
@@ -491,6 +498,89 @@ public sealed class SiteConfigurationTransferTests
             new RegisterDeviceRequest("S02", "Lidar", "Ouster", "HttpsPush", "Canonical", "Ptp", new DevicePlacement(arrivals.Id, 22, 16, 6, 90, "Snake A", null, null, 8)));
         plan.Counts.Devices.Should().Be(2);
         plan.DevicesNeedingAccessSettings.Should().Equal(["S01"], "only S01 had source networks or a certificate pin");
+    }
+
+    /// <summary>ARV-276: S01 counts the entry and exit lines it lists (Exit A and Entry A unless others are given); S02 counts none.</summary>
+    private static SiteConfigurationSource Declared(SiteConfigurationSource source, IReadOnlyList<string> s01Lines = null)
+    {
+        source.Devices.Single(d => d.Code == "S01").CoverLines(DeviceLineCoverage.Listed, s01Lines ?? ["Exit A", "Entry A"], Now).Should().BeTrue();
+        source.Devices.Single(d => d.Code == "S02").CoverLines(DeviceLineCoverage.None, [], Now).Should().BeTrue();
+        return source;
+    }
+
+    [Fact]
+    public void Export_Should_CarryEachDevicesLineDeclaration_When_DevicesListTheirLinesOrCountNone()
+    {
+        var data = SiteConfigurationTransfer.Export(Declared(Source())).Data;
+
+        var listed = data.Devices.Single(d => d.Code == "S01");
+        listed.LineCoverage.Should().Be("Listed");
+        listed.CoveredLines.Should().Equal(["Entry A", "Exit A"], "as the registry keeps them, in ordinal order");
+        data.Devices.Single(d => d.Code == "S02").Should().Match<DevicePartRow>(d => d.LineCoverage == "None" && d.CoveredLines == null, "a list only for a device that lists its lines");
+    }
+
+    [Theory]
+    [InlineData("Count hall")]
+    [InlineData("Overflow entry A")]
+    [InlineData("Entry B")]
+    public void Export_Should_RefuseTheSite_When_ADeviceListsALineThatIsNotAnEntryOrExitLineOfItsZone(string line)
+    {
+        // A declaration made before the profile changed: the import would refuse it, so the export does (every export imports).
+        // Entry B is an entry line, but of another queue zone than the device's.
+        var result = SiteConfigurationTransfer.Export(Declared(Source(secondQueue: true), [line]));
+
+        result.ErrorMessages.Should().Equal([SiteConfigurationErrors.DeviceLinesNotImportable]);
+        SiteConfigurationErrors.Conflicts.Should().Contain(SiteConfigurationErrors.DeviceLinesNotImportable, "a 409, as the export's other refusals");
+    }
+
+    [Fact]
+    public void Plan_Should_CarryEachDevicesLineDeclarationInRegistrationOrder_When_TheBundleListsThem()
+    {
+        var content = RoundTrip(SiteConfigurationTransfer.Export(Declared(Source())).Data);
+
+        var plan = SiteConfigurationTransfer.Plan("DST-COPY", content, Target(), "ZZZ").Data;
+
+        plan.Devices.Select(d => d.Code).Should().Equal("S01", "S02");
+        plan.DeviceLines.Select(l => (l.Mode, string.Join("|", l.Lines))).Should().Equal(("Listed", "Entry A|Exit A"), ("None", ""));
+    }
+
+    [Fact]
+    public void Plan_Should_LetEveryDeviceCountEveryLine_When_TheBundleCarriesNoDeclaration()
+    {
+        var content = RoundTrip(SiteConfigurationTransfer.Export(Declared(Source())).Data);
+        var older = content with { Devices = [.. content.Devices.Select(d => d with { LineCoverage = null, CoveredLines = null })] };
+
+        var plan = SiteConfigurationTransfer.Plan("DST-COPY", older, Target(), "ZZZ").Data;
+
+        plan.DeviceLines.Select(l => (l.Mode, l.Lines.Count)).Should().Equal(("All", 0), ("All", 0));
+    }
+
+    [Theory]
+    [InlineData("Count hall")]
+    [InlineData("Overflow entry A")]
+    [InlineData("Entry B")]
+    [InlineData("entry a")]
+    [InlineData("<img src=x onerror=alert(1)>")]
+    public void Plan_Should_RefuseTheDeviceByItsRow_When_ItListsALineThatIsNotAnEntryOrExitLineOfItsZone(string line)
+    {
+        // Entry B is an entry line of another queue zone; "entry a" differs from the zone's line only in case (names compare ordinally).
+        var content = RoundTrip(SiteConfigurationTransfer.Export(Declared(Source(secondQueue: true))).Data);
+        var changed = content with { Devices = [content.Devices[0], content.Devices[1] with { LineCoverage = "Listed", CoveredLines = ["Exit A", line] }] };
+
+        var plan = SiteConfigurationTransfer.Plan("DST-COPY", changed, Target(), "ZZZ");
+
+        plan.ErrorMessages.Should().Equal([SiteConfigurationErrors.DeviceLineNotInProfile(2)]);
+        plan.ErrorMessages.Single().Should().StartWith("Device 2 of the devices part").And.NotContain(line, "the row is named, never the line (CWE-79)");
+    }
+
+    [Fact]
+    public void Plan_Should_RefuseListedLines_When_TheBundleCarriesNoZoneProfile()
+    {
+        var content = RoundTrip(SiteConfigurationTransfer.Export(Declared(Source())).Data);
+
+        var plan = SiteConfigurationTransfer.Plan("DST-COPY", content with { ZoneProfiles = [] }, Target(), "ZZZ");
+
+        plan.ErrorMessages.Should().Equal([SiteConfigurationErrors.DeviceLineNotInProfile(1)], "no profile, so no line of the device's zone");
     }
 
     [Fact]

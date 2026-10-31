@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-276: site configuration bundles carry each device's line declaration (2026-10-31)
+
+- Behaviour: a site configuration export now carries the lines each device counts (`lineCoverage` All, None or Listed, and `coveredLines` for a device that lists them), and an import applies them through the registry's own path, after each device is registered. The import refuses a device that lists a line that is not an entry or exit line of its queue zone in the bundle's zone profile (400, naming the device's row), and lists in `devicesWithLinesOutOfReach` the devices whose footprint does not reach a line they count (wiki 11 section 2d).
+- The export answers 409 for a device that lists a line its zone no longer has in the published profile: declare its lines again first (wiki 11 section 6).
+- A bundle exported before this release carries no declaration and still imports: its devices count every line, as before. The bundle's format version stays 1; a release before this one refuses a bundle from this one (a member it does not know).
+
 ### ARV-275: each pod's telemetry names the pod (2026-10-31)
 
 - Behaviour: the chart's `OTEL_RESOURCE_ATTRIBUTES` now carries `service.instance.id`, `k8s.pod.name` (both the pod's name) and `k8s.namespace.name` on the five API hosts and the simulator, declared after the downward API variables they are made from. The replicas of a host export series told apart, so a gauge each reports for its own share (`ariva.stream.zones_unknown`, `ariva.stream.consumer_lag`) is summed rather than read as interleaved samples (wiki 10 sections 1 and 2a). The hosts still set no instance id of their own.

@@ -88,7 +88,7 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
     /// alert rules (R-001 with an escalation contact, R-002 on the overflow band) and, when a code is given, a paired
     /// display; a terminal, a desk, a zone, a rule and a display named with markup or SQL. Answers the device's credential.
     /// </summary>
-    private async Task<string> SourceAsync(Guid admin, string site, string iata, bool twoPlans = false, string displayCode = null)
+    private async Task<string> SourceAsync(Guid admin, string site, string iata, bool twoPlans = false, string displayCode = null, bool secondQueue = false)
     {
         await SiteAsync(admin, site);
         var airport = await AirportAsync(admin, iata);
@@ -113,6 +113,14 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
         Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Count hall", "Count", departures, 1, 1, 1, 9), Ct)));
         var overflow = Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddZoneAsync(draft, new AddZoneRequest("Overflow A", "Overflow", arrivals, Rect(10, 24, 24, 4), queue), Ct))).Id;
         Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Overflow entry A", "OverflowEntry", arrivals, 10, 25, 10, 27, overflow), Ct)));
+        if (secondQueue)
+        {
+            // ARV-276: another queue zone with lines of its own, so a device's lines are checked against its own zone only.
+            var other = Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddZoneAsync(draft, new AddZoneRequest("Snake B", "Queue", arrivals, Rect(50, 20, 12, 8)), Ct))).Id;
+            Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Entry B", "Entry", arrivals, 50, 22, 50, 26, other), Ct)));
+            Ok(await _host.AsCallerAsync(admin, s => profiles(s).AddLineAsync(draft, new AddLineRequest("Exit B", "Exit", arrivals, 62, 22, 62, 26, other), Ct)));
+        }
+
         await PublishAsync(admin, draft);
 
         var bytes = Encoding.UTF8.GetBytes(Svg);
@@ -637,6 +645,123 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
             .Should().Equal(SiteConfigurationErrors.DisplayZonesNotInProfile);
         (await RecordsAsync("XCFU")).Should().Be(0);
     }
+
+    #region Line declarations (ARV-276)
+
+    /// <summary>
+    /// ARV-276: the source site with two more devices on Snake A: S02 near the entry line, counting the entry and exit lines it
+    /// lists (its footprint reaches the entry line only), and S03 counting none; S01 keeps the default (every line). Answers the
+    /// registry's warnings for S02.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> DeclaredSourceAsync(Guid admin, string site, string iata, bool secondQueue = false)
+    {
+        await SourceAsync(admin, site, iata, secondQueue: secondQueue);
+        var devices = (IServiceProvider s) => s.GetRequiredService<ISvcDevices>();
+        var level = await _host.ReadAsync<Guid>("SELECT id FROM level WHERE site_code = @secret AND code = 'L0' AND deleted_on IS NULL", secret: site);
+        var near = Ok(await _host.AsCallerAsync(admin, s => devices(s).RegisterAsync(
+            new RegisterDeviceRequest("S02", "StereoVision", "PC2SE", "HttpsPush", "Xovis", "Ntp", new DevicePlacement(level, 12, 14, 5, 0, "Snake A")), Ct)));
+        var none = Ok(await _host.AsCallerAsync(admin, s => devices(s).RegisterAsync(
+            new RegisterDeviceRequest("S03", "StereoVision", "PC2SE", "HttpsPush", "Xovis", "Ntp", new DevicePlacement(level, 24, 18, 5, 0, "Snake A")), Ct)));
+        var listed = Ok(await _host.AsCallerAsync(admin, s => devices(s).SetCoverageAsync(near.Device.Id, new SetDeviceCoverageRequest("Listed", ["Exit A", "Entry A"]), Ct)));
+        Ok(await _host.AsCallerAsync(admin, s => devices(s).SetCoverageAsync(none.Device.Id, new SetDeviceCoverageRequest("None"), Ct)));
+        return listed.Warnings;
+    }
+
+    /// <summary>Each live device of a site as code, coverage and listed lines (a bar between names; a dash for none).</summary>
+    private Task<string> DeclarationsAsync(string site) =>
+        _host.ReadAsync<string>("""
+            SELECT coalesce(string_agg(code || ':' || line_coverage || ':' || coalesce(replace(covered_lines, E'\n', '|'), '-'), ',' ORDER BY code), '')
+            FROM device WHERE site_code = @secret AND deleted_on IS NULL
+            """, secret: site);
+
+    private static List<DevicePartRow> DeviceRows(SiteConfigurationBundleViewModel bundle) =>
+        System.Text.Json.JsonSerializer.Deserialize<List<DevicePartRow>>(Convert.FromBase64String(bundle.Parts[SiteConfigurationBundles.Devices]), SiteConfigurationParts.Json)!;
+
+    [Fact]
+    public async Task ExportThenImport_Should_KeepEachDevicesLineDeclaration_When_DevicesListTheirLinesOrCountNone()
+    {
+        var admin = await AdministratorAsync("dl");
+        var sourceWarnings = await DeclaredSourceAsync(admin, "XDVA", "QVA");
+        sourceWarnings.Should().ContainSingle("Exit A lies beyond S02's footprint, Entry A within it");
+        await SiteAsync(admin, "XDVB");
+        await AirportAsync(admin, "QVB");
+
+        var exported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XDVA", Ct)));
+        var imported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XDVB", Request(exported.Bundle), "QVB", Ct)));
+
+        DeviceRows(exported.Bundle).Select(d => (d.Code, d.LineCoverage, d.CoveredLines is null ? null : string.Join("|", d.CoveredLines)))
+            .Should().Equal(("S01", "All", null), ("S02", "Listed", "Entry A|Exit A"), ("S03", "None", null));
+        (await DeclarationsAsync("XDVB")).Should().Be(await DeclarationsAsync("XDVA"), "the import keeps each device's declaration");
+        (await DeclarationsAsync("XDVB")).Should().Be("S01:All:-,S02:Listed:Entry A|Exit A,S03:None:-");
+        imported.DevicesWithLinesOutOfReach.Should().Equal(["S02"], "the registry's footprint warning, as at the source");
+        imported.Notes.Should().Contain(SiteConfigurationErrors.DeviceLinesOutOfReach);
+        (await _host.ReadAsync<long>("""
+            SELECT count(*) FROM audit_entry a JOIN device d ON d.id = a.target_id
+            WHERE a.action = 'Device.CoverageChanged' AND d.site_code = @secret
+            """, secret: "XDVB")).Should().Be(2, "each declaration goes through the registry's path, audited there (S01 keeps the default)");
+    }
+
+    [Fact]
+    public async Task Import_Should_LetEveryDeviceCountEveryLine_When_TheBundleCarriesNoDeclaration()
+    {
+        // A bundle made before ARV-276: the device rows carry no lineCoverage or coveredLines member.
+        var admin = await AdministratorAsync("dn");
+        await DeclaredSourceAsync(admin, "XDVC", "QVC");
+        await SiteAsync(admin, "XDVD");
+        await AirportAsync(admin, "QVD");
+        var exported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XDVC", Ct)));
+        var rows = System.Text.Json.JsonSerializer.Deserialize<List<Dictionary<string, System.Text.Json.JsonElement>>>(
+            Convert.FromBase64String(exported.Bundle.Parts[SiteConfigurationBundles.Devices]))!;
+        foreach (var row in rows)
+        {
+            row.Remove("lineCoverage");
+            row.Remove("coveredLines");
+        }
+
+        var older = Rehashed(exported.Bundle, SiteConfigurationBundles.Devices, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(rows));
+        var imported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XDVD", older, "QVD", Ct)));
+
+        (await DeclarationsAsync("XDVD")).Should().Be("S01:All:-,S02:All:-,S03:All:-");
+        imported.DevicesWithLinesOutOfReach.Should().BeEmpty();
+        imported.Notes.Should().NotContain(SiteConfigurationErrors.DeviceLinesOutOfReach);
+    }
+
+    [Fact]
+    public async Task Import_Should_RefuseTheBundleAndWriteNothing_When_ADeviceDeclaresLinesItsZoneLacksOrOfAnotherShape()
+    {
+        var admin = await AdministratorAsync("dr");
+        await DeclaredSourceAsync(admin, "XDVE", "QVE", secondQueue: true);
+        await SiteAsync(admin, "XDVF");
+        await AirportAsync(admin, "QVF");
+        var exported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XDVE", Ct)));
+        var rows = DeviceRows(exported.Bundle);
+        (string Name, string Coverage, string[] Lines, string Expected)[] cases =
+        [
+            ("a count line on another level", "Listed", ["Exit A", "Count hall"], SiteConfigurationErrors.DeviceLineNotInProfile(2)),
+            ("the overflow band's entry line", "Listed", ["Overflow entry A"], SiteConfigurationErrors.DeviceLineNotInProfile(2)),
+            ("an entry line of another queue zone", "Listed", ["Entry A", "Entry B"], SiteConfigurationErrors.DeviceLineNotInProfile(2)),
+            ("a line of the zone in another case", "Listed", ["exit a"], SiteConfigurationErrors.DeviceLineNotInProfile(2)),
+            ("a line no profile has, written as markup", "Listed", [HostileName], SiteConfigurationErrors.DeviceLineNotInProfile(2)),
+            ("a line listed twice", "Listed", ["Exit A", "Exit A"], SiteConfigurationErrors.InvalidDevices),
+            ("lines named by a device that counts none", "None", ["Exit A"], SiteConfigurationErrors.InvalidDevices),
+            ("a coverage that does not exist", "Most", null, SiteConfigurationErrors.InvalidDevices)
+        ];
+
+        foreach (var (name, coverage, lines, expected) in cases)
+        {
+            // S02 is the second row (the export orders devices by code); every refusal leaves XDVF empty for the next case.
+            var changed = rows.Select(d => d.Code == "S02" ? d with { LineCoverage = coverage, CoveredLines = lines } : d).ToList();
+            var bundle = Rehashed(exported.Bundle, SiteConfigurationBundles.Devices, SiteConfigurationParts.Write(changed));
+
+            var refused = await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XDVF", bundle, "QVF", Ct));
+
+            refused.ErrorMessages.Should().Equal([expected], name);
+            (lines ?? []).Where(line => refused.ErrorMessages.Single().Contains(line, StringComparison.Ordinal)).Should().BeEmpty("the row is named, never a line (CWE-79)");
+            (await RecordsAsync("XDVF")).Should().Be(0, name);
+        }
+    }
+
+    #endregion
 
     [Fact]
     public async Task Import_Should_LeaveNothingBehind_When_TheRegistrationPathRefusesALaterDeviceAfterRecordsFilesAndADeviceWereWritten()
