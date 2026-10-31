@@ -70,6 +70,7 @@ public sealed partial class MetricTagTests
             devices.Snapshot(4, 1, 1, 1, 1, TimeSpan.FromMinutes(1));
         },
         [typeof(SensingArchiveMetrics)] = m => ((SensingArchiveMetrics)m).Skipped(SensingArchiveMetrics.BatchKind, 1),
+        [typeof(IngestMetrics)] = m => ((IngestMetrics)m).Undeclared(Site, 3),
         [typeof(BorderMetrics)] = m =>
         {
             var border = (BorderMetrics)m;

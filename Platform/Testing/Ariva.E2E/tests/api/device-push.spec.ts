@@ -8,7 +8,9 @@ import { expectStatus } from '../support/expect-status';
 // line refused; another zone 403; another dialect 400; not JSON 415; over 256 KB 413 with Connection: close (ARV-233), and the
 // next push answered; a Xovis firmware 5 logics push
 // mapped to an interval count and an occupancy. ARV-024: an Ouster Detect occupations message through the declarative
-// mapping ouster-detect-v1, the mappings list, and an unknown mapping refused at registration.
+// mapping ouster-detect-v1, the mappings list, and an unknown mapping refused at registration. ARV-277: a device that declares
+// the lines it counts (Listed) has its push on other entry and exit lines accepted whole, each such line named once with its
+// count in the safe form (a line named with markup is never echoed), and a device that declared nothing has no such problem.
 
 test.skip(!databaseAvailable, 'pushes need the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -19,6 +21,9 @@ const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const random = (n: number) => Array.from({ length: n }, () => letters[Math.floor(Math.random() * 26)]).join('');
 const site = `DP${random(4)}`;
 const keys: Record<string, string> = {};
+// A name the zone profile accepts (ARV-159's rule allows markup characters) that must never come back as markup.
+const hostileLine = 'Entry <b onmouseover=alert(1)>';
+let declaredKey = '';
 let adminToken = '';
 let level = '';
 
@@ -46,6 +51,7 @@ test.beforeAll(async () => {
 	const zoneId = await create(`zone-profiles/${draft}/zones`, { name: 'Snake A', kind: 'Queue', levelId, polygon: '10 10,34 10,34 22,10 22' });
 	await create(`zone-profiles/${draft}/lines`, { name: 'Entry A', role: 'Entry', levelId, startX: 10, startY: 12, endX: 10, endY: 16, zoneId });
 	await create(`zone-profiles/${draft}/lines`, { name: 'Exit A', role: 'Exit', levelId, startX: 30, startY: 22, endX: 34, endY: 22, zoneId });
+	await create(`zone-profiles/${draft}/lines`, { name: hostileLine, role: 'Entry', levelId, startX: 10, startY: 17, endX: 10, endY: 21, zoneId });
 	const { geometryHash } = await (await call('GET', `${admin}/zone-profiles/${draft}/validation`, { token })).json();
 	expect((await call('POST', `${admin}/zone-profiles/${draft}/publish`, { token, data: { geometryHash } })).status()).toBe(200);
 	for (const [code, dialect, mappingName] of [['S-1', 'Canonical', null], ['S-2', 'Xovis', null], ['L-1', 'Declarative', 'ouster-detect-v1']] as const) {
@@ -59,6 +65,19 @@ test.beforeAll(async () => {
 		await expectStatus(registered, 201);
 		keys[dialect] = (await registered.json()).credential;
 	}
+
+	// ARV-277: a device that declares it counts the exit line only (ARV-259e4), before it ever pushes.
+	const declared = await call('POST', `${admin}/devices`, {
+		token,
+		data: {
+			code: 'S-3', family: 'StereoVision', model: 'PC2SE', transport: 'HttpsPush', dialect: 'Canonical', clockSource: 'Ntp', mappingName: null,
+			placement: { levelId, x: 20, y: 16, mountingHeightMetres: 5, orientationDegrees: 0, queueZoneName: 'Snake A' }
+		}
+	});
+	await expectStatus(declared, 201);
+	const { device, credential } = await declared.json();
+	declaredKey = credential;
+	await expectStatus(await call('PUT', `${admin}/devices/${device.id}/coverage`, { token, data: { mode: 'Listed', lines: ['Exit A'] } }), 200);
 });
 
 test('a canonical push is accepted for the own zone and refused elsewhere', async () => {
@@ -135,4 +154,32 @@ test('an Ouster occupations message is read through the declarative mapping', as
 		}
 	});
 	expect(unknown.status()).toBe(400);
+});
+
+test('a push on entry lines its device does not declare it counts is accepted, each line named once and safely (ARV-277)', async () => {
+	test.skip(!kafkaAvailable, 'an accepted push needs Kafka (ARIVA_E2E_KAFKA_BOOTSTRAP)');
+	const now = new Date();
+	const minuteAgo = new Date(now.getTime() - 60_000);
+	const crossing = (lineName: string, trackId: string, direction = 'In') => ({ lineName, direction, trackId, timeUtc: now.toISOString() });
+	const body = JSON.stringify({
+		sentUtc: now.toISOString(),
+		crossings: [crossing(hostileLine, '8'), crossing(hostileLine, '9'), crossing('Entry A', '10'), crossing('Exit A', '8', 'Out')],
+		intervals: [{ lineName: 'Entry A', in: 2, out: 0, fromUtc: minuteAgo.toISOString(), toUtc: now.toISOString() }]
+	});
+
+	const answer = await push('events', declaredKey, body);
+	await expectStatus(answer, 202);
+	expect(answer.headers()['content-type']).toContain('application/json');
+	const outcome = await answer.json();
+	expect(outcome.accepted, 'a line the device does not declare is a warning, never a refusal').toBe(5);
+	expect(outcome.rejected).toBe(0);
+	const warning = 'events accepted on an entry or exit line this device does not declare it counts';
+	// In ordinal order of the names ('<' sorts before 'A'); the declared exit line is not named.
+	expect(outcome.problems).toEqual([`undeclared line 'Entry ?b onmouseover?alert?1??': 2 ${warning}`, `undeclared line 'Entry A': 2 ${warning}`]);
+	for (const problem of outcome.problems as string[]) expect(problem, 'the name is in the safe form, never markup').not.toMatch(/[<>()="&]/);
+
+	// The same push from a device that declared nothing (All) names no line.
+	const all = await push('events', keys.Canonical, body);
+	await expectStatus(all, 202);
+	expect((await all.json()).problems).toEqual([]);
 });

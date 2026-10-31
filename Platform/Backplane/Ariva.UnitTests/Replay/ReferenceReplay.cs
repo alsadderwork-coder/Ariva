@@ -160,7 +160,7 @@ internal static class ReferenceReplay
         var sink = new Sink();
         var cache = new FusionCache(new FusionCacheOptions(), new MemoryCache(new MemoryCacheOptions()));
         var ingest = new SensingIngest(new Gateway(deskZones), sink, new DeviceClockStore(), cache, Options.Create(new IngestSettings { MaxEventsPerMessage = 3_000 }),
-            Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded);
+            Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded, new IngestMetrics());
         var package = 0L;
         for (var minute = 1020; minute < 1230; minute++)
         {

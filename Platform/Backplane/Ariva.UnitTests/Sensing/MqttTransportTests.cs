@@ -91,6 +91,7 @@ public sealed class MqttTransportTests
         services.AddSingleton<IFusionCache>(new FusionCache(new FusionCacheOptions(), new MemoryCache(new MemoryCacheOptions())));
         services.AddSingleton(Options.Create(new IngestSettings()));
         services.AddSingleton(DeclarativeMappingCatalog.Embedded);
+        services.AddSingleton<IngestMetrics>();
         services.AddScoped<SensingIngest>();
         services.AddSingleton(TimeProvider.System);
     }

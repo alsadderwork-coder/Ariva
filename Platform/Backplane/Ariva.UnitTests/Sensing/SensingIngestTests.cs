@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using System.Text;
 using Ariva.Core.Domain.Contracts;
 using Ariva.Core.Domain.Enums;
@@ -17,16 +18,17 @@ namespace Ariva.UnitTests.Sensing;
 /// ARV-023: the clock estimate (F19 test cases), and the ingest of a push: the device's dialect only, names checked
 /// against the published geometry of its zone, bounds, clock correction and skew flags, far-future and too-old events
 /// refused, track ids namespaced, batches keyed by zone with ids that repeat for a resent package, and health at most
-/// every 10 seconds.
+/// every 10 seconds. ARV-277: accepted crossings and interval readings on an entry or exit line the device does not declare it
+/// counts are published, named per line in the problems (safe form, bounded) and counted by site.
 /// </summary>
 public sealed class SensingIngestTests
 {
     private static readonly DateTime Received = new(2026, 10, 2, 14, 5, 1, DateTimeKind.Utc);
 
-    private static DeviceCredentialRecord Device(string dialect = "Canonical", string state = "Online") =>
-        new(Guid.Parse("0199a000-0000-7000-8000-0000000d0017"), "S-17", "DMO", "Snake A", state, new string('a', 64), [], null, dialect, 20, 16, 0);
+    private static DeviceCredentialRecord Device(string dialect = "Canonical", string state = "Online", IReadOnlyList<string> covered = null) =>
+        new(Guid.Parse("0199a000-0000-7000-8000-0000000d0017"), "S-17", "DMO", "Snake A", state, new string('a', 64), [], null, dialect, 20, 16, 0, CoveredLines: covered);
 
-    private sealed class Gateway(bool published = true) : ISvcDeviceGateway
+    private sealed class Gateway(bool published = true, bool countLine = false) : ISvcDeviceGateway
     {
         public Task<DeviceCredentialRecord> FindByPrefixAsync(string prefix, CancellationToken ct = default) => Task.FromResult<DeviceCredentialRecord>(null);
 
@@ -34,7 +36,8 @@ public sealed class SensingIngestTests
             Task.FromResult(published
                 ? new Fluentx.Result<DeviceZoneViewModel>(new DeviceZoneViewModel(siteCode, queueZoneName, 12, new string('b', 64),
                     [new(Guid.NewGuid(), "Snake A", "Queue", Guid.NewGuid(), null, null, "10 10,34 10,34 22,10 22", 288), new(Guid.NewGuid(), "Overflow A", "Overflow", Guid.NewGuid(), null, null, "10 4,34 4,34 10,10 10", 144)],
-                    [new(Guid.NewGuid(), "Entry A", "Entry", null, Guid.NewGuid(), 10, 12, 10, 16, 4), new(Guid.NewGuid(), "Exit A", "Exit", null, Guid.NewGuid(), 30, 22, 34, 22, 4)]))
+                    [new(Guid.NewGuid(), "Entry A", "Entry", null, Guid.NewGuid(), 10, 12, 10, 16, 4), new(Guid.NewGuid(), "Exit A", "Exit", null, Guid.NewGuid(), 30, 22, 34, 22, 4),
+                     .. countLine ? new LineViewModel[] { new(Guid.NewGuid(), "Count A", "Count", null, Guid.NewGuid(), 20, 10, 20, 22, 12) } : []]))
                 : Fluentx.Result.Error<DeviceZoneViewModel>("not found"));
     }
 
@@ -52,12 +55,14 @@ public sealed class SensingIngestTests
         }
     }
 
-    private static (SensingIngest Ingest, Sink Sink, DeviceClockStore Clocks) Create(bool published = true, int max = 2_000)
+    private static (SensingIngest Ingest, Sink Sink, DeviceClockStore Clocks) Create(bool published = true, int max = 2_000, IngestMetrics metrics = null,
+        bool countLine = false)
     {
         var sink = new Sink();
         var clocks = new DeviceClockStore();
         var cache = new FusionCache(new FusionCacheOptions(), new MemoryCache(new MemoryCacheOptions()));
-        return (new SensingIngest(new Gateway(published), sink, clocks, cache, Options.Create(new IngestSettings { MaxEventsPerMessage = max }), Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded), sink, clocks);
+        return (new SensingIngest(new Gateway(published, countLine), sink, clocks, cache, Options.Create(new IngestSettings { MaxEventsPerMessage = max }),
+            Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded, metrics ?? new IngestMetrics()), sink, clocks);
     }
 
     private static ReadOnlyMemory<byte> Json(string json) => Encoding.UTF8.GetBytes(json);
@@ -416,4 +421,195 @@ public sealed class SensingIngestTests
         ids[0].Should().NotBe(ids[1], "an identical count read 5 seconds later is a new reading, stamped at its receipt");
         ids[1].Should().Be(ids[2], "the same body received at the same instant is the same batch");
     }
+
+    #region ARV-277: events on lines the device does not declare it counts
+
+    private const string Undeclared = "undeclared line";
+
+    private static string Crossing(string line, string time = "2026-10-02T14:05:00.600Z") =>
+        $$"""{ "lineName": "{{line}}", "direction": "In", "trackId": "7", "timeUtc": "{{time}}" }""";
+
+    private static string Interval(string line) =>
+        $$"""{ "lineName": "{{line}}", "in": 0, "out": 5, "fromUtc": "2026-10-02T14:00:00Z", "toUtc": "2026-10-02T14:05:00Z" }""";
+
+    private static string LinePush(IEnumerable<string> crossings, IEnumerable<string> intervals) => $$"""
+        { "sentUtc": "2026-10-02T14:05:00.900Z", "packageId": 4712, "crossings": [{{string.Join(", ", crossings)}}], "intervals": [{{string.Join(", ", intervals)}}] }
+        """;
+
+    private static string Problem(string quoted, int events) =>
+        $"{Undeclared} {quoted}: {events} events accepted on an entry or exit line this device does not declare it counts";
+
+    /// <summary>Listens to this instance's meter alone, so other tests' ingests running in parallel are not counted.</summary>
+    private static (MeterListener Listener, List<(string Site, long Value)> Measured) Listen(IngestMetrics metrics)
+    {
+        var measured = new List<(string Site, long Value)>();
+        var listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (ReferenceEquals(instrument.Meter, metrics.Meter) && instrument.Name == IngestMetrics.UndeclaredName)
+                    l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+        {
+            var keys = new List<string>();
+            string site = null;
+            foreach (var tag in tags)
+            {
+                keys.Add(tag.Key);
+                if (tag.Key == "site")
+                    site = (string)tag.Value;
+            }
+
+            keys.Should().Equal(["site"], "the site is the counter's only tag");
+            lock (measured)
+                measured.Add((site, value));
+        });
+        listener.Start();
+        return (listener, measured);
+    }
+
+    [Fact]
+    public async Task Ingest_Should_AcceptAndNameEachUndeclaredLineWithItsCount_When_AListedDeviceCountsALineItDoesNotDeclare()
+    {
+        using var metrics = new IngestMetrics();
+        var (listener, measured) = Listen(metrics);
+        using var listening = listener;
+        var (ingest, sink, _) = Create(metrics: metrics);
+        var body = LinePush([Crossing("Entry A"), Crossing("Exit A"), Crossing("Exit A")], [Interval("Exit A")]);
+
+        var result = await ingest.IngestAsync(Device(covered: ["Entry A"]), DeviceDialect.Canonical, Json(body), Received, CancellationToken.None);
+
+        result.HasErrors.Should().BeFalse(string.Join(", ", result.ErrorMessages ?? []));
+        result.Data.Accepted.Should().Be(4, "an undeclared line is a warning, never a refusal");
+        result.Data.Rejected.Should().Be(0);
+        result.Data.Problems.Should().Equal(Problem("'Exit A'", 3));
+        sink.Published.OfType<VendorLineCrossingBatch>().Single().Crossings.Select(c => c.Event.LineName).Should().Equal(["Entry A", "Exit A", "Exit A"],
+            "the queue engine counts them: coverage and counting are separate questions");
+        sink.Published.OfType<IntervalCountBatch>().Single().Intervals.Single().Event.LineName.Should().Be("Exit A");
+        measured.Should().Equal([("DMO", 3L)]);
+    }
+
+    [Fact]
+    public async Task Ingest_Should_NameEveryEntryAndExitLineInNameOrderButNoCountLine_When_TheDeviceDeclaresNone()
+    {
+        using var metrics = new IngestMetrics();
+        var (listener, measured) = Listen(metrics);
+        using var listening = listener;
+        var (ingest, sink, _) = Create(metrics: metrics, countLine: true);
+        var body = LinePush([Crossing("Exit A"), Crossing("Entry A"), Crossing("Count A"), Crossing("Entry A")], [Interval("Exit A"), Interval("Count A")]);
+
+        var result = await ingest.IngestAsync(Device(covered: []), DeviceDialect.Canonical, Json(body), Received, CancellationToken.None);
+
+        result.Data.Accepted.Should().Be(6);
+        result.Data.Problems.Should().Equal([Problem("'Entry A'", 2), Problem("'Exit A'", 2)], "a count line is never a declaration's question");
+        sink.Published.OfType<VendorLineCrossingBatch>().Single().Crossings.Should().HaveCount(4);
+        measured.Should().Equal([("DMO", 4L)]);
+    }
+
+    [Fact]
+    public async Task Ingest_Should_NameNoLine_When_TheDeviceCountsEveryLineOrListsTheOnesItSends()
+    {
+        using var metrics = new IngestMetrics();
+        var (listener, measured) = Listen(metrics);
+        using var listening = listener;
+        var (ingest, _, _) = Create(metrics: metrics);
+        var body = LinePush([Crossing("Entry A"), Crossing("Exit A")], [Interval("Exit A")]);
+
+        var all = await ingest.IngestAsync(Device(), DeviceDialect.Canonical, Json(body), Received, CancellationToken.None);
+        var listed = await ingest.IngestAsync(Device(covered: ["Entry A", "Exit A"]), DeviceDialect.Canonical, Json(body), Received.AddSeconds(1), CancellationToken.None);
+
+        all.Data.Accepted.Should().Be(3);
+        all.Data.Problems.Should().BeEmpty("a device that declared nothing (All) counts every line");
+        listed.Data.Problems.Should().BeEmpty();
+        measured.Should().BeEmpty("nothing is counted for a device whose events are all on lines it declares");
+    }
+
+    [Fact]
+    public async Task Ingest_Should_CountOnlyAcceptedEvents_When_SomeOnAnUndeclaredLineAreRefused()
+    {
+        using var metrics = new IngestMetrics();
+        var (listener, measured) = Listen(metrics);
+        using var listening = listener;
+        var (ingest, _, _) = Create(metrics: metrics);
+        var body = LinePush([Crossing("Exit A", "2026-10-02T14:30:00Z"), Crossing("Nowhere"), Crossing("Exit A")], []);
+
+        var result = await ingest.IngestAsync(Device(covered: ["Entry A"]), DeviceDialect.Canonical, Json(body), Received, CancellationToken.None);
+
+        result.Data.Accepted.Should().Be(1);
+        result.Data.Rejected.Should().Be(2);
+        result.Data.Problems.Should().HaveCount(3);
+        result.Data.Problems[0].Should().StartWith("crossings[0]: the time is more than 5 minutes ahead");
+        result.Data.Problems[1].Should().StartWith("crossings[1]: line 'Nowhere'");
+        result.Data.Problems[2].Should().Be(Problem("'Exit A'", 1), "a refused event has its own problem and is not counted again");
+        measured.Should().Equal([("DMO", 1L)]);
+    }
+
+    [Fact]
+    public async Task Ingest_Should_NameNoLineAndCountNothing_When_TheEventsCouldNotBeStored()
+    {
+        using var metrics = new IngestMetrics();
+        var (listener, measured) = Listen(metrics);
+        using var listening = listener;
+        var (ingest, sink, _) = Create(metrics: metrics);
+        sink.Fail = true;
+
+        var act = () => ingest.IngestAsync(Device(covered: []), DeviceDialect.Canonical, Json(LinePush([Crossing("Exit A")], [])), Received, CancellationToken.None);
+
+        await act.Should().ThrowAsync<SensingSinkUnavailableException>();
+        measured.Should().BeEmpty("the device sends them again; they are counted when they are stored");
+    }
+
+    [Fact]
+    public void Undeclared_Should_CountOnlyEntryAndExitLinesOutsideTheDeclaration()
+    {
+        var entryExit = new HashSet<string>(StringComparer.Ordinal) { "Entry A", "Exit A", "Entry B" };
+        string[] sent = ["Exit A", "Entry B", "Count A", "Exit A", null, "entry a", "Entry A"];
+
+        SensingIngest.Undeclared(null, entryExit, sent).Should().BeEmpty("All declares every line");
+        SensingIngest.Undeclared([], entryExit, sent).Should().Equal([("Entry A", 1), ("Entry B", 1), ("Exit A", 2)], "None declares none; names compare ordinally");
+        SensingIngest.Undeclared(["Exit A"], entryExit, sent).Should().Equal([("Entry A", 1), ("Entry B", 1)]);
+        SensingIngest.Undeclared(["Exit A", "Entry A", "Entry B"], entryExit, sent).Should().BeEmpty();
+        SensingIngest.Undeclared([], null, sent).Should().BeEmpty("a zone that is not published refuses every line event already");
+        SensingIngest.Undeclared([], new HashSet<string>(StringComparer.Ordinal), sent).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void UndeclaredProblems_Should_QuoteEachNameSafelyAndStayWithinTheBound()
+    {
+        var hostile = new (string Line, int Events)[] { ("Entry <img src=x onerror=alert(1)>", 2), ("Exit \"A\" & 'B'", 1), (new string('L', 60), 4) };
+
+        var problems = SensingIngest.UndeclaredProblems(hostile).ToList();
+
+        problems.Should().Equal(Problem("'Entry ?img src?x onerror?alert?1??'", 2), Problem("'Exit ?A? ? ?B?'", 1), Problem($"'{new string('L', 40)}...'", 4));
+        char[] meaningful = ['<', '>', '"', '&', '(', ')'];
+        problems.Should().OnlyContain(p => p.IndexOfAny(meaningful) < 0, "no character that means something in markup, a script or a log query");
+
+        var ten = Enumerable.Range(0, SensingIngest.MaxProblems).Select(i => ($"Entry {i:00}", i + 1)).ToList();
+        SensingIngest.UndeclaredProblems(ten).Should().HaveCount(SensingIngest.MaxProblems).And.OnlyContain(p => p.StartsWith(Undeclared + " 'Entry ", StringComparison.Ordinal),
+            "up to the bound every line is named");
+
+        var twelve = Enumerable.Range(0, SensingIngest.MaxProblems + 2).Select(i => ($"Entry {i:00}", i + 1)).ToList();
+        var cut = SensingIngest.UndeclaredProblems(twelve).ToList();
+        cut.Should().HaveCount(SensingIngest.MaxProblems);
+        cut.Take(SensingIngest.MaxProblems - 1).Should().Equal(twelve.Take(SensingIngest.MaxProblems - 1).Select(u => Problem($"'{u.Item1}'", u.Item2)));
+        cut[^1].Should().Be("undeclared lines: 33 events accepted on 3 more entry or exit lines this device does not declare it counts", "10 + 11 + 12 on the three lines beyond the ninth");
+    }
+
+    [Fact]
+    public async Task Ingest_Should_KeepTheUndeclaredLinesWithinTheirOwnBound_When_TheRefusalsFillTheirs()
+    {
+        var (ingest, _, _) = Create();
+        var refused = Enumerable.Range(0, SensingIngest.MaxProblems + 5).Select(_ => Crossing("Nowhere"));
+        var body = LinePush([.. refused, Crossing("Exit A")], []);
+
+        var result = await ingest.IngestAsync(Device(covered: ["Entry A"]), DeviceDialect.Canonical, Json(body), Received, CancellationToken.None);
+
+        result.Data.Rejected.Should().Be(SensingIngest.MaxProblems + 5);
+        result.Data.Problems.Should().HaveCount(SensingIngest.MaxProblems + 1, "ten refusals named, then the undeclared line");
+        result.Data.Problems[^1].Should().Be(Problem("'Exit A'", 1), "refusals never crowd out the undeclared lines");
+    }
+
+    #endregion
 }

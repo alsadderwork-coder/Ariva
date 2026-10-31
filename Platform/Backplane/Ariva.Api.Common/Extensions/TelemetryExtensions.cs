@@ -31,6 +31,8 @@ public static class TelemetryExtensions
         Ariva.Infra.Sensing.DeviceHealthMetrics.MeterName,
         // Sensing batches, events and health reports the archive skipped (ARV-159).
         Ariva.Infra.Sensing.SensingArchiveMetrics.MeterName,
+        // Events accepted on entry or exit lines their device does not declare it counts, by site (ARV-277), Ariva.Api.Ingest only.
+        Ariva.Infra.Sensing.IngestMetrics.MeterName,
         // Immigration records by contract and outcome, unmapped codes (ARV-048); exported since ARV-125a.
         Ariva.Infra.Border.BorderMetrics.MeterName,
         // Flight feed items, stale feeds (ARV-041); exported since ARV-125a.

@@ -84,7 +84,9 @@ public sealed class DeviceClockStore
 /// as in the published geometry of the device's zone; the device's clock offset is estimated from its send time
 /// (F19, EWMA) and events are corrected when it is off but stable; events beyond the tolerance from receipt are
 /// flagged, far-future or older-than-retention ones refused; track ids are namespaced by device; the batches go to the
-/// sink keyed by zone, with a health report at most every 10 seconds per device.
+/// sink keyed by zone, with a health report at most every 10 seconds per device. Crossings and interval readings accepted on an
+/// entry or exit line the device does not declare it counts (a Listed or None declaration, ARV-259e4) are still published, and
+/// are named per line in the answer's problems and counted by site (ARV-277).
 /// </summary>
 public sealed class SensingIngest(
     ISvcDeviceGateway gateway,
@@ -92,7 +94,8 @@ public sealed class SensingIngest(
     DeviceClockStore clocks,
     IFusionCache cache,
     Microsoft.Extensions.Options.IOptions<IngestSettings> settings,
-    Declarative.DeclarativeMappingCatalog mappings)
+    Declarative.DeclarativeMappingCatalog mappings,
+    IngestMetrics metrics)
 {
     /// <summary>Further ahead than this, an event cannot be a clock glitch; it is refused.</summary>
     public static readonly TimeSpan MaxFuture = TimeSpan.FromMinutes(5);
@@ -104,6 +107,12 @@ public sealed class SensingIngest(
     public static readonly TimeSpan Late = TimeSpan.FromMinutes(10);
 
     public static readonly TimeSpan HealthEvery = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The refusals an answer names at most (with the mapping's notes), and apart from them the undeclared lines it names at most
+    /// (ARV-277); the counts and the metric take in every one.
+    /// </summary>
+    public const int MaxProblems = 10;
 
     /// <summary>
     /// The adapter boundary of a push (ARV-023, CWE-120): the body parsed as JSON (depth 16, no comments) and mapped by the
@@ -185,7 +194,7 @@ public sealed class SensingIngest(
                 if (why is not null)
                 {
                     rejected++;
-                    if (problems.Count < 10)
+                    if (problems.Count < MaxProblems)
                         problems.Add($"{kind}[{i}]: {why}");
                     continue;
                 }
@@ -198,7 +207,7 @@ public sealed class SensingIngest(
                 if (why is not null)
                 {
                     rejected++;
-                    if (problems.Count < 10)
+                    if (problems.Count < MaxProblems)
                         problems.Add($"{kind}[{i}]: {why}");
                     continue;
                 }
@@ -224,6 +233,10 @@ public sealed class SensingIngest(
         var crossings = Check(push.Crossings, "crossings", c => c.LineName, true, NamespacedCrossing, PushKinds.Crossings);
         var occupancy = Check(push.Occupancy, "occupancy", o => o.ZoneName, false, o => o, PushKinds.Occupancy);
         var intervals = Check(push.Intervals, "intervals", c => c.LineName, true, CorrectedInterval, PushKinds.Intervals);
+        // ARV-277: accepted events on an entry or exit line the device does not declare it counts stay in their batches (the queue
+        // engine counts them; coverage and counting are separate questions) and are named and counted below, once they are stored.
+        var undeclared = Undeclared(device.CoveredLines, names?.EntryExit,
+            crossings.Select(c => c.Event.LineName).Concat(intervals.Select(c => c.Event.LineName)));
 
         var reading = clock.Reading;
         var commissioned = device.State is "Online" or "Degraded" or "Offline";
@@ -295,6 +308,11 @@ public sealed class SensingIngest(
 
         if (health)
             clocks.HealthSent(device.DeviceId, receivedUtc);
+        if (undeclared.Count > 0)
+        {
+            problems.AddRange(UndeclaredProblems(undeclared));
+            metrics.Undeclared(device.SiteCode, undeclared.Sum(u => (long)u.Events));
+        }
 
         var accepted = tracks.Count + crossings.Count + occupancy.Count + intervals.Count + (statusAccepted ? 1 : 0);
         return new Fluentx.Result<IngestOutcome>(new IngestOutcome(accepted, rejected, flagged, push.Ignored, reading, problems));
@@ -316,8 +334,46 @@ public sealed class SensingIngest(
         OccurredOn = status.TimeUtc
     };
 
-    /// <summary>The line and zone names of the device's zone in the published profile (cached a minute), or null when it is not published.</summary>
-    private async Task<(HashSet<string> Lines, HashSet<string> Zones)?> NamesAsync(DeviceCredentialRecord device, CancellationToken ct)
+    /// <summary>
+    /// The events on each entry or exit line of the device's zone its declaration leaves out (ARV-277), by line in ordinal order: none
+    /// for every line declared (<paramref name="declared"/> null, All) or no published zone, every entry and exit line for None (empty),
+    /// those not listed for Listed. <paramref name="lineNames"/> are the accepted events' lines, already checked against the zone's.
+    /// </summary>
+    internal static IReadOnlyList<(string Line, int Events)> Undeclared(IReadOnlyList<string> declared, IReadOnlySet<string> entryExit, IEnumerable<string> lineNames)
+    {
+        ArgumentNullException.ThrowIfNull(lineNames);
+        if (declared is null || entryExit is null || entryExit.Count == 0)
+            return [];
+        var covered = new HashSet<string>(declared, StringComparer.Ordinal);
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var name in lineNames)
+        {
+            if (name is not null && entryExit.Contains(name) && !covered.Contains(name))
+                counts[name] = counts.GetValueOrDefault(name) + 1;
+        }
+
+        return [.. counts.OrderBy(c => c.Key, StringComparer.Ordinal).Select(c => (c.Key, c.Value))];
+    }
+
+    /// <summary>
+    /// One problem per undeclared line with its events, the name in the answer's safe form (CWE-79): at most <see cref="MaxProblems"/>,
+    /// the last of them summing up the lines beyond the first <see cref="MaxProblems"/> less one when there are more (CWE-400).
+    /// </summary>
+    internal static IEnumerable<string> UndeclaredProblems(IReadOnlyList<(string Line, int Events)> undeclared)
+    {
+        ArgumentNullException.ThrowIfNull(undeclared);
+        var named = undeclared.Count <= MaxProblems ? undeclared.Count : MaxProblems - 1;
+        for (var i = 0; i < named; i++)
+            yield return $"undeclared line {PushJson.Quote(undeclared[i].Line)}: {undeclared[i].Events} events accepted on an entry or exit line this device does not declare it counts";
+        if (named < undeclared.Count)
+            yield return $"undeclared lines: {undeclared.Skip(named).Sum(u => (long)u.Events)} events accepted on {undeclared.Count - named} more entry or exit lines this device does not declare it counts";
+    }
+
+    /// <summary>
+    /// The line and zone names of the device's zone in the published profile (cached a minute), with its entry and exit lines (only a
+    /// queue zone holds them, and the geometry holds one queue zone, the device's), or null when it is not published.
+    /// </summary>
+    private async Task<(HashSet<string> Lines, HashSet<string> Zones, HashSet<string> EntryExit)?> NamesAsync(DeviceCredentialRecord device, CancellationToken ct)
     {
         var geometry = await cache.GetOrSetAsync<DeviceZoneViewModel>($"ingest:zone:{device.SiteCode}/{device.QueueZoneName}", async (_, token) =>
         {
@@ -335,7 +391,8 @@ public sealed class SensingIngest(
         }, token: ct);
         return geometry is null
             ? null
-            : (new HashSet<string>(geometry.Lines.Select(l => l.Name), StringComparer.Ordinal), new HashSet<string>(geometry.Zones.Select(z => z.Name), StringComparer.Ordinal));
+            : (new HashSet<string>(geometry.Lines.Select(l => l.Name), StringComparer.Ordinal), new HashSet<string>(geometry.Zones.Select(z => z.Name), StringComparer.Ordinal),
+                new HashSet<string>(geometry.Lines.Where(l => l.Role is nameof(LineRole.Entry) or nameof(LineRole.Exit)).Select(l => l.Name), StringComparer.Ordinal));
     }
 }
 

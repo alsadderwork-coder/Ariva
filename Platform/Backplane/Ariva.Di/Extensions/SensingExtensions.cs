@@ -25,6 +25,8 @@ public static class SensingExtensions
         // The declarative mappings shipped with Ariva (ARV-024), parsed here so a broken one stops the host at start-up.
         services.TryAddSingleton(DeclarativeMappingCatalog.Embedded);
         services.TryAddSingleton<ISensingSink, MessageBusSensingSink>();
+        // Events on lines their device does not declare it counts, by site (ARV-277).
+        services.TryAddSingleton<IngestMetrics>();
         services.TryAddScoped<SensingIngest>();
         return services;
     }

@@ -116,7 +116,7 @@ public sealed class AuhTerminalAReplayTests
         var sink = new Sink();
         var cache = new FusionCache(new FusionCacheOptions(), new MemoryCache(new MemoryCacheOptions()));
         var ingest = new SensingIngest(new Gateway(), sink, new DeviceClockStore(), cache, Options.Create(new IngestSettings { MaxEventsPerMessage = 3_000 }),
-            Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded);
+            Ariva.Infra.Sensing.Declarative.DeclarativeMappingCatalog.Embedded, new IngestMetrics());
         var ids = devices.ToDictionary(d => d.Sensor, d => d.Id, StringComparer.Ordinal);
         var package = 0L;
         for (var minute = 1020; minute < 1200; minute++)

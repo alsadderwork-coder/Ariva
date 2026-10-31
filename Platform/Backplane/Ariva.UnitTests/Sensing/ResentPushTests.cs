@@ -95,7 +95,7 @@ public sealed class ResentPushTests
     private static async Task<List<SensingBatch>> IngestAsync(DeviceCredentialRecord device, DeviceDialect dialect, string body, DateTime received, Sink sink, DeviceClockStore clocks)
     {
         var cache = new FusionCache(new FusionCacheOptions(), new MemoryCache(new MemoryCacheOptions()));
-        var ingest = new SensingIngest(new Gateway(), sink, clocks, cache, Options.Create(new IngestSettings()), Catalog);
+        var ingest = new SensingIngest(new Gateway(), sink, clocks, cache, Options.Create(new IngestSettings()), Catalog, new IngestMetrics());
         var before = sink.Published.Count;
         var result = await ingest.IngestAsync(device, dialect, Encoding.UTF8.GetBytes(body), received, CancellationToken.None);
         result.HasErrors.Should().BeFalse(string.Join("; ", result.ErrorMessages ?? []));

@@ -20,8 +20,8 @@ Formulas F11 makes a queue zone's wait Unknown when an entry or exit line has no
 ## Consequences
 
 - The device health answer lists, per published queue zone, the entry and exit lines no commissioned device declares it counts, so a gap in the declarations shows before the engine relies on them.
-- Since ARV-259e5 the engine reads them (formulas F11): Ingest stamps each health report with the registry's declaration, the archive keeps it (script 0067), and the zone snapshot carries each device's (version 15). A declared name the zone does not hold is ignored and counted (`DeclaredLineNotInZone`), never refused in Ingest; naming, in the push answer, events on lines a device does not declare is left for ARV-277 (the owner's optional item).
-- Site configuration export and import do not carry declarations yet (a follow-up story).
+- Since ARV-259e5 the engine reads them (formulas F11): Ingest stamps each health report with the registry's declaration, the archive keeps it (script 0067), and the zone snapshot carries each device's (version 15). A declared name the zone does not hold is ignored and counted (`DeclaredLineNotInZone`), never refused in Ingest; since ARV-277 the push answer names, once per line with its count, the accepted events on entry or exit lines a device does not declare, and `ariva.ingest.undeclared_line_events` counts them by site; they are still published and counted (the owner's decision: warn, count and name, warn).
+- Since ARV-276 site configuration export and import carry each device's declaration.
 - A wrong declaration is a configuration error that makes a zone Unknown sooner (or never); the warnings and the uncovered lines are the guard, with the audit trail to trace who declared what.
 
 ## Alternatives considered

@@ -4216,3 +4216,33 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - A record's equality compares list members by reference. An export that always wrote a list would break every `Should().Equal` on rows. Write a list only where it means something (Listed) and null otherwise.
   - The registry's coverage path (`SetCoverageAsync`) takes a row lock with raw SQL, so flush the registered devices before calling it in the same transaction.
   - A fixture with one queue zone cannot tell "this zone's lines" from "any queue zone's lines": add a second zone to test scoping.
+
+## 2026-10-31: ARV-277 [E4] The push answer names events on entry or exit lines its device does not declare it counts
+
+- What changed:
+  - Ingest counts, per push, the accepted crossings and interval readings on an entry or exit line of the device's queue zone that its declaration leaves out (`DeviceCredentialRecord.CoveredLines` from the registry: null for All, nothing to count; empty for None; the names for Listed). The zone's entry and exit lines come from the published geometry Ingest already checks names against (only a queue zone holds Entry and Exit lines, and the geometry holds the device's one queue zone).
+  - The events stay in their batches and are published as before: the queue engine counts them, since coverage and counting are separate questions (the owner's decision of 2026-10-29, "warn, count and name, warn").
+  - Once the events are stored, the answer's problems name each such line once with its count, in ordinal name order and in the safe form (`PushJson.Quote`): `undeclared line 'Entry B': 3 events accepted on an entry or exit line this device does not declare it counts`. At most `SensingIngest.MaxProblems` (10) such problems, nine lines named and the tenth summing up the rest when there are more, apart from the mapping's notes and the refusals (10 at most together), so refusals never crowd them out.
+  - New meter `Ariva.Ingest`, counter `ariva.ingest.undeclared_line_events`, tag `site` only (the authenticated device's site from the registry, never a value from the push). MQTT devices are counted too; their acknowledgement carries no problems.
+  - A refused event on such a line has its own problem and is not counted again; a push whose events could not be stored (503) names and counts nothing.
+- Files:
+  - Ariva.Infra/Sensing: `SensingIngest` (`MaxProblems`, `Undeclared`, `UndeclaredProblems`, the entry and exit set in `NamesAsync`, `IngestMetrics` required), `IngestMetrics` (new).
+  - Ariva.Api.Common `TelemetryExtensions.Meters`; Ariva.Di `SensingExtensions`.
+  - Unit: `ResentPushTests`, the two replay builders and `MqttTransportTests` give the new dependency; `SensingIngestTests` (eight tests: Listed, None with a count line, All and a full Listed, refused events, a failed store, `Undeclared`, the safe form and the bound, refusals that fill theirs), `MetricTagTests` (the driver).
+  - E2E: `device-push.spec.ts` (a Listed device and an entry line named `Entry <b onmouseover=alert(1)>`: 202, five accepted, both undeclared lines named in order and safely; the All device's same push names none).
+  - Docs: sensor-adapters.md (the push answer), ADR-0027, cwe-controls.md (CWE-79), costly-operations.md (the push row), wiki 06 (section 4, rule 7), wiki 09 (the push answer), wiki 10 (sections 2a and 4.22), wiki 11, wiki 18.
+- Gates: `node scripts/verify.mjs story --specs tests/api/device-push.spec.ts` PASS. It widened to the full suites, since Api.Common and Di changed: build, unit, security scan and its self-tests, chart security, audits, docs, integration 870 (0 failed, 1 skipped, the Timescale smoke test), E2E API and functional 944 passed (1 skipped). The first run was stopped in its unit step for the review fixes. `verify.mjs quick` PASS before the commit.
+- Security review (CWE-20, CWE-79, CWE-400, CWE-532): Round 1 PASS. Its four Lows were all docs:
+    - sensor-adapters.md said the 10 refusals sit apart from the notes;
+    - the CWE-79 row said "letters" for ASCII letters, and wrote "lines" for problems;
+    - ADR-0027 still said the bundle did not carry declarations;
+    - wiki 10 section 4.22 offered a test push (a connection test never shows the warning), gave no route for MQTT devices, and worded the Unknown condition loosely.
+  - Advisories taken: `IngestMetrics` is a required dependency, so a lost registration fails `HostServicesTests` instead of stopping the metric silently. The docs now note the safe form's limits (ASCII only, 40 characters), that resends count again, and wiki 09 says a problem can be a warning.
+  - Not taken: naming the line by position or id (Advisory 2; documented instead). Advisory 5 needed no action.
+  - Follow-up PASS; its optional wording (problems, not lines) taken in wiki 10 and costly-operations.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - FluentAssertions' `Equal(params string[])` on a string collection takes a trailing reason as one more expected item: pass the expectation as a collection expression when giving a reason.
+  - A collection expression cannot appear inside an expression tree (CS9175), such as a FluentAssertions `OnlyContain` predicate: hoist it into a local.
+  - The zone profile's name rule allows markup characters in a line name, so any answer that names a line goes through the push's safe form; System.Text.Json's default encoder writes `<` as a six-character escape (backslash, u, 003C) in the raw text, so a test of the safe form checks the parsed strings, not the raw body.
+  - An optional constructor dependency called with `?.` fails silent when its registration is lost; make it required where a host test resolves the service, so the composition test catches it.

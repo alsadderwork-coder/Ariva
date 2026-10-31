@@ -79,6 +79,7 @@ Penalty-grade evaluation needs T3 (tracks) or T1 counts validated against manual
 4. Cover the staff zone behind each desk and the service zone in front of it when desk state comes from sensors (staff presence proves a desk is staffed; service-zone occupancy is a weak serving signal).
 5. Cover the overflow band outside the snake; overflow time counts as wait.
 6. LiDAR: the binding constraint is occlusion, not range. Every point of a dense queue should be seen by at least two sensors from different angles; the perception vendor's simulation sets the count (planning heuristic 2 to 4 per zone).
+7. Plan which sensor counts which entry and exit line, and record it on the as-built plan. A sensor that counts only some of its zone's lines declares them in Ariva (Lines it counts: Listed, or None for a band or desk zone sensor; wiki 11), so the zone turns Unknown when the sensors of one line are all out (formulas F11). A sensor whose logics count a line it does not declare still has its counts accepted, but every push answer names that line with its count (`undeclared line '...'`) and `ariva.ingest.undeclared_line_events` counts them by site (ARV-277): either the sensor sees a line the plan did not give it (widen its declaration) or its logics sit on the wrong line (correct them in the vendor's tool).
 
 ### Formulas
 

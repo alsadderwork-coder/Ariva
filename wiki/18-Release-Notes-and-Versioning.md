@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-277: the push answer names events on lines their device does not declare it counts (2026-10-31)
+
+- Behaviour: a push from a device that declares the lines it counts (Listed or None) with accepted crossings or interval readings on another entry or exit line of its zone answers 202 as before, and its `problems` now also name each such line once with its count (`undeclared line '<name>': <n> events accepted on an entry or exit line this device does not declare it counts`), at most 10 such problems apart from the refusals (nine lines named, the tenth summing up the rest). The events are still published and counted. A device that declared nothing has no such problem.
+- New counter `ariva.ingest.undeclared_line_events` (meter `Ariva.Ingest`, tag `site`), exported by Ariva.Api.Ingest (wiki 10 sections 2a and 4.22); no alert rule ships with it.
+- A device or gateway that treats any problem as a failure, rather than reading `accepted` and `rejected`, should be checked before the upgrade: the answer is still 202 with nothing refused.
+
 ### ARV-276: site configuration bundles carry each device's line declaration (2026-10-31)
 
 - Behaviour: a site configuration export now carries the lines each device counts (`lineCoverage` All, None or Listed, and `coveredLines` for a device that lists them), and an import applies them through the registry's own path, after each device is registered. The import refuses a device that lists a line that is not an entry or exit line of its queue zone in the bundle's zone profile (400, naming the device's row), and lists in `devicesWithLinesOutOfReach` the devices whose footprint does not reach a line they count (wiki 11 section 2d).

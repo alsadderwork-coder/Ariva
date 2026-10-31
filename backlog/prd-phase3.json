@@ -1757,7 +1757,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 45,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Filed 2026-10-30 with ARV-259e5, which left the push answer's problems out (its acceptance said optionally). No sign-in code.",
       "dependsOn": [
         "ARV-259e5"
