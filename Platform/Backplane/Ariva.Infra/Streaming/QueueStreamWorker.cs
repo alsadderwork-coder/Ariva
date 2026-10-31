@@ -273,6 +273,32 @@ public sealed class QueueStreamWorker(
     private int _heldRecords;
     private long _forcedReleases, _failedBatches, _wrongPartition;
     private readonly HashSet<int> _assigned = [];
+
+    // ARV-274: the assigned partitions whose saved zones are still to be listed, the zones listed and waiting to be restored without a
+    // record of them, the topics' partition count read last (the partition a zone's records go to now), and how the restores went.
+    private readonly HashSet<int> _toList = [];
+    private readonly Queue<(string ZoneKey, int Partition, int ProfileVersion)> _toRestore = new();
+    private int _currentPartitionCount;
+    private readonly RestoreRetry _restoreRetry = new(timeProvider, RestoreRetryAfter, RestoreAttempts);
+    private readonly int[] _restoreTally = new int[Enum.GetValues<RestoreOutcome>().Length];
+
+    /// <summary>The zones restored from their saved state in one pass of the loop at most (ARV-274), so a rebalance's restores never hold up reading.</summary>
+    internal const int RestoresPerPass = 50;
+
+    /// <summary>The time one pass of the loop gives the restores (ARV-274): no zone is started after it, so reading is not held up.</summary>
+    internal static readonly TimeSpan RestorePassBudget = TimeSpan.FromSeconds(5);
+
+    /// <summary>How long the restores wait after the database did not answer (ARV-274); <see cref="RestoreAttempts"/> failures in a row give up.</summary>
+    internal static readonly TimeSpan RestoreRetryAfter = TimeSpan.FromSeconds(60);
+
+    internal const int RestoreAttempts = 3;
+
+    /// <summary>
+    /// The saved zone states listed on an assignment at most (ARV-274, CWE-400); beyond, the first in key order, the others restored with
+    /// their first record. The listing spans every replica's zones and keeps those retired (the runtime login cannot delete a state), so
+    /// a deployment can pass it; the log then warns. Keys longer than a message key are not read (they are never zone keys).
+    /// </summary>
+    internal const int MaxListedZones = 100_000;
     private readonly Dictionary<string, (ZoneGeometry Geometry, DateTime Until)> _geometryCache = new(StringComparer.Ordinal);
     private long _skippedUnknownZone, _skippedFull, _deadLettered, _records, _legacyHealth;
 
@@ -345,6 +371,7 @@ public sealed class QueueStreamWorker(
                         TickIdleZones();
                 }
 
+                await RestoreAssignedAsync(ct);
                 await RefreshDeskTermsAsync(ct);
 
                 // ARV-125a: the lag is measured whether or not a checkpoint succeeds, so a worker held back by its database
@@ -357,7 +384,9 @@ public sealed class QueueStreamWorker(
                     metrics.ZonesUnknown(_zones.Select(z => (Ariva.Infra.Live.LiveZones.SiteOf(z.Key), z.Value.Zone.UnknownInUse)), MeasurementFreshFor(every));
                 }
 
-                if (full || (timeProvider.GetUtcNow() >= next && _positions.Count > 0))
+                // ARV-274: zones held without a record read yet (restored on assignment) still move on with idle ticks, so their outputs are
+                // written on the same interval.
+                if (full || (timeProvider.GetUtcNow() >= next && (_positions.Count > 0 || _zones.Count > 0)))
                 {
                     next = timeProvider.GetUtcNow() + every;
                     try
@@ -382,7 +411,7 @@ public sealed class QueueStreamWorker(
                         }
                     }
                 }
-                else if (_positions.Count == 0 && timeProvider.GetUtcNow() >= next)
+                else if (_positions.Count == 0 && _zones.Count == 0 && timeProvider.GetUtcNow() >= next)
                 {
                     // ARV-258: nothing read since the assignment, so nothing is owed: the checkpoint age stays fresh.
                     next = timeProvider.GetUtcNow() + every;
@@ -485,6 +514,7 @@ public sealed class QueueStreamWorker(
             throw new InvalidOperationException(
                 $"The sensing topics must have the same number of partitions for the queue stream worker; they have {string.Join(", ", counts)}.");
         store.SavePartitionCountAsync(TopicSet, counts[0], CancellationToken.None).GetAwaiter().GetResult();
+        _currentPartitionCount = counts[0];
         if (_partitionCounts.Add(counts[0]) && _partitionCounts.Count > 1)
             logger.LogWarning("The sensing topics now have {Count} partitions; records hashed over the earlier counts are still accepted", counts[0]);
         return true;
@@ -494,9 +524,10 @@ public sealed class QueueStreamWorker(
     private List<TopicPartitionOffset> Assigned(List<TopicPartition> partitions, CancellationToken ct)
     {
         // Partitions may have been added (that is what caused this rebalance); a failure here keeps the counts known so far.
+        var counted = false;
         try
         {
-            RefreshPartitionCount();
+            counted = RefreshPartitionCount();
         }
         catch (KafkaException e)
         {
@@ -511,14 +542,285 @@ public sealed class QueueStreamWorker(
         // Where reading starts is where "nothing more to read" is measured from until a record arrives.
         foreach (var ((topic, partition), offset) in saved)
             _consumed[(topic, partition)] = offset;
+        // ARV-274: the saved zones of these partitions are listed on the next pass of the loop, not in this callback, and only under a
+        // partition count read now: under an older count a zone could be held here while its records go to another instance.
+        if (counted)
+            _toList.UnionWith(partitions.Select(p => p.Partition.Value));
+        else if (partitions.Count > 0)
+            logger.LogWarning("The sensing topics' partition count was not read on assignment; the zones of the assigned partitions are restored when a record of them arrives");
         return [.. partitions.Select(p => saved.TryGetValue((p.Topic, p.Partition.Value), out var offset)
             ? new TopicPartitionOffset(p, new Offset(offset))
             : new TopicPartitionOffset(p, Offset.Unset))];
     }
 
+    // ARV-274: a zone whose devices all stay silent sends no record, so it would never be held (idle-ticked, its spell without coverage
+    // carried on, counted in zones_unknown) until one arrives. The assignment only notes its partitions (_toList); the next pass of the
+    // loop lists the saved zone keys once, bounded, and queues those whose records go to a noted partition under the topics' partition
+    // count now; each pass after restores a few, within RestoresPerPass and RestorePassBudget, so neither the rebalance nor reading is
+    // held up by them. When the database does not answer, the restores wait RestoreRetryAfter and give up after RestoreAttempts: those
+    // zones are restored with their first record, as before. One summary is logged when the queue is done.
+    private async Task RestoreAssignedAsync(CancellationToken ct)
+    {
+        if ((_toList.Count == 0 && _toRestore.Count == 0) || !_restoreRetry.Due)
+            return;
+        var started = timeProvider.GetTimestamp();
+        try
+        {
+            if (_toList.Count > 0)
+                await ListRestoresAsync(ct);
+            await DrainAsync(_toRestore, RestoresPerPass, () => timeProvider.GetElapsedTime(started) < RestorePassBudget, zone => RestoreAsync(zone, ct), _restoreTally);
+        }
+        catch (Exception e) when (!ct.IsCancellationRequested && e is NpgsqlException or TimeoutException or IOException)
+        {
+            RestoreFailed(e);
+            return;
+        }
+
+        _restoreRetry.Succeeded();
+        if (_toList.Count == 0 && _toRestore.Count == 0)
+            ReportRestores();
+    }
+
+    /// <summary>
+    /// Up to <paramref name="max"/> queued zones restored while <paramref name="withinBudget"/> holds, each outcome tallied (ARV-274).
+    /// A zone is taken off the queue once its outcome is known, so one the database did not answer for (<paramref name="restore"/>
+    /// throws) stays first for the next attempt; the first zone beyond Stream:MaxZones ends the queue, every zone left tallied Full.
+    /// </summary>
+    internal static async Task DrainAsync<T>(Queue<T> queue, int max, Func<bool> withinBudget, Func<T, Task<RestoreOutcome>> restore, int[] tally)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+        ArgumentNullException.ThrowIfNull(withinBudget);
+        ArgumentNullException.ThrowIfNull(restore);
+        ArgumentNullException.ThrowIfNull(tally);
+        for (var n = 0; n < max && queue.Count > 0 && withinBudget(); n++)
+        {
+            var outcome = await restore(queue.Peek());
+            if (outcome == RestoreOutcome.Full)
+            {
+                tally[(int)RestoreOutcome.Full] += queue.Count;
+                queue.Clear();
+                return;
+            }
+
+            tally[(int)outcome]++;
+            queue.Dequeue();
+        }
+    }
+
+    // The saved zone keys, listed once for the partitions noted on assignment; a database failure leaves them noted for the next attempt.
+    private async Task ListRestoresAsync(CancellationToken ct)
+    {
+        var partitions = _toList.ToHashSet();
+        if (!CanList(partitions, _currentPartitionCount))
+        {
+            // The assignment names a partition the count read last does not have: which zones go to it now is not known here.
+            logger.LogWarning("Partitions {Partitions} are not all below the sensing topics' partition count {Count}; their zones are restored when a record of them arrives",
+                string.Join(", ", partitions.Order()), _currentPartitionCount);
+            _toList.Clear();
+            return;
+        }
+
+        var stored = await store.LoadZoneKeysAsync(MaxListedZones, ct);
+        _toList.Clear();
+        var listed = Listed(stored, MaxListedZones, out var cut);
+        if (cut)
+            logger.LogWarning("More than {Max} saved zone states; the first {Max} in key order are restored on assignment, the others when a record of them arrives",
+                MaxListedZones, MaxListedZones);
+        var queued = ZonesOf(listed, partitions, _currentPartitionCount, out var malformed);
+        _restoreTally[(int)RestoreOutcome.Malformed] += malformed;
+        foreach (var zone in queued.Where(z => _assigned.Contains(z.Partition)))
+            _toRestore.Enqueue(zone);
+    }
+
+    /// <summary>
+    /// Whether the saved zones of <paramref name="partitions"/> can be told apart under <paramref name="partitionCount"/>, the count read
+    /// from the brokers on the assignment (ARV-274, CWE-501): not before a count is read, and not for a partition at or past it (the
+    /// assignment then knows partitions the count does not, so which zones go to them now is not known here).
+    /// </summary>
+    internal static bool CanList(IReadOnlyCollection<int> partitions, int partitionCount) =>
+        partitions is { Count: > 0 } && partitionCount >= 1 && partitions.All(p => p >= 0 && p < partitionCount);
+
+    /// <summary>The first <paramref name="max"/> of a listing read with one row more than its maximum, and whether it was cut there.</summary>
+    internal static IEnumerable<(string ZoneKey, int ProfileVersion)> Listed(IReadOnlyList<(string ZoneKey, int ProfileVersion)> stored, int max, out bool cut)
+    {
+        ArgumentNullException.ThrowIfNull(stored);
+        cut = stored.Count > max;
+        return cut ? stored.Take(max) : stored;
+    }
+
+    /// <summary>
+    /// The saved zones whose key hashes to one of <paramref name="partitions"/> under the topics' partition count now (the partition
+    /// their records go to, ARV-274), in the order given; a key that is not a site code, a slash and a queue zone name that fits a message
+    /// key is left out and counted in <paramref name="malformed"/> (CWE-501: the keys are data from storage).
+    /// </summary>
+    internal static IReadOnlyList<(string ZoneKey, int Partition, int ProfileVersion)> ZonesOf(IEnumerable<(string ZoneKey, int ProfileVersion)> stored,
+        IReadOnlySet<int> partitions, int partitionCount, out int malformed)
+    {
+        ArgumentNullException.ThrowIfNull(stored);
+        ArgumentNullException.ThrowIfNull(partitions);
+        ArgumentOutOfRangeException.ThrowIfLessThan(partitionCount, 1);
+        malformed = 0;
+        var zones = new List<(string, int, int)>();
+        foreach (var (key, version) in stored)
+        {
+            if (!TrySplitZoneKey(key, out _, out _))
+            {
+                malformed++;
+                continue;
+            }
+
+            var partition = ExpectedPartition(key, partitionCount);
+            if (partitions.Contains(partition))
+                zones.Add((key, partition, version));
+        }
+
+        return zones;
+    }
+
+    /// <summary>A zone key's site code and queue zone name (<see cref="ZoneKeys.For"/>), if it is one: a site code, a slash and a clean name that fits a message key.</summary>
+    internal static bool TrySplitZoneKey(string key, out string siteCode, out string queueZoneName)
+    {
+        siteCode = queueZoneName = null;
+        var slash = key?.IndexOf('/', StringComparison.Ordinal) ?? -1;
+        if (slash <= 0 || slash == key.Length - 1)
+            return false;
+        var site = key[..slash];
+        var zone = key[(slash + 1)..];
+        if (!Ariva.Core.Domain.Entities.Site.IsValidCode(site) || !ZoneKeys.Fits(site, zone) || !Ariva.Core.Domain.Components.DisplayText.IsClean(zone))
+            return false;
+        (siteCode, queueZoneName) = (site, zone);
+        return true;
+    }
+
+    // One queued zone restored from its saved state as a first record of it would restore it (ZoneAsync): a zone already held, or of a
+    // partition no longer assigned, is passed over; so is one no longer in its site's published profile, one saved under another
+    // profile version (it starts afresh with its first record, as before), one whose state is gone, and any beyond Stream:MaxZones. A
+    // snapshot that fails its checks (CWE-501) is not used: the zone starts afresh with its first record. A database failure throws.
+    private async Task<RestoreOutcome> RestoreAsync((string ZoneKey, int Partition, int ProfileVersion) queued, CancellationToken ct)
+    {
+        var (key, partition, version) = queued;
+        if (_zones.ContainsKey(key) || !_assigned.Contains(partition))
+            return RestoreOutcome.Held;
+        if (!TrySplitZoneKey(key, out var site, out var name))
+            return RestoreOutcome.Malformed;
+        if (_zones.Count >= settings.MaxZones)
+            return RestoreOutcome.Full;
+        var geometry = await GeometryAsync(site, name, ct);
+        var choice = ChooseRestore(geometry, version);
+        if (choice != RestoreOutcome.Restored)
+            return choice;
+        try
+        {
+            var state = await store.LoadStateAsync(key, ct);
+            if (state is null || state.ProfileVersion != geometry.ProfileVersion)
+                return RestoreOutcome.Gone;
+            var notAfter = timeProvider.GetUtcNow().UtcDateTime.AddSeconds(settings.MaxAheadSeconds);
+            var zone = ZoneProcessor.Restore(key, geometry.Geometry, geometry.ProfileVersion, settings.ZoneSettingsFor(site, _zoneSettings), state, notAfter);
+            // Its clock moves on with the host's from here (TickIdleZones), as for a zone restored with its first record: the time the
+            // stream was away is not skipped, since a record of the zone still to be read would then be late.
+            _zones[key] = (zone, partition, timeProvider.GetUtcNow().UtcDateTime);
+            return RestoreOutcome.Restored;
+        }
+        catch (Exception e) when (e is InvalidDataException or JsonException or ArgumentException or InvalidOperationException or NotSupportedException or OverflowException)
+        {
+            logger.LogDebug(e, "The saved state of zone {Zone} cannot be restored on assignment; the zone starts afresh with its first record", key);
+            return RestoreOutcome.Unreadable;
+        }
+    }
+
+    // The database did not answer: the restores wait and try again, and after RestoreAttempts give up (the zones left are restored with
+    // their first record).
+    private void RestoreFailed(Exception e)
+    {
+        if (!_restoreRetry.Failed())
+        {
+            logger.LogWarning(e, "Zones of the assigned partitions not restored now (the database did not answer); attempt {Attempt} of {Attempts}, the next in {Seconds} seconds",
+                _restoreRetry.Failures, RestoreAttempts, RestoreRetryAfter.TotalSeconds);
+            return;
+        }
+
+        logger.LogWarning(e, "Zones of the assigned partitions not restored after {Attempts} attempts (the database did not answer); they are restored when a record of them arrives",
+            RestoreAttempts);
+        _restoreTally[(int)RestoreOutcome.Database] += _toRestore.Count;
+        _toList.Clear();
+        _toRestore.Clear();
+        ReportRestores();
+    }
+
+    // One line for the restores of an assignment, rather than one per zone.
+    private void ReportRestores()
+    {
+        int Count(RestoreOutcome outcome) => _restoreTally[(int)outcome];
+        if (_restoreTally.All(c => c == 0))
+            return;
+        var level = Count(RestoreOutcome.Full) > 0 ? LogLevel.Error
+            : Count(RestoreOutcome.Malformed) + Count(RestoreOutcome.Unreadable) + Count(RestoreOutcome.Database) > 0 ? LogLevel.Warning
+            : LogLevel.Information;
+        logger.Log(level,
+            "Queue stream worker restored {Restored} zones of its assigned partitions from their saved state; not restored: {Held} held already, " +
+            "{NotPublished} not in their site's published zone profile, {OtherVersion} saved under another profile version, {Gone} no longer saved, " +
+            "{Malformed} keys that are not zone keys, {Unreadable} saved states that fail their checks, {Full} beyond Stream:MaxZones, " +
+            "{Database} the database did not answer for",
+            Count(RestoreOutcome.Restored), Count(RestoreOutcome.Held), Count(RestoreOutcome.NotPublished), Count(RestoreOutcome.OtherVersion),
+            Count(RestoreOutcome.Gone), Count(RestoreOutcome.Malformed), Count(RestoreOutcome.Unreadable), Count(RestoreOutcome.Full),
+            Count(RestoreOutcome.Database));
+        Array.Clear(_restoreTally);
+    }
+
+    /// <summary>What became of a saved zone on an assignment (ARV-274).</summary>
+    internal enum RestoreOutcome
+    {
+        /// <summary>Restored from its saved state.</summary>
+        Restored,
+
+        /// <summary>Held already (a record of it came first), or its partition is no longer assigned.</summary>
+        Held,
+
+        /// <summary>Not in its site's published zone profile (retired, or the site's profile withdrawn): not restored.</summary>
+        NotPublished,
+
+        /// <summary>Saved under another profile version than the one published: it starts afresh with its first record, as before.</summary>
+        OtherVersion,
+
+        /// <summary>Its saved state was removed, or saved under another version, between the listing and the restore.</summary>
+        Gone,
+
+        /// <summary>A saved key that is not a zone key (CWE-501).</summary>
+        Malformed,
+
+        /// <summary>A saved state that fails its checks (CWE-501): the zone starts afresh with its first record.</summary>
+        Unreadable,
+
+        /// <summary>Beyond Stream:MaxZones.</summary>
+        Full,
+
+        /// <summary>Given up on after the database did not answer RestoreAttempts times.</summary>
+        Database
+    }
+
+    /// <summary>Whether a zone saved under <paramref name="savedVersion"/> is restored, given its published geometry (null when it has none).</summary>
+    internal static RestoreOutcome ChooseRestore(ZoneGeometry geometry, int savedVersion) =>
+        geometry is null ? RestoreOutcome.NotPublished : geometry.ProfileVersion == savedVersion ? RestoreOutcome.Restored : RestoreOutcome.OtherVersion;
+
     private void Drop(IEnumerable<int> partitions)
     {
         var gone = partitions.ToHashSet();
+        _toList.ExceptWith(gone);
+        if (_toRestore.Count > 0)
+        {
+            var keep = _toRestore.Where(z => !gone.Contains(z.Partition)).ToList();
+            _toRestore.Clear();
+            foreach (var zone in keep)
+                _toRestore.Enqueue(zone);
+        }
+
+        // ARV-274: an assignment's restores end with it: what became of them is said now, and the next assignment's start afresh.
+        if (_toList.Count == 0 && _toRestore.Count == 0)
+        {
+            ReportRestores();
+            _restoreRetry.Reset();
+        }
+
         foreach (var (key, zone) in _zones.Where(z => gone.Contains(z.Value.Partition)).ToList())
             _zones.Remove(key);
         foreach (var position in _positions.Keys.Where(k => gone.Contains(k.Partition)).ToList())
@@ -966,7 +1268,9 @@ public sealed class QueueStreamWorker(
         }
         try
         {
-            consumer.Commit(offsets.Select(o => new TopicPartitionOffset(o.Topic, new Partition(o.Partition), new Offset(o.NextOffset))));
+            // Nothing read since the assignment (only zones restored from their saved state): no position to commit.
+            if (offsets.Count > 0)
+                consumer.Commit(offsets.Select(o => new TopicPartitionOffset(o.Topic, new Partition(o.Partition), new Offset(o.NextOffset))));
         }
         catch (KafkaException e)
         {

@@ -4111,3 +4111,39 @@ Project `Ariva.UnitTests` has the following vulnerable packages
 - Gates: `node scripts/verify.mjs story` (wide: script 0067) PASS on the final tree: build, unit 8,342 of 8,342, integration 862 of 863 (1 skipped), E2E 943 passed (API and functional), security scan 0 errors, docs, chart and release guards. The second run failed on two tests the change itself owed: the generated AsyncAPI document (regenerated with ARIVA_UPDATE_ASYNCAPI=1: only `coveredLines` added) and `QueueStreamCoverageTests` pinning snapshot version 14 (now 15); a third run was lost to a container restart and run again.
 - Security review (CWE-501, CWE-400, CWE-532, CWE-89, CWE-120): round 1 FAIL: one Medium (CWE-501: `LineDeclarations.IsWellFormed` checked count, length and repeats but not the name rule, so a hostile Kafka record with a line feed in a name would be split by the archive's join and replay differently from the live run, or fail the column's CHECK and be dead-lettered); fixed (the registry's name rule and `DisplayText.IsClean` on the raw name, tests in the engine, the snapshot and the archive), and three Lows taken (`Covering` folds the devices counting every line into one cover, so its cost is devices plus lines plus names, with costly-operations.md's row; the merge buffer cuts a declaration to 17 names; the metric comment names the new kind). Round 2 PASS; its note on the archive comment taken. Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
 - Gotchas: the story asked for `text[]`, which `unnest` cannot take as an array of arrays: send one joined text per row and `string_to_array` it in SQL (an empty text gives an empty array, NULL stays NULL). A theory whose data holds delegates is listed once by xUnit: add it to theory-rows.json with its row count. A live minute published before a device's silence passes the limit keeps its flags: compare Unknown minutes with the golden's degraded minutes, not with a fixed range. Linked unit test helpers (ReferenceReplay) are compiled into the integration project, but the rest of the unit test assembly is not: put shared cases on the linked file. A declared name has to pass the registry's name rule on its raw text, not just its trimmed text: a trailing line feed survives `TopologyCodes.IsName` (it trims) and would split in the archive's join.
+
+## 2026-10-31: ARV-274 [E17] Stream loads a partition's zones at assignment, so a zone whose devices are all silent is counted Unknown after a restart
+
+- What changed: when the queue stream worker takes a partition it restores every zone of that partition with a saved snapshot under its site's published profile version, without waiting for a record of it, so a zone whose devices are all silent is held (idle-ticked, checkpointed, counted in `ariva.stream.zones_unknown`) right after a restart or a rebalance.
+  - The assignment callback only notes its partitions, and only when the sensing topics' partition count was read on that assignment (`_currentPartitionCount`).
+  - The next pass of the loop lists the saved keys once (`StreamStore.LoadZoneKeysAsync`: at most 100,000 keys of at most 200 characters and one row more, command 10 s). It queues the keys that hash to a noted partition under that count (`ZonesOf`, `CanList`; never a count read back from `stream_partition_count`).
+  - Each pass then restores at most 50 zones and 5 s (`DrainAsync`), never beyond `Stream:MaxZones`, through the same snapshot checks as a first record.
+  - A key that is not a zone key (`TrySplitZoneKey`) or a snapshot that fails its checks is passed over and counted. A zone retired from the profile is not restored; one saved under another version starts afresh with its first record, as before.
+  - A database that does not answer ends the pass. The restores wait 60 s and give up after 3 failures in a row (`RestoreRetry`), and those zones are restored with their first record.
+  - One summary line says what became of the zones: Information, Warning for bad keys, snapshots or the database, Error at `MaxZones`.
+  - A worker now checkpoints on its interval while it holds zones, even before it has read a record, and commits no Kafka offsets when it has none.
+- Files:
+  - Ariva.Infra/Streaming (QueueStreamWorker, RestoreRetry new, StreamStore).
+  - Unit `AssignedZonesTests` (new, 31 tests).
+  - Integration:
+    - `QueueStreamAssignmentTests` (new): a dark zone restored and counted after a restart, then forgotten after 24 hours.
+    - `QueueStreamRestoreTests` (new, on a broker of its own): ownership under a larger saved count, the hostile copy, a bad key, the listing's cut, `MaxZones`, the summary, the database give-up and the retry.
+    - `StreamAssignmentHarness` (new).
+    - PostgresFixture: four databases.
+  - Docs: wiki 10 sections 3.1 and 4.5b, wiki 18, docs/security/costly-operations.md, cwe-controls.md (CWE-501), asvs-l2.md (V15.2.2, V16.5.2).
+- Gates: `node scripts/verify.mjs story --specs tests/api/live-hub.spec.ts --integration "FullyQualifiedName~Streaming"` PASS (widened to the full suites): build, unit 8,372 of 8,372, integration 866 of 867 (1 skipped), E2E 943 passed (API and functional), security scan 0 errors, docs, chart and release guards. Two earlier runs were stopped for the review fixes. After the round 3 advisories (comments, a null guard in `RestoreRetry` and its test): build, `AssignedZonesTests` 31 of 31 and `verify.mjs quick` PASS.
+- Security review (CWE-501, CWE-400, CWE-89, CWE-120):
+  - Round 1 FAIL:
+    - two Mediums: ownership decided under the largest partition count ever saved, so zones of a smaller count's partitions were never restored; a database failure did not end the pass.
+    - missing tests: a hostile snapshot, `MaxZones`, the listing's cut.
+    - four Lows: one summary instead of per-zone logs; the listing out of the rebalance callback with a command timeout; `[ConstantExpected]` on the test's SQL; the CWE-501 row.
+  - Round 2 FAIL: the give-up path had no test (Medium), and four Lows (costly-operations symbols, tests and memory figure; Drop leaving the tally and retry state; the ownership clause in CWE-501; the ASVS rows).
+  - Fixed: `RestoreRetry` and `DrainAsync` with unit tests, two table-lock integration tests, keys over 200 characters not read, the cap 100,000, Drop reports and resets, the bounds tests on a broker of their own.
+  - Round 3 PASS; its three advisories taken: no claim in the ASVS row about reading during the failures, the listing comment says the keys span every replica, the retry comment says what an attempt can cost.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - The consumer's assigned callback runs inside the librdkafka poll: keep database reads out of it, note the work and do it on the loop.
+  - A worker that holds zones but has read no record has no offsets to commit: skip `Commit` then, or it throws.
+  - `stream_partition_count` keeps every count ever seen (records produced before a scale-out still hash over the older ones), so it never says which instance owns a zone now; only the count read on the assignment does.
+  - A test that needs a database read to time out while everything else answers: `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` in an open transaction, as ARV-258 did for checkpoints.
+  - Two test classes sharing a broker and a consumer group read each other's records from the earliest offset: give a class whose arithmetic depends on what it holds a broker of its own.

@@ -1694,7 +1694,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. Phase 3. Filed 2026-10-30 from the ARV-259e3 security review (finding 4). No sign-in code.",
       "dependsOn": [
         "ARV-259e3"

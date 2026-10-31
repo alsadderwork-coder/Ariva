@@ -849,6 +849,32 @@ public sealed class StreamStore(DatabaseSettings database, TimeProvider timeProv
         return result;
     }
 
+    /// <summary>
+    /// The zones with a saved state and the profile version each was saved under (ARV-274), in key order: at most
+    /// <paramref name="max"/> and one more, so the caller sees the list was cut (CWE-400). Keys only; a zone's state is read when it is
+    /// restored.
+    /// </summary>
+    public async Task<IReadOnlyList<(string ZoneKey, int ProfileVersion)>> LoadZoneKeysAsync(int max, CancellationToken ct)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(max, 1);
+        await using var connection = PostgresConnections.Create(database.BuildConnectionString());
+        await connection.OpenAsync(ct);
+        // ARV-274: an index-ordered read of at most max + 1 short rows, held to ten seconds, so a slow database ends the attempt; a key
+        // longer than a message key is never a zone key, so it is not read.
+        await using var command = new NpgsqlCommand(
+            "SELECT zone_key, profile_version FROM stream_zone_state WHERE char_length(zone_key) <= @longest ORDER BY zone_key LIMIT @limit", connection)
+        {
+            CommandTimeout = 10
+        };
+        command.Parameters.AddWithValue("longest", MessageKeys.MaxLength);
+        command.Parameters.AddWithValue("limit", (long)max + 1);
+        var zones = new List<(string, int)>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            zones.Add((reader.GetString(0), reader.GetInt32(1)));
+        return zones;
+    }
+
     /// <summary>A zone's saved state, or null; a state above <see cref="MaxStateBytes"/> or unreadable throws.</summary>
     public async Task<ZoneProcessorState> LoadStateAsync(string zoneKey, CancellationToken ct)
     {
