@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
-import { createAirport } from '../support/airports';
+import { createAirport, randomLetters } from '../support/airports';
 import { hosts } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
 
@@ -179,14 +179,18 @@ test('desk ranges are all or nothing and capped at 200 (ARV-015)', async () => {
 
 test('external desk codes map to one desk per system and site (ARV-015)', async () => {
 	const url = `${api}/desk-code-mappings`;
-	const created = await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: 'dsk-101', deskId: ids.r01 } });
+	// A code of this run's own: the last step maps it again and leaves it mapped, so a fixed code would already be taken on a
+	// database an earlier run used (ARV-279). Sent in lower case, stored in upper case.
+	const code = `dsk-${randomLetters(6).toLowerCase()}`;
+	const stored = code.toUpperCase();
+	const created = await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: code, deskId: ids.r01 } });
 	expect(created.status()).toBe(201);
 	const mapping = await created.json();
-	expect(mapping.externalCode).toBe('DSK-101');
+	expect(mapping.externalCode).toBe(stored);
 	expect(mapping.siteCode).toBe('E2E1');
 
-	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: 'DSK-101', deskId: ids.r02 } })).status(), 'same code').toBe(409);
-	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: 'DSK-102', deskId: ids.r01 } })).status(), 'second code for the desk').toBe(409);
+	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: stored, deskId: ids.r02 } })).status(), 'same code').toBe(409);
+	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: `${stored}-2`, deskId: ids.r01 } })).status(), 'second code for the desk').toBe(409);
 	expect((await call('POST', url, { token: admin, data: { system: 'Aodb', externalCode: 'C12', deskId: ids.r02 } })).status(), 'AODB on a border desk').toBe(400);
 	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: '<script>', deskId: ids.r02 } })).status(), 'markup').toBe(400);
 
@@ -195,5 +199,5 @@ test('external desk codes map to one desk per system and site (ARV-015)', async 
 	const moved = await call('PUT', `${url}/${mapping.id}`, { token: admin, data: { deskId: ids.r02 } });
 	expect((await moved.json()).deskCode).toBe('R02');
 	expect((await call('DELETE', `${url}/${mapping.id}`, { token: admin })).status()).toBe(204);
-	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: 'DSK-101', deskId: ids.r01 } })).status(), 'free again').toBe(201);
+	expect((await call('POST', url, { token: admin, data: { system: 'Aman', externalCode: stored, deskId: ids.r01 } })).status(), 'free again').toBe(201);
 });

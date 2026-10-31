@@ -52,6 +52,21 @@ function seed(): string {
 	return value;
 }
 
+/**
+ * A site code of this run alone: the prefix (two capitals or digits) and six capitals drawn from the run's tag, the site
+ * code's first part. The account seed creates the sites its accounts hold, so an account can be given a site no earlier run
+ * used, and a spec that needs a site's first zone profile gets one on a database earlier runs used too (ARV-279a). The tag
+ * (`ARIVA_E2E_RUN_TAG`) is random per run and no secret: it is not the account seed, so a site code tells nothing about the
+ * passwords, and a caller who fixes the seed still gets new sites. Every worker reads the same tag, so all draw one code.
+ */
+export function runSite(prefix: string): string {
+	if (!/^[A-Z0-9]{2}$/.test(prefix)) throw new Error('runSite: the prefix is two capitals or digits');
+	const tag = process.env.ARIVA_E2E_RUN_TAG;
+	if (!tag) throw new Error('ARIVA_E2E_RUN_TAG is not set; playwright.config.ts sets it before the workers start');
+	const digest = crypto.createHash('sha256').update(`${tag}|site|${prefix}`).digest();
+	return prefix + Array.from(digest.subarray(0, 6), (byte) => String.fromCharCode(65 + (byte % 26))).join('');
+}
+
 function account(userName: string, roles: RoleCode[], temporary = false, withTotp = false, sites: string[] = []): Account {
 	// Long, random and free of the username and the product name, so the password policy would accept it too.
 	const password = crypto.createHash('sha256').update(`${seed()}|${userName}`).digest('base64url').slice(0, 24);
@@ -209,7 +224,7 @@ export function accounts() {
 		// ARV-052: a border supervisor at the demo airport, for the read-only screens.
 		webBorder: account('e2e.webborder', ['BorderShiftSupervisor'], false, false, ['DMO']),
 		// ARV-053: draws and publishes zones at a site of its own (publishing needs a second factor).
-		webZones: account('e2e.webzones', ['TerminalDutyManager'], false, true, ['E2EZ']),
+		webZones: account('e2e.webzones', ['TerminalDutyManager'], false, true, [runSite('ZW')]),
 		// ARV-054: registers devices at the demo airport through the screen (registering needs a second factor).
 		webDevices: account('e2e.webdevices', ['TerminalDutyManager'], false, true, ['DMO']),
 		// ARV-056: writes alert rules at the demo airport through the screen (deleting needs a second factor).

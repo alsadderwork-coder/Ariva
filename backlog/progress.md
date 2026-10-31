@@ -4381,3 +4381,53 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - Ariva's NHibernate session flushes only at commit (FlushMode.Commit), and the commit is `UnitOfWorkFilter`'s, after the service returns. A service that wants to answer a unique violation itself must flush inside its own try; a catch around code that only saves never sees it.
   - Match a unique violation by its constraint name, not by SqlState alone, so an index added later is not silently read as the same conflict.
   - A deterministic race test: hold the first unit of work open after its flush, start the second without awaiting it, wait until pg_locks shows a lock not granted, then end the first.
+
+## 2026-10-31: ARV-279 split; ARV-279a [E17] Topology, zone profile and zones screen E2E specs pass a second time on the database a run already used
+
+- Split: ARV-279's six failures had five causes. ARV-279 stays the parent and passes when all three of these pass:
+  - ARV-279a: this story, three specs.
+  - ARV-279c: aman-feed and aman-pull. The simulator names a minute's AMAN records by the UTC date the demo day is laid on, so a second run the same day sends ids Ariva holds and keeps as unchanged.
+    - The fix (the anchor minute in the ids and batch keys) was built and reviewed.
+    - It changes the AMAN emulator fingerprint (`aman-emulator-golden.json`), which is locked with the human's approval, so the owner decides first.
+    - Taken out of this story, kept as a description in the PRD.
+  - ARV-279b: alert-emails, which needs a site of its own with zones and its own role holders, then the whole suite twice.
+- What changed:
+  - `topology.spec.ts`: the desk code mapping uses an external code of the run's own (`dsk-` and six random letters) instead of DSK-101. The test maps it again at its end, so the fixed code was taken on any later run.
+  - `zone-profiles.spec.ts`: E2E2's first draft copies an earlier run's published version, so the test deletes the lines and zones it copied, each checked for 204, before it adds its own.
+  - `functional/zones.spec.ts`: e2e.webzones holds a site of the run's own instead of E2EZ.
+    - `runSite(prefix)` in `tests/support/accounts.ts` builds the code from the prefix and six capitals drawn from `ARIVA_E2E_RUN_TAG`, a random tag per run that is no secret and not the account seed.
+    - `playwright.config.ts` sets the tag with `||=` before the account list is read. `scripts/e2e-apphost.mjs` draws one for both of its passes.
+    - The account seed creates the site.
+    - A prefix that is not two capitals or digits is refused.
+  - E2E README: what a rerun needs, the run tag's row, and sites accumulating on a kept database.
+- Files: Ariva.E2E `tests/support/accounts.ts`, `playwright.config.ts`, `tests/api/topology.spec.ts`, `tests/api/zone-profiles.spec.ts`, `tests/functional/zones.spec.ts`, README.md; `scripts/e2e-apphost.mjs`; backlog/prd-phase3.json.
+- Gates: `node scripts/verify.mjs story --specs tests/api/topology.spec.ts,tests/api/zone-profiles.spec.ts,tests/functional/zones.spec.ts` PASS on recreated services. It was wide (`tests/support/` and `playwright.config.ts` changed): build, unit (0 failed), security scan, audits, docs, chart; integration 873 (0 failed, 1 skipped); visual 20 passed (pinned image); E2E API and functional 944 passed. Then `node scripts/verify.mjs e2e` with the three specs on the same services, without recreating them: 15 passed. The wrapper waited until the first run's hosts let go of their ports. `verify.mjs docs` and `verify.mjs quick` PASS before the commit. Free disk dipped to 293 MB at the end of the integration step; committed stories' scratch logs were cleared (43 MB).
+- Security review (test code; CWE-532 and ARV-152 for what specs print; the account seed's secrecy):
+  - Round 1 FAIL, on the simulator change, then part of the story:
+    - High: `FeedEmulatorEndpointTests` still expected the old key format.
+    - Medium: no test that another anchor gives another key, nor that keys and ids pass Ariva's own validators.
+    - The first gate run, started before the review, showed the same failure and `AmanEmulatorGoldenTests` failing for both seeds. It was stopped by explicit PIDs in its integration step.
+  - Round 1 advisories:
+    - the counts' wording;
+    - a stale summary of the batch key;
+    - a fixed caller seed made runSite repeat its site, and made the public site code an offline check on the seed;
+    - no prefix guard;
+    - sites accumulate;
+    - ARV-279b's text;
+    - DevelopmentUserSeed's comment says roles are reset;
+    - the AMAN specs' counts read the whole database.
+  - Done:
+    - the simulator change moved to ARV-279c, with the required fixes and the counts' advisories in its criteria;
+    - runSite draws from the run tag;
+    - the prefix guard, the README lines and ARV-279b's corrections are in;
+    - DevelopmentUserSeed is left alone: a sign-in file under the login freeze, noted in ARV-279b for the owner.
+  - Round 2 PASS. Its advisories:
+    - ARV-279c: Idempotency-Keys are kept per client, so reused keys matter for a demo that keeps its client and an E2E rerun meets the ids alone; and the stale summary of the batch key should be fixed with the change. Taken in its description and criteria.
+    - The README's run tag row: a run that reuses a running Ariva.Api.Main needs that host's tag, as it needs its seed. Taken.
+    - DevelopmentUserSeed's comment: still open, noted in ARV-279b for the owner.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - `aman-emulator-golden.json` fingerprints everything AmanFeed.Build publishes, ids included, and changes only with the human's approval. Any change to the AMAN emulator's ids, counts or shapes needs the owner first.
+  - The E2E accounts keep their usernames, and whatever specs gave them (emails), from run to run. The account seed resets passwords, second factors and sites, enables them and adds missing roles. It removes no role and clears no email.
+  - A value derived from the account seed and shown in public (a site code, a name) is an offline check on the seed. Draw public per-run values from a separate random tag.
+  - A per-run value that the hosts and the tests must agree on is set in `playwright.config.ts` before `accounts()` is read, and in `scripts/e2e-apphost.mjs`, which loads the config twice in separate processes.

@@ -101,6 +101,9 @@ if (isCi && !process.env.ARIVA_E2E_CLAMD) {
 // One random seed per run for the E2E account passwords (tests/support/accounts.ts). Set in the runner process before
 // the workers start, so every worker derives the same passwords; never written to disk.
 process.env.ARIVA_E2E_ACCOUNT_SEED ||= crypto.randomBytes(24).toString('base64url');
+// ARV-279a: a tag per run, no secret, from which specs draw sites of the run's own (runSite in tests/support/accounts.ts);
+// set here, before the account list is read, so the hosts' account seed and every worker draw the same codes.
+process.env.ARIVA_E2E_RUN_TAG ||= crypto.randomBytes(12).toString('hex');
 process.env.ARIVA_E2E_KEY_DIR ||= keyDirectory;
 // One simulator operator key per run (ARV-027, ARV-028): the simulator gets only its SHA-256, the tests the key.
 process.env.ARIVA_E2E_SIMULATION_KEY ||= 'sim-e2e-' + crypto.randomBytes(24).toString('base64url');

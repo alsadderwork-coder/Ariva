@@ -16,6 +16,8 @@ test.skip(!databaseAvailable, 'the zones screen needs the E2E database (ARIVA_E2
 test.describe.configure({ mode: 'serial' });
 
 const api = `${hosts.main}/api/v1/admin`;
+/** The duty manager's site: one of this run alone (ARV-279), so its first draft is the site's first, on a reused database too. */
+const site = (): string => accounts().webZones.sites[0];
 /** The plan of floor-plans.spec.ts: script, handlers, foreign content, an outside image and a javascript: link. */
 const hostileSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="100" onload="alert(1)">
 <script>alert(2)</script>
@@ -27,16 +29,16 @@ const hostileSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://
 </svg>`;
 
 test.beforeAll(async () => {
-	// The site E2EZ gets an airport, a terminal and one 60 by 40 m level, unless an earlier run left them.
+	// The run's site gets an airport, a terminal and one 60 by 40 m level, unless a retry of this run made them already.
 	const admin = (await signIn(accounts().webAdmin)).accessToken;
-	const levels = await call('GET', `${api}/levels?siteCode=E2EZ`, { token: admin });
+	const levels = await call('GET', `${api}/levels?siteCode=${site()}`, { token: admin });
 	if (((await levels.json()).data as unknown[]).length > 0) return;
 	const airport = await createAirport((iata) =>
 		call('POST', `${api}/airports`, { token: admin, data: { iataCode: iata, name: `E2E zones ${iata}`, timeZoneId: 'Asia/Amman' } })
 	);
 	const terminal = await call('POST', `${api}/terminals`, {
 		token: admin,
-		data: { airportId: airport.id, code: 'TZ', name: 'Zones terminal', siteCode: 'E2EZ' }
+		data: { airportId: airport.id, code: 'TZ', name: 'Zones terminal', siteCode: site() }
 	});
 	await expectStatus(terminal, 201);
 	const level = await call('POST', `${api}/levels`, {
@@ -70,7 +72,7 @@ test('a duty manager draws a queue zone and its lines, checks the draft and publ
 	await signInAged(page);
 	await page.getByTestId('app-sidebar').getByRole('link', { name: 'Zones' }).click();
 	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Zones');
-	await expect(page.getByLabel('Site', { exact: true })).toHaveValue('E2EZ');
+	await expect(page.getByLabel('Site', { exact: true })).toHaveValue(site());
 
 	await page.getByTestId('new-draft').click();
 	await expect(page.getByLabel('Version')).toContainText('Draft');
@@ -168,7 +170,7 @@ test('a duty manager draws a queue zone and its lines, checks the draft and publ
 
 	// The server has the shapes the screen showed.
 	const token = (await signIn(accounts().webAdmin)).accessToken;
-	const history = (await (await call('GET', `${api}/zone-profiles?siteCode=E2EZ`, { token })).json()) as { id: string; status: string }[];
+	const history = (await (await call('GET', `${api}/zone-profiles?siteCode=${site()}`, { token })).json()) as { id: string; status: string }[];
 	const live = history.find((p) => p.status === 'Published')!;
 	const profile = await (await call('GET', `${api}/zone-profiles/${live.id}`, { token })).json();
 	const snake = (profile.zones as { name: string; polygon: string; laneCategory: string | null; physicalCapacity: number | null }[]).find(
@@ -213,7 +215,7 @@ test('an uploaded SVG plan with script is shown as an image from a blob URL: not
 	await signInThroughUi(page, accounts().webAdmin);
 	await page.goto('/zones');
 	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Zones');
-	await page.getByLabel('Site', { exact: true }).selectOption('E2EZ');
+	await page.getByLabel('Site', { exact: true }).selectOption(site());
 	await expect(page.getByLabel('Level', { exact: true })).toContainText('LZ');
 
 	await page.getByTestId('upload-plan').click();

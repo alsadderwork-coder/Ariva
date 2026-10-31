@@ -50,7 +50,12 @@ test('a draft is edited, validated and published as version 1 only with a recent
 
 	const created = await call('POST', `${api}/drafts`, { token: withSecondFactor, data: { siteCode: 'E2E2', name: 'Arrivals immigration' } });
 	await expectStatus(created, 201);
-	firstId = (await created.json()).profile.id;
+	const draft = await created.json();
+	firstId = draft.profile.id;
+	// On a database earlier runs used, the draft copies their published version: take out what it brought, lines first,
+	// so the draft holds only what this test adds, as on a new database (ARV-279).
+	for (const line of draft.lines as { id: string }[]) await expectStatus(await call('DELETE', `${api}/${firstId}/lines/${line.id}`, { token: withSecondFactor }), 204);
+	for (const zone of draft.zones as { id: string }[]) await expectStatus(await call('DELETE', `${api}/${firstId}/zones/${zone.id}`, { token: withSecondFactor }), 204);
 	expect((await call('POST', `${api}/drafts`, { token: withSecondFactor, data: { siteCode: 'E2E2' } })).status(), 'one draft per site').toBe(409);
 
 	const zone = await call('POST', `${api}/${firstId}/zones`, { token: withSecondFactor, data: { name: 'Snake A', kind: 'Queue', levelId, polygon: '10 10,34 10,34 22,10 22' } });

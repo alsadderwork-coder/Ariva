@@ -2067,9 +2067,64 @@
       ],
       "priority": 47,
       "passes": false,
-      "notes": "Size S to M. Phase 3. Filed 2026-10-31 from ARV-196's second E2E pass (log kept in the session scratchpad only). No sign-in code.",
+      "notes": "Size S to M. Phase 3. Filed 2026-10-31 from ARV-196's second E2E pass (log kept in the session scratchpad only). No sign-in code. Split 2026-10-31 into ARV-279a (topology, zone-profiles and the functional zones spec), ARV-279c (aman-feed and aman-pull: the simulator's record ids, which the locked AMAN emulator fingerprint covers, so the owner approves) and ARV-279b (alert-emails, which needs a site of its own with zones and its own role holders, and the whole suite twice); passes when all three do.",
       "dependsOn": [
         "ARV-196"
+      ]
+    },
+    {
+      "id": "ARV-279a",
+      "title": "[E17] Topology, zone profile and zones screen E2E specs pass a second time on the database a run already used",
+      "description": "Split from ARV-279 (2026-10-31). Three of the six specs that failed on ARV-196's second pass, each made to own its data. topology.spec.ts: the desk code mapping uses an external code of the run's own instead of DSK-101, which the test leaves mapped. zone-profiles.spec.ts: the first draft at E2E2 copies an earlier run's published version, so the test takes out the zones and lines it copied before it adds its own. functional/zones.spec.ts: the duty manager e2e.webzones holds a site of the run's own instead of E2EZ (runSite in tests/support/accounts.ts draws it from ARIVA_E2E_RUN_TAG, a random tag per run that is not the account seed; the account seed creates the site). aman-feed.spec.ts and aman-pull.spec.ts moved to ARV-279c, alert-emails.spec.ts to ARV-279b. CWEs to review: none new (test code); CWE-532 for anything the specs print.",
+      "acceptanceCriteria": [
+        "topology.spec.ts, zone-profiles.spec.ts and functional/zones.spec.ts pass when run a second time against the same services, without recreating them (node scripts/verify.mjs e2e --specs with those three, after a full run)",
+        "The three specs keep their assertions (no weakened check, no added skip); a duplicate a spec asserts is still sent by the spec itself",
+        "runSite draws from a per-run tag that is not the account seed, and refuses a prefix that would make an invalid site code",
+        "node scripts/verify.mjs story passes; node scripts/verify.mjs quick passes",
+        "security-reviewer verdict PASS recorded in backlog/progress.md"
+      ],
+      "priority": 47,
+      "passes": true,
+      "notes": "Size S. Phase 3. No sign-in code: the specs sign in as before, and the account seed is only given a site to create.",
+      "dependsOn": [
+        "ARV-196"
+      ]
+    },
+    {
+      "id": "ARV-279b",
+      "title": "[E17] Alert email E2E spec owns its site and its escalation role holders",
+      "description": "Split from ARV-279 (2026-10-31). alert-emails.spec.ts asserts that escalating an alert at DMO emails the duty manager and nobody else, but every enabled TerminalDutyManager at DMO with an address is emailed: on ARV-196's second pass, e2e.reportterminal kept the address reports.spec.ts gave it in the first run, and an account users.spec.ts (functional) creates at DMO was emailed too. Both are races within one run as well (reports.spec.ts sets the address in its beforeAll, users.spec.ts gives its new DMO account roles, and the suite runs fully parallel), so the spec passes on a new database by order alone. The recipients are every enabled holder of the escalation role with an address at the site or at all sites (AlertEmails), and the seed gives several accounts TerminalDutyManager at all sites. Give the spec a site of the run's own (runSite, as ARV-279a's zones spec) with the zones its three rules need (a queue zone for QueueLength, a border lane zone for DesksBelowPlan, the zone of the predicted nowcast rule) in a published profile, and accounts of its own that are the only holders of the owner and escalation roles there, so the assertion stays exact. Then run the whole suite twice on the same services. CWEs to review: none new (test code); CWE-532 for anything the spec prints.",
+      "acceptanceCriteria": [
+        "alert-emails.spec.ts builds its rules at a site of the run's own (runSite), where its own accounts are the only holders of the owner and escalation roles with an address (the all-sites holders the seed creates have none, which the spec checks); its assertions are unchanged (the duty manager and nobody else gets one email; the owner who escalated is not emailed; no header added)",
+        "node scripts/verify.mjs e2e passes twice in a row against the same services, without recreating them between the runs (the parent ARV-279's criterion)",
+        "docs/harness/test-cadence.md or the E2E README says whether a run needs fresh services",
+        "node scripts/verify.mjs story passes; node scripts/verify.mjs quick passes",
+        "security-reviewer verdict PASS recorded in backlog/progress.md"
+      ],
+      "priority": 47,
+      "passes": false,
+      "notes": "Size S to M. Phase 3. No sign-in code: new seeded accounts only, signed in as the others are. Noted by the ARV-279a review: DevelopmentUserSeed's comment says roles are reset, while it only adds missing ones (a comment in a sign-in file, left for the owner).",
+      "dependsOn": [
+        "ARV-279a",
+        "ARV-279c"
+      ]
+    },
+    {
+      "id": "ARV-279c",
+      "title": "[E17] Simulator AMAN record ids name the time the demo day is laid on (owner approval of the AMAN emulator fingerprint)",
+      "description": "Split from ARV-279 (2026-10-31). aman-feed.spec.ts (the immigration system's REST feed) and aman-pull.spec.ts fail on a second run the same UTC day: the simulator's AMAN and immigration feeds name their records by system, seed and the UTC date the demo day is laid on (AmanFeed.Build: aman-<seed>-<yyyyMMdd>-dk-<desk>-<minute>), and the REST batches' Idempotency-Keys likewise (ImmigrationFeedEmulator: sim-<seed>-<yyyyMMdd>-<minute>-<contract>). A run laid on another time the same day (the next E2E run, or a demo restarted or jumped) sends records of other times under ids Ariva already holds, which it keeps as unchanged, and batch keys Ariva holds for other bodies (keys are kept per client, script 0026, so the keys matter for a demo that keeps its client; an E2E rerun registers new clients and meets the ids alone). Change, built and reviewed once (ARV-279a review round 1): the ids carry the anchor minute (<tag>T<HHmm of minute 0's UTC time>, passed to Desks, Gates and Demand for the ids only), the batch keys carry it too (yyyyMMdd'T'HHmm), and the pseudo-random counts keep hashing the day's tag, so they stay the same within a UTC date. Owner decision: Platform/Backplane/Ariva.UnitTests/Simulation/aman-emulator-golden.json locks a SHA-256 of everything AmanFeed.Build publishes over the reference day, ids included, and its rule is that a change is reviewed and the value updated with the human's approval. The ids change the fingerprint of both seeds (9303 and 2026); the figures (sessions, desk intervals, e-gate counts, lane demand) do not. CWEs to review: CWE-501 (the ids and keys stay within Ariva's ImmigrationRules.IsSourceEventId and IntegrationBatches.IsKey).",
+      "acceptanceCriteria": [
+        "The owner approves the new values of aman-emulator-golden.json for seeds 9303 and 2026 (recorded in docs/product/decisions.md), and AmanEmulatorGoldenTests passes with them",
+        "The simulator's AMAN and immigration feed source event ids and REST Idempotency-Keys carry the minute the demo day is laid on; the same minute on another anchor of the same day gets other ids and keys, one anchor one set; the counts stay the same within a UTC date; every id passes ImmigrationRules.IsSourceEventId and every key IntegrationBatches.IsKey; unit tests in FeedEmulatorTests and FeedEmulatorEndpointTests (whose key pattern then reads sim-9303-20261003T0000-1110-<contract>); the summary of ImmigrationFeedEmulator that describes the key (\"the seed, date, minute and contract\") names the anchor too",
+        "aman-feed.spec.ts and aman-pull.spec.ts pass when run a second time against the same services, without recreating them, with their assertions kept; where a count reads the whole database (aman-feed's Kafka counts, aman-pull's received in the last 10 minutes), scope it to the run by the anchor the ids carry",
+        "node scripts/verify.mjs story passes; node scripts/verify.mjs quick passes",
+        "security-reviewer verdict PASS recorded in backlog/progress.md"
+      ],
+      "priority": 47,
+      "passes": false,
+      "notes": "Size S. Phase 3. Owner decision needed first (the locked fingerprint). Also fixes a demo restarted or jumped the same UTC day, whose AMAN records Ariva now keeps as unchanged. No sign-in code.",
+      "dependsOn": [
+        "ARV-279a"
       ]
     },
     {

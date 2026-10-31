@@ -61,6 +61,8 @@ const passwords = { owner: secret(), runtime: secret(), readonly: secret(), vali
 const run = {
 	ARIVA_E2E_LOG_DIR: path.join(E2E, 'logs', new Date().toISOString().replace(/[:.]/g, '-')),
 	ARIVA_E2E_ACCOUNT_SEED: secret(),
+	// ARV-279a: the run's site tag, drawn once so the config listing (the hosts' accounts) and the test pass agree on it.
+	ARIVA_E2E_RUN_TAG: randomBytes(12).toString('hex'),
 	ARIVA_E2E_KEY_DIR: path.join(work, 'keys'),
 	ARIVA_E2E_SIMULATION_KEY: 'sim-e2e-' + secret(),
 	// ARV-104i's read-only simulator key: drawn here too, so the simulator the AppHost starts holds the digest of the key the
