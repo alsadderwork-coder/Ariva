@@ -3,6 +3,7 @@ import http from 'node:http';
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
+import { createSite } from '../support/airports';
 import { provisionLoadSite, randomLetters, secondFactorSignIn } from '../support/load-site';
 import { box, lasting, live, renamed, videoFixture, withCodec } from '../support/media';
 import { sqlInjectionPayloads, xssPayloads } from '../support/payloads';
@@ -198,9 +199,8 @@ test.beforeAll(async () => {
 	admin = await secondFactorSignIn(accounts().mediaAdmin);
 	site = (await provisionLoadSite(accounts().mediaAdmin, 'AM', 'Load Zone', admin)).site;
 	other = (await provisionLoadSite(accounts().mediaAdmin, 'AN', 'Load Zone', admin)).site;
-	off = `AO${randomLetters(4)}`;
-	const offSite = await call('POST', `${hosts.main}/api/v1/admin/sites`, { token: admin, data: { code: off, name: off } });
-	expect(offSite.status(), 'a site that never had an advertising policy').toBe(201);
+	// A site that never had an advertising policy.
+	off = await createSite(() => `AO${randomLetters(4)}`, (code) => call('POST', `${hosts.main}/api/v1/admin/sites`, { token: admin, data: { code, name: code } }));
 	await allow(site);
 	await allow(other);
 	manager = (await signIn(accounts().mediaManager)).accessToken;

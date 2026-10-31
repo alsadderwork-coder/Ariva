@@ -4,6 +4,7 @@ import { accounts, call, databaseAvailable, login, signIn, totpCode } from '../s
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
 import { expectStatus } from '../support/expect-status';
+import { unusedCode } from '../support/airports';
 
 // ARV-139a: the illustrative AUH Terminal A arrivals site (AUH-TA), seeded beside the fictional DMO in vm-local. The
 // sites API says which site is "Illustrative, not surveyed"; the flag is set by the seed alone (CWE-269): no body of the
@@ -57,7 +58,12 @@ test('the sites API flags AUH-TA illustrative and DMO not', async () => {
 
 test('the admin API cannot set the flag on a new site', async () => {
 	const admin = await signIn(accounts().SystemAdministrator);
-	const code = `IL-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+	// A code no site holds yet, so the refusals below can show nothing was created under it (ARV-196: drawn again when taken).
+	const code = await unusedCode('sites', () => `IL-${crypto.randomBytes(3).toString('hex').toUpperCase()}`, async (drawn) => {
+		const found = await call('GET', `${sites}/${drawn}`, { token: admin.accessToken });
+		if (found.status() !== 200 && found.status() !== 404) throw new Error(`sites: ${found.status()} for a code lookup`);
+		return found.status() === 200;
+	});
 	const name = `Illustrative probe ${xssPayloads[1]}`;
 
 	// ARV-089: the request model has no such member, so a body naming one is refused (400) and creates nothing, whatever

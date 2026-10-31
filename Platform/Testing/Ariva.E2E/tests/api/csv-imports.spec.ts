@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode, type Account } from '../support/accounts';
-import { createAirport } from '../support/airports';
+import { createAirport, createSite, randomLetters } from '../support/airports';
 import { hosts } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
 
@@ -11,18 +11,16 @@ import { expectStatus } from '../support/expect-status';
 // refused with fixed texts naming rows and columns, never a cell. A preview token works only for the file, site and
 // user of its preview. A commit registers the devices in Commissioning and returns each new credential once; a
 // credential is checked by its format inside an expect and never printed (ARV-152).
-// The sites are new each run (codes CIA and CIB with a random tail; no other suite uses them). Everything the suite
-// creates is removed at the end except the sites and the published zone profile versions.
+// The sites are new each run (codes CIA and CIB with random tails, drawn again when taken; no other suite uses
+// them). Everything the suite creates is removed at the end except the sites and the published zone profile versions.
 
 test.skip(!databaseAvailable, 'the CSV imports need the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
 
 const admin = `${hosts.main}/api/v1/admin`;
-const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const random = (n: number) => Array.from({ length: n }, () => letters[Math.floor(Math.random() * 26)]).join('');
-const tail = random(4);
-const site = `CIA${tail}`;
-const otherSite = `CIB${tail}`;
+// The two sites' codes are drawn when they are created (ARV-196: drawn again when an earlier run took one).
+let site = '';
+let otherSite = '';
 const devices = (code: string) => `${admin}/sites/${code}/device-imports`;
 const mappings = (code: string) => `${admin}/sites/${code}/desk-code-mapping-imports`;
 const deviceHeader = 'code,family,model,transport,dialect,clockSource,terminal,level,x,y,mountingHeightMetres,orientationDegrees,queueZone';
@@ -64,16 +62,26 @@ async function create(path: string, data: unknown): Promise<string> {
 	return (json.id ?? json.profile?.id) as string;
 }
 
-/** Every record of a kind at a site (searches page at most 500). */
+/**
+ * Every record of a kind at a site (searches page at most 500). None for an empty code: the API reads an empty siteCode as
+ * no filter, and the cleanup deletes what this finds (ARV-196 review).
+ */
 async function search(entity: string, code: string): Promise<any[]> {
+	if (!code) return [];
 	const response = await call('GET', `${admin}/${entity}?siteCode=${code}&pageSize=500`, { token: stepped });
 	return response.status() === 200 ? (await response.json()).data : [];
 }
 
-/** A site with one level, a published queue zone Snake A, an immigration checkpoint (desk D01, e-gate EG01) and a check-in counter. */
+/** A new site under the prefix and four random letters, drawn again when taken (ARV-196). Returns its code. */
+function newSite(prefix: string): Promise<string> {
+	return createSite(
+		() => `${prefix}${randomLetters(4)}`,
+		(code) => call('POST', `${admin}/sites`, { token: stepped, data: { code, name: `E2E CSV imports ${code}` } })
+	);
+}
+
+/** The site's topology: one level, a published queue zone Snake A, an immigration checkpoint (desk D01, e-gate EG01) and a check-in counter. */
 async function siteWithTopology(code: string): Promise<void> {
-	const created = await call('POST', `${admin}/sites`, { token: stepped, data: { code, name: `E2E CSV imports ${code}` } });
-	await expectStatus(created, 201, code);
 	const { id: airportId, iataCode } = await createAirport((iata) =>
 		call('POST', `${admin}/airports`, { token: stepped, data: { iataCode: iata, name: `E2E CSV imports ${iata}`, timeZoneId: 'Asia/Dubai' } })
 	);
@@ -101,13 +109,17 @@ test.beforeAll(async () => {
 	passwordOnly = (await signIn(accounts().SystemAdministrator)).accessToken;
 	handler = (await signIn(accounts().HandlerStationManager)).accessToken;
 	duty = (await signIn(accounts().TerminalDutyManager)).accessToken;
+	// Both codes are known before anything is built on them, so the cleanup finds a site whose build failed part way.
+	site = await newSite('CIA');
+	otherSite = await newSite('CIB');
 	await siteWithTopology(site);
 	await siteWithTopology(otherSite);
 });
 
 test.afterAll(async () => {
 	if (!stepped) return;
-	for (const code of [site, otherSite]) {
+	// Only the sites this run created: an empty code would search, and delete, every site's records.
+	for (const code of [site, otherSite].filter(Boolean)) {
 		for (const device of await search('devices', code)) await call('DELETE', `${admin}/devices/${device.id}`, { token: stepped });
 		for (const mapping of await search('desk-code-mappings', code)) await call('DELETE', `${admin}/desk-code-mappings/${mapping.id}`, { token: stepped });
 		const history = await call('GET', `${admin}/zone-profiles?siteCode=${code}`, { token: stepped });

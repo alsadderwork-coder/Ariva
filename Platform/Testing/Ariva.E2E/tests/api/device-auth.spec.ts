@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, signIn, unusedTotpCode } from '../support/accounts';
-import { createAirport } from '../support/airports';
+import { createAirport, createSite, randomLetters } from '../support/airports';
 import { hosts } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
 
@@ -14,9 +14,8 @@ test.describe.configure({ mode: 'serial' });
 
 const admin = `${hosts.main}/api/v1/admin`;
 const ingest = `${hosts.ingest}/api/v1/ingest`;
-const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const random = (n: number) => Array.from({ length: n }, () => letters[Math.floor(Math.random() * 26)]).join('');
-const site = `DA${random(4)}`;
+// The site's code is drawn when it is created (ARV-196: drawn again when an earlier run took it).
+let site = '';
 let withSecondFactor: string;
 let deviceId: string;
 let key: string;
@@ -32,7 +31,7 @@ test.beforeAll(async () => {
 		const json = await response.json();
 		return (json.id ?? json.profile?.id) as string;
 	};
-	expect((await call('POST', `${admin}/sites`, { token: withSecondFactor, data: { code: site, name: site } })).status()).toBe(201);
+	site = await createSite(() => `DA${randomLetters(4)}`, (code) => call('POST', `${admin}/sites`, { token: withSecondFactor, data: { code, name: code } }));
 	const { id: airport } = await createAirport((iataCode) =>
 		call('POST', `${admin}/airports`, { token: withSecondFactor, data: { iataCode, name: `E2E device auth ${site}`, timeZoneId: 'Asia/Dubai' } })
 	);

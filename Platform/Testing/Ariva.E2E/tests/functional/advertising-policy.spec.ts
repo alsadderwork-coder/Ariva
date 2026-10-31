@@ -5,7 +5,7 @@ import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
 import { allowStatuses, databaseAvailable, earlyInStep, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
-import { expectStatus } from '../support/expect-status';
+import { createSite } from '../support/airports';
 
 // ARV-145: the advertising policy panel of the Passenger displays screen. A system administrator allows advertising at a
 // site of this spec's own (created here, without zones, so no other spec's displays or boards depend on it) after a fresh
@@ -18,7 +18,8 @@ import { expectStatus } from '../support/expect-status';
 test.skip(!databaseAvailable, 'needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
 
-const site = `AD${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+// The spec's own site; its code is drawn when it is created (ARV-196: drawn again when an earlier run took it).
+let site = '';
 const injected = 'img[src="x"], [onerror], [onload], iframe, svg[onload]';
 const reason = `${xssPayloads[1]} airport operator letter AO-WEB-145`;
 
@@ -57,8 +58,10 @@ async function emptyLibrary(page: Page): Promise<void> {
 
 test.beforeAll(async () => {
 	const admin = (await signIn(accounts().webAdmin)).accessToken;
-	const created = await call('POST', `${hosts.main}/api/v1/admin/sites`, { token: admin, data: { code: site, name: 'E2E advertising screen' } });
-	await expectStatus(created, 201);
+	site = await createSite(
+		() => `AD${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+		(code) => call('POST', `${hosts.main}/api/v1/admin/sites`, { token: admin, data: { code, name: 'E2E advertising screen' } })
+	);
 });
 
 test('a system administrator allows advertising with a reason after a second factor; the reason shows as text', async ({ page }) => {

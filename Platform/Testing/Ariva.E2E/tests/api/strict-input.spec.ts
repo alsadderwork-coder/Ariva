@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, integrationSeedsFile, login, signIn, totpCode, unusedTotpCode, type CallResponse } from '../support/accounts';
-import { createAirport } from '../support/airports';
+import { createAirport, createSite, randomLetters } from '../support/airports';
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
@@ -25,9 +25,9 @@ test.skip(!databaseAvailable, 'strict input needs the E2E database (ARIVA_E2E_SC
 test.describe.configure({ mode: 'serial' });
 
 const admin = `${hosts.main}/api/v1/admin`;
-const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const random = (n: number) => Array.from({ length: n }, () => letters[Math.floor(Math.random() * 26)]).join('');
-const site = `SI${random(4)}`;
+const random = randomLetters;
+// The site's code is drawn when it is created (ARV-196: drawn again when an earlier run took it).
+let site = '';
 const inside = () => `10.${1 + Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}.${1 + Math.floor(Math.random() * 250)}`;
 const json = { 'Content-Type': 'application/json' };
 const level = { name: 'Arrivals', floorNumber: 0, widthMetres: 100, depthMetres: 50 };
@@ -74,7 +74,7 @@ test.beforeAll(async () => {
 	};
 
 	// A site of its own: a level, a published zone profile with one queue and a device in it.
-	expect((await call('POST', `${admin}/sites`, { token: stepped, data: { code: site, name: `E2E strict input ${site}` } })).status()).toBe(201);
+	site = await createSite(() => `SI${randomLetters(4)}`, (code) => call('POST', `${admin}/sites`, { token: stepped, data: { code, name: `E2E strict input ${code}` } }));
 	const { id: airport } = await createAirport((iataCode) =>
 		call('POST', `${admin}/airports`, { token: stepped, data: { iataCode, name: `E2E strict input ${site}`, timeZoneId: 'Asia/Dubai' } })
 	);

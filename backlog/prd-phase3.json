@@ -663,7 +663,7 @@
         "node scripts/verify.mjs e2e passes twice in a row without a flaky test from this cause"
       ],
       "priority": 59,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Recorded 2026-10-18 with ARV-142b under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back). Not this story's code: it passed on its retry.",
       "dependsOn": []
     },
@@ -2035,6 +2035,41 @@
       "notes": "Size S. Phase 3. Filed 2026-10-29 by ARV-193. No sign-in code.",
       "dependsOn": [
         "ARV-193"
+      ]
+    },
+    {
+      "id": "ARV-278",
+      "title": "[E15] A site created twice at once answers 409, not 500",
+      "description": "Found by the ARV-196 security review (2026-10-31): SvcSites.CreateAsync checks for an existing code and then saves, but does not turn a unique index violation on ux_site_code (script 0007) into AdministrationErrors.SiteTaken, unlike SvcTopology.GuardedAsync for airports and other topology codes. Two creates of the same site code at the same moment both pass the check; the second fails at commit and answers 500 (in vm-local with the exception text). Map the unique violation of ux_site_code to SiteTaken (409, 'Already exists'), as the topology services do, and keep every other database error a 500. CWEs to review: CWE-209 (no exception text in an answer), CWE-20.",
+      "acceptanceCriteria": [
+        "Two concurrent creates of the same site code: one answers 201 and the other 409 with the SiteTaken detail; the audit holds one SiteCreated; integration test against PostgreSQL",
+        "Any other database error on a site create still answers 500 without the exception text outside vm-local; unit or integration test",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 46,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-10-31 from the ARV-196 review (advisory 2); the E2E suite no longer races on site codes since ARV-196 gave every spec a prefix of its own. No sign-in code.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-279",
+      "title": "[E17] E2E suite passes a second time on the database a run already used",
+      "description": "Found while building ARV-196 (2026-10-31): `verify.mjs e2e` run a second time against the same services, without recreating them, failed six tests on state the first run left behind rather than on random codes. Specifically: zone-profiles.spec.ts and functional zones.spec.ts ('Zone Snake A already exists here.' in a fixed site); topology.spec.ts (desk code mapping dsk-101 already mapped, 409); alert-emails.spec.ts (the first run's email attempts counted with the second's); aman-feed.spec.ts and aman-pull.spec.ts (desk intervals counted 0, likely the feed's and pull's idempotency keys or cursors from the first run). Every gate recreates the services first and CI starts from new containers, so this does not fail a gate, but a developer rerunning the suite on a kept database does. Make each of these specs own its data: a site, profile or mapping of its own drawn per run, counts scoped to what the run sent, and keys unique per run. CWEs to review: none new (test code); CWE-532 for anything the specs print.",
+      "acceptanceCriteria": [
+        "node scripts/verify.mjs e2e passes twice in a row against the same services, without recreating them between the runs",
+        "The six specs named keep their assertions (no weakened check, no added skip); a duplicate a spec asserts is still sent by the spec itself",
+        "node scripts/verify.mjs quick passes; docs/harness/test-cadence.md or the E2E README says whether a run needs fresh services",
+        "security-reviewer verdict PASS recorded in backlog/progress.md"
+      ],
+      "priority": 47,
+      "passes": false,
+      "notes": "Size S to M. Phase 3. Filed 2026-10-31 from ARV-196's second E2E pass (log kept in the session scratchpad only). No sign-in code.",
+      "dependsOn": [
+        "ARV-196"
       ]
     }
   ]

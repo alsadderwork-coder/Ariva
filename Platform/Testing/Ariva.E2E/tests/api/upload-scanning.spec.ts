@@ -2,7 +2,7 @@ import { createHash, randomInt } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, claimsOf, databaseAvailable, type CallResponse } from '../support/accounts';
-import { createAirport } from '../support/airports';
+import { createAirport, createSite } from '../support/airports';
 import { expectProblemDetails } from '../support/api-assertions';
 import { eicar, eicarSha256, eicarSignature } from '../support/eicar';
 import { expectStatus } from '../support/expect-status';
@@ -336,9 +336,7 @@ test('a site configuration bundle whose floor plan file or JSON part is the EICA
 	expect(Object.keys(bundle.parts), 'the bundle carries the floor plan file').toContain('floorPlanFile.1');
 
 	// The target: an empty site and an airport of its own, so that only the parts decide.
-	const target = `UW${randomLetters(4)}`;
-	const created = await call('POST', `${adminApi}/sites`, { token: admin, data: { code: target, name: target } });
-	await expectStatus(created, 201, 'the target site');
+	const target = await createSite(() => `UW${randomLetters(4)}`, (code) => call('POST', `${adminApi}/sites`, { token: admin, data: { code, name: code } }));
 	sites.push(target);
 	const airport = await createAirport((iataCode) =>
 		call('POST', `${adminApi}/airports`, { token: admin, data: { iataCode, name: `E2E upload scanning ${iataCode}`, timeZoneId: 'Asia/Dubai' } })

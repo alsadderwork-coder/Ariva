@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { hosts } from '../support/hosts';
+import { createSite } from '../support/airports';
 import { provisionLoadSite, randomLetters, secondFactorSignIn } from '../support/load-site';
 import { markupFragments, sqlInjectionPayloads, xssPayloads } from '../support/payloads';
 import { expectStatus } from '../support/expect-status';
@@ -100,8 +101,8 @@ test.beforeAll(async () => {
 	site = provisioned.site;
 	zone = provisioned.zone;
 	other = (await provisionLoadSite(accounts().planAdmin, 'PM', 'Load Zone', admin)).site;
-	off = `PO${randomLetters(4)}`;
-	expect((await call('POST', `${hosts.main}/api/v1/admin/sites`, { token: admin, data: { code: off, name: off } })).status(), 'a site that never had an advertising policy').toBe(201);
+	// A site that never had an advertising policy.
+	off = await createSite(() => `PO${randomLetters(4)}`, (code) => call('POST', `${hosts.main}/api/v1/admin/sites`, { token: admin, data: { code, name: code } }));
 	await allow(site);
 	await allow(other);
 	manager = (await signIn(accounts().planManager)).accessToken;

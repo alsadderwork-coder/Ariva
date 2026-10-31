@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
-import { createAirport } from '../support/airports';
+import { createAirport, createSite, randomLetters } from '../support/airports';
 import { hosts, kafkaAvailable } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
 
@@ -12,9 +12,8 @@ test.skip(!databaseAvailable, 'device health needs the E2E database (ARIVA_E2E_S
 test.describe.configure({ mode: 'serial' });
 
 const admin = `${hosts.main}/api/v1/admin`;
-const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-const random = (n: number) => Array.from({ length: n }, () => letters[Math.floor(Math.random() * 26)]).join('');
-const site = `DH${random(4)}`;
+// The site's code is drawn when it is created (ARV-196: drawn again when an earlier run took it).
+let site = '';
 let token = '';
 let deviceId = '';
 let key = '';
@@ -31,7 +30,7 @@ test.beforeAll(async () => {
 		const json = await response.json();
 		return (json.id ?? json.profile?.id) as string;
 	};
-	expect((await call('POST', `${admin}/sites`, { token, data: { code: site, name: site } })).status()).toBe(201);
+	site = await createSite(() => `DH${randomLetters(4)}`, (code) => call('POST', `${admin}/sites`, { token, data: { code, name: code } }));
 	const { id: airport } = await createAirport((iataCode) =>
 		call('POST', `${admin}/airports`, { token, data: { iataCode, name: `E2E health ${site}`, timeZoneId: 'Asia/Dubai' } })
 	);

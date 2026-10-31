@@ -1,15 +1,15 @@
 import { expect } from '@playwright/test';
 import { type Account, call, login, unusedTotpCode } from './accounts';
-import { createAirport } from './airports';
+import { createAirport, createSite, randomLetters } from './airports';
 import { hosts } from './hosts';
 import { expectStatus } from './expect-status';
 
 // ARV-071: a site of its own for a load run (api/load.spec.ts) or for the screen watched under load
 // (functional/live-under-load.spec.ts): an airport, a terminal, a level and a published zone profile with one queue zone
-// and its entry and exit lines. Each run gets a fresh site code, so suites and reruns never share a zone.
+// and its entry and exit lines. Each run gets a fresh site code, so suites and reruns never share a zone; a code an
+// earlier run took is drawn again (ARV-196).
 
-const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-export const randomLetters = (n: number) => Array.from({ length: n }, () => letters[Math.floor(Math.random() * 26)]).join('');
+export { randomLetters };
 
 export interface LoadSite {
 	site: string;
@@ -33,8 +33,7 @@ export async function provisionLoadSite(admin: Account, prefix: string, zone = '
 		await expectStatus(response, 201, resource);
 		return response.json();
 	};
-	const site = `${prefix}${randomLetters(4)}`;
-	expect((await call('POST', `${base}/sites`, { token, data: { code: site, name: site } })).status()).toBe(201);
+	const site = await createSite(() => `${prefix}${randomLetters(4)}`, (code) => call('POST', `${base}/sites`, { token, data: { code, name: code } }));
 	const { id: airport } = await createAirport((iataCode) =>
 		call('POST', `${base}/airports`, { token, data: { iataCode, name: `E2E load ${site}`, timeZoneId: 'Asia/Dubai' } })
 	);

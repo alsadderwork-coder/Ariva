@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, clientAddress, databaseAvailable, login, signIn, unusedTotpCode, type Account } from '../support/accounts';
-import { createAirport } from '../support/airports';
+import { createAirport, createSite } from '../support/airports';
 import { hosts } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
 import { announced } from '../support/raw-http';
@@ -25,9 +25,9 @@ import { announced } from '../support/raw-http';
 // with its owner) and is refused with an airport-side owner or escalation role, without an owner, or on an overflow band.
 // ARV-187: a predicted nowcast rule is refused the same way (roles only), and a stored one an older release left with an
 // airport-side owner refuses the export with a fixed text (409) that names no rule.
-// The sites are new each run (codes CFA, CFB and CFC with a random tail; no other suite uses them). Everything the
-// suite creates is removed at the end except what Ariva never deletes: the sites themselves and the published zone
-// profile versions (immutable by design, script 0012).
+// The sites are new each run (codes CFA, CFB and CFC with random tails, drawn again when taken; no other suite
+// uses them). Everything the suite creates is removed at the end except what Ariva never deletes: the sites
+// themselves and the published zone profile versions (immutable by design, script 0012).
 
 test.skip(!databaseAvailable, 'site configuration needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -35,10 +35,12 @@ test.describe.configure({ mode: 'serial' });
 const admin = `${hosts.main}/api/v1/admin`;
 const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const random = (n: number) => Array.from({ length: n }, () => letters[Math.floor(Math.random() * 26)]).join('');
+/** The random part of the display's code. */
 const tail = random(4);
-const source = `CFA${tail}`;
-const target = `CFB${tail}`;
-const spare = `CFC${tail}`;
+/** The three sites' codes, drawn when they are created (ARV-196: drawn again when an earlier run took one). */
+let source = '';
+let target = '';
+let spare = '';
 /** The source's and the target's airport codes, drawn when the airports are created (another code when one is taken). */
 let sourceIata = '';
 let targetIata = '';
@@ -128,8 +130,12 @@ async function publish(draft: string): Promise<any> {
 	return published.json();
 }
 
-/** Every record of a kind at a site (topology searches page at most 500). */
+/**
+ * Every record of a kind at a site (topology searches page at most 500). None for an empty code: the API reads an empty
+ * siteCode as no filter, and the cleanup deletes what this finds (ARV-196 review).
+ */
 async function search(entity: string, site: string): Promise<any[]> {
+	if (!site) return [];
 	const response = await call('GET', `${admin}/${entity}?siteCode=${site}&pageSize=500`, { token: stepped });
 	return response.status() === 200 ? (await response.json()).data : [];
 }
@@ -140,10 +146,10 @@ test.beforeAll(async () => {
 	passwordOnly = (await signIn(accounts().SystemAdministrator)).accessToken;
 	duty = (await signIn(accounts().TerminalDutyManager)).accessToken;
 
-	for (const site of [source, target, spare]) {
-		const created = await call('POST', `${admin}/sites`, { token: stepped, data: { code: site, name: `E2E site configuration ${site}` } });
-		await expectStatus(created, 201, site);
-	}
+	const postSite = (code: string) => call('POST', `${admin}/sites`, { token: stepped, data: { code, name: `E2E site configuration ${code}` } });
+	source = await createSite(() => `CFA${random(4)}`, postSite);
+	target = await createSite(() => `CFB${random(4)}`, postSite);
+	spare = await createSite(() => `CFC${random(4)}`, postSite);
 	sourceIata = (await createAirport(postAirport)).iataCode;
 	airports.push(sourceIata);
 	targetIata = (await createAirport(postAirport)).iataCode;
@@ -214,15 +220,17 @@ test.beforeAll(async () => {
 	await expectStatus(display, 201, 'display');
 });
 
-/** The live displays of a site (the display search answers a list). */
+/** The live displays of a site (the display search answers a list); none for an empty code, as `search`. */
 async function displaysOf(site: string): Promise<any[]> {
+	if (!site) return [];
 	const response = await call('GET', `${admin}/displays?siteCode=${site}`, { token: stepped });
 	return response.status() === 200 ? await response.json() : [];
 }
 
 test.afterAll(async () => {
 	if (!stepped) return;
-	for (const site of [source, target, spare]) {
+	// Only the sites this run created: an empty code would search, and delete, every site's records.
+	for (const site of [source, target, spare].filter(Boolean)) {
 		for (const display of await displaysOf(site)) await call('DELETE', `${admin}/displays/${display.id}`, { token: stepped });
 		for (const rule of await search('alert-rules', site)) await call('DELETE', `${admin}/alert-rules/${rule.id}`, { token: stepped });
 		for (const device of await search('devices', site)) await call('DELETE', `${admin}/devices/${device.id}`, { token: stepped });

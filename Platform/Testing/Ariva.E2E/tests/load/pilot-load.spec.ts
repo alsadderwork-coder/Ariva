@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { accounts, call, databaseAvailable } from '../support/accounts';
 import { expectStatus } from '../support/expect-status';
 import { hosts, kafkaAvailable } from '../support/hosts';
-import { createAirport } from '../support/airports';
+import { createAirport, createSite } from '../support/airports';
 import { randomLetters, screenSessions, secondFactorSignIn } from '../support/load-site';
 import { staffingDatabase } from '../support/staffing';
 
@@ -82,9 +82,9 @@ test.beforeAll(async () => {
 		await expectStatus(response, 201, resource);
 		return response.json();
 	};
-	// A site of its own each run (PL and four letters), so reruns never share a zone.
-	site = `PL${randomLetters(4)}`;
-	await expectStatus(await call('POST', `${admin}/sites`, { token, data: { code: site, name: `Pilot hall ${site}` } }), 201, 'site');
+	// A site of its own each run (PH and four letters, drawn again when taken, ARV-196; no other spec uses PH), so reruns
+	// never share a zone.
+	site = await createSite(() => `PH${randomLetters(4)}`, (code) => call('POST', `${admin}/sites`, { token, data: { code, name: `Pilot hall ${code}` } }));
 	const { id: airport } = await createAirport((iataCode) =>
 		call('POST', `${admin}/airports`, { token, data: { iataCode, name: `E2E pilot ${site}`, timeZoneId: 'Asia/Dubai' } })
 	);

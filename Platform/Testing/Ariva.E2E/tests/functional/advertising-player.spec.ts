@@ -389,7 +389,7 @@ const times = (list: string[], id: string) => list.filter((value) => value === i
 test.beforeAll(async () => {
 	test.setTimeout(240_000);
 	admin = await secondFactorSignIn(accounts().playerAdmin);
-	const provisioned = await provisionLoadSite(accounts().playerAdmin, 'PY', 'Load Zone', admin);
+	const provisioned = await provisionLoadSite(accounts().playerAdmin, 'PX', 'Load Zone', admin);
 	site = provisioned.site;
 	zone = provisioned.zone;
 	const policyUrl = `${admins}/sites/${site}/advertising-policy`;

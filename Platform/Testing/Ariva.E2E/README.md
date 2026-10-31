@@ -40,6 +40,13 @@ API end-to-end tests and Playwright functional tests for Ariva. They run against
 
 - Default deny answers before routing. An anonymous caller (no token or an invalid one) gets 401 (with a ProblemDetails body) for unknown routes, wrong methods and TRACE as well, so routes cannot be enumerated. The genuine 404, 405 and 500 bodies are covered in `Ariva.UnitTests` (`ErrorHandlingTests`) with an authenticated test scheme.
 - A 2 MB body sent to a protected route is answered with 401 before Kestrel reads it: authorization runs before model binding, and a client that sends `Expect: 100-continue` never uploads the body. Kestrel's 1 MB limit (413) applies once an endpoint reads a body. Request lines over 8 KB get 414 and header blocks over 32 KB get 431 from Kestrel.
+- The E2E database keeps what earlier runs created, so a spec never assumes a random code is free (ARV-196).
+  - It creates its airports with `createAirport` and its sites with `createSite` (`tests/support/airports.ts`). They draw another code only when the answer is a 409 whose detail says the code is taken, and fail at once on any other answer, another conflict included.
+  - A spec that sends refused requests under a code before creating the record draws it with `unusedCode`.
+  - A spec that derives other codes from a site's random part draws it inside the site's `draw`, so they follow the code the site got.
+  - Each spec has a site prefix of its own.
+  - A spec that asserts a duplicate answers 409 (`topology.spec.ts`) sends the duplicate itself, after the helper.
+  - A site code is known only once `beforeAll` has created the site, so a cleanup skips an empty code: the API reads an empty `siteCode` as no filter, and a cleanup that searched with one would delete every site's records.
 - The web CSP allows SvelteKit's inline bootstrap script by hash (`kit.csp` in hash mode) and SvelteKit's route announcer style attribute by hash (`style-src-attr 'unsafe-hashes'`); there is no `'unsafe-inline'`. See `Platform/Frontplane/Ariva.Web/csp.config.js`.
 
 ## Run locally

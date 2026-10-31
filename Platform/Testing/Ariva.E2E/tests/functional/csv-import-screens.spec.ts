@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { accounts, call, claimsOf, developmentSigningKey, headerOf, login, signIn, signToken, unusedTotpCode, type Account } from '../support/accounts';
-import { createAirport } from '../support/airports';
+import { createAirport, createSite } from '../support/airports';
 import { guardPage } from '../support/browser-guards';
 import { hosts, webUrl } from '../support/hosts';
 import { allowStatuses, databaseAvailable, fillSecret, fillSignIn, ownAddress, signInThroughUi } from '../support/web-auth';
@@ -27,12 +27,13 @@ const admin = `${hosts.main}/api/v1/admin`;
 const deviceUrl = `${hosts.ingest}/api/v1/ingest/device`;
 const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const random = (n: number) => Array.from(crypto.randomBytes(n), (b) => letters[b % 26]).join('');
-const tail = random(4);
-const site = `CIW${tail}`;
+/** The random part of the site's code, which other codes reuse; drawn with the site (ARV-196: again when an earlier run took it). */
+let tail = '';
+let site = '';
 /** The airport's code, drawn when the airport is created (another code when one is taken). */
 let iata = '';
 const hostileModel = '<img src=x onerror=alert(1)>';
-const hostileZone = `<img src=x onerror=alert(2)> ${tail}`;
+const hostileZone = () => `<img src=x onerror=alert(2)> ${tail}`;
 /** Elements and attributes a successful injection would create. */
 const injected = 'img[src="x"], svg[onload], iframe, [onerror], [onload], a[href^="javascript:"]';
 /** A device credential: the marker and 43 base64url characters. Tested inside an expect, never printed. */
@@ -69,8 +70,12 @@ async function create(path: string, data: unknown): Promise<string> {
 	return (json.id ?? json.profile?.id) as string;
 }
 
-/** Every record of a kind at the site (searches page at most 500). */
+/**
+ * Every record of a kind at the site (searches page at most 500). None before the site exists: the API reads an empty
+ * siteCode as no filter, and the cleanup deletes what this finds (ARV-196 review).
+ */
 async function search(entity: string, token = stepped): Promise<any[]> {
+	if (!site) return [];
 	const response = await call('GET', `${admin}/${entity}?siteCode=${site}&pageSize=500`, { token });
 	return response.status() === 200 ? (await response.json()).data : [];
 }
@@ -80,8 +85,10 @@ async function search(entity: string, token = stepped): Promise<any[]> {
  * an immigration checkpoint (desk D01, e-gate EG01) and a check-in counter C01.
  */
 async function siteWithTopology(): Promise<void> {
-	const created = await call('POST', `${admin}/sites`, { token: stepped, data: { code: site, name: `E2E CSV import screens ${site}` } });
-	await expectStatus(created, 201, site);
+	site = await createSite(
+		() => `CIW${(tail = random(4))}`,
+		(code) => call('POST', `${admin}/sites`, { token: stepped, data: { code, name: `E2E CSV import screens ${code}` } })
+	);
 	const airport = await createAirport((code) =>
 		call('POST', `${admin}/airports`, { token: stepped, data: { iataCode: code, name: `E2E CSV import screens ${code}`, timeZoneId: 'Asia/Dubai' } })
 	);
@@ -97,7 +104,7 @@ async function siteWithTopology(): Promise<void> {
 	const draft = await create('zone-profiles/drafts', { siteCode: site, name: 'Arrivals' });
 	for (const [name, x, mark] of [
 		['Snake A', 10, 'A'],
-		[hostileZone, 50, 'H']
+		[hostileZone(), 50, 'H']
 	] as const) {
 		const zone = await create(`zone-profiles/${draft}/zones`, { name, kind: 'Queue', levelId: level, polygon: `${x} 10,${x + 24} 10,${x + 24} 22,${x} 22` });
 		await create(`zone-profiles/${draft}/lines`, { name: `Entry ${mark}`, role: 'Entry', levelId: level, startX: x, startY: 12, endX: x, endY: 16, zoneId: zone });
@@ -175,7 +182,8 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
 	test.setTimeout(120_000);
-	if (!stepped) return;
+	// Nothing to remove before the site exists (its airport is created after it); an empty code would reach every site.
+	if (!stepped || !site) return;
 	// Removing a device is critical: a fresh second factor, since the suite may outlast the first one's 15 minutes.
 	const fresh = await secondFactor(account());
 	for (const device of await search('devices', fresh)) await call('DELETE', `${admin}/devices/${device.id}`, { token: fresh });
@@ -309,13 +317,13 @@ test('row content from the file is text: a model and a zone named with markup ru
 	const guards = await guardPage(page);
 	await signInThroughUi(page, account(), await unusedTotpCode(account().totpSecret!));
 	const dialog = await openDeviceImport(page);
-	await dialog.getByLabel('CSV file').setInputFiles(csvFile('hostile.csv', csv(deviceHeader, row('H-01', hostileModel), row('H-02', 'PC2SE', 62, hostileZone))));
+	await dialog.getByLabel('CSV file').setInputFiles(csvFile('hostile.csv', csv(deviceHeader, row('H-01', hostileModel), row('H-02', 'PC2SE', 62, hostileZone()))));
 	await dialog.getByRole('button', { name: 'Check the file' }).click();
 	await expect(dialog.getByTestId('import-ready')).toBeVisible();
 	const rows = dialog.getByTestId('import-row');
 	await expect(rows).toHaveCount(2);
 	await expect(rows.nth(0).locator('td').nth(3)).toHaveText(hostileModel);
-	await expect(rows.nth(1).locator('td').nth(6)).toHaveText(hostileZone);
+	await expect(rows.nth(1).locator('td').nth(6)).toHaveText(hostileZone());
 	await expect(page.locator(injected)).toHaveCount(0);
 	const html = await page.content();
 	expect(html.includes('<img src=x') || html.includes('<img src="x"'), 'the markup is escaped text, never an element').toBe(false);

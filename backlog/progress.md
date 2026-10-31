@@ -4246,3 +4246,51 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - A collection expression cannot appear inside an expression tree (CS9175), such as a FluentAssertions `OnlyContain` predicate: hoist it into a local.
   - The zone profile's name rule allows markup characters in a line name, so any answer that names a line goes through the push's safe form; System.Text.Json's default encoder writes `<` as a six-character escape (backslash, u, 003C) in the raw text, so a test of the safe form checks the parsed strings, not the raw body.
   - An optional constructor dependency called with `?.` fails silent when its registration is lost; make it required where a host test resolves the service, so the composition test catches it.
+
+## 2026-10-31: ARV-196 [E17] E2E airports and sites created with codes that cannot collide
+
+- What changed:
+  - `tests/support/airports.ts` now holds the code helpers:
+    - `createUnderFreshCode(what, draw, post, taken)` draws a code, posts, and draws again only on a 409 whose ProblemDetails detail is the endpoint's own "taken" text (`airportTaken`, `siteTaken`, copied from `TopologyErrors.Duplicate` and `AdministrationErrors.SiteTaken`). Any other answer, another 409 included, fails at once with the body redacted.
+    - `createAirport` (from 129654c) is built on it, and `createSite(draw, post)` is new.
+    - `unusedCode` draws until a lookup says the code is free, for a spec that sends refused requests under a code before creating the record (`api/illustrative-site.spec.ts`).
+    - `randomLetters` moved here; load-site.ts re-exports it.
+  - Every spec and support file that created a site under a random code now uses `createSite`:
+    - support: `load-site.ts`;
+    - api: device-push, device-health, device-auth, devices, strict-input, csv-imports, site-configuration, upload-scanning, advertising-media, advertising-plans;
+    - functional: advertising-policy, csv-import-screens;
+    - load: pilot-load.
+  - The site codes became `let` values set in `beforeAll`. csv-import-screens draws its tail inside `draw`, so its desk codes and its hostile zone name follow the code the site got.
+  - Every spec has a site prefix of its own: pilot-load moved from PL to PH, and the functional advertising player from PY to PX.
+  - Fixed codes with an existence check (site-switch's E2SW) and the seeded sites are unchanged. `api/topology.spec.ts` still asserts that a duplicate airport answers 409.
+  - The E2E README's "Behaviour worth knowing" lists the rules.
+- Files: Ariva.E2E `tests/support/airports.ts`, `tests/support/load-site.ts`, the specs above, `api/illustrative-site.spec.ts`, README.md.
+- Gates: `node scripts/verify.mjs story` PASS. It was wide, since `tests/support/` changed, so it ran: build, unit, security scan, audits, docs, chart; integration 870 (0 failed, 1 skipped); visual 20 passed; E2E API and functional 944 passed (1 skipped, no retry). Then a second full `verify.mjs e2e` on recreated services: 944 passed (1 skipped, no retry). So the suite passes twice in a row with no flaky test. Two earlier second passes are kept apart:
+  - one did not start: the simulator's port was still held by the first run's host, which was stopping;
+  - one ran on the first run's database, without recreating the services, and failed six tests in other specs on fixed codes and leftover state. Specifically: zone-profiles and zones ('Zone Snake A already exists here.'), topology (desk code mapping dsk-101), alert-emails (the first run's emails), aman-feed and aman-pull (counts 0). None came from a random code. Filed as ARV-279.
+  `verify.mjs quick` PASS before the commit.
+- Security review (test code only; CWE-532 and ARV-152 for secrets in errors and step titles, the data boundary):
+  - Round 1 FAIL.
+    - High: a code was now unset until `beforeAll` created the site. A spec that failed before that ran its cleanup with an empty code, which the API reads as no filter, so csv-imports, site-configuration and csv-import-screens would have deleted every site's desks, checkpoints, levels, terminals, mappings, Commissioning devices, displays and rules.
+    - Lows:
+      - a half-built csv-imports site leaked;
+      - illustrative-site still drew a site code directly;
+      - the helper retried on any 409.
+    - Advisories: shared prefixes (PL, PY), comment wrapping.
+  - Fixed:
+    - every search helper returns nothing for an empty code;
+    - the cleanups skip empty codes;
+    - csv-imports creates both sites before building on them;
+    - `unusedCode`, the 409 detail check, distinct prefixes, comments re-wrapped.
+  - The first gate run was stopped in its unit step (before any E2E ran) as soon as the High was reported.
+  - Round 2 PASS. Its advisories:
+    - the helper name `unusedCode` also names the smoke suite's TOTP helper. Not taken: they sit in different folders with different signatures, so a wrong import fails the type check.
+    - a site created twice at once answers 500, not 409 (production). Filed as ARV-278.
+    - display codes PY- in two specs. No action: negligible, and outside this story.
+  - Also filed: ARV-279 (the suite run a second time on one database), from the second E2E pass above.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - The admin searches read an empty `siteCode` as no filter. A cleanup keyed on a site code that may be unset must skip it, or it deletes across every site the account can see.
+  - Retry a create only on the conflict that means "taken" (its detail), never on any 409: imports answer 409 for a busy site too.
+  - `call` (Node fetch) reads the body once and caches it, so a helper may read `json()` and then `text()` of the same answer.
+  - Two Playwright runs back to back can collide on a host's port while the first run's hosts stop; a gate starts from recreated services, and so should any second run that is meant to count.
