@@ -69,6 +69,34 @@ public sealed class TlsCollector : IAsyncDisposable
         return _bodies.Any(body => body.AsSpan().IndexOf(wanted) >= 0);
     }
 
+    /// <summary>
+    /// True when a request's body held <paramref name="key"/> followed within <paramref name="within"/> bytes by
+    /// <paramref name="value"/> (UTF-8): an OTLP attribute's key and its string value, a few bytes of protobuf framing apart
+    /// (the value's field tag and length, its AnyValue's tag and length), so a value that is another attribute's does not count.
+    /// </summary>
+    public bool ReceivedPair(string key, string value, int within = 8)
+    {
+        var wantedKey = System.Text.Encoding.UTF8.GetBytes(key);
+        var wantedValue = System.Text.Encoding.UTF8.GetBytes(value);
+        foreach (var body in _bodies)
+        {
+            var start = 0;
+            while (start < body.Length)
+            {
+                var at = body.AsSpan(start).IndexOf(wantedKey);
+                if (at < 0)
+                    break;
+                var after = start + at + wantedKey.Length;
+                var window = body.AsSpan(after, Math.Min(body.Length - after, within + wantedValue.Length));
+                if (window.IndexOf(wantedValue) >= 0)
+                    return true;
+                start = after;
+            }
+        }
+
+        return false;
+    }
+
     #endregion
 
     #region Methods

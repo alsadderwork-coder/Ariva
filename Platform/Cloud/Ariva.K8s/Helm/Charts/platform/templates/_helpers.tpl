@@ -52,8 +52,7 @@ validate.yaml then requires an https:// endpoint too. The chart test fails if an
 - name: Otlp__RootCertificate
   value: "/app/secrets/otlp-ca/ca.crt"
 {{- end }}
-- name: OTEL_RESOURCE_ATTRIBUTES
-  value: {{ printf "service.namespace=ariva,deployment.environment=%s,k8s.cluster.name=%s,service.version=%s" .Values.environment .Values.clusterName .Values.releaseVersion | quote }}
+# The pod's names first: Kubernetes expands $(K8S_POD_NAME) below only from a variable declared before it (ARV-275).
 - name: K8S_NODE_NAME
   valueFrom:
     fieldRef:
@@ -66,6 +65,10 @@ validate.yaml then requires an https:// endpoint too. The chart test fails if an
   valueFrom:
     fieldRef:
       fieldPath: metadata.namespace
+# ARV-275: service.instance.id is the pod's name, so the replicas of a host export series told apart (a gauge each reports for
+# its own share is summed, not read as interleaved samples); ServiceDefaults sets none of its own.
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: {{ printf "service.namespace=ariva,deployment.environment=%s,k8s.cluster.name=%s,service.version=%s,service.instance.id=$(K8S_POD_NAME),k8s.pod.name=$(K8S_POD_NAME),k8s.namespace.name=$(K8S_NAMESPACE_NAME)" .Values.environment .Values.clusterName .Values.releaseVersion | quote }}
 {{- end }}
 
 {{/*

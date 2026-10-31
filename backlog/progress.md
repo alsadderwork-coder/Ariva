@@ -4147,3 +4147,36 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - `stream_partition_count` keeps every count ever seen (records produced before a scale-out still hash over the older ones), so it never says which instance owns a zone now; only the count read on the assignment does.
   - A test that needs a database read to time out while everything else answers: `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` in an open transaction, as ARV-258 did for checkpoints.
   - Two test classes sharing a broker and a consumer group read each other's records from the earliest offset: give a class whose arithmetic depends on what it holds a broker of its own.
+
+## 2026-10-31: ARV-275 [E17] Each pod's metrics told apart: service.instance.id from the pod name, so gauges summed across replicas add up
+
+- What changed:
+  - The chart's otelEnv helper declares K8S_NODE_NAME, K8S_POD_NAME and K8S_NAMESPACE_NAME first. Its `OTEL_RESOURCE_ATTRIBUTES` then carries `service.instance.id=$(K8S_POD_NAME)`, `k8s.pod.name=$(K8S_POD_NAME)` and `k8s.namespace.name=$(K8S_NAMESPACE_NAME)` on the five API hosts and the simulator.
+  - So the replicas of a host export series told apart, and a gauge each reports for its own share (`ariva.stream.zones_unknown`, `ariva.stream.consumer_lag`) is summed rather than read as interleaved samples. The shipped rules already aggregate with `sum`.
+  - ServiceDefaults keeps setting no instance id of its own; tests now prove it keeps the environment's on traces, metrics and both log paths.
+  - The chart check `instanceIdFindings` (Ariva.K8s/tests/checks.mjs) runs on every render through `checkManifests`; whole renders also require every host to export with it. Every container that exports (`OTEL_EXPORTER_OTLP_ENDPOINT`, or `Otlp__` or `Otlp:` `Enabled` or `Endpoint`) or has `OTEL_RESOURCE_ATTRIBUTES` must have:
+    - the attributes once, as a literal, with exactly one `service.instance.id=$(K8S_POD_NAME)`;
+    - `k8s.pod.name` as `$(K8S_POD_NAME)`;
+    - K8S_POD_NAME from `metadata.name`, declared before the attributes;
+    - every other `$(NAME)` pointing to a downward API variable declared before them (`$$(NAME)` is an escape and is skipped).
+  - No ConfigMap may hold a telemetry setting, and no `envFrom` prefix may make one.
+- Files:
+  - Helm/Charts/platform/templates/_helpers.tpl.
+  - Ariva.K8s/tests: checks.mjs, chart-security.mjs (25 exact cases), fixtures/upload-scan-good.yaml.
+  - Unit `ServiceDefaultsTests`: two new tests.
+  - Unit `CollectorTrustTests.OtlpLogs_Should_NameThePodAsTheServiceInstance_When_TheChartGivesItsAttributes`, for the API hosts' Serilog OTLP sink. `TlsCollector.ReceivedPair` was added for it.
+  - Docs: wiki 10 sections 1 and 2a, wiki 18, docs/security/log-inventory.md, asvs-l2.md (V16.2.1).
+- Gates: `node scripts/verify.mjs story --specs tests/api/health.spec.ts` PASS on the final tree: build, unit 8,378 of 8,378, chart security (every environment and Helmfile render, 25 instance id cases each exact), docs, release guards, E2E 342 passed in the 5 spec files the plan chose; integration skipped (no persistence change). Two earlier runs were stopped for the review fixes.
+- Security review (ASVS V16.2.1; CWE-532 data boundary, CWE-269):
+  - Round 1 FAIL:
+    - a Medium: the API hosts' logs went through Serilog's OTLP sink, which no test checked for the instance id;
+    - a Low: the check read only `env`, missing `Otlp__Enabled` exports, `envFrom` ConfigMaps and a lower-case duplicate.
+  - Fixed: the Serilog sink test, the `Otlp__` switch, and the ConfigMap rule. Advisories taken: every reference declared before, `k8s.pod.name` exact, init containers out of the host branch, the JSDoc, real pod names, the no-instance-id test cited.
+  - Round 2 PASS. Its four advisories taken: `Otlp:` with a colon, `envFrom` prefixes, the `$$(` escape, and the encoded key and value pair. Follow-up PASS.
+  - Not taken: a character set for `clusterName` and `releaseVersion` in validate.yaml. It predates this story, and a comma that would add a second instance id or pod name is now caught.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - Kubernetes expands `$(NAME)` in an env value only from a variable declared earlier in the same list; a later one leaves the text as written, and it is exported literally.
+  - The five API hosts ship logs through Serilog's OTLP sink, which reads `OTEL_RESOURCE_ATTRIBUTES` from configuration. Only the simulator uses OpenTelemetry's logging provider (`ExportLogs`). A resource test of `LoggerProvider` therefore proves nothing about the hosts' logs.
+  - `ProviderExtensions.GetResource(BaseProvider)` reads the resource of the tracer, meter and logger providers alike.
+  - A text search of an OTLP body cannot tell which attribute a value belongs to when two carry it: look for the key followed within a few bytes of protobuf framing by the value.

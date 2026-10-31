@@ -211,8 +211,6 @@ spec:
               value: ""
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
-            - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "service.namespace=ariva,deployment.environment=k8s-dev,k8s.cluster.name=k8s-dev,service.version=v-0.0.0"
             - name: K8S_NODE_NAME
               valueFrom:
                 fieldRef:
@@ -225,6 +223,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=ariva,deployment.environment=k8s-dev,k8s.cluster.name=k8s-dev,service.version=v-0.0.0,service.instance.id=$(K8S_POD_NAME),k8s.pod.name=$(K8S_POD_NAME),k8s.namespace.name=$(K8S_NAMESPACE_NAME)"
             # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
             - name: Kafka__SaslPassword
               valueFrom:
@@ -463,8 +463,6 @@ spec:
               value: ""
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
               value: "grpc"
-            - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "service.namespace=ariva,deployment.environment=k8s-dev,k8s.cluster.name=k8s-dev,service.version=v-0.0.0"
             - name: K8S_NODE_NAME
               valueFrom:
                 fieldRef:
@@ -477,6 +475,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=ariva,deployment.environment=k8s-dev,k8s.cluster.name=k8s-dev,service.version=v-0.0.0,service.instance.id=$(K8S_POD_NAME),k8s.pod.name=$(K8S_POD_NAME),k8s.namespace.name=$(K8S_NAMESPACE_NAME)"
             # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
             - name: Kafka__SaslPassword
               valueFrom:

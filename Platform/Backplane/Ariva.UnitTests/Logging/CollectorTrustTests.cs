@@ -415,6 +415,28 @@ public sealed class CollectorTrustTests : IDisposable
 
     #region The log sinks
 
+    [Theory]
+    [InlineData("api-stream-deployment-6f7c9d8b5-2xkqp", "api-stream-deployment-6f7c9d8b5-9wz4t")]
+    [InlineData("api-stream-deployment-6f7c9d8b5-9wz4t", "api-stream-deployment-6f7c9d8b5-2xkqp")]
+    public async Task OtlpLogs_Should_NameThePodAsTheServiceInstance_When_TheChartGivesItsAttributes(string pod, string otherPod)
+    {
+        // ARV-275: the five API hosts ship their logs through Serilog's OTLP sink, which reads OTEL_RESOURCE_ATTRIBUTES from the host's
+        // configuration: the chart's attributes, as Kubernetes expands them in a pod, name that pod as the instance and no other.
+        await using var collector = await TlsCollector.StartAsync("Ariva test site CA", Ct);
+        var attributes = "service.namespace=ariva,deployment.environment=vm-local,k8s.cluster.name=site-a,service.version=main-20261031.1," +
+            $"service.instance.id={pod},k8s.pod.name={pod},k8s.namespace.name=ariva";
+
+        Ship(Configuration(("Otlp:Enabled", "true"), ("Otlp:Endpoint", collector.Address), ("Otlp:Protocol", "http/protobuf"),
+            (CollectorTrust.OtlpSetting, TlsCollector.WritePem(collector.Authority, _folder)), ("OTEL_RESOURCE_ATTRIBUTES", attributes)));
+
+        (await collector.ReceivedAsync("POST /v1/logs", Patience, Ct)).Should().BeTrue(string.Join(", ", collector.Requests));
+        collector.ReceivedText("Probe line for a collector the site CA signed").Should().BeTrue("the line itself arrived");
+        collector.ReceivedPair("service.instance.id", pod).Should().BeTrue("the pod's name is the instance, as its own attribute's value");
+        collector.ReceivedPair("k8s.pod.name", pod).Should().BeTrue();
+        collector.ReceivedPair("service.instance.id", otherPod).Should().BeFalse("another replica's name is never this pod's instance");
+        collector.ReceivedText(otherPod).Should().BeFalse("another replica's name never reaches this pod's logs");
+    }
+
     [Fact]
     public async Task Loki_Should_GetTheLogs_When_ItsCaFileNamesTheCaThatIssuedItsCertificate()
     {

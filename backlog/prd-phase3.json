@@ -1715,7 +1715,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Filed 2026-10-30 from the ARV-259e3 security review (advisory A); predates ARV-259e3 (streamConsumerLag has the same dependency). No sign-in code.",
       "dependsOn": []
     },

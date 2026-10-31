@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-275: each pod's telemetry names the pod (2026-10-31)
+
+- Behaviour: the chart's `OTEL_RESOURCE_ATTRIBUTES` now carries `service.instance.id`, `k8s.pod.name` (both the pod's name) and `k8s.namespace.name` on the five API hosts and the simulator, declared after the downward API variables they are made from. The replicas of a host export series told apart, so a gauge each reports for its own share (`ariva.stream.zones_unknown`, `ariva.stream.consumer_lag`) is summed rather than read as interleaved samples (wiki 10 sections 1 and 2a). The hosts still set no instance id of their own.
+- After the upgrade: nothing to configure. Each new pod is a new instance in SigNoz, so a dashboard grouped by `service.instance.id` shows the old pods' series ending at the rollout. A site collector that already added `k8s.pod.name` sees the same value.
+- The chart test refuses a workload that exports telemetry without naming its pod.
+
 ### ARV-274: Stream holds a partition's zones from the moment it takes the partition (2026-10-31)
 
 - Behaviour: when an Ariva.Api.Stream replica takes a partition (a restart, a rollout, a rebalance), it restores every zone of that partition with a saved snapshot under its published profile version, without waiting for a record of the zone. A zone whose devices are all silent is idle-ticked, written at every checkpoint and counted by `ariva.stream.zones_unknown`, so `zonesUnknown` pages for zones that were already dark before the restart (wiki 10 section 3.1). Zones retired from the profile are not restored; zones saved under another version start afresh with their first record, as before.

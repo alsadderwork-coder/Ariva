@@ -75,7 +75,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
-import { checkManifests, COLLECTOR_CAS, collectorCaFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
+import { checkManifests, COLLECTOR_CAS, collectorCaFindings, INSTANCE_ID, instanceIdFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
 	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients,
 	clamavDirectives, UPLOAD_SCAN, uploadScanFindings } from './checks.mjs';
 
@@ -964,6 +964,113 @@ function uploadScanSelfTest() {
 	return { failures, count: UPLOAD_SCAN_CASES.length + 2 };
 }
 
+/**
+ * ARV-275: the five API hosts, the simulator, the web pod and the migration job as the chart renders them: each .NET host's
+ * container with the pod's name declared, then the resource attributes naming it as service.instance.id.
+ */
+function instanceDocs({ simulator = true } = {}) {
+	const env = () => [{ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'https://otel.example:4317' },
+		{ name: 'K8S_NODE_NAME', valueFrom: { fieldRef: { fieldPath: 'spec.nodeName' } } },
+		{ name: INSTANCE_ID.variable, valueFrom: { fieldRef: { fieldPath: INSTANCE_ID.fieldPath } } },
+		{ name: 'K8S_NAMESPACE_NAME', valueFrom: { fieldRef: { fieldPath: 'metadata.namespace' } } },
+		{ name: 'OTEL_RESOURCE_ATTRIBUTES', value: 'service.namespace=ariva,deployment.environment=k8s-prd,service.instance.id=$(K8S_POD_NAME),k8s.pod.name=$(K8S_POD_NAME),k8s.namespace.name=$(K8S_NAMESPACE_NAME)' }];
+	const workload = (kind, name, image, variables) => ({ kind, metadata: { name }, spec: { template: { spec: { containers: [{ name: 'app', image, env: variables }] } } } });
+	return [...API_HOSTS.map((host) => workload('Deployment', `${host}-deployment`, `r.example/ariva/${host}:1`, env())),
+		...(simulator ? [workload('Deployment', 'simulation-deployment', 'r.example/ariva/simulation:1', env())] : []),
+		workload('Deployment', 'web-deployment', 'r.example/ariva/web:1', []), workload('Job', 'database-migration', 'r.example/ariva/api-main:1', [])];
+}
+const instanceEnv = (docs, name) => workloadOf(docs, name).spec.template.spec.containers[0].env;
+const instanceVariable = (docs, name, variable) => instanceEnv(docs, name).find((entry) => entry.name === variable);
+const withoutVariable = (docs, name, variable) => { const env = instanceEnv(docs, name); return env.splice(env.findIndex((entry) => entry.name === variable), 1)[0]; };
+const HOST = (name) => `Deployment/${name}-deployment container app`;
+
+/** ARV-275: each change to the rendered hosts and the findings it must give, no more (a whole render: hosts true). */
+const INSTANCE_ID_CASES = [
+	['the attributes without the instance id', (docs) => { instanceVariable(docs, 'api-stream-deployment', 'OTEL_RESOURCE_ATTRIBUTES').value = 'service.namespace=ariva,k8s.pod.name=$(K8S_POD_NAME)'; },
+		[`${HOST('api-stream')}: OTEL_RESOURCE_ATTRIBUTES must carry service.instance.id=$(K8S_POD_NAME) once, the pod's name, not none`]],
+	['the instance id from the node', (docs) => { instanceVariable(docs, 'api-main-deployment', 'OTEL_RESOURCE_ATTRIBUTES').value = 'service.namespace=ariva,service.instance.id=$(K8S_NODE_NAME)'; },
+		[`${HOST('api-main')}: OTEL_RESOURCE_ATTRIBUTES must carry service.instance.id=$(K8S_POD_NAME) once, the pod's name, not service.instance.id=$(K8S_NODE_NAME)`]],
+	['a fixed instance id', (docs) => { instanceVariable(docs, 'api-cronz-deployment', 'OTEL_RESOURCE_ATTRIBUTES').value = 'service.instance.id=api-cronz'; },
+		[`${HOST('api-cronz')}: OTEL_RESOURCE_ATTRIBUTES must carry service.instance.id=$(K8S_POD_NAME) once, the pod's name, not service.instance.id=api-cronz`]],
+	['two instance ids', (docs) => { instanceVariable(docs, 'api-ingest-deployment', 'OTEL_RESOURCE_ATTRIBUTES').value += ',service.instance.id=api-ingest'; },
+		[`${HOST('api-ingest')}: OTEL_RESOURCE_ATTRIBUTES must carry service.instance.id=$(K8S_POD_NAME) once`]],
+	['the pod name declared after the attributes', (docs) => { instanceEnv(docs, 'api-integration-deployment').push(withoutVariable(docs, 'api-integration-deployment', 'K8S_POD_NAME')); },
+		[`${HOST('api-integration')}: K8S_POD_NAME must be declared before OTEL_RESOURCE_ATTRIBUTES, or Kubernetes leaves $(K8S_POD_NAME) unexpanded`]],
+	['the pod name as a literal', (docs) => { Object.assign(instanceVariable(docs, 'simulation-deployment', 'K8S_POD_NAME'), { value: 'simulation-0', valueFrom: undefined }); },
+		[`${HOST('simulation')}: must get K8S_POD_NAME once, from the pod's name (fieldRef metadata.name), not 1 times or another source`]],
+	['the pod name from the namespace', (docs) => { instanceVariable(docs, 'api-main-deployment', 'K8S_POD_NAME').valueFrom.fieldRef.fieldPath = 'metadata.namespace'; },
+		[`${HOST('api-main')}: must get K8S_POD_NAME once, from the pod's name`]],
+	['no pod name variable', (docs) => { withoutVariable(docs, 'api-stream-deployment', 'K8S_POD_NAME'); },
+		[`${HOST('api-stream')}: must get K8S_POD_NAME once, from the pod's name (fieldRef metadata.name), not 0 times or another source`]],
+	['the attributes from a ConfigMap', (docs) => { Object.assign(instanceVariable(docs, 'api-main-deployment', 'OTEL_RESOURCE_ATTRIBUTES'), { value: undefined, valueFrom: { configMapKeyRef: { name: 'otel', key: 'attributes' } } }); },
+		[`${HOST('api-main')}: must get OTEL_RESOURCE_ATTRIBUTES once, a literal value, not 1 times (one from valueFrom)`]],
+	['the attributes given twice', (docs) => { instanceEnv(docs, 'api-cronz-deployment').push({ name: 'otel_resource_attributes', value: 'service.namespace=ariva' }); },
+		[`${HOST('api-cronz')}: must get OTEL_RESOURCE_ATTRIBUTES once, a literal value, not 2 times`]],
+	['an exporter without the attributes', (docs) => { withoutVariable(docs, 'simulation-deployment', 'OTEL_RESOURCE_ATTRIBUTES'); },
+		[`${HOST('simulation')}: must get OTEL_RESOURCE_ATTRIBUTES once, a literal value, not 0 times`]],
+	['a host that exports nothing', (docs) => { instanceEnv(docs, 'api-cronz-deployment').length = 0; },
+		[`${HOST('api-cronz')}: exports no telemetry naming its pod (no OTEL_RESOURCE_ATTRIBUTES with service.instance.id=$(K8S_POD_NAME))`]],
+	['the migration job exporting without them', (docs) => { instanceEnv(docs, 'database-migration').push({ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: 'https://otel.example:4317' }); },
+		['Job/database-migration container app: must get OTEL_RESOURCE_ATTRIBUTES once, a literal value, not 0 times']],
+	['an init container exporting without them', (docs) => {
+		workloadOf(docs, 'api-ingest-deployment').spec.template.spec.initContainers = [{ name: 'wait', image: 'r.example/ariva/api-ingest:1', env: [{ name: 'OTEL_EXPORTER_OTLP_ENDPOINT', value: '' }] }];
+	}, ['Deployment/api-ingest-deployment container wait: must get OTEL_RESOURCE_ATTRIBUTES once, a literal value, not 0 times']],
+	// Ariva's own switch turns the export on too (OtlpSettings), so it counts as exporting.
+	['the migration job exporting by Otlp__Enabled', (docs) => { instanceEnv(docs, 'database-migration').push({ name: 'Otlp__Enabled', value: 'true' }, { name: 'Otlp__Endpoint', value: 'https://otel.example:4317' }); },
+		['Job/database-migration container app: must get OTEL_RESOURCE_ATTRIBUTES once, a literal value, not 0 times']],
+	['the web pod exporting by otlp__endpoint', (docs) => { instanceEnv(docs, 'web-deployment').push({ name: 'otlp__endpoint', value: 'https://otel.example:4317' }); },
+		['Deployment/web-deployment container app: must get OTEL_RESOURCE_ATTRIBUTES once, a literal value, not 0 times']],
+	['an exporter in a ConfigMap', (docs) => { docs.push({ kind: 'ConfigMap', metadata: { name: 'api-main-configmap' }, data: { OTEL_EXPORTER_OTLP_ENDPOINT: 'https://otel.example:4317' } }); },
+		['ConfigMap/api-main-configmap: OTEL_EXPORTER_OTLP_ENDPOINT is a telemetry setting; it reaches a workload in its env only']],
+	['the attributes in a ConfigMap, in lower case', (docs) => { docs.push({ kind: 'ConfigMap', metadata: { name: 'api-stream-configmap' }, data: { otel_resource_attributes: 'service.instance.id=fixed' } }); },
+		['ConfigMap/api-stream-configmap: otel_resource_attributes is a telemetry setting']],
+	['Ariva\'s switch in a ConfigMap', (docs) => { docs.push({ kind: 'ConfigMap', metadata: { name: 'simulation-configmap' }, data: { Otlp__Enabled: 'true' } }); },
+		['ConfigMap/simulation-configmap: Otlp__Enabled is a telemetry setting']],
+	// Kubernetes accepts relaxed variable names now, and .NET reads Otlp:Enabled as Otlp__Enabled.
+	['the migration job exporting by Otlp:Endpoint', (docs) => { instanceEnv(docs, 'database-migration').push({ name: 'Otlp:Endpoint', value: 'https://otel.example:4317' }); },
+		['Job/database-migration container app: must get OTEL_RESOURCE_ATTRIBUTES once, a literal value, not 0 times']],
+	['an envFrom prefix making telemetry settings', (docs) => { workloadOf(docs, 'web-deployment').spec.template.spec.containers[0].envFrom = [{ prefix: 'Otlp__', configMapRef: { name: 'web-settings' } }]; },
+		['Deployment/web-deployment container app: envFrom with the prefix Otlp__ makes its keys telemetry settings these rules do not see; give them in env']],
+	['an escaped reference', (docs) => {
+		const env = instanceEnv(docs, 'api-stream-deployment');
+		env.splice(0, 0, { name: 'SITE', value: 'site-a' });
+		instanceVariable(docs, 'api-stream-deployment', 'OTEL_RESOURCE_ATTRIBUTES').value += ',site=$$(SITE),zone=$(SITE)';
+	}, [`${HOST('api-stream')}: OTEL_RESOURCE_ATTRIBUTES refers to $(SITE), which is not a downward API variable declared before it`]],
+	['the namespace declared after the attributes', (docs) => { instanceEnv(docs, 'api-main-deployment').push(withoutVariable(docs, 'api-main-deployment', 'K8S_NAMESPACE_NAME')); },
+		[`${HOST('api-main')}: OTEL_RESOURCE_ATTRIBUTES refers to $(K8S_NAMESPACE_NAME), which is not a downward API variable declared before it`]],
+	['a reference to a literal variable', (docs) => {
+		const env = instanceEnv(docs, 'api-cronz-deployment');
+		env.splice(0, 0, { name: 'SITE', value: 'site-a' });
+		instanceVariable(docs, 'api-cronz-deployment', 'OTEL_RESOURCE_ATTRIBUTES').value += ',site=$(SITE)';
+	}, [`${HOST('api-cronz')}: OTEL_RESOURCE_ATTRIBUTES refers to $(SITE), which is not a downward API variable declared before it`]],
+	['the pod name attribute from the node', (docs) => {
+		const attributes = instanceVariable(docs, 'api-ingest-deployment', 'OTEL_RESOURCE_ATTRIBUTES');
+		attributes.value = attributes.value.replace('k8s.pod.name=$(K8S_POD_NAME)', 'k8s.pod.name=$(K8S_NODE_NAME)');
+	}, [`${HOST('api-ingest')}: OTEL_RESOURCE_ATTRIBUTES must give k8s.pod.name as $(K8S_POD_NAME), the pod's name, not k8s.pod.name=$(K8S_NODE_NAME)`]]
+];
+
+/** ARV-275: the instance id rules: the good renders clean (with and without the simulator), each change giving exactly its findings. */
+function instanceIdSelfTest() {
+	const failures = [];
+	const clean = [...instanceIdFindings(instanceDocs(), { hosts: true }), ...instanceIdFindings(instanceDocs({ simulator: false }), { hosts: true })];
+	if (clean.length) failures.push(`the good instance id renders produced findings:\n   ${clean.join('\n   ')}`);
+	// A .NET init container of a host that exports nothing is not a finding: the host's own container is the one that must.
+	const init = instanceDocs();
+	workloadOf(init, 'api-main-deployment').spec.template.spec.initContainers = [{ name: 'wait', image: 'r.example/ariva/api-main:1', env: [] }];
+	if (instanceIdFindings(init, { hosts: true }).length) failures.push('instance id rules: a host\'s init container that exports nothing must give no finding');
+	// Without hosts (a fixture, not a whole render) a host that exports nothing is not a finding; what it exports still is.
+	const partial = instanceDocs();
+	instanceEnv(partial, 'api-main-deployment').length = 0;
+	if (instanceIdFindings(partial).length) failures.push('instance id rules: a part of a render without a host\'s telemetry must give no finding');
+	for (const [label, change, expected] of INSTANCE_ID_CASES) {
+		const docs = instanceDocs();
+		change(docs);
+		const found = instanceIdFindings(docs, { hosts: true });
+		if (!exactly(found, expected)) failures.push(`instance id case ${label} must give exactly ${expected.join(' | ')}; gave ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	return { failures, count: INSTANCE_ID_CASES.length };
+}
+
 function selfTest() {
 	const good = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'good.yaml'), 'utf8')), { environment: 'k8s-prd' });
 	const bad = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'bad.yaml'), 'utf8')), { environment: 'k8s-prd' });
@@ -1018,8 +1125,9 @@ function selfTest() {
 	const logs = logShippingSelfTest();
 	const collectorCas = collectorCaSelfTest();
 	const scanning = uploadScanSelfTest();
+	const instances = instanceIdSelfTest();
 	const others = [...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
-		...collectorCas.failures, ...scanning.failures];
+		...collectorCas.failures, ...scanning.failures, ...instances.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
@@ -1030,7 +1138,7 @@ function selfTest() {
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
-		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases and ${scanning.count} malware scanner cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
+		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases and ${instances.count} instance id cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen} and keeps no nginx configuration in its web root (${webRoot.count} cases); the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
 		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
@@ -1298,7 +1406,7 @@ for (const env of environments) {
 		continue;
 	}
 	const docs = parse(result.stdout);
-	const findings = checkManifests(docs, { environment: env.environment });
+	const findings = checkManifests(docs, { environment: env.environment, hosts: true });
 	// ARV-125b: every environment ships the alert rules the story names and the dashboards, reading its own environment.
 	findings.push(...missingMonitoringRules(docs), ...monitoringEnvironment(docs, env.environment));
 	// ARV-104g1: the validation reader login reaches exactly api-main and the migration job, in every environment.
@@ -2694,7 +2802,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			continue;
 		}
 		const docs = parse(result.stdout);
-		const findings = checkManifests(docs, { environment: contextEnvironment });
+		const findings = checkManifests(docs, { environment: contextEnvironment, hosts: true });
 		if (!docs.some((doc) => doc?.kind === 'StatefulSet' && doc.metadata?.name === 'timescaledb')) findings.push('the timescaledb release is not installed');
 		if (!docs.some((doc) => doc?.kind === 'Job' && doc.metadata?.name === 'kafka-topics')) findings.push('the kafka-topics job is not rendered');
 		findings.push(...missingMonitoringRules(docs), ...monitoringEnvironment(docs, contextEnvironment));

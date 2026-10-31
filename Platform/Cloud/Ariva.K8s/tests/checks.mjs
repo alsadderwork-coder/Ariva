@@ -840,10 +840,11 @@ export function missingMonitoringRules(docs, { border = false } = {}) {
 
 /**
  * @param {any[]} docs parsed manifests
- * @param {{ environment: string }} context
+ * @param {{ environment: string, hosts?: boolean }} context hosts: true for a whole render (every API host and the simulator,
+ *   when rendered, must export telemetry naming its pod, ARV-275); false for a fixture or a part of a render
  * @returns {string[]} findings, empty when every rule holds
  */
-export function checkManifests(docs, { environment }) {
+export function checkManifests(docs, { environment, hosts = false }) {
 	const findings = [];
 	for (const doc of docs) {
 		if (!doc || typeof doc !== 'object') continue;
@@ -1027,6 +1028,92 @@ export function checkManifests(docs, { environment }) {
 				if (annotations['nginx.ingress.kubernetes.io/enable-opentelemetry'] !== 'false') findings.push(`${id}: /hubs carries tokens in its URL; the ingress must keep OpenTelemetry off (enable-opentelemetry "false"), whose spans carry the request target with its query string`);
 				if (!/error_log\s+\S+\s+crit;/.test(annotations['nginx.ingress.kubernetes.io/configuration-snippet'] ?? '')) findings.push(`${id}: /hubs carries tokens in its URL; the ingress must log only critical errors`);
 				if (paths.some((value) => !(value === '/hubs' || value?.startsWith('/hubs/')))) findings.push(`${id}: /hubs carries tokens in its URL; serve it from its own ingress`);
+			}
+		}
+	}
+	// ARV-275: every container that exports telemetry names its pod as service.instance.id (with hosts, a whole render: every host does).
+	findings.push(...instanceIdFindings(docs, { hosts }));
+	return findings;
+}
+
+/** ARV-275: the resource attribute that tells the pods of one workload apart, and the downward API variable it is made from. */
+const TELEMETRY_SETTING = /^(OTEL_|Otlp(__|:))/i;
+
+export const INSTANCE_ID = { attribute: 'service.instance.id', variable: 'K8S_POD_NAME', fieldPath: 'metadata.name' };
+
+/**
+ * ARV-275 (ASVS 5.0 V16.2.1): the replicas of a host export indistinguishable series unless each names itself, so a gauge every
+ * replica reports for its own share (ariva.stream.zones_unknown, ariva.stream.consumer_lag) reads as interleaved samples rather than
+ * their sum. Every container of a workload that exports (OTEL_EXPORTER_OTLP_ENDPOINT, or Otlp__Enabled or Otlp__Endpoint with a
+ * double underscore or a colon, names compared ignoring case as .NET reads them) or has OTEL_RESOURCE_ATTRIBUTES:
+ * - gets OTEL_RESOURCE_ATTRIBUTES once, a literal value whose pairs carry service.instance.id=$(K8S_POD_NAME) once and no other
+ *   service.instance.id, and k8s.pod.name, when given, as $(K8S_POD_NAME);
+ * - gets K8S_POD_NAME once, from the pod's name (fieldRef metadata.name), declared before OTEL_RESOURCE_ATTRIBUTES, and every
+ *   other $(NAME) the attributes refer to is a downward API variable (fieldRef) declared before them (Kubernetes expands $(NAME)
+ *   only from a variable declared earlier in the list; a later one leaves the text as written, exported as it stands; $$(NAME)
+ *   is the escape for the literal text and refers to nothing).
+ * No ConfigMap holds a key of OpenTelemetry's or Ariva's telemetry settings (OTEL_*, Otlp__* or Otlp:*), and no envFrom adds a
+ * prefix that would make its keys one: envFrom would make them variables these rules do not see, and a case variant of one
+ * beside the chart's could replace it in .NET's configuration.
+ * With hosts, the .NET containers (not the init containers) of each of the five API host Deployments and of the simulator, when
+ * rendered, must have them.
+ */
+export function instanceIdFindings(docs, { hosts = false } = {}) {
+	const findings = [];
+	const reference = `$(${INSTANCE_ID.variable})`;
+	for (const doc of docs) {
+		if (!doc || typeof doc !== 'object') continue;
+		const id = `${doc.kind}/${doc.metadata?.name ?? '?'}`;
+		if (doc.kind === 'ConfigMap') {
+			for (const key of Object.keys(doc.data ?? {}).filter((candidate) => TELEMETRY_SETTING.test(candidate))) {
+				findings.push(`${id}: ${key} is a telemetry setting; it reaches a workload in its env only, where the chart checks that it names its pod (envFrom would add it unchecked)`);
+			}
+			continue;
+		}
+		if (!WORKLOADS.has(doc.kind)) continue;
+		const name = doc.metadata?.name ?? '';
+		const pod = podSpecOf(doc) ?? {};
+		const host = hosts && doc.kind === 'Deployment' && [...API_HOSTS, 'simulation'].some((candidate) => name === `${candidate}-deployment`);
+		const main = new Set(pod.containers ?? []);
+		for (const container of [...(pod.initContainers ?? []), ...(pod.containers ?? [])]) {
+			const cid = `${id} container ${container.name}`;
+			const env = container.env ?? [];
+			const attributes = env.filter((variable) => /^OTEL_RESOURCE_ATTRIBUTES$/i.test(variable.name ?? ''));
+			const exports = env.some((variable) => /^(OTEL_EXPORTER_OTLP_ENDPOINT|Otlp(__|:)(Enabled|Endpoint))$/i.test(variable.name ?? ''));
+			for (const source of (container.envFrom ?? []).filter((candidate) => TELEMETRY_SETTING.test(candidate.prefix ?? ''))) {
+				findings.push(`${cid}: envFrom with the prefix ${source.prefix} makes its keys telemetry settings these rules do not see; give them in env`);
+			}
+			const dotnet = DOTNET_IMAGES.has(imageName(container.image ?? ''));
+			if (!attributes.length && !exports) {
+				if (host && dotnet && main.has(container)) findings.push(`${cid}: exports no telemetry naming its pod (no OTEL_RESOURCE_ATTRIBUTES with ${INSTANCE_ID.attribute}=${reference})`);
+				continue;
+			}
+			if (attributes.length !== 1 || attributes[0].valueFrom || typeof attributes[0].value !== 'string') {
+				findings.push(`${cid}: must get OTEL_RESOURCE_ATTRIBUTES once, a literal value, not ${attributes.length} times${attributes.some((variable) => variable.valueFrom) ? ' (one from valueFrom)' : ''}`);
+				continue;
+			}
+			const pairs = attributes[0].value.split(',').map((pair) => pair.trim()).filter(Boolean);
+			const ids = pairs.filter((pair) => pair.split('=')[0].trim() === INSTANCE_ID.attribute);
+			if (ids.length !== 1 || ids[0] !== `${INSTANCE_ID.attribute}=${reference}`) {
+				findings.push(`${cid}: OTEL_RESOURCE_ATTRIBUTES must carry ${INSTANCE_ID.attribute}=${reference} once, the pod's name, not ${ids.length ? ids.join(', ') : 'none'}`);
+			}
+			const podNames = pairs.filter((pair) => pair.split('=')[0].trim() === 'k8s.pod.name');
+			if (podNames.some((pair) => pair !== `k8s.pod.name=${reference}`)) {
+				findings.push(`${cid}: OTEL_RESOURCE_ATTRIBUTES must give k8s.pod.name as ${reference}, the pod's name, not ${podNames.join(', ')}`);
+			}
+			const pods = env.filter((variable) => variable.name === INSTANCE_ID.variable);
+			if (pods.length !== 1 || pods[0].value !== undefined || pods[0].valueFrom?.fieldRef?.fieldPath !== INSTANCE_ID.fieldPath) {
+				findings.push(`${cid}: must get ${INSTANCE_ID.variable} once, from the pod's name (fieldRef ${INSTANCE_ID.fieldPath}), not ${pods.length} times or another source`);
+			} else if (env.indexOf(pods[0]) > env.indexOf(attributes[0])) {
+				findings.push(`${cid}: ${INSTANCE_ID.variable} must be declared before OTEL_RESOURCE_ATTRIBUTES, or Kubernetes leaves ${reference} unexpanded`);
+			}
+			// Every other reference: a downward API variable declared before the attributes, or its text is exported as written.
+			const before = env.slice(0, env.indexOf(attributes[0]));
+			for (const [, referenced] of attributes[0].value.matchAll(/(?<!\$)\$\(([A-Za-z_][A-Za-z0-9_]*)\)/g)) {
+				if (referenced === INSTANCE_ID.variable) continue;
+				if (!before.some((variable) => variable.name === referenced && variable.valueFrom?.fieldRef?.fieldPath)) {
+					findings.push(`${cid}: OTEL_RESOURCE_ATTRIBUTES refers to $(${referenced}), which is not a downward API variable declared before it`);
+				}
 			}
 		}
 	}

@@ -9,6 +9,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using OpenTelemetry;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 
 namespace Ariva.UnitTests.Hosting;
@@ -59,6 +61,62 @@ public sealed class ServiceDefaultsTests
         attributes["service.namespace"].Should().Be("ariva");
         attributes["deployment.environment"].Should().Be("vm-local");
         attributes["service.instance.id"].Should().Be("apphost-7", "the instance Serilog's sink reports too, so the dashboard shows one resource");
+    }
+
+    /// <summary>ARV-275: the chart's OTEL_RESOURCE_ATTRIBUTES (templates/_helpers.tpl, otelEnv) as Kubernetes expands it in a pod.</summary>
+    private static string ChartAttributes(string pod) =>
+        $"service.namespace=ariva,deployment.environment=vm-local,k8s.cluster.name=site-a,service.version=main-20261031.1,service.instance.id={pod},k8s.pod.name={pod},k8s.namespace.name=ariva";
+
+    private static IEnumerable<(string Signal, Dictionary<string, object> Attributes)> Resources(IServiceProvider services) =>
+        new (string, BaseProvider)[]
+        {
+            ("traces", services.GetRequiredService<TracerProvider>()), ("metrics", services.GetRequiredService<MeterProvider>()),
+            ("logs", services.GetRequiredService<LoggerProvider>())
+        }.Select(p => (p.Item1, p.Item2.GetResource().Attributes.ToDictionary(a => a.Key, a => a.Value)));
+
+    [Theory]
+    [InlineData("api-stream-deployment-6f7c9d8b5-2xkqp")]
+    [InlineData("api-stream-deployment-6f7c9d8b5-9wz4t")]
+    public void Telemetry_Should_NameThePodAsTheServiceInstanceOnEverySignal_When_TheChartGivesItsAttributes(string pod)
+    {
+        // ARV-275: two replicas of one host export series told apart by service.instance.id, the pod's name, on every signal; a gauge
+        // each reports for its own share is then summed, not read as interleaved samples.
+        var builder = Builder(new() { ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317", ["OTEL_RESOURCE_ATTRIBUTES"] = ChartAttributes(pod) });
+        builder.AddArivaServiceDefaults(options =>
+        {
+            options.ServiceName = "api-stream";
+            options.Environment = "vm-local";
+            options.ExportLogs = true;
+        });
+        using var host = builder.Build();
+
+        foreach (var (signal, attributes) in Resources(host.Services))
+        {
+            attributes["service.instance.id"].Should().Be(pod, $"the {signal} resource keeps the instance the environment names");
+            attributes["k8s.pod.name"].Should().Be(pod, signal);
+            attributes["service.name"].Should().Be("api-stream", signal);
+            attributes["service.namespace"].Should().Be("ariva", signal);
+        }
+    }
+
+    [Fact]
+    public void Telemetry_Should_GiveNoInstanceIdOfItsOwn_When_TheEnvironmentNamesNone()
+    {
+        // A generated id would differ between a host's signals and from the one Serilog's sink reports, and change at every restart.
+        var builder = Builder(new() { ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317" });
+        builder.AddArivaServiceDefaults(options =>
+        {
+            options.ServiceName = "api-stream";
+            options.Environment = "vm-local";
+            options.ExportLogs = true;
+        });
+        using var host = builder.Build();
+
+        foreach (var (signal, attributes) in Resources(host.Services))
+        {
+            attributes.Should().NotContainKey("service.instance.id", signal);
+            attributes["service.name"].Should().Be("api-stream", signal);
+        }
     }
 
     [Fact]
