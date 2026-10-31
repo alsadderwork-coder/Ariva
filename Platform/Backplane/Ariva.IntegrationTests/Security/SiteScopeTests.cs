@@ -2,6 +2,7 @@ using Ariva.Core;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
+using Ariva.Core.Services;
 using Ariva.Core.Services.Administration;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
@@ -51,6 +52,91 @@ public sealed class SiteScopeTests(PostgresFixture fixture) : IAsyncDisposable
         again.ErrorMessages.Should().Equal(AdministrationErrors.SiteTaken);
         renamed.Data.Name.Should().Be("Integration A, renamed");
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE target_name = 'ITA' AND action IN ('Site.Created', 'Site.Updated')")).Should().Be(2);
+    }
+
+    /// <summary>
+    /// ARV-278: two creates of one code at the same moment. The first has sent its row and holds its transaction open; the
+    /// second passes the existence check (it cannot see a row not yet committed), and its insert waits on the first one's
+    /// entry in the code index. When the first commits, the second answers SiteTaken (409 at the API) and commits nothing.
+    /// Before ARV-278 neither create sent its row before the commit, so the second never waited and one of them failed there.
+    /// </summary>
+    [Fact]
+    public async Task Create_Should_AnswerSiteTakenToTheSecond_When_TwoCreatesOfOneCodeMeet()
+    {
+        var admin = await AllSitesAdminAsync("it.site.racer");
+
+        Fluentx.Result<SiteViewModel> first;
+        Task<Fluentx.Result<SiteViewModel>> second;
+        await using (var scope = _host.Provider.CreateAsyncScope())
+        {
+            var caller = (TestCurrentUser)scope.ServiceProvider.GetRequiredService<ICurrentUser>();
+            caller.Id = admin;
+            caller.UserName = "it-admin";
+            first = await Sites(scope.ServiceProvider).CreateAsync(new CreateSiteRequest("ITR", "Race first"), Ct);
+            second = _host.AsCallerAsync(admin, s => Sites(s).CreateAsync(new CreateSiteRequest("ITR", "Race second"), Ct));
+            (await BlocksAsync(second)).Should().BeTrue("the second insert waits on the first one's index entry, so the first has sent its row");
+            await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().EndAsync(Ct);
+        }
+
+        first.Data.Code.Should().Be("ITR");
+        (await second).ErrorMessages.Should().Equal(AdministrationErrors.SiteTaken);
+        (await _host.ReadAsync<string>("SELECT string_agg(name, ',') FROM site WHERE code = 'ITR'")).Should().Be("Race first");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE target_name = 'ITR' AND action = 'Site.Created'")).Should().Be(1);
+    }
+
+    /// <summary>
+    /// ARV-278: only the code index's refusal means the code is taken. A unique violation of another index, or any other
+    /// database error, is not turned into SiteTaken: the create fails (500 at the API, without its text outside vm-local;
+    /// <c>ErrorHandlingTests.Get_Should_Return500WithoutExceptionDetails_When_EnvironmentIsNotVmLocal</c>) and keeps nothing.
+    /// A trigger on this test's database raises each error for the codes it names; it is dropped before it is created and
+    /// afterwards, so one row's failure cannot leave it for the next.
+    /// </summary>
+    [Theory]
+    [InlineData("ITXU", "Raise unique", "23505")]
+    [InlineData("ITXO", "Raise other", "P0001")]
+    public async Task Create_Should_FailAndKeepNothing_When_TheDatabaseRefusesTheSiteForAnotherReason(string code, string name, string sqlState)
+    {
+        var admin = await AllSitesAdminAsync($"it.site.refused.{code.ToLowerInvariant()}");
+        await _host.ReadAsync<int>("""
+            DROP TRIGGER IF EXISTS it_refuse_site ON site;
+            CREATE OR REPLACE FUNCTION it_refuse_site() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                IF NEW.name = 'Raise unique' THEN
+                    RAISE EXCEPTION 'refused by the test' USING ERRCODE = 'unique_violation', CONSTRAINT = 'ux_site_elsewhere';
+                END IF;
+                RAISE EXCEPTION 'refused by the test';
+            END $$;
+            CREATE TRIGGER it_refuse_site BEFORE INSERT ON site FOR EACH ROW WHEN (NEW.code LIKE 'ITX%') EXECUTE FUNCTION it_refuse_site();
+            SELECT 1
+            """);
+        try
+        {
+            var create = () => _host.AsCallerAsync(admin, s => Sites(s).CreateAsync(new CreateSiteRequest(code, name), Ct));
+
+            var thrown = await create.Should().ThrowAsync<global::NHibernate.Exceptions.GenericADOException>();
+            thrown.Which.InnerException.Should().BeOfType<Npgsql.PostgresException>().Which.SqlState.Should().Be(sqlState);
+        }
+        finally
+        {
+            await _host.ReadAsync<int>("DROP TRIGGER IF EXISTS it_refuse_site ON site; DROP FUNCTION IF EXISTS it_refuse_site(); SELECT 1");
+        }
+
+        (await _host.ReadAsync<long>("SELECT count(*) FROM site WHERE code LIKE 'ITX%'")).Should().Be(0);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE target_name LIKE 'ITX%'")).Should().Be(0);
+    }
+
+    /// <summary>True once <paramref name="work"/> waits for a lock in this test's database; false when it ends first, or after 30 seconds.</summary>
+    private async Task<bool> BlocksAsync(Task work)
+    {
+        var until = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < until && !work.IsCompleted)
+        {
+            if (await _host.ReadAsync<long>("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND a.datname = current_database()") > 0)
+                return true;
+            await Task.Delay(25, Ct);
+        }
+
+        return false;
     }
 
     [Fact]

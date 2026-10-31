@@ -16,6 +16,9 @@ namespace Ariva.Infra.Services.Administration;
 internal sealed class SvcSites(IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider timeProvider, ISiteScope scope, AuditTrail audit)
     : SvcBase(unitOfWork, currentUser, timeProvider), ISvcSites
 {
+    /// <summary>The unique index on a site's code (script 0007), whose refusal of a create means the code was taken.</summary>
+    private const string CodeIndex = "ux_site_code";
+
     public async Task<Result<IReadOnlyList<SiteViewModel>>> ListAsync(CancellationToken ct = default)
     {
         var access = await scope.GetAsync(ct);
@@ -50,6 +53,8 @@ internal sealed class SvcSites(IUnitOfWork unitOfWork, ICurrentUser currentUser,
 
         var site = new Site(request.Code, request.Name);
         await SaveAsync(site, ct);
+        if (!await InsertedAsync(ct))
+            return Result.Error<SiteViewModel>(AdministrationErrors.SiteTaken);
         await audit.RecordAsync(AuditActions.SiteCreated, AuditActions.SiteTarget, site.Id, site.Code, null, $"code={site.Code}; name={site.Name}", ct);
         return new Result<SiteViewModel>(View(site));
     }
@@ -70,6 +75,29 @@ internal sealed class SvcSites(IUnitOfWork unitOfWork, ICurrentUser currentUser,
         await UpdateAsync(site, ct);
         await audit.RecordAsync(AuditActions.SiteUpdated, AuditActions.SiteTarget, site.Id, site.Code, before, $"code={site.Code}; name={site.Name}", ct);
         return new Result<SiteViewModel>(View(site));
+    }
+
+    /// <summary>
+    /// Sends the new site's row now (ARV-278). Two creates of one code at the same moment both pass the check before it: the
+    /// second insert waits on the first one's entry in <see cref="CodeIndex"/> and, once the first commits, the index refuses
+    /// it. That refusal answers SiteTaken (409) with the unit of work promised not to commit, rather than a failed commit
+    /// (500). Any other database error, a unique violation of another index included, is not caught and stays an error
+    /// answer (500, or 503 for an outage), without its text outside vm-local (CWE-209).
+    /// </summary>
+    /// <returns>False when the code was taken meanwhile.</returns>
+    private async Task<bool> InsertedAsync(CancellationToken ct)
+    {
+        try
+        {
+            await FlushAsync(ct);
+            return true;
+        }
+        catch (global::NHibernate.Exceptions.GenericADOException e) when (e.InnerException is global::Npgsql.PostgresException
+                   { SqlState: global::Npgsql.PostgresErrorCodes.UniqueViolation, ConstraintName: CodeIndex })
+        {
+            UnitOfWork.PromiseNotToCommit();
+            return false;
+        }
     }
 
     private async Task<Site> VisibleAsync(string code, CancellationToken ct)

@@ -2051,7 +2051,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 46,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Filed 2026-10-31 from the ARV-196 review (advisory 2); the E2E suite no longer races on site codes since ARV-196 gave every spec a prefix of its own. No sign-in code.",
       "dependsOn": []
     },
@@ -2090,6 +2090,28 @@
       "notes": "Size M. Phase 3. Filed 2026-10-31 from the ARV-205 review (round 1, the Remaining of V12.1.1 and V12.1.2). No sign-in code; the Redis and PostgreSQL connections carry no session or account logic.",
       "dependsOn": [
         "ARV-205"
+      ]
+    },
+    {
+      "id": "ARV-281",
+      "title": "[E15] Topology records created twice at once answer 409, not 500",
+      "description": "Found while building ARV-278 (2026-10-31): SvcTopology.GuardedAsync (SvcTopology.cs) catches a unique violation (23505) and answers TopologyErrors.Duplicate, but no topology create sends its row before the request's unit of work commits in UnitOfWorkFilter, after the service has returned: the session flushes only at commit (FlushMode.Commit, NHibernateStorageProvider), so no query or native SQL statement (ShareSiteAsync included) flushes it earlier. So the catch is likely never reached for two creates of one code at the same moment, and the second fails at the commit with a 500. Unconfirmed: reasoned from the code, not yet shown by a test. The records and their unique indexes: airport (ux_airport_iata_code), terminal (ux_terminal_airport_code), level (ux_level_terminal_code and ux_level_terminal_floor), checkpoint (ux_checkpoint_level_code and ux_checkpoint_site_code), desk (ux_desk_checkpoint_code), and the other topology records the guard covers. Not affected, as far as the code shows: device registrations (SvcDevices) and zone profile drafts (SvcZoneProfiles) lock the site row (FOR UPDATE) before their existence check, so two of them at one site run one after the other, and neither guard catches 23505 (unconfirmed by a race test). Confirm per create with a test like ARV-278's SiteScopeTests race (the first create holds its transaction after its row is sent, the second's insert waits on the index), then fix each that fails as ARV-278 did for sites: flush the insert inside the guard and map each index by its constraint name to its own error (a level's floor number taken is not its code taken), with the unit of work promised not to commit; every other database error stays an error answer (500, or 503 for an outage). Also in the same guard (CWE-209): its catch-all ArgumentException and InvalidOperationException handlers answer any such exception's message as a 400 detail, the framework's and the driver's included, where only the entities' own rule messages are meant; narrow them as SvcZoneProfiles.FromDomain does (both types, the entities' own messages only). SvcDevices.GuardedAsync has the same gap for ArgumentException (its catch answers any ArgumentException's message; only its InvalidOperationException catch is narrowed): narrow it too. CWEs to review: CWE-209 (no exception text in an answer), CWE-20.",
+      "acceptanceCriteria": [
+        "For airports, terminals, levels, checkpoints, desks and the other records SvcTopology.GuardedAsync covers, two concurrent creates of one code (and of one floor number for levels): one succeeds and the other answers 409 with the error of the index that refused it, and the audit holds one creation; integration tests against PostgreSQL, each shown to fail without the fix",
+        "Device registrations and zone profile drafts: a race test confirms the site row lock serialises two creates at one site (the second answers its duplicate error, no 500); no fix is needed if it does",
+        "A unique violation of another index, and any other database error, on these creates still answers an error without the exception text outside vm-local; integration test",
+        "SvcTopology.GuardedAsync and SvcDevices.GuardedAsync answer only the entities' own rule messages as 400 details: an ArgumentException or InvalidOperationException from the framework or the driver is not answered with its message; unit test",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 48,
+      "passes": false,
+      "notes": "Size M. Phase 3. Filed 2026-10-31 from ARV-278 (unconfirmed, see the description); corrected by the ARV-278 security review (round 1). No sign-in code.",
+      "dependsOn": [
+        "ARV-278"
       ]
     }
   ]

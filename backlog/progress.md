@@ -4348,3 +4348,36 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - The policy test needs a control: a raw SslStream client without the policy must negotiate the CBC suite against the same server, or a refusal proves nothing.
   - An RSA leaf under an ECDSA issuer needs `X509SignatureGenerator.CreateForECDsa(issuer key)`; `CertificateRequest.Create(issuer, ...)` refuses a mismatched public key algorithm.
   - `scan.mjs` refuses a new HttpClient or SocketsHttpHandler in tests too (SEC-020, SEC-023), and CA5359 refuses an always-true certificate callback: use raw SslStream controls with a validating callback.
+
+## 2026-10-31: ARV-278 [E15] A site created twice at once answers 409, not 500
+
+- What changed:
+  - `SvcSites.CreateAsync` sends the new site's row inside the request (`InsertedAsync`: `FlushAsync` in a try).
+    - A unique violation (23505) whose constraint is `ux_site_code` (script 0007) answers `AdministrationErrors.SiteTaken` (409 "Already exists") with the unit of work promised not to commit. The audit entry is written only after the row is in.
+    - Every other database error, a unique violation of another index included, is not caught and stays an error answer (500, or 503 for an outage), without its text outside vm-local (CWE-209).
+    - Before, nothing sent the row before `UnitOfWorkFilter` committed, after the service had returned. Two creates of one code both passed the existence check, and the second failed at the commit with a 500.
+  - `SiteScopeTests` (integration, PostgreSQL):
+    - `Create_Should_AnswerSiteTakenToTheSecond_When_TwoCreatesOfOneCodeMeet`: the first create holds its transaction after its row is sent; the second's insert waits on the index entry (`BlocksAsync`, pg_locks); the first commits. Asserted: the second answers SiteTaken, one row named for the first, one `Site.Created`. Shown to fail with the flush call removed.
+    - `Create_Should_FailAndKeepNothing_When_TheDatabaseRefusesTheSiteForAnotherReason`: a trigger raises a 23505 named for another index, or a P0001. Asserted: the create throws the driver's error, and no row and no audit are kept.
+    - The 500 without text is `ErrorHandlingTests.Get_Should_Return500WithoutExceptionDetails_When_EnvironmentIsNotVmLocal`.
+  - Docs: wiki 11 (the site API sentence), asvs-l2 V2.3.4 (evidence).
+  - Filed ARV-281: `SvcTopology.GuardedAsync` catches 23505, but the session flushes only at commit (FlushMode.Commit), so the catch is likely never reached and a concurrent duplicate airport or other topology record answers 500 (unconfirmed). The guard's catch-all 400 answers are in it too (CWE-209).
+- Files: Ariva.Infra `Services/Administration/SvcSites.cs`; Ariva.IntegrationTests `Security/SiteScopeTests.cs`; wiki/11-Administration-Guide.md; docs/security/asvs-l2.md; backlog/prd-phase3.json.
+- Gates: `node scripts/verify.mjs story --specs tests/api/sites.spec.ts,tests/api/illustrative-site.spec.ts,tests/api/site-configuration.spec.ts,tests/api/csv-imports.spec.ts,tests/api/devices.spec.ts --integration "FullyQualifiedName~Ariva.IntegrationTests."` PASS: build, unit, security scan, audits, docs, chart; integration (the whole suite, since site creates run in most classes) 873 (0 failed, 1 skipped); E2E 10 spec files (the five named and those the gate added), 375 passed; visual skipped (no web change). After the gate, test cleanup and a comment only (review advisories 4 and 6): `SiteScopeTests` 10 of 10, no new warning. `verify.mjs docs` and `verify.mjs quick` PASS before the commit.
+- Security review (CWE-209, CWE-20; CWE-862 and CWE-863 checked; ASVS V2.3.3, V2.3.4, V16.5.1, V16.5.3):
+  - Round 1 FAIL, on the ARV-281 text only; the code and tests passed every row.
+    - Required: ARV-281 said the guards of SvcZoneProfiles and SvcDevices catch 23505. They do not, and both lock the site row before their check, so a race test there would pass without a fix.
+    - Advisories:
+      - ARV-281: name FlushMode.Commit; name each index (levels and checkpoints have two); add the guard's catch-all 400 answers (CWE-209).
+      - The test trigger's cleanup: IF EXISTS, and a drop before the create.
+      - The comment "stays a 500" (an outage is a 503).
+      - The wiki sentence ran on, and said two administrators where two creates is meant.
+      - Cite the race test on V2.3.4.
+      - `PromiseNotToCommit` is not observable in the test, since PostgreSQL rolls back a commit of an aborted transaction. Acceptable as is.
+  - Fixed: ARV-281 rewritten (only SvcTopology claims the catch; devices and drafts are serialised by the site row lock, a race test to confirm; the indexes named; FlushMode.Commit; the CWE-209 catch-alls added as a criterion); every advisory taken but the last.
+  - Round 2 PASS. Its one advisory: ARV-281 named SvcDevices as narrowing its catch-alls, but its ArgumentException catch answers any message too. Taken: ARV-281 names SvcZoneProfiles.FromDomain as the model and covers SvcDevices.GuardedAsync in its CWE-209 criterion.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - Ariva's NHibernate session flushes only at commit (FlushMode.Commit), and the commit is `UnitOfWorkFilter`'s, after the service returns. A service that wants to answer a unique violation itself must flush inside its own try; a catch around code that only saves never sees it.
+  - Match a unique violation by its constraint name, not by SqlState alone, so an index added later is not silently read as the same conflict.
+  - A deterministic race test: hold the first unit of work open after its flush, start the second without awaiting it, wait until pg_locks shows a lock not granted, then end the first.
