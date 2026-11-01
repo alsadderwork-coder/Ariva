@@ -23,6 +23,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Ariva.Di.Extensions;
+using Ariva.UnitTests.Security.Fixtures;
 
 namespace Ariva.UnitTests.Security;
 
@@ -701,70 +702,11 @@ public sealed class OutboundTests
         {
             var call = clients.For(target).GetAsync("x", Ct);
             using (var peer = await listener.AcceptTcpClientAsync(Ct))
-                record = await FirstRecordAsync(peer.GetStream());
+                record = await ClientHello.FirstRecordAsync(peer.GetStream(), Ct);
             await FluentActions.Awaiting(() => call).Should().ThrowAsync<HttpRequestException>("the listener closes after the hello");
         }
 
-        var hello = ClientHelloOf(record);
-        hello.LegacyVersion.Should().Be(0x0303, "TLS 1.2 in the legacy field, as TLS 1.3 requires");
-        hello.SupportedVersions.Should().BeEquivalentTo([(ushort)0x0303, (ushort)0x0304], "TLS 1.2 and 1.3 only: never 1.0 or 1.1");
-        if (OperatingSystem.IsLinux())
-        {
-            var listed = ModernTls.CipherSuites.Select(suite => (ushort)suite).Append((ushort)0x00FF).ToHashSet();
-            hello.CipherSuites.Should().OnlyContain(suite => listed.Contains(suite), "the pods' suites and the renegotiation SCSV, nothing else")
-                .And.Contain((ushort)System.Net.Security.TlsCipherSuite.TLS_AES_128_GCM_SHA256);
-        }
-    }
-
-    /// <summary>Reads one whole TLS record (its 5 byte header and its body) from a stream, at most 16 KB.</summary>
-    private static async Task<byte[]> FirstRecordAsync(Stream stream)
-    {
-        var header = new byte[5];
-        await stream.ReadExactlyAsync(header, Ct);
-        var length = (header[3] << 8) | header[4];
-        length.Should().BeInRange(1, 16 * 1024, "a TLS record");
-        var body = new byte[length];
-        await stream.ReadExactlyAsync(body, Ct);
-        return [.. header, .. body];
-    }
-
-    /// <summary>The fields of a ClientHello this test reads (RFC 5246 section 7.4.1.2, RFC 8446 section 4.1.2 and 4.2.1).</summary>
-    private static (ushort LegacyVersion, IReadOnlyList<ushort> CipherSuites, IReadOnlyList<ushort> SupportedVersions) ClientHelloOf(byte[] record)
-    {
-        record[0].Should().Be(0x16, "a handshake record");
-        var at = 5;
-        record[at].Should().Be(0x01, "a ClientHello");
-        at += 4;
-        ushort Read16() { var value = (ushort)((record[at] << 8) | record[at + 1]); at += 2; return value; }
-        var legacy = Read16();
-        at += 32;
-        at += 1 + record[at];
-        var suitesEnd = at + 2 + ((record[at] << 8) | record[at + 1]);
-        at += 2;
-        var suites = new List<ushort>();
-        while (at < suitesEnd)
-            suites.Add(Read16());
-        at += 1 + record[at];
-        var extensionsEnd = at + 2 + ((record[at] << 8) | record[at + 1]);
-        at += 2;
-        var versions = new List<ushort>();
-        while (at < extensionsEnd)
-        {
-            var type = Read16();
-            var length = Read16();
-            var next = at + length;
-            if (type == 0x002b)
-            {
-                var listEnd = at + 1 + record[at];
-                at += 1;
-                while (at < listEnd)
-                    versions.Add(Read16());
-            }
-
-            at = next;
-        }
-
-        return (legacy, suites, versions);
+        ClientHello.Parse(record).ShouldOfferOnlyModernTls("an outbound call");
     }
 
     [Fact]

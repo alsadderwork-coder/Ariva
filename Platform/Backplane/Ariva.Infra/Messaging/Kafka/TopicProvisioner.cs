@@ -1,4 +1,5 @@
 using System.Globalization;
+using Ariva.Infra.Security;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using Microsoft.Extensions.Hosting;
@@ -90,6 +91,16 @@ public static class KafkaClientConfig
     /// </summary>
     public static ClientConfig Rider() => new() { AllowAutoCreateTopics = false };
 
+    /// <summary>
+    /// True when <paramref name="settings"/>' security protocol speaks TLS (Ssl, SaslSsl): then every Kafka client offers
+    /// <see cref="ModernTls.OpenSslCipherList"/> (ARV-280), Ariva's own here and the rider's on its host (Ariva.Di).
+    /// </summary>
+    public static bool UsesTls(KafkaSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        return Enum.Parse<SecurityProtocol>(settings.SecurityProtocol, ignoreCase: true) is SecurityProtocol.Ssl or SecurityProtocol.SaslSsl;
+    }
+
     /// <summary>librdkafka's <c>message.timeout.ms</c> for Ariva's producer: 30 seconds.</summary>
     public const int MessageTimeoutMilliseconds = 30_000;
 
@@ -167,6 +178,9 @@ public static class KafkaClientConfig
         // answers with 503.
         config.AllowAutoCreateTopics = false;
         config.SecurityProtocol = Enum.Parse<SecurityProtocol>(settings.SecurityProtocol, ignoreCase: true);
+        // ARV-280: over TLS, the platform's TLS 1.2 suites only, at OpenSSL security level 2 (no version below TLS 1.2).
+        if (UsesTls(settings))
+            config.SslCipherSuites = ModernTls.OpenSslCipherList;
         if (!string.IsNullOrEmpty(settings.SslCaLocation))
             config.SslCaLocation = settings.SslCaLocation;
         if (!string.IsNullOrEmpty(settings.SaslMechanism))

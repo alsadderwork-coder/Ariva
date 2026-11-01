@@ -1,3 +1,5 @@
+using System.Net.Security;
+using Ariva.Infra.Security;
 using Npgsql;
 
 namespace Ariva.Infra.Settings;
@@ -10,6 +12,8 @@ namespace Ariva.Infra.Settings;
 /// revocation; Npgsql's own check (VerifyFull against Database:RootCertificate) decides the trust as before and downloads
 /// nothing itself. The NHibernate driver's connections take the same policy, and nothing else constructs a connection
 /// (<c>CertificateDownloadTests.PostgreSql_Should_BeOpenedThroughPostgresConnectionsOnly_When_TheHostsAndJobsConnect</c>).
+/// ARV-280: the same handshake offers TLS 1.2 and 1.3 only and, on Linux, the pods' suites only (<see cref="ModernTls"/>), where
+/// Npgsql would take the platform's defaults; the production server refuses anything else too (ARV-082a).
 /// </summary>
 public static class PostgresConnections
 {
@@ -17,13 +21,21 @@ public static class PostgresConnections
     /// <param name="connectionString">The connection string (<see cref="DatabaseSettings.BuildConnectionString"/> and its kin).</param>
     public static NpgsqlConnection Create(string connectionString) => Harden(new NpgsqlConnection(connectionString));
 
-    /// <summary>Gives <paramref name="connection"/>'s TLS handshake a chain policy that downloads no certificate.</summary>
+    /// <summary>Gives <paramref name="connection"/>'s TLS handshake a chain policy that downloads no certificate, and Ariva's versions and suites.</summary>
     /// <param name="connection">A connection not yet open.</param>
     /// <returns>The same connection.</returns>
     public static NpgsqlConnection Harden(NpgsqlConnection connection)
     {
         ArgumentNullException.ThrowIfNull(connection);
-        connection.SslClientAuthenticationOptionsCallback = CertificateDownloads.Refuse;
+        connection.SslClientAuthenticationOptionsCallback = Handshake;
         return connection;
+    }
+
+    /// <summary>The handshake's options as every PostgreSQL connection Ariva opens sets them.</summary>
+    /// <param name="options">The options Npgsql built.</param>
+    internal static void Handshake(SslClientAuthenticationOptions options)
+    {
+        CertificateDownloads.Refuse(options);
+        ModernTls.Apply(options);
     }
 }

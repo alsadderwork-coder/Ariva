@@ -270,36 +270,7 @@ public static partial class MessagingExtensions
                     consumer.Register(rider);
 
                 // ARV-177: the rider's clients on Ariva's base, so none of them asks a broker to create a topic either.
-                rider.UsingKafka(KafkaClientConfig.Rider(), (context, kafka) =>
-                {
-                    // A ClientConfig in the container, which MassTransit takes as the base only when UsingKafka is given none,
-                    // still gives the rider its librdkafka debug contexts (CommitRaceTests' diagnostics); nothing else of it.
-                    if (context.GetService<ClientConfig>()?.Debug is { Length: > 0 } debug)
-                        kafka.Debug = debug;
-                    kafka.Host(settings.BootstrapServers, host =>
-                    {
-                        if (!string.IsNullOrEmpty(settings.SslCaLocation))
-                            host.UseSsl(ssl => ssl.CaLocation = settings.SslCaLocation);
-                        if (!string.IsNullOrEmpty(settings.SaslMechanism))
-                        {
-                            host.UseSasl(sasl =>
-                            {
-                                sasl.Mechanism = Enum.Parse<SaslMechanism>(settings.SaslMechanism, ignoreCase: true);
-                                sasl.Username = settings.SaslUsername;
-                                sasl.Password = settings.SaslPassword;
-                                sasl.SecurityProtocol = Enum.Parse<SecurityProtocol>(settings.SecurityProtocol, ignoreCase: true);
-                            });
-                        }
-                    });
-                    kafka.ClientId = $"ariva-{settings.ServiceName}";
-                    kafka.SecurityProtocol = Enum.Parse<SecurityProtocol>(settings.SecurityProtocol, ignoreCase: true);
-                    kafka.Acks = Acks.All;
-                    kafka.MessageMaxBytes = KafkaSettings.MaxMessageBytes;
-                    // ARV-176: no topic endpoint here. MassTransit starts the endpoints configured with the bus as part of the
-                    // bus's start, and one whose topic is missing faults that start and leaves the bus stopped for good, every
-                    // consumer of the host with it. KafkaConsumerEndpoints connects each endpoint after the bus has started,
-                    // once its topic exists.
-                });
+                rider.UsingKafka(KafkaClientConfig.Rider(), (context, kafka) => ConfigureRider(context, kafka, settings));
             });
         });
 
@@ -320,6 +291,68 @@ public static partial class MessagingExtensions
         }
 
         return services;
+    }
+
+    /// <summary>
+    /// The rider's clients, on <see cref="KafkaClientConfig.Rider"/>: the brokers and their TLS and SASL (<see cref="ConfigureRiderHost"/>),
+    /// the client id, the security protocol, acknowledgement by all in-sync replicas and the 1 MB cap. No topic endpoint here
+    /// (ARV-176): MassTransit starts the endpoints configured with the bus as part of the bus's start, and one whose topic is
+    /// missing faults that start and leaves the bus stopped for good, every consumer of the host with it. KafkaConsumerEndpoints
+    /// connects each endpoint after the bus has started, once its topic exists.
+    /// </summary>
+    /// <param name="context">The rider's registration context.</param>
+    /// <param name="kafka">The rider's Kafka configurator.</param>
+    /// <param name="settings">The Kafka section.</param>
+    internal static void ConfigureRider(IRiderRegistrationContext context, IKafkaFactoryConfigurator kafka, KafkaSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(kafka);
+        ArgumentNullException.ThrowIfNull(settings);
+        // A ClientConfig in the container, which MassTransit takes as the base only when UsingKafka is given none, still gives
+        // the rider its librdkafka debug contexts (CommitRaceTests' diagnostics); nothing else of it.
+        if (context.GetService<ClientConfig>()?.Debug is { Length: > 0 } debug)
+            kafka.Debug = debug;
+        kafka.Host(settings.BootstrapServers, host => ConfigureRiderHost(host, settings));
+        kafka.ClientId = $"ariva-{settings.ServiceName}";
+        kafka.SecurityProtocol = Enum.Parse<SecurityProtocol>(settings.SecurityProtocol, ignoreCase: true);
+        kafka.Acks = Acks.All;
+        kafka.MessageMaxBytes = KafkaSettings.MaxMessageBytes;
+    }
+
+    /// <summary>
+    /// The rider's host: its CA and SASL credentials, and over TLS (Ssl, SaslSsl) the platform's suites at OpenSSL security
+    /// level 2 (ARV-280, <see cref="Ariva.Infra.Security.ModernTls.OpenSslCipherList"/>), as Ariva's own clients have them
+    /// (<see cref="KafkaClientConfig"/>). MassTransit writes these into the rider's base config (<see cref="KafkaClientConfig.Rider"/>),
+    /// which every topic endpoint's consumer and the rider's admin client take.
+    /// </summary>
+    /// <param name="host">The rider's host.</param>
+    /// <param name="settings">The Kafka section.</param>
+    internal static void ConfigureRiderHost(IKafkaHostConfigurator host, KafkaSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(settings);
+        var tls = KafkaClientConfig.UsesTls(settings);
+        if (tls || !string.IsNullOrEmpty(settings.SslCaLocation))
+        {
+            host.UseSsl(ssl =>
+            {
+                if (tls)
+                    ssl.CipherSuites = Ariva.Infra.Security.ModernTls.OpenSslCipherList;
+                if (!string.IsNullOrEmpty(settings.SslCaLocation))
+                    ssl.CaLocation = settings.SslCaLocation;
+            });
+        }
+
+        if (!string.IsNullOrEmpty(settings.SaslMechanism))
+        {
+            host.UseSasl(sasl =>
+            {
+                sasl.Mechanism = Enum.Parse<SaslMechanism>(settings.SaslMechanism, ignoreCase: true);
+                sasl.Username = settings.SaslUsername;
+                sasl.Password = settings.SaslPassword;
+                sasl.SecurityProtocol = Enum.Parse<SecurityProtocol>(settings.SecurityProtocol, ignoreCase: true);
+            });
+        }
     }
 
     [GeneratedRegex("^[a-z0-9]+(-[a-z0-9]+)*$")]

@@ -15,7 +15,8 @@ namespace Ariva.IntegrationTests.Persistence;
 /// on the production image, its key mounted as the chart mounts it: a host's connection (<see cref="DatabaseSettings"/> with TLS and <c>RootCertificate</c>) is
 /// encrypted and verified against the pinned CA alone. A CA file that did not issue the server's certificate, or a host
 /// name the certificate does not name, refuses the connection; so does the image's own system store, which never knew the
-/// internal CA. Its own container, so the shared one keeps serving plain connections to the other tests.
+/// internal CA. Its own container, so the shared one keeps serving plain connections to the other tests. ARV-280: a connection
+/// made through <see cref="PostgresConnections"/> (TLS 1.2 and 1.3 and the pods' suites only) negotiates a listed suite with it.
 /// </summary>
 public sealed class DatabaseTlsTests : IAsyncLifetime
 {
@@ -97,6 +98,27 @@ public sealed class DatabaseTlsTests : IAsyncLifetime
         (await reader.ReadAsync(Ct)).Should().BeTrue();
         reader.GetBoolean(0).Should().BeTrue("the connection is encrypted");
         reader.GetString(1).Should().BeOneOf("TLSv1.2", "TLSv1.3");
+    }
+
+    [Fact]
+    public async Task ArivaConnection_Should_NegotiateAListedVersionAndSuite_When_ItOpensThroughPostgresConnections()
+    {
+        // ARV-280: a connection Ariva makes offers TLS 1.2 and 1.3 and the pods' suites only, and still reaches the production
+        // server's settings; the server reports what was negotiated (OpenSSL's names).
+        await using var connection = PostgresConnections.Create(Settings("localhost", _ourCa).BuildConnectionString());
+        await connection.OpenAsync(Ct);
+        await using var command = new NpgsqlCommand("SELECT ssl, version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid()", connection);
+        await using var reader = await command.ExecuteReaderAsync(Ct);
+        string[] listed =
+        [
+            "TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256",
+            .. Ariva.Infra.Security.ModernTls.OpenSslCipherList.Split(':').Where(name => !name.StartsWith('@'))
+        ];
+
+        (await reader.ReadAsync(Ct)).Should().BeTrue();
+        reader.GetBoolean(0).Should().BeTrue("the connection is encrypted");
+        reader.GetString(1).Should().BeOneOf("TLSv1.2", "TLSv1.3");
+        reader.GetString(2).Should().BeOneOf(listed, "the suite is one of the pods' list");
     }
 
     public static TheoryData<string, string> Refused => new()

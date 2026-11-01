@@ -2164,8 +2164,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 301,
-      "passes": false,
-      "notes": "Size M. Phase 3. Filed 2026-10-31 from the ARV-205 review (round 1, the Remaining of V12.1.1 and V12.1.2). No sign-in code; the Redis and PostgreSQL connections carry no session or account logic.",
+      "passes": true,
+      "notes": "Size M. Phase 3. Filed 2026-10-31 from the ARV-205 review (round 1, the Remaining of V12.1.1 and V12.1.2). No sign-in code; the Redis and PostgreSQL connections carry no session or account logic. Done 2026-11-01: PostgreSQL and the SMTP relay client through ModernTls.Apply, Redis through its handshake options (sslProtocols narrows, never widens), the collector clients through CollectorTls (held equal to ModernTls), Kafka (own clients and the MassTransit rider) through ModernTls.OpenSslCipherList with OpenSSL security level 2 (librdkafka has no minimum version setting); unit TlsClientTests reads each client's options and ClientHello; residuals in crypto inventory A15. Security review: round 1 FAIL (docs) fixed, round 2 PASS.",
       "dependsOn": [
         "ARV-205"
       ]

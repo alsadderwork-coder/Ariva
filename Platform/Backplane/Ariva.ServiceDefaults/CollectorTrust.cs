@@ -106,7 +106,8 @@ public static class CollectorTrust
 
     /// <summary>
     /// Pins the named clients to <paramref name="roots"/> (custom root trust, server authentication, no revocation check, no
-    /// certificate download), the TLS handshake still checking the collector's host name; follows no redirect and keeps no
+    /// certificate download), the TLS handshake still checking the collector's host name and offering TLS 1.2 and 1.3 only and, on
+    /// Linux, the platform's suites only (ARV-280, <see cref="CollectorTls"/>); follows no redirect and keeps no
     /// cookie (CWE-918: a collector's redirect would send a batch and its headers to another host); and keeps their requests
     /// out of the logs they carry (a logged request of the Loki client would be shipped by the same client). Each pinned name
     /// is recorded, so a sink can require its client to be pinned (<see cref="IsPinned"/>). Without <paramref name="roots"/>,
@@ -132,6 +133,8 @@ public static class CollectorTrust
                     .UseSocketsHttpHandler((handler, _) =>
                     {
                         handler.SslOptions.CertificateChainPolicy = Policy(roots);
+                        handler.SslOptions.EnabledSslProtocols = CollectorTls.Protocols;
+                        handler.SslOptions.CipherSuitesPolicy = CollectorTls.CipherSuitesPolicy;
                         handler.AllowAutoRedirect = false;
                         handler.UseCookies = false;
                     })

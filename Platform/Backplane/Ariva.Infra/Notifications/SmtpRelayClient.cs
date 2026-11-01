@@ -1,4 +1,5 @@
 using System.Net.Security;
+using Ariva.Infra.Security;
 using Ariva.Infra.Settings;
 using MailKit.Net.Smtp;
 
@@ -8,7 +9,9 @@ namespace Ariva.Infra.Notifications;
 /// ARV-226 (CWE-918): MailKit's SMTP client whose TLS handshake, TLS on connect and STARTTLS alike, builds the relay's chain without
 /// downloads and checks no revocation (<see cref="CertificateDownloads"/>). MailKit checks revocation online by default and gives
 /// SslStream no chain policy, so the platform's default would ask the addresses the relay's certificate names, before the relay is
-/// authenticated. MailKit's own check of the certificate (an error refuses it) is kept.
+/// authenticated. MailKit's own check of the certificate (an error refuses it) is kept. ARV-280: the handshake offers TLS 1.2 and
+/// 1.3 only and, on Linux, the pods' suites only (<see cref="ModernTls"/>), where MailKit would offer its own default versions and
+/// the platform's suites.
 /// </summary>
 internal sealed class SmtpRelayClient : SmtpClient
 {
@@ -16,6 +19,7 @@ internal sealed class SmtpRelayClient : SmtpClient
     {
         var options = base.GetSslClientAuthenticationOptions(host, remoteCertificateValidationCallback);
         CertificateDownloads.Refuse(options);
+        ModernTls.Apply(options);
         return options;
     }
 }

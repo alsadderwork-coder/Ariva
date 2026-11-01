@@ -1,6 +1,8 @@
 using System.Net.Security;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Ariva.Infra.Security;
 using Microsoft.Extensions.Configuration;
 using StackExchange.Redis;
 
@@ -66,6 +68,10 @@ public sealed class RedisSettings
     /// <summary>The server authentication purpose the Redis server's certificate must hold.</summary>
     private const string ServerAuthentication = "1.3.6.1.5.5.7.3.1";
 
+    /// <summary>Why a connection string whose sslProtocols names no version Ariva speaks is refused; names no part of it.</summary>
+    private const string UnspokenProtocols =
+        "Redis:ConnectionString's sslProtocols names neither TLS 1.2 nor TLS 1.3: remove it, or name Tls12, Tls13 or Tls12|Tls13.";
+
     public bool Enabled { get; init; }
     public string ConnectionString { get; init; } = "localhost:6379";
 
@@ -81,8 +87,10 @@ public sealed class RedisSettings
     /// <summary>
     /// The connection's options, for the cache and the live hub's backplane alike: never aborting on a failed first connect,
     /// and over TLS with the handshake's own options (<see cref="Handshake"/>): pinned to the internal CA when one is named
-    /// (<see cref="IsIssuedByPinnedCa"/>), the system's CAs otherwise, and never a certificate downloaded (ARV-226).
+    /// (<see cref="IsIssuedByPinnedCa"/>), the system's CAs otherwise, never a certificate downloaded (ARV-226), and TLS 1.2 and
+    /// 1.3 only with, on Linux, the pods' suites (ARV-280, <see cref="AllowedProtocols"/>).
     /// </summary>
+    /// <exception cref="InvalidOperationException">The connection string's sslProtocols names neither TLS 1.2 nor 1.3.</exception>
     public ConfigurationOptions Options()
     {
         var options = ConfigurationOptions.Parse(ConnectionString);
@@ -90,6 +98,8 @@ public sealed class RedisSettings
         options.ClientName ??= "ariva";
         if (!options.Ssl)
             return options;
+        var protocols = AllowedProtocols(options.SslProtocols)
+            ?? throw new InvalidOperationException(UnspokenProtocols);
         X509Certificate2Collection roots = null;
         if (!string.IsNullOrWhiteSpace(CaCertificatePath))
         {
@@ -100,7 +110,6 @@ public sealed class RedisSettings
         // StackExchange.Redis takes these options for the whole handshake, in place of its own TLS settings (its validation event,
         // its revocation check), so the chain the handshake builds follows this policy too, not only the check after it.
         var sslHost = options.SslHost;
-        var protocols = options.SslProtocols;
         options.SslClientAuthenticationOptions = host => Handshake(string.IsNullOrEmpty(sslHost) ? host : sslHost, protocols, roots);
         return options;
     }
@@ -110,8 +119,10 @@ public sealed class RedisSettings
     /// chain with a policy that downloads no certificate and checks no revocation (no request leaves for an address a certificate
     /// names, before the server is authenticated), requires server authentication usage, and trusts <paramref name="roots"/> alone
     /// when given (then <see cref="IsIssuedByPinnedCa"/> judges the result), the system's CAs otherwise; the host name is checked.
+    /// ARV-280: it offers <paramref name="protocols"/> only (from <see cref="AllowedProtocols"/>) and, on Linux, the pods' suites
+    /// only (<see cref="ModernTls.CipherSuitesPolicy"/>).
     /// </summary>
-    internal static SslClientAuthenticationOptions Handshake(string host, System.Security.Authentication.SslProtocols? protocols, X509Certificate2Collection roots)
+    internal static SslClientAuthenticationOptions Handshake(string host, SslProtocols protocols, X509Certificate2Collection roots)
     {
         var policy = new X509ChainPolicy { RevocationMode = X509RevocationMode.NoCheck, DisableCertificateDownloads = true };
         policy.ApplicationPolicy.Add(new Oid(ServerAuthentication));
@@ -124,13 +135,28 @@ public sealed class RedisSettings
         return new SslClientAuthenticationOptions
         {
             TargetHost = host,
-            EnabledSslProtocols = protocols ?? System.Security.Authentication.SslProtocols.None,
+            EnabledSslProtocols = protocols,
+            CipherSuitesPolicy = ModernTls.CipherSuitesPolicy,
             CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
             CertificateChainPolicy = policy,
             RemoteCertificateValidationCallback = roots is { Count: > 0 }
                 ? (_, certificate, presented, errors) => IsIssuedByPinnedCa(certificate, presented, errors, roots)
                 : (_, _, _, errors) => errors == SslPolicyErrors.None
         };
+    }
+
+    /// <summary>
+    /// ARV-280 (ASVS V12.1.1): the versions the handshake may offer. Unnamed in the connection string (or None, the platform's
+    /// choice): TLS 1.2 and 1.3 (<see cref="ModernTls.Protocols"/>). Named: only those of them it names too, so sslProtocols can
+    /// narrow the handshake to one of the two but never widen it to an older version. Null when it names neither.
+    /// </summary>
+    /// <param name="named">The connection string's sslProtocols, if any.</param>
+    internal static SslProtocols? AllowedProtocols(SslProtocols? named)
+    {
+        if (named is null || named.Value == SslProtocols.None)
+            return ModernTls.Protocols;
+        var allowed = named.Value & ModernTls.Protocols;
+        return allowed == SslProtocols.None ? null : allowed;
     }
 
     /// <summary>
@@ -160,16 +186,19 @@ public sealed class RedisSettings
 
     /// <summary>
     /// Why this configuration is not fit for k8s-prd, or null (ARV-082a, CWE-319, CWE-295): with Redis on, the connection uses
-    /// TLS (ssl=true), verified against the internal CA in <see cref="CaCertificatePath"/>, which must be there. Never names
-    /// the connection string, which may hold a password.
+    /// TLS (ssl=true), verified against the internal CA in <see cref="CaCertificatePath"/>, which must be there, and an sslProtocols
+    /// it names allows TLS 1.2 or 1.3 (ARV-280). Never names the connection string, which may hold a password.
     /// </summary>
     public string ProductionTransportProblem(Func<string, bool> fileExists)
     {
         ArgumentNullException.ThrowIfNull(fileExists);
         if (!Enabled)
             return null;
-        if (!ConfigurationOptions.Parse(ConnectionString).Ssl)
+        var options = ConfigurationOptions.Parse(ConnectionString);
+        if (!options.Ssl)
             return "Redis:ConnectionString must carry ssl=true in k8s-prd: every connection to Redis uses TLS.";
+        if (AllowedProtocols(options.SslProtocols) is null)
+            return UnspokenProtocols;
         if (string.IsNullOrWhiteSpace(CaCertificatePath))
             return "Redis:CaCertificatePath must name the internal CA's PEM file in k8s-prd: the server is verified against it, not the system store.";
         return fileExists(CaCertificatePath) ? null : "Redis:CaCertificatePath names a file that does not exist: mount the Redis CA secret.";
