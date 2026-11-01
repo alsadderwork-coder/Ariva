@@ -146,6 +146,11 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-204: the ingress's own answers name object-src and base-uri in their policy (2026-11-01)
+
+- Behaviour: the policy the ingress adds to every response (`add_header` in the chart's `server-snippet` and `configuration-snippet`) is now `frame-ancestors 'none'; object-src 'none'; base-uri 'none'` instead of `frame-ancestors 'none'`. The ingress's own answers (the 421, the probes' 404, the 403 and the redirect over plain HTTP, the 413, the 502 to 504) carry it; the pods' answers keep their own policy beside it, which already names or implies all three (the floor plan and advertisement file policies through `default-src 'none'`), so nothing they serve changes.
+- After the upgrade: the TLS check (`scripts/ops/tls-check.mjs`) now fails a host whose own 413, probe 404 or plain HTTP answer lacks `object-src 'none'` or `base-uri 'none'`; a host still behind an older chart's Ingresses reports it until the release that carries this chart.
+
 ### ARV-203: refused uploads are security events (2026-11-01)
 
 - Behaviour: an upload refused with 400, 404, 408, 409, 413, 415 or 422 (by its controller or its service) now writes `SecurityEvent.UploadRefused` (9134) at Warning when no other security event recorded it: the caller, the upload's kind, the endpoint's route pattern, the status and a fixed reason, never the file or its name. Floor plans, SSIM previews and imports, the CSV imports' refusals before their service, site configuration imports and advertisement uploads were not logged before. The answers do not change.

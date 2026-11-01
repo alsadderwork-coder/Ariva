@@ -13,7 +13,8 @@ import { expect, smoke, target } from './support/smoke';
 // ports, so readiness cannot be read from here (wiki 04 section 8, check 2, reads it inside the cluster). Each API host and
 // the web host must answer every probe path 404 (or 403), and that answer must be the ingress's own: none of the pods'
 // marks (X-Frame-Options, Referrer-Policy, a ProblemDetails body), and the chart's headers (ARV-084: one
-// Strict-Transport-Security of at least a year with includeSubDomains, nosniff, frame-ancestors 'none').
+// Strict-Transport-Security of at least a year with includeSubDomains, nosniff, and, ARV-204, frame-ancestors, object-src
+// and base-uri 'none' across the answer's policies).
 // Each API host then proves it is up behind the ingress with a read it answers itself, that changes nothing and needs no
 // credential: an endpoint of its own that challenges an anonymous call, before any action runs (Main: GET /api/auth/me;
 // Ingest: the device check; Integration: the flight feed's connectivity check at the smoke site, where a call without a
@@ -50,7 +51,12 @@ const hosts: Host[] = [
 const probePaths = ['/health/startup', '/health/readiness', '/health/liveness', '/healthz'];
 
 const yearSeconds = 31_536_000;
-const frameAncestorsNone = /(^|;)\s*frame-ancestors\s+'none'\s*(;|$)/i;
+/** The policy the ingress adds to every answer (ARV-204): each directive 'none', in any of the answer's policies (all are enforced). */
+const ingressPolicy: [string, RegExp][] = [
+	['frame-ancestors', /(^|;)\s*frame-ancestors\s+'none'\s*(;|$)/i],
+	['object-src', /(^|;)\s*object-src\s+'none'\s*(;|$)/i],
+	['base-uri', /(^|;)\s*base-uri\s+'none'\s*(;|$)/i]
+];
 
 /** The values of a header; Node's fetch joins repeated headers with ", " (none of the values checked here holds a comma). */
 function values(response: SmokeResponse, name: string): string[] {
@@ -71,7 +77,9 @@ function ingressHeaderProblems(response: SmokeResponse): string[] {
 	}
 	const nosniff = values(response, 'x-content-type-options');
 	if (nosniff.length === 0 || nosniff.some((value) => value.toLowerCase() !== 'nosniff')) problems.push('no X-Content-Type-Options: nosniff');
-	if (!values(response, 'content-security-policy').some((policy) => frameAncestorsNone.test(policy))) problems.push("no Content-Security-Policy with frame-ancestors 'none'");
+	const policies = values(response, 'content-security-policy');
+	const missing = ingressPolicy.filter(([, pattern]) => !policies.some((policy) => pattern.test(policy))).map(([name]) => `${name} 'none'`);
+	if (missing.length) problems.push(`no Content-Security-Policy with ${missing.join(', ')}`);
 	return problems;
 }
 

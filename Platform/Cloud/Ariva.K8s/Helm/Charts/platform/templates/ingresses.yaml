@@ -1,7 +1,7 @@
 {{- /*
 One Ingress per entry of ingresses (values.yaml). The chart's annotations come from ariva-platform.ingressChartAnnotations
 (_helpers.tpl): plain HTTP refused or redirected (plainHttp, ARV-084), the response headers of every host (HSTS, nosniff,
-frame-ancestors 'none', on the ingress's own responses too), the affinity cookie __Host- named, Secure with SameSite=Strict (ARV-199), ModSecurity
+frame-ancestors, object-src and base-uri 'none', on the ingress's own responses too), the affinity cookie __Host- named, Secure with SameSite=Strict (ARV-199), ModSecurity
 with its audit log off (ARV-091), the live hub's logging (ARV-035) and /hubs answered 404 on every host without the hub's
 Ingress (ARV-091) and, with pod TLS (ARV-082b), HTTPS to the pods verified against the cluster CA under the backend
 Service's name. A site's own annotations are added after them: its server-snippet, configuration-snippet and

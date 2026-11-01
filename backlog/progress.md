@@ -4640,3 +4640,40 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - The exception handler (inside `RequestLogContextMiddleware`) clears the endpoint before it answers a `BadHttpRequestException`'s 408 or 413, so anything that names the endpoint at the request's end must capture it earlier.
   - A mocked service's refusal text reaches the answer's detail: a test that checks the answer repeats nothing the caller sent must not put the canary in the mock's text.
   - xUnit filters of different kinds (`--filter-namespace` with `--filter-class`) are ANDed; repeat one kind to OR them.
+
+## 2026-11-01: ARV-204 [E17] Ingress answers name object-src and base-uri in their policy
+
+- What changed:
+  - The policy the ingress adds to every response, in the chart's `ingressServerSnippet` and again in `ingressConfigurationSnippet` (`templates/_helpers.tpl`), is now `frame-ancestors 'none'; object-src 'none'; base-uri 'none'` with `add_header ... always`.
+    - So the ingress's own answers name the two directives ASVS 5.0 V3.4.3 asks of every policy: the 421, the probes' 404, the 403 and the redirect over plain HTTP, the 413, and the 502 to 504.
+    - It is added beside the pods' own policies (both enforced), which already name all three, so nothing the pods serve changes.
+  - Chart test (`tests/checks.mjs` `ingressHardeningFindings`):
+    - One constant pattern per directive (`INGRESS_POLICY`).
+    - A snippet whose added policies miss any of the three is refused, with the missing ones named. So are the three split over separate add_headers, and the full policy without always.
+    - New bad fixture cases `csp-server-no-object-src`, `csp-location-no-base-uri` and `csp-server-split` (the three over two add_headers). Every other fixture policy is the full one, the ingress privacy fixtures' included.
+    - The chart's expected snippets in `chart-security.mjs` follow. 43 ingress hardening cases, each tripping exactly its rule.
+  - TLS check (`scripts/ops/tls-check.mjs` `generatedHeaderFindings`, for each host's own 413, its probe 404 and its plain HTTP answers):
+    - It requires the three across the response's policies. Each is enforced, so a directive in any of them counts.
+    - The finding names the missing ones.
+    - Self-test cases: an ingress 413 without object-src, one without base-uri, and the three in two policies (no finding). 57 stand-in hosts.
+  - The post-release smoke test (`Ariva.E2E/tests/smoke/health.spec.ts`) checks the three directives across each answer's policies, naming the missing ones.
+  - Docs:
+    - asvs-l2: V3.4.1's case count (43), V3.4.3 loses its ingress residual and gets the evidence; the ARV-084 ingress sentences and the row near the top name the two directives.
+    - wiki 04 (the ingress headers and the TLS check), wiki 10 (the TLS check's findings for the 413 and the probe 404), wiki 13 (headers, release checklist), wiki 17 (the ingress protections entry), wiki 18 (migration note).
+    - The chart's `values.yaml` and `ingresses.yaml` comments; scripts/ops/README.md (the stand-in count is 57, it said 52).
+- Files:
+  - Platform/Cloud/Ariva.K8s: `Helm/Charts/platform/templates/_helpers.tpl`, `templates/ingresses.yaml`, `values.yaml`, `tests/checks.mjs`, `tests/chart-security.mjs`, `tests/fixtures/ingress-hardening-bad.yaml`, `tests/fixtures/ingress-hardening-good.yaml`, `tests/fixtures/ingress-privacy-bad.yaml`, `tests/fixtures/ingress-privacy-good.yaml`.
+  - Platform/Testing/Ariva.E2E: `tests/smoke/health.spec.ts`.
+  - scripts/ops: `tls-check.mjs`, `README.md`.
+  - Docs: docs/security/asvs-l2.md, wiki/04-Deployment-Guide.md, wiki/10-Operations-Runbook.md, wiki/13-Security-Guide.md, wiki/17-Troubleshooting-and-FAQ.md, wiki/18-Release-Notes-and-Versioning.md.
+  - Backlog: backlog/prd-phase3.json.
+- Gates: `node scripts/verify.mjs story` (no specs: no host code changed) green, 34 steps: build, unit tests, security scan 0 errors and the expected warnings, the chart and script self-tests (TLS check 57 stand-in hosts), audits, docs; integration, visual and E2E skipped by the gate (no persistence, web or host code change). After the review fixes: `tests/chart-security.mjs` exit 0 (44 ingress hardening rules, each bad case tripping exactly its rule), `tls-check.mjs --self-test` exit 0, E2E `tsc --noEmit` exit 0, `node scripts/verify.mjs docs` green. `node scripts/verify.mjs quick` green before the commit.
+- Security review: (CWE-79; CWE-94 for the constant patterns; ASVS V3.4.3, V3.4.6, V3.4.1):
+  - Round 1 FAIL (the control itself correct): the split-policy rule had no bad fixture case; tls-check's comments for the probe 404 and the plain HTTP answers named frame-ancestors only; wiki 10's probe row did not list the new directives. Judged: the second policy cannot break a page (every pod policy names or implies all three); the union rule in tls-check is sound (all enforced policies apply); every response the chart's ingress generates carries the policy.
+  - Fixed: `csp-server-split`, the comments, the wiki row. Advisories taken: V3.4.1's case count, "name or imply" wording, the privacy fixtures' policy, the smoke test's three directives, the more_set_headers finding text, wiki 17, long comment lines.
+  - Follow-up PASS. Its nits taken in the same commit: the smoke test's header comment and wiki 04's smoke paragraph, V3.4.3 citing `csp-server-split` and the smoke check, two long comment lines.
+  - Not taken: a repeated directive (browsers keep the first) passes the patterns (theoretical: the chart's value is fixed and validate.yaml refuses site annotations naming the header); the controller's default server for an unknown host carries none of the chart's headers (pre-existing, outside the story).
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors (story gate and quick gate).
+- Gotchas:
+  - The chart test's bad fixture shares one base Ingress across its cases. A rule that tightens what the base must carry has to change every case's base, the ones without `always` included, or each case trips two rules.
+  - Patterns in the repository are constants (the CWE-1333 rule), so one regular expression per directive rather than one built from the name.

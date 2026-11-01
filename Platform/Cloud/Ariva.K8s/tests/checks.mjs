@@ -1282,14 +1282,22 @@ function hstsValueFindings(value, where) {
 }
 
 const NGINX = 'nginx.ingress.kubernetes.io/';
-const FRAME_ANCESTORS = /(^|;)\s*frame-ancestors\s+'none'\s*(;|$)/;
+/** ARV-084, ARV-204: the directives the ingress's own policy names, each 'none' (ASVS 5.0 V3.4.3: object-src and base-uri on every policy). */
+const INGRESS_POLICY = new Map([
+	['frame-ancestors', /(^|;)\s*frame-ancestors\s+'none'\s*(;|$)/],
+	['object-src', /(^|;)\s*object-src\s+'none'\s*(;|$)/],
+	['base-uri', /(^|;)\s*base-uri\s+'none'\s*(;|$)/]
+]);
+const namesNone = (value, name) => INGRESS_POLICY.get(name).test(value);
+const fullPolicy = (value) => [...INGRESS_POLICY.keys()].every((name) => namesNone(value, name));
 
 /**
  * ARV-084: findings for the Ingresses of a render (docs parsed as Kubernetes reads them). For every Ingress:
  * - its server-snippet (one per host: every Ingress of a host carries the same) sets HSTS with more_set_headers, so it applies
  *   to every status and replaces the controller's own: over HTTPS max-age of a year at least with includeSubDomains and no
  *   preload, on the 421 for other hosts as well (set before it), and nothing over plain HTTP; nosniff with more_set_headers;
- *   Content-Security-Policy with frame-ancestors 'none' through add_header always (it adds to the pods' own policy);
+ *   Content-Security-Policy with frame-ancestors 'none', object-src 'none' and base-uri 'none' through add_header always (it adds
+ *   to the pods' own policy; ARV-204);
  * - its configuration-snippet repeats that add_header (nginx drops the server's in a location with an add_header of its own);
  * - plain HTTP per ariva.dalil.tech/plain-http: refuse has ssl-redirect and force-ssl-redirect "false" and a 4xx for
  *   if ($scheme = http) in the configuration-snippet; redirect has both "true" and no refusal; ingress-nginx applies the mode
@@ -1347,15 +1355,17 @@ export function ingressHardeningFindings(docs, { environment }) {
 			findings.push(`${id}: server-snippet sends no X-Content-Type-Options: nosniff with more_set_headers (every status, one header)`);
 		}
 
-		// frame-ancestors 'none': add_header always at the server level and again in the location.
+		// frame-ancestors, object-src and base-uri 'none': add_header always at the server level and again in the location.
 		for (const [tree, where, why] of [[server, 'server-snippet', 'the server level (the 421 and every location without an add_header)'],
 			[location, 'configuration-snippet', 'the location (an add_header there drops the server\'s)']]) {
 			const policies = headerDirectives(tree, 'Content-Security-Policy');
-			if (policies.some((directive) => directive.kind === 'more_set_headers')) findings.push(`${id}: ${where} replaces the pods' Content-Security-Policy with more_set_headers; add frame-ancestors with add_header always`);
+			if (policies.some((directive) => directive.kind === 'more_set_headers')) findings.push(`${id}: ${where} replaces the pods' Content-Security-Policy with more_set_headers; add frame-ancestors, object-src and base-uri 'none' with add_header always`);
 			const added = policies.filter((directive) => directive.kind === 'add_header');
+			const missing = [...INGRESS_POLICY.keys()].filter((name) => !added.some((directive) => namesNone(directive.value, name)));
 			if (added.length === 0) findings.push(`${id}: ${where} adds no Content-Security-Policy frame-ancestors 'none' at ${why}`);
-			else if (!added.some((directive) => FRAME_ANCESTORS.test(directive.value))) findings.push(`${id}: ${where} adds a Content-Security-Policy without frame-ancestors 'none'`);
-			else if (!added.some((directive) => FRAME_ANCESTORS.test(directive.value) && directive.always)) findings.push(`${id}: ${where} adds Content-Security-Policy without always, so 4xx and 5xx responses lack it`);
+			else if (missing.length) findings.push(`${id}: ${where} adds a Content-Security-Policy without ${missing.map((name) => `${name} 'none'`).join(', ')}`);
+			else if (!added.some((directive) => fullPolicy(directive.value))) findings.push(`${id}: ${where} adds frame-ancestors, object-src and base-uri in separate policies; name the three in one add_header`);
+			else if (!added.some((directive) => fullPolicy(directive.value) && directive.always)) findings.push(`${id}: ${where} adds Content-Security-Policy without always, so 4xx and 5xx responses lack it`);
 		}
 
 		// Plain HTTP.

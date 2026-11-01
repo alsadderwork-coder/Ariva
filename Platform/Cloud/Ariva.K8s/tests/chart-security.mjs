@@ -23,7 +23,7 @@
 // and verifies the pods against the cluster CA under the backend's in-cluster name; dev, demo and localk8s stay plain; the web
 // image's default.conf takes its listener from listen.d and the image ships the plain one.
 // ARV-084: every Ingress of every render (dev, demo, localk8s, prd, the Helmfile environments and the offline bundle's) sends
-// HSTS of a year with includeSubDomains over HTTPS only, nosniff and frame-ancestors 'none' on every response, its own
+// HSTS of a year with includeSubDomains over HTTPS only, nosniff and frame-ancestors, object-src and base-uri 'none' (ARV-204) on every response, its own
 // included (ingressHardeningFindings); the machine services refuse plain HTTP in prd, on the web host's /api and /hubs too, and
 // the browser apps redirect (ARV-199); the affinity cookie is __Host- named, Secure, SameSite=Strict, Path=/, without Domain;
 // ssl-prefer-server-ciphers is false; the release guards refuse a machine service that redirects in prd, a plainHttp other
@@ -244,7 +244,10 @@ const INGRESS_HARDENING_CASES = [
 	['nosniff-add-header', 'sends no X-Content-Type-Options: nosniff with more_set_headers'], ['csp-server-missing', "server-snippet adds no Content-Security-Policy frame-ancestors 'none'"],
 	['csp-server-no-always', 'server-snippet adds Content-Security-Policy without always'], ['csp-server-no-frame', "server-snippet adds a Content-Security-Policy without frame-ancestors 'none'"],
 	['csp-server-replace', "replaces the pods' Content-Security-Policy"], ['csp-location-missing', "configuration-snippet adds no Content-Security-Policy frame-ancestors 'none'"],
-	['csp-location-no-always', 'configuration-snippet adds Content-Security-Policy without always'], ['plain-mode-missing', 'neither refuse nor redirect'],
+	['csp-location-no-always', 'configuration-snippet adds Content-Security-Policy without always'],
+	['csp-server-no-object-src', "server-snippet adds a Content-Security-Policy without object-src 'none'"],
+	['csp-location-no-base-uri', "configuration-snippet adds a Content-Security-Policy without base-uri 'none'"],
+	['csp-server-split', 'server-snippet adds frame-ancestors, object-src and base-uri in separate policies'], ['plain-mode-missing', 'neither refuse nor redirect'],
 	['refuse-ssl-redirect', 'refuses plain HTTP but ssl-redirect is true'], ['refuse-force-ssl-redirect', 'refuses plain HTTP but force-ssl-redirect is true'],
 	['refuse-no-answer', 'refuses plain HTTP without answering it'], ['refuse-redirects', 'answers plain HTTP with 301, not an error'],
 	['redirect-not-forced', 'redirects plain HTTP but ssl-redirect and force-ssl-redirect are not both "true"'], ['redirect-refuses', 'redirects plain HTTP but its configuration-snippet refuses it'],
@@ -486,7 +489,7 @@ function ingressPrivacySelfTest() {
 const HUB_REFUSAL = 'if ($uri ~* "^/hubs(/|$)") {\n  return 404;\n}\n';
 const HUB_VARIANT_REFUSAL = 'if ($uri ~ "^/(?!hubs(/|$))[Hh][Uu][Bb][Ss](/|$)") {\n  return 404;\n}\n';
 const chartServerSnippet = (host, hub = false) => 'set $ariva_hsts "";\nif ($scheme = https) {\n  set $ariva_hsts "max-age=31536000; includeSubDomains";\n}\n' +
-	'more_set_headers "Strict-Transport-Security: $ariva_hsts";\nmore_set_headers "X-Content-Type-Options: nosniff";\nadd_header Content-Security-Policy "frame-ancestors \'none\'" always;\n' +
+	'more_set_headers "Strict-Transport-Security: $ariva_hsts";\nmore_set_headers "X-Content-Type-Options: nosniff";\nadd_header Content-Security-Policy "frame-ancestors \'none\'; object-src \'none\'; base-uri \'none\'" always;\n' +
 	`if ($host != "${host}") {\n  return 421;\n}\n` + 'if ($uri ~* "^/healthz?(/|$)") {\n  return 404;\n}\n' + (hub ? HUB_VARIANT_REFUSAL : HUB_REFUSAL);
 
 /**
@@ -2053,7 +2056,7 @@ for (const [label, file, sets, message, annotation] of [
 		findings.push(...checkManifests(parse(site.stdout), { environment: 'k8s-prd' }), ...ingressHardeningFindings(docs, { environment: 'k8s-prd' }), ...hubRefusalFindings(docs));
 		// ARV-085: the probes answered 404 at the server level, after the HSTS value and the 421; ARV-091: then /hubs, as this host has no live hub.
 		const chartServer = chartServerSnippet('api-integration-test.dalilhub.tech');
-		const chartLocation = 'add_header Content-Security-Policy "frame-ancestors \'none\'" always;\nif ($scheme = http) {\n  return 403;\n}\n';
+		const chartLocation = 'add_header Content-Security-Policy "frame-ancestors \'none\'; object-src \'none\'; base-uri \'none\'" always;\nif ($scheme = http) {\n  return 403;\n}\n';
 		for (const ingress of docs.filter((doc) => doc?.kind === 'Ingress')) {
 			const annotations = ingress.metadata.annotations;
 			if (annotations['nginx.ingress.kubernetes.io/server-snippet'] !== chartServer + siteServer) findings.push(`Ingress/${ingress.metadata.name}: the server-snippet is not the chart's followed by the site's`);

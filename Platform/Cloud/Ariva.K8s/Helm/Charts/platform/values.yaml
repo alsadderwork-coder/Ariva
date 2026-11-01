@@ -610,10 +610,11 @@ imageCredentials:
 # The 404 is judged on the request's own path, so no Ingress rewrites one: validate.yaml refuses the annotations rewrite-target
 # and use-regex and any snippet that writes a rewrite directive (the chart needs none: every path reaches its pod as it is).
 # Every Ingress gets, from the chart: HSTS max-age=31536000; includeSubDomains over HTTPS (no preload), nosniff and
-# Content-Security-Policy frame-ancestors 'none' on every response, the ingress's own (421, the redirect, 403, 413, 502,
-# 503, 504) included; the affinity cookie __Host-ariva-<name>, Secure, SameSite=Strict, Path=/, no Domain (ARV-199; a site
-# annotation may not set session-cookie-domain); ssl-prefer-server-ciphers false (Mozilla
-# intermediate). The controller's TLS (protocols, suites, its own HSTS and snippet settings) is the site's:
+# Content-Security-Policy frame-ancestors 'none'; object-src 'none'; base-uri 'none' (ARV-204) on every response, the
+# ingress's own (421, the redirect, 403, 413, 502, 503, 504) included; the affinity cookie __Host-ariva-<name>, Secure,
+# SameSite=Strict, Path=/, no Domain (ARV-199; a site annotation may not set session-cookie-domain);
+# ssl-prefer-server-ciphers false (Mozilla intermediate). The controller's TLS (protocols, suites, its own HSTS and snippet
+# settings) is the site's:
 # Platform/Cloud/Ariva.K8s/Helm/ingress-nginx-values.yaml. A site's server-snippet, configuration-snippet and
 # modsecurity-snippet are appended to the chart's; no annotation may set a key the chart sets, from-to-www-redirect (its
 # server carries none of these headers), custom-headers, or name Strict-Transport-Security, X-Content-Type-Options,

@@ -29,13 +29,15 @@
 //   writes them; a 403 without one, a source range refusing before routing, is noted instead);
 // - a response the ingress generates itself, the 413 to a POST that announces a body over every proxy-body-size (1 GiB, none
 //   sent, refused before any pod sees it), lacks that HSTS, X-Content-Type-Options: nosniff or a Content-Security-Policy with
-//   frame-ancestors 'none';
+//   frame-ancestors 'none', object-src 'none' and base-uri 'none' (ASVS 5.0 V3.4.3, ARV-204);
 // - GET /health/readiness over HTTPS is answered anything but 404 or 403 (the ingress routes the health probes, which stay on
-//   the pods' own ports; ARV-085), or its 404 lacks that HSTS, nosniff or frame-ancestors 'none';
+//   the pods' own ports; ARV-085), or its 404 lacks that HSTS, nosniff or the policy (frame-ancestors, object-src and base-uri
+//   'none', ARV-204);
 // - over plain HTTP, at each of its paths (and, for a path other than /, that path with a trailing slash, the location real
 //   clients reach), a refuse path answers anything but the ingress's 403 (a closed port is a refusal too; any other status may
 //   come from the pod, a sign the chart's refusal is not applied), a redirect path does not redirect to https://<host>, or
-//   either answers without nosniff and frame-ancestors 'none' or with Strict-Transport-Security (RFC 6797 section 7.2).
+//   either answers without nosniff and the policy (frame-ancestors, object-src and base-uri 'none', ARV-204) or with
+//   Strict-Transport-Security (RFC 6797 section 7.2).
 // Exit code 0 when every host passes, 1 when one fails, 2 on a usage error. --self-test runs the checks against throwaway local
 // servers (Node https and http servers with chosen protocols, suites, certificates and headers), so CI proves every rule
 // without a cluster (ci.yml security gate, node scripts/verify.mjs security).
@@ -68,7 +70,12 @@ const pathKey = (path) => (path.length > 1 ? path.replace(/\/+$/, '') || '/' : p
 /** The chart's affinity cookie (ARV-199): __Host-ariva-<name>; a name such as ariva-<name> or __Secure-ariva-<name> is the same cookie misnamed. */
 const AFFINITY_COOKIE = /^(?:__[A-Za-z]+-)?ariva-/;
 const BODY_PROBE_BYTES = 1024 * 1024 * 1024;
-const FRAME_ANCESTORS = /(^|;)\s*frame-ancestors\s+'none'\s*(;|$)/i;
+/** ARV-084, ARV-204: what the ingress's own policy names, each 'none' (ASVS 5.0 V3.4.3: object-src and base-uri on every policy). */
+const INGRESS_POLICY = new Map([
+	['frame-ancestors', /(^|;)\s*frame-ancestors\s+'none'\s*(;|$)/i],
+	['object-src', /(^|;)\s*object-src\s+'none'\s*(;|$)/i],
+	['base-uri', /(^|;)\s*base-uri\s+'none'\s*(;|$)/i]
+]);
 /** A health probe path (ARV-085): the chart's server-snippet answers it 404 on every host, before any location. */
 export const HEALTH_PROBE = '/health/readiness';
 
@@ -170,11 +177,16 @@ export function hstsFindings(values, where) {
 	return findings;
 }
 
-/** Findings for the headers an ingress-generated response must carry: nosniff and frame-ancestors 'none'. */
+/**
+ * Findings for the headers an ingress-generated response must carry: nosniff, and frame-ancestors, object-src and base-uri 'none'
+ * in its policies (each policy is enforced, so a directive in any of them counts).
+ */
 function generatedHeaderFindings(headers, where) {
 	const findings = [];
 	if (!(headers['x-content-type-options'] ?? []).some((value) => value.trim().toLowerCase() === 'nosniff')) findings.push(`${where} lacks X-Content-Type-Options: nosniff`);
-	if (!(headers['content-security-policy'] ?? []).some((value) => FRAME_ANCESTORS.test(value))) findings.push(`${where} lacks a Content-Security-Policy with frame-ancestors 'none'`);
+	const policies = headers['content-security-policy'] ?? [];
+	const missing = [...INGRESS_POLICY].filter(([, pattern]) => !policies.some((value) => pattern.test(value))).map(([name]) => `${name} 'none'`);
+	if (missing.length) findings.push(`${where} lacks a Content-Security-Policy with ${missing.join(', ')}`);
 	return findings;
 }
 
@@ -265,7 +277,8 @@ const plainPaths = (target) => target.paths ?? [{ path: '/', mode: target.mode }
 
 /**
  * Plain HTTP at one path of a host (ARV-084; per path since ARV-199): a refuse path answers an error or no connection, a
- * redirect path a redirect to https://<host>; either with nosniff and frame-ancestors 'none' and without HSTS.
+ * redirect path a redirect to https://<host>; either with nosniff and frame-ancestors, object-src and base-uri 'none' (ARV-204)
+ * and without HSTS.
  */
 async function plainFindings(target, path, mode, findings, notes) {
 	const at = path === '/' ? '' : ` ${path}`;
@@ -523,10 +536,11 @@ export function issueCertificates(names = ['capability.ariva.test']) {
 // self-test: throwaway local servers, one per case, each with exactly the findings it must give
 
 const GOOD_HSTS = `max-age=${HSTS_MIN_AGE}; includeSubDomains`;
-const SECURE_HEADERS = { 'Strict-Transport-Security': GOOD_HSTS, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "frame-ancestors 'none'" };
+const GOOD_POLICY = "frame-ancestors 'none'; object-src 'none'; base-uri 'none'";
+const SECURE_HEADERS = { 'Strict-Transport-Security': GOOD_HSTS, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': GOOD_POLICY };
 /** The page's affinity cookie as ingress-nginx writes it from the chart's annotations (ARV-199). */
 const GOOD_COOKIE = '__Host-ariva-web=4f6b0c; Path=/; Secure; HttpOnly; SameSite=Strict';
-const PLAIN_HEADERS = { 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "frame-ancestors 'none'" };
+const PLAIN_HEADERS = { 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': GOOD_POLICY };
 
 /**
  * A stand-in for an Ariva host behind its ingress: an https server (protocols, suites and certificate of the case; GET / with
@@ -619,6 +633,11 @@ function selfTestCases(certificates) {
 		['an ingress 413 without HSTS', 'refuse', { generated: remove('Strict-Transport-Security') }, ["the ingress's 413 has no Strict-Transport-Security"]],
 		['an ingress 413 without nosniff', 'refuse', { generated: remove('X-Content-Type-Options') }, ["the ingress's 413 lacks X-Content-Type-Options: nosniff"]],
 		['an ingress 413 without frame-ancestors', 'refuse', { generated: { 'Content-Security-Policy': "default-src 'none'" } }, ["the ingress's 413 lacks a Content-Security-Policy with frame-ancestors 'none'"]],
+		['an ingress 413 without object-src', 'refuse', { generated: { 'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'none'" } },
+			[/^the ingress's 413 lacks a Content-Security-Policy with object-src 'none'$/]],
+		['an ingress 413 without base-uri', 'refuse', { generated: { 'Content-Security-Policy': "frame-ancestors 'none'; object-src 'none'" } },
+			[/^the ingress's 413 lacks a Content-Security-Policy with base-uri 'none'$/]],
+		['an ingress 413 with the directives in two policies', 'refuse', { generated: { 'Content-Security-Policy': ["frame-ancestors 'none'", "object-src 'none'; base-uri 'none'"] } }, []],
 		['no body limit at the ingress', 'refuse', { noBodyLimit: true }, ['is answered 404, not the ingress\'s 413']],
 		['a host that routes its readiness probe', 'refuse', { health: { status: 200, headers: {} } }, ['GET /health/readiness is answered 200, not 404']],
 		['a probe refusal without HSTS', 'redirect', { health: { status: 404, headers: remove('Strict-Transport-Security') } }, ['GET /health/readiness (404) has no Strict-Transport-Security']],

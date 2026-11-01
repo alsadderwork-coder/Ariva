@@ -15,12 +15,12 @@ metadata:
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/server-snippet: |
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "hsts-missing.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -59,12 +59,12 @@ metadata:
     nginx.ingress.kubernetes.io/server-snippet: |
       add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "hsts-add-header.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -107,13 +107,13 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "hsts-twice.example.test") {
         return 421;
       }
       more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -156,12 +156,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "hsts-short.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -204,12 +204,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "hsts-no-subdomains.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -252,12 +252,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "hsts-preload.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -296,12 +296,12 @@ metadata:
     nginx.ingress.kubernetes.io/server-snippet: |
       more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "hsts-plain.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -347,9 +347,9 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -392,12 +392,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "hsts-never-https.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -439,12 +439,12 @@ metadata:
         set $ariva_hsts "max-age=31536000; includeSubDomains";
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "nosniff-missing.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -487,12 +487,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       add_header X-Content-Type-Options "nosniff" always;
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "nosniff-add-header.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -539,7 +539,7 @@ metadata:
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -582,12 +582,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'";
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'";
       if ($host != "csp-server-no-always.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -635,7 +635,7 @@ metadata:
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -678,13 +678,13 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "csp-server-replace.example.test") {
         return 421;
       }
       more_set_headers "Content-Security-Policy: frame-ancestors 'none'";
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -727,7 +727,7 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "csp-location-missing.example.test") {
         return 421;
       }
@@ -774,12 +774,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "csp-location-no-always.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'";
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'";
       if ($scheme = http) {
         return 403;
       }
@@ -791,6 +791,151 @@ spec:
       secretName: ariva-tls
   rules:
     - host: csp-location-no-always.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: csp-server-no-object-src
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-csp-server-no-object-src
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'; base-uri 'none'" always;
+      if ($host != "csp-server-no-object-src.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - csp-server-no-object-src.example.test
+      secretName: ariva-tls
+  rules:
+    - host: csp-server-no-object-src.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: csp-location-no-base-uri
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-csp-location-no-base-uri
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
+      if ($host != "csp-location-no-base-uri.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - csp-location-no-base-uri.example.test
+      secretName: ariva-tls
+  rules:
+    - host: csp-location-no-base-uri.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: csp-server-split
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-csp-server-split
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "object-src 'none'; base-uri 'none'" always;
+      if ($host != "csp-server-split.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - csp-server-split.example.test
+      secretName: ariva-tls
+  rules:
+    - host: csp-server-split.example.test
       http:
         paths:
           - path: /
@@ -821,12 +966,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "plain-mode-missing.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -869,12 +1014,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "refuse-ssl-redirect.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -917,12 +1062,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "refuse-force-ssl-redirect.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -965,12 +1110,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "refuse-no-answer.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
 spec:
   ingressClassName: nginx
   tls:
@@ -1010,12 +1155,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "refuse-redirects.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 301 https://$host$request_uri;
       }
@@ -1058,12 +1203,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "redirect-not-forced.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
 spec:
   ingressClassName: nginx
   tls:
@@ -1103,12 +1248,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "redirect-refuses.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1151,12 +1296,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "prd-machine-redirect.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
 spec:
   ingressClassName: nginx
   tls:
@@ -1196,12 +1341,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "cookie-not-secure.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1244,12 +1389,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "cookie-lax.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1292,12 +1437,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "cookie-path.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1340,12 +1485,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "cookie-no-prefix.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1388,12 +1533,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "cookie-bad-chars.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1437,12 +1582,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "cookie-domain.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1485,12 +1630,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "prefer-server-ciphers.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1533,12 +1678,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "www-redirect.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1582,12 +1727,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "custom-headers.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1631,12 +1776,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "clear-headers.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1680,12 +1825,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "header-elsewhere.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1729,12 +1874,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "location-hsts.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1778,12 +1923,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "host-modes.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1826,12 +1971,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "host-modes.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
 spec:
   ingressClassName: nginx
   tls:
@@ -1871,12 +2016,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "host-snippets.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1919,13 +2064,13 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "host-snippets.example.test") {
         return 421;
       }
       client_header_timeout 30s;
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($scheme = http) {
         return 403;
       }
@@ -1968,12 +2113,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "prd-web.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
 spec:
   ingressClassName: nginx
   tls:
@@ -2013,12 +2158,12 @@ metadata:
       }
       more_set_headers "Strict-Transport-Security: $ariva_hsts";
       more_set_headers "X-Content-Type-Options: nosniff";
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
       if ($host != "prd-web.example.test") {
         return 421;
       }
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
 spec:
   ingressClassName: nginx
   tls:

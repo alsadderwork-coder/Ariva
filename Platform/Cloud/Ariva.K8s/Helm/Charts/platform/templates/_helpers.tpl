@@ -498,9 +498,12 @@ ingress-nginx applies one server-snippet per host.
   the controller's hsts-max-age. $ariva_hsts is set before the 421 so that response carries it too; over plain HTTP it
   stays empty, which removes the header.
 - nosniff with more_set_headers, so a pod's own nosniff is replaced by the same value instead of repeated.
-- Content-Security-Policy frame-ancestors 'none' with add_header always (always: on 4xx and 5xx too). add_header adds to a
-  pod's own policy instead of replacing it (both are enforced; the pods already forbid framing), and the configuration-snippet
-  repeats it in every location, as nginx drops a server's add_header in a location that has one of its own.
+- Content-Security-Policy frame-ancestors 'none'; object-src 'none'; base-uri 'none' with add_header always (always: on 4xx and
+  5xx too). add_header adds to a pod's own policy instead of replacing it (both are enforced; the pods' own already name or
+  imply all three: the file policies take object-src from default-src 'none'), so the ingress's own responses (the 421, the
+  probes' 404, the 403 and the redirect over plain HTTP, the 413, the 502 to 504) carry a policy that names object-src and
+  base-uri as well (ASVS 5.0 V3.4.3, ARV-204). The configuration-snippet repeats it in every location, as nginx drops a
+  server's add_header in a location that has one of its own.
 - The health probes are private (ARV-085, ASVS 5.0 V13.4.5): /health, /healthz and anything under them, in any case, answer 404
   at the server level, after the HSTS value is set and the 421. The server's rewrite phase runs before nginx picks a location,
   so no location of any Ingress on the host (prefix, exact, regex) can route them, and the 404 is the server's own response,
@@ -524,7 +527,7 @@ if ($scheme = https) {
 }
 more_set_headers "Strict-Transport-Security: $ariva_hsts";
 more_set_headers "X-Content-Type-Options: nosniff";
-add_header Content-Security-Policy "frame-ancestors 'none'" always;
+add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
 if ($host != "{{ .host }}") {
   return 421;
 }
@@ -544,14 +547,15 @@ if ($uri ~* "^/hubs(/|$)") {
 
 {{/*
 The chart's configuration-snippet for an ingress (ARV-084), rendered by ingress-nginx in each of its locations: the
-frame-ancestors policy again (see ingressServerSnippet), and with plainHttp refuse a 403 for any request over plain HTTP
+policy again (frame-ancestors, object-src and base-uri, see ingressServerSnippet), and with plainHttp refuse a 403 for any
+request over plain HTTP
 (ASVS 5.0 V4.1.2: machine endpoints never redirect, so a client that sends credentials in clear is told, not silently
 redirected). It runs in the rewrite phase, before ingress-nginx's own redirect (rewrite_by_lua, at the end of that phase),
 and only in this Ingress's locations, so an ACME HTTP-01 solver Ingress on the same host keeps plain HTTP. The live hub
 logs only critical errors (ARV-035, tokenInQuery). Usage: {{ include "ariva-platform.ingressConfigurationSnippet" $ingress }}
 */}}
 {{- define "ariva-platform.ingressConfigurationSnippet" -}}
-add_header Content-Security-Policy "frame-ancestors 'none'" always;
+add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'none'" always;
 {{- if eq (include "ariva-platform.ingressPlainHttp" .) "refuse" }}
 if ($scheme = http) {
   return 403;
