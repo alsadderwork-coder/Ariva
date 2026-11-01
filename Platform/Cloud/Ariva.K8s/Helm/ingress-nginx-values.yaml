@@ -67,4 +67,7 @@ controller:
     # - enable-opentelemetry: off (on, the controller exports a span per request whose http.target holds the query string;
     #   the chart also keeps it off on the live hub's Ingress, and the Ariva hosts trace themselves with query values redacted);
     # - main-snippet, http-snippet, server-snippet, location-snippet: none with an access_log, log_format, error_log or
-    #   modsecurity directive (they would get around the format above and the chart's per Ingress guards).
+    #   modsecurity directive (they would get around the format above and the chart's per Ingress guards), and none, nor the
+    #   global-auth-snippet, naming proxy_cache_path, proxy_cache or proxy_store, or the fastcgi_, uwsgi_ or scgi_ one;
+    # - global-auth-cache-key: unset (set, ingress-nginx caches the global external authentication answers in its auth_cache
+    #   zone). ARV-206: the controller keeps no copy of an answer, which can carry a credential, border data or personal data.

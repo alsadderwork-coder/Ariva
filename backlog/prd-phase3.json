@@ -814,7 +814,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 300,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-19 from the ARV-094 documents (Low).",
       "dependsOn": []
     },
@@ -2208,6 +2208,26 @@
       "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-201 security review (advisory 6). Owner decision needed before building: it rewrites stored files. No sign-in code.",
       "dependsOn": [
         "ARV-201"
+      ]
+    },
+    {
+      "id": "ARV-284",
+      "title": "[E17] Snippet guards read directives as nginx does, and refuse include, client_body_in_file_only and Lua in every environment",
+      "description": "Found by the ARV-206 security review (advisories 1 to 3, 2026-11-01). nginx's tokenizer takes a quoted directive name followed directly by \")\" as the name and the start of the next argument, so the statement-start patterns of validate.yaml's older annotation guards (the modsecurity directive and the access_log or error_log rules of ARV-091) and INGRESS_LOG_FORMAT.directive in tests/checks.mjs miss \"access_log\")off; (which would log $request, the live hub's access_token included, to a file), and the ARV-085 rewrite guard has no quote handling at all (\"rewrite\" ^ /healthz break;). ARV-206 matched its cache names anywhere with word boundaries; the others should be held to one shared, tokenizer-faithful pattern. An nginx include of a file on the controller's disk gets around every directive guard (ARV-082b, ARV-085, ARV-091, ARV-206) and is not refused; client_body_in_file_only keeps every request body (sign-in passwords, TOTP codes, uploads) as files on the controller; and *_by_lua blocks, which can copy bodies into Lua shared dictionaries or files, are refused only with podTls (k8s-prd), not in dev, demo or localk8s. CWEs to review: CWE-501, CWE-532, CWE-94.",
+      "acceptanceCriteria": [
+        "validate.yaml and controllerValuesFindings refuse access_log, error_log, log_format, modsecurity directives and rewrite however nginx tokenizes them (a quoted name followed by \")\" and a quoted rewrite included), each with a fixture case that trips exactly its rule",
+        "validate.yaml refuses an annotation value that writes include, client_body_in_file_only or a *_by_lua block in every environment, and the controller values check refuses them in the controller's snippets, each with a fixture case; the chart's own snippets still render",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 302,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-206 security review (advisories 1 to 3). Chart and chart test only. No sign-in code.",
+      "dependsOn": [
+        "ARV-206"
       ]
     }
   ]

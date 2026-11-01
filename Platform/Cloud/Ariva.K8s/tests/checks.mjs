@@ -1439,6 +1439,19 @@ export const INGRESS_LOG_FORMAT = {
 	directive: /(^|[;{}'])\s*["']?(access_log|log_format|error_log|modsecurity(_[a-z_]+)?)["']?\s/im
 };
 
+/**
+ * ARV-206: the name of an nginx directive that keeps a copy of an answer (a cache zone, a cache, or the answer stored as a file),
+ * for the proxy, FastCGI, uwsgi and SCGI modules, anywhere in the text as a whole name: so however nginx's tokenizer reads the
+ * snippet (a quoted name followed by ")", which nginx takes as the start of the next argument, included), and in a comment or a
+ * quoted argument too, and "proxy_cache off" as well. Directives that keep answers out of a cache (proxy_no_cache,
+ * proxy_cache_bypass) and the cache's settings, which do nothing without a cache (proxy_cache_valid), are other names and do not
+ * match. validate.yaml holds the same pattern for the Ingresses' annotation values.
+ */
+export const INGRESS_CACHE_DIRECTIVE = /\b((proxy|fastcgi|uwsgi|scgi)_(cache|cache_path|store))\b/i;
+
+/** ARV-206: the controller's snippets the cache name is looked for in: the four of INGRESS_LOG_FORMAT and the global auth location's. */
+const CACHE_SNIPPETS = ['main-snippet', 'http-snippet', 'server-snippet', 'location-snippet', 'global-auth-snippet'];
+
 /** A ConfigMap boolean as ingress-nginx reads it (mapstructure, weakly typed: strconv.ParseBool). */
 const configTrue = (value) => /^(1|t|true)$/i.test(String(value ?? ''));
 
@@ -1451,7 +1464,10 @@ const configTrue = (value) => /^(1|t|true)$/i.test(String(value ?? ''));
  * query string, body, Authorization header or cookie (INGRESS_LOG_FORMAT), given explicitly (the default writes $request);
  * error-log-level unset or notice and above, nginx's log escaping kept (no log-format-escape-none), the controller's
  * OpenTelemetry off (its spans carry the query string), and no access_log, log_format, error_log or modsecurity directive in
- * the controller's main, http, server or location snippet.
+ * the controller's main, http, server or location snippet. ARV-206: nor the name of a directive that keeps a copy of an answer
+ * (INGRESS_CACHE_DIRECTIVE: proxy_cache_path in the http-snippet, proxy_cache, proxy_store, and the FastCGI, uwsgi and SCGI ones)
+ * in those snippets or the global auth snippet, and no global-auth-cache-key (ingress-nginx would cache the global external
+ * authentication answers in its auth_cache zone).
  */
 export function controllerValuesFindings(values) {
 	const findings = [];
@@ -1495,6 +1511,18 @@ export function controllerValuesFindings(values) {
 	for (const key of INGRESS_LOG_FORMAT.snippets) {
 		const match = INGRESS_LOG_FORMAT.directive.exec(String(config[key] ?? ''));
 		if (match) findings.push(`controller.config ${key} writes ${match[2]}: the controller's snippets write no access_log, log_format, error_log or modsecurity directive, which would get around the access log format and the Ingresses' audit log and logging guards`);
+	}
+	for (const key of CACHE_SNIPPETS) {
+		const cache = INGRESS_CACHE_DIRECTIVE.exec(String(config[key] ?? ''));
+		if (cache) {
+			findings.push(`controller.config ${key} writes ${cache[1]}: the controller keeps no copy of an answer (no cache zone, cache or stored answer), as Ariva's answers carry credentials, ` +
+				'border data and personal data that no cache outside Ariva may hold (ARV-206)');
+		}
+	}
+	// Any value but empty, spaces included: ingress-nginx tests the string as it is, so " " would cache with one key per location.
+	if (String(config['global-auth-cache-key'] ?? '') !== '') {
+		findings.push('controller.config global-auth-cache-key is set: ingress-nginx would cache the global external authentication answers (proxy_cache auth_cache) on the controller\'s disk; ' +
+			'Ariva uses no external authentication and the controller keeps no copy of an answer (ARV-206)');
 	}
 	for (const [key, value] of Object.entries(config)) if (typeof value !== 'string') findings.push(`controller.config ${key} must be a string (a ConfigMap value), not ${typeof value} ${value}`);
 	return findings;

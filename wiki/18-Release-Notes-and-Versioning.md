@@ -146,6 +146,11 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-206: the ingress refuses a proxy cache (2026-11-01)
+
+- Behaviour: the chart refuses to render a site's Ingress annotation that names `proxy_cache`, `proxy_cache_path` or `proxy_store` (or the `fastcgi_`, `uwsgi_` or `scgi_` directive) anywhere in its text, or that sets `auth-cache-key` or `auth-cache-duration`; the chart test refuses those names in the controller's snippets and a `global-auth-cache-key` (`Helm/ingress-nginx-values.yaml`). So no site annotation or shipped controller value keeps a copy of an answer at the ingress (a Lua block outside pod TLS and an `include` are ARV-284's). Nothing Ariva ships changes.
+- Before the upgrade: a site values file whose annotations name one of those directives must drop it, a defensive `proxy_cache off;` or `proxy_store off;` and a comment naming one included (the name alone fails the render), and so must a controller release whose snippets do; `proxy_no_cache`, `proxy_cache_bypass` and `proxy_cache_valid` may stay. Drop `auth-cache-key`, `auth-cache-duration` and the controller's `global-auth-cache-key` too.
+
 ### ARV-204: the ingress's own answers name object-src and base-uri in their policy (2026-11-01)
 
 - Behaviour: the policy the ingress adds to every response (`add_header` in the chart's `server-snippet` and `configuration-snippet`) is now `frame-ancestors 'none'; object-src 'none'; base-uri 'none'` instead of `frame-ancestors 'none'`. The ingress's own answers (the 421, the probes' 404, the 403 and the redirect over plain HTTP, the 413, the 502 to 504) carry it; the pods' answers keep their own policy beside it, which already names or implies all three (the floor plan and advertisement file policies through `default-src 'none'`), so nothing they serve changes.

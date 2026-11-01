@@ -4677,3 +4677,42 @@ Project `Ariva.UnitTests` has the following vulnerable packages
 - Gotchas:
   - The chart test's bad fixture shares one base Ingress across its cases. A rule that tightens what the base must carry has to change every case's base, the ones without `always` included, or each case trips two rules.
   - Patterns in the repository are constants (the CWE-1333 rule), so one regular expression per directive rather than one built from the name.
+
+## 2026-11-01: ARV-206 [E17] The ingress refuses a proxy cache
+
+- What changed:
+  - `validate.yaml` (the chart's release guards, every environment) refuses an Ingress annotation value that names `proxy_cache`, `proxy_cache_path` or `proxy_store`, or the `fastcgi_`, `uwsgi_` or `scgi_` one, anywhere in its text as a whole name. So however nginx's tokenizer reads a snippet (a quoted name followed by `)`, which nginx takes as the next argument's start, included) it is refused, and so are a comment naming one and `proxy_cache off`. A site's `configuration-snippet`, `server-snippet`, `auth-snippet` or any other annotation is covered.
+  - It also refuses the keys `auth-cache-key` and `auth-cache-duration`, with which ingress-nginx caches external authentication answers itself (`proxy_cache auth_cache`; Ariva uses no external authentication). So no site annotation makes the controller keep a copy of an answer (a credentialed one, L3 border data, an L4 credential handed to its holder) outside Ariva, where no retention, sign-out or revocation reaches it.
+  - The controller values check (`tests/checks.mjs` `controllerValuesFindings`, over `Helm/ingress-nginx-values.yaml`) refuses the same names in the controller's main, http, server, location and global auth snippets (`proxy_cache_path` in the `http-snippet`, and `proxy_cache` at the http level, which would cache every location), and a `global-auth-cache-key`. The pattern is one exported constant, `INGRESS_CACHE_DIRECTIVE`, and validate.yaml holds the same pattern.
+  - Not covered, filed as ARV-284: a `*_by_lua` block outside pod TLS (k8s-prd requires pod TLS), an nginx `include` of a file on the controller's disk, the same `)` gap in the older ARV-085 and ARV-091 directive guards, and `client_body_in_file_only`. The site's own controller release is the site's to keep as shipped.
+  - Directives that keep answers out of a cache (`proxy_no_cache`, `proxy_cache_bypass`) and the cache's settings, which do nothing without one (`proxy_cache_valid`), pass.
+  - Tests (`tests/chart-security.mjs`):
+    - Controller cases, each tripping only its own rule: a cache zone in the http-snippet, the same quoted before a parenthesis, a quoted `proxy_cache` at the http level, `proxy_store` in a location-snippet, `fastcgi_cache` in a server-snippet, `scgi_store`, `proxy_cache` in the global auth snippet, a global auth cache key, one of a single space. Accepted changes: `proxy_no_cache`, `proxy_cache_bypass` and `proxy_cache_valid` in a location-snippet, an empty global auth cache key. 47 changes and 10 accepted changes in all.
+    - Release guards: a configuration-snippet with `proxy_cache`; a production server-snippet with a quoted `proxy_cache`; `proxy_store`; `uwsgi_cache`; `'proxy_store')$uri;` (a quoted name before a parenthesis); the same double quoted in a production server-snippet; `fastcgi_cache` in an auth-snippet; `proxy_cache off`; an auth cache key; an auth cache duration in production. Each is refused for its own message.
+    - The site snippet render carries `proxy_no_cache`, `proxy_cache_bypass` and `proxy_cache_valid` and still renders with every rule holding.
+  - Docs:
+    - data classification: the caching row names the controls and tests; item 13 is Done.
+    - asvs-l2: V14.2.2's evidence and what it does not cover; V14.2.4 drops the proxy cache from its missing list; the ARV-094 row's open list.
+    - wiki 04: the ingresses row and the controller row. wiki 18: migration note.
+    - The controller values' comment, and validate.yaml's header.
+- Files:
+  - Platform/Cloud/Ariva.K8s: `Helm/Charts/platform/templates/validate.yaml`, `Helm/ingress-nginx-values.yaml`, `tests/checks.mjs`, `tests/chart-security.mjs`.
+  - Docs: docs/security/data-classification.md, docs/security/asvs-l2.md, wiki/04-Deployment-Guide.md, wiki/18-Release-Notes-and-Versioning.md.
+  - Backlog: backlog/prd-phase3.json (ARV-206 passes; ARV-284 filed).
+- Gates: `node scripts/verify.mjs story` (no specs: no host code changed) green on the first tree: build, unit tests, security scan 0 errors and the expected warnings, the chart and script self-tests, audits, docs; integration, visual and E2E skipped by the gate (no persistence, web or host code change). After the review fixes (chart, chart test and docs only): `tests/chart-security.mjs` exit 0 (each new case refused for its own message; 47 controller changes and 10 accepted ones), `node scripts/verify.mjs docs` green. `node scripts/verify.mjs quick` green before the commit.
+- Security review: (CWE-501; CWE-94 and CWE-384 related; ASVS V14.2.2, V14.2.4):
+  - Round 1 FAIL, four required fixes:
+    1. The statement-start pattern missed a quoted name followed by `)` (nginx reads it as the next argument's start: `'proxy_store')$uri;` stores every answer as a file).
+    2. `auth-cache-key` and `auth-cache-duration` (and the controller's `global-auth-cache-key`) make ingress-nginx write `proxy_cache auth_cache` itself.
+    3. The ARV-094 row's open list in asvs-l2 still named ARV-206.
+    4. The docs overclaimed ("none can be added") and did not say that `proxy_cache off` is refused too.
+  - Fixed: the name matched anywhere as a whole word in both places; the auth cache keys refused, the global auth snippet scanned; the open list; every page now says what is covered and names what is not. Advisory 4 (fixture gaps) taken.
+  - Advisories 1 to 3 filed as ARV-284: the same gap in the older ARV-085 and ARV-091 guards (the rewrite guard has no quote handling), `include` and `client_body_in_file_only`, `_by_lua` in every environment.
+  - Follow-up PASS. Its advisories taken in the same commit: a whitespace-only `global-auth-cache-key` refused (one more controller case), wiki 18's last unqualified line.
+  - Open: neither the reviewer nor I could read the ingress-nginx 1.15.0 template (the `auth_cache` zone and what `auth-cache-key` writes); refusing keys Ariva never uses costs nothing either way. V14.2.2 stays Met with the residuals named; revisit when ARV-284 lands.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors (story gate and quick gate).
+- Gotchas:
+  - `proxy_cache` is valid at the http level, so a controller http-snippet can cache every location without any Ingress annotation; the controller check covers the cache itself as well as the zone.
+  - A pattern that refuses every `proxy_cache_` directive would also refuse `proxy_cache_bypass`, which keeps answers out of a cache; matching whole directive names keeps the protective ones allowed.
+  - nginx's tokenizer takes `)` right after a closing quote as the start of the next argument, so `'proxy_store')$uri;` is `proxy_store` with the argument `)$uri`: a statement-start pattern that expects a space after the name misses it. Match the name anywhere as a whole word instead.
+  - ingress-nginx writes `proxy_cache` itself for `auth-cache-key` (an annotation) and `global-auth-cache-key` (a ConfigMap key): a guard on snippet text alone misses caches the controller's own template turns on.

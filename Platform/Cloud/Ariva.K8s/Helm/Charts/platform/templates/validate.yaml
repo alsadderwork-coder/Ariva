@@ -86,6 +86,16 @@ Release guards. Renders nothing; fails the render when a rule is broken.
     routes /hubs (in any case) or a path under it has tokenInQuery: the live hub's URL carries the access token, and the
     chart's server-snippet answers /hubs 404 on every host without such an Ingress. On that Ingress enable-access-log and
     enable-opentelemetry are the chart's ("false"), so no site annotation turns them on.
+- No proxy cache at the ingress (ARV-206, ASVS 5.0 V14.2.2): no annotation value names proxy_cache, proxy_cache_path or
+  proxy_store, nor the fastcgi_, uwsgi_ or scgi_ one, anywhere in its text (a whole name: proxy_cache_bypass, proxy_no_cache
+  and proxy_cache_valid pass; proxy_cache off is refused too), so no site snippet can write one however nginx's tokenizer reads
+  it (a quoted name followed by ")" included); and no annotation sets auth-cache-key or auth-cache-duration, which make
+  ingress-nginx cache the external authentication answers itself (proxy_cache auth_cache; Ariva uses no external
+  authentication). So no site annotation makes the controller keep a copy of an answer (a credentialed one, L3 border data,
+  an L4 credential handed to its holder) outside Ariva, where no retention, sign-out or revocation reaches it. The controller
+  values Ariva ships keep none either (tests/checks.mjs controllerValuesFindings); the chart's snippets are not values and write
+  none. Not covered here (ARV-284): a *_by_lua block is refused only with podTls (required in k8s-prd), and an include of a
+  file on the controller's disk is not refused.
 - Log shipping and the log pseudonym key (ARV-091a, ASVS 5.0 V16.4.2, V16.4.3, CWE-532; values logging):
   - logging is a map of collector, pseudonymKeySecret (name and key), lokiCredentialsSecret (name, usernameKey and passwordKey)
     and required, nothing else, so neither the key nor Loki's credentials can ever be a value; collector is otlp, loki or empty;
@@ -316,6 +326,12 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if regexMatch "(?im)(^|[;{}'])\\s*[\"']?(access_log|error_log)[\"']?\\s" (toString $value) }}
 {{- fail (printf "ingresses %s: %s writes an access_log or error_log directive; the controller's values and the chart decide what is logged, so no Ingress writes a request line with its query string (on /hubs, the access token) or logs the live hub below critical; to drop an Ingress's access log set enable-access-log \"false\" (ARV-091)" $name $key) }}
+{{- end }}
+{{- if regexMatch "(?i)\\b(proxy|fastcgi|uwsgi|scgi)_(cache|cache_path|store)\\b" (toString $value) }}
+{{- fail (printf "ingresses %s: %s names proxy_cache, proxy_cache_path or proxy_store (or the fastcgi_, uwsgi_ or scgi_ one); the ingress keeps no copy of an answer, as Ariva's answers carry credentials, border data and personal data that no cache outside Ariva may hold, so no annotation names one, quoted, commented or turned off (ARV-206)" $name $key) }}
+{{- end }}
+{{- if has $key (list "nginx.ingress.kubernetes.io/auth-cache-key" "nginx.ingress.kubernetes.io/auth-cache-duration") }}
+{{- fail (printf "ingresses %s: %s makes ingress-nginx cache the external authentication answers (proxy_cache auth_cache) on the controller's disk; Ariva uses no external authentication and the ingress keeps no copy of an answer (ARV-206)" $name $key) }}
 {{- end }}
 {{- if eq $key "nginx.ingress.kubernetes.io/server-snippet" }}{{ $siteServerSnippet = toString $value }}{{ end }}
 {{- end }}

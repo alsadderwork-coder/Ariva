@@ -324,7 +324,19 @@ const CONTROLLER_CASES = [
 	['a main-snippet with a debug error log', (v) => { v.controller.config['main-snippet'] = 'error_log /dev/stderr debug;'; }, 'main-snippet writes error_log:'],
 	['a server-snippet with a quoted access_log', (v) => { v.controller.config['server-snippet'] = '"access_log" /dev/stdout;'; }, 'server-snippet writes access_log:'],
 	["a location-snippet loading the controller's modsecurity.conf", (v) => { v.controller.config['location-snippet'] = "'modsecurity_rules_file' /etc/nginx/modsecurity/modsecurity.conf;"; }, 'location-snippet writes modsecurity_rules_file:'],
-	['a location-snippet turning ModSecurity on', (v) => { v.controller.config['location-snippet'] = 'more_set_headers "X-Site: 1"; modsecurity on;'; }, 'location-snippet writes modsecurity:']
+	['a location-snippet turning ModSecurity on', (v) => { v.controller.config['location-snippet'] = 'more_set_headers "X-Site: 1"; modsecurity on;'; }, 'location-snippet writes modsecurity:'],
+	// ARV-206: the controller keeps no copy of an answer: no cache zone, cache or stored answer in its snippets, quoted or not.
+	['an http-snippet with a cache zone', (v) => { v.controller.config['http-snippet'] = 'client_body_buffer_size 16k;\nproxy_cache_path /tmp/cache keys_zone=site:10m;'; }, 'http-snippet writes proxy_cache_path:'],
+	['an http-snippet that caches every location', (v) => { v.controller.config['http-snippet'] = "'proxy_cache' site;"; }, 'http-snippet writes proxy_cache:'],
+	['a location-snippet that stores every answer as a file', (v) => { v.controller.config['location-snippet'] = 'proxy_store on;'; }, 'location-snippet writes proxy_store:'],
+	['a server-snippet with a FastCGI cache', (v) => { v.controller.config['server-snippet'] = 'more_set_headers "X-Site: 1"; fastcgi_cache site;'; }, 'server-snippet writes fastcgi_cache:'],
+	// ARV-206, review round 1: a quoted name followed by ")", which nginx reads as the next argument's start; the SCGI store; the
+	// global auth location's snippet and its cache key (ingress-nginx's own auth_cache zone).
+	['an http-snippet with a quoted cache zone name before a parenthesis', (v) => { v.controller.config['http-snippet'] = '"proxy_cache_path")c keys_zone=)z:10m;'; }, 'http-snippet writes proxy_cache_path:'],
+	['a location-snippet with an SCGI store', (v) => { v.controller.config['location-snippet'] = 'scgi_store on;'; }, 'location-snippet writes scgi_store:'],
+	['a global auth snippet that caches', (v) => { v.controller.config['global-auth-snippet'] = 'proxy_cache auth_cache;'; }, 'global-auth-snippet writes proxy_cache:'],
+	['a global auth cache key', (v) => { v.controller.config['global-auth-cache-key'] = '$remote_user$http_authorization'; }, 'global-auth-cache-key is set'],
+	['a global auth cache key of one space', (v) => { v.controller.config['global-auth-cache-key'] = ' '; }, 'global-auth-cache-key is set']
 ];
 
 /** ARV-091: controller values the rules accept (each alone): the error levels from notice up, the switches off, harmless snippets. */
@@ -332,7 +344,10 @@ const CONTROLLER_ACCEPTED = [
 	(v) => { v.controller.config['error-log-level'] = 'warn'; }, (v) => { v.controller.config['error-log-level'] = 'notice'; }, (v) => { v.controller.config['error-log-level'] = 'crit'; },
 	(v) => { v.controller.config['log-format-escape-none'] = 'false'; }, (v) => { v.controller.config['log-format-escape-json'] = 'true'; },
 	(v) => { v.controller.config['enable-opentelemetry'] = 'false'; },
-	(v) => { v.controller.config['http-snippet'] = 'client_body_buffer_size 16k;'; }, (v) => { v.controller.config['server-snippet'] = 'more_set_headers "X-Site: 1";'; }
+	(v) => { v.controller.config['http-snippet'] = 'client_body_buffer_size 16k;'; }, (v) => { v.controller.config['server-snippet'] = 'more_set_headers "X-Site: 1";'; },
+	// ARV-206: directives that keep answers out of a cache, and a cache setting that does nothing without one.
+	(v) => { v.controller.config['location-snippet'] = 'proxy_no_cache 1;\nproxy_cache_bypass 1;\nproxy_cache_valid 200 1m;'; },
+	(v) => { v.controller.config['global-auth-cache-key'] = ''; }
 ];
 
 function controllerValuesSelfTest() {
@@ -1818,6 +1833,30 @@ for (const [label, file, sets, message, annotation] of [
 	['a configuration-snippet with a quoted access_log', 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log or error_log directive', 'configuration-snippet: "\\"access_log\\" /dev/stdout combined;"'],
 	['a server-snippet with a quoted error_log', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log or error_log directive', "server-snippet: \"client_header_timeout 30s; 'error_log' /dev/stderr debug;\""],
 	["a server-snippet with a quoted modsecurity directive", 'values-k8s-dev.yaml', [], 'server-snippet writes a modsecurity directive', "server-snippet: \"'modsecurity_rules_file' /etc/nginx/modsecurity/modsecurity.conf;\""],
+	// ARV-206: no site annotation makes the ingress keep a copy of an answer (a cache, or the answer stored as a file).
+	['a configuration-snippet that caches answers', 'values-k8s-dev.yaml', [], 'configuration-snippet names proxy_cache, proxy_cache_path or proxy_store',
+		'configuration-snippet: "proxy_cache site;\\nproxy_cache_valid 200 10m;"'],
+	['a server-snippet with a quoted proxy_cache in production', 'values-k8s-prd.yaml', [PRD], 'server-snippet names proxy_cache, proxy_cache_path or proxy_store',
+		"server-snippet: \"client_header_timeout 30s; 'proxy_cache' site;\""],
+	['a configuration-snippet that stores answers as files', 'values-k8s-dev.yaml', [], 'configuration-snippet names proxy_cache, proxy_cache_path or proxy_store',
+		'configuration-snippet: "add_header X-Site 1;\\nproxy_store on;"'],
+	['a configuration-snippet with a uwsgi cache', 'values-k8s-dev.yaml', [], 'configuration-snippet names proxy_cache, proxy_cache_path or proxy_store (or the fastcgi_, uwsgi_ or scgi_ one)',
+		'configuration-snippet: "uwsgi_cache site;"'],
+	// ARV-206, review round 1: a quoted name followed by ")" (nginx reads ")" as the next argument's start, so this stores every
+	// answer as a file), double quoted in production; a FastCGI cache in another annotation; the cache turned off (the name alone
+	// is refused); ingress-nginx's own auth cache, which its auth-cache-key and auth-cache-duration annotations turn on.
+	['a configuration-snippet that stores answers through a quoted name before a parenthesis', 'values-k8s-dev.yaml', [], 'configuration-snippet names proxy_cache, proxy_cache_path or proxy_store',
+		"configuration-snippet: \"'proxy_store')$uri;\""],
+	['a server-snippet with a double-quoted proxy_cache before a parenthesis in production', 'values-k8s-prd.yaml', [PRD], 'server-snippet names proxy_cache, proxy_cache_path or proxy_store',
+		'server-snippet: "\\"proxy_cache\\")z;"'],
+	['an auth-snippet with a FastCGI cache', 'values-k8s-dev.yaml', [], 'auth-snippet names proxy_cache, proxy_cache_path or proxy_store (or the fastcgi_, uwsgi_ or scgi_ one)',
+		'auth-snippet: "fastcgi_cache site;"'],
+	['a configuration-snippet that turns the cache off', 'values-k8s-dev.yaml', [], 'configuration-snippet names proxy_cache, proxy_cache_path or proxy_store',
+		'configuration-snippet: "proxy_cache off;"'],
+	['an auth cache key', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-cache-key makes ingress-nginx cache the external authentication answers',
+		'auth-cache-key: "$remote_user$http_authorization"'],
+	['an auth cache duration in production', 'values-k8s-prd.yaml', [PRD], 'nginx.ingress.kubernetes.io/auth-cache-duration makes ingress-nginx cache the external authentication answers',
+		'auth-cache-duration: "200 202 401 5m"'],
 	['a site annotation that turns OpenTelemetry on for the live hub', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/enable-opentelemetry is set by the chart',
 		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-opentelemetry': 'true' } })] }],
 	['the Ingresses of one host with different server-snippets', 'values-k8s-dev.yaml', [], 'the Ingresses of host api-integration-test carry different server-snippet annotations',
@@ -2040,7 +2079,8 @@ for (const [label, file, sets, message, annotation] of [
 {
 	const findings = [];
 	const siteServer = 'client_header_timeout 30s;\n';
-	const siteLocation = 'more_set_headers "X-Ariva-Site: 1";\n';
+	// ARV-206: directives that keep answers out of a cache, and a cache setting that does nothing without one, pass validate.yaml.
+	const siteLocation = 'more_set_headers "X-Ariva-Site: 1";\nproxy_no_cache 1;\nproxy_cache_bypass 1;\nproxy_cache_valid 200 1m;\n';
 	// ARV-091: a site's own ModSecurity rule follows the chart's, whose SecAuditEngine Off stays the last word on the audit log.
 	// Its logdata names the matched variable (MATCHED_VAR_NAME), never its value, which validate.yaml would refuse.
 	const siteModsecurity = 'SecRule REQUEST_HEADERS:User-Agent "@contains sqlmap" "id:100200,phase:1,deny,status:403,log,msg:\\\'scanner\\\',logdata:\\\'%{MATCHED_VAR_NAME}\\\'"\n';
