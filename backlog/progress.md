@@ -4431,3 +4431,55 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - The E2E accounts keep their usernames, and whatever specs gave them (emails), from run to run. The account seed resets passwords, second factors and sites, enables them and adds missing roles. It removes no role and clears no email.
   - A value derived from the account seed and shown in public (a site code, a name) is an offline check on the seed. Draw public per-run values from a separate random tag.
   - A per-run value that the hosts and the tests must agree on is set in `playwright.config.ts` before `accounts()` is read, and in `scripts/e2e-apphost.mjs`, which loads the config twice in separate processes.
+
+## 2026-11-01: ARV-281 [E15] Topology records created twice at once answer 409, not 500
+
+- What changed:
+  - Confirmed first: with the creates as they were, all seven unique index rows of the race theory failed (the second create never waited and failed at the commit, 500), as ARV-278 had reasoned.
+  - `SvcTopology.GuardedAsync` sends a successful command's changes inside the request (`SendAsync`: `FlushAsync` in a try, promising not to commit on any failure before it rethrows).
+    - A unique violation (23505) whose constraint is one of the topology's indexes (scripts 0008 and 0033: `ux_airport_iata_code`, `ux_terminal_airport_code`, `ux_level_terminal_code`, `ux_level_terminal_floor`, `ux_checkpoint_level_code`, `ux_checkpoint_site_code`, `ux_desk_checkpoint_code`) answers that index's own error (409), with the unit of work promised not to commit. `UniqueIndexes` maps each name to its error.
+    - A level's floor number taken is its own conflict: `TopologyErrors.FloorTaken` ("Another level of this terminal has that floor number.", in `Conflicts`). It is answered by `ux_level_terminal_floor`, by `UpdateLevelAsync`'s check and by the entity's own refusal (`Terminal.FloorTakenMessage`, a fixed text without the floor number or terminal code). A code taken stays `TopologyErrors.Duplicate`.
+    - Any other database error, a unique violation of another index included, is not caught: an error answer (500, or 503 for an outage) without its text outside vm-local (CWE-209).
+    - A refused command keeps nothing: an error result and every domain rule catch promise not to commit (only the topology controllers call `ISvcTopology`, one call per request). The flush runs on the request's token, so a client gone mid-flush cancels it and nothing is half kept.
+  - CWE-209: the guard's catch-alls answered any `ArgumentException` message, and any `InvalidOperationException` naming "already exists", as a 400. Now only exceptions thrown by Ariva.Core (`FromDomain`, the first frame's assembly) are answered with their text; the framework's and the driver's pass through to the generic 500. `TopologyCodes.RequireName` throws its own "A name is required." instead of `ArgumentException.ThrowIfNullOrWhiteSpace`, so a blank name stays the domain's rule (a zone profile's blank name now answers 400 instead of 500). `SvcDevices.GuardedAsync` answers an `ArgumentException`'s text only when Ariva.Core threw it (its own `Parse` is reached only after `Kinds` has passed).
+  - `SvcSites.InsertedAsync` (ARV-278) promises not to commit on any failed flush, not only on its own index.
+  - Device registrations and zone profile drafts lock the site's row before their existence check, so two at once run one after the other: race tests confirm it, and no fix was needed.
+  - Tests:
+    - `ConcurrentCreates` (integration, new): the race harness from ARV-278's `SiteScopeTests`, shared. The first create's unit of work stays open after its row is sent; the second must wait on a lock (pg_locks) before the first commits.
+    - `TopologyTests.Create_Should_AnswerTheIndexErrorToTheSecond_When_TwoCreatesOfOneCodeMeet`: one row per index plus a desk range row (R01 to R30 against R05 to R34, more than one batch of 25 inserts). Each asserts the index's error, one record kept and one creation audited.
+    - `Level_Should_AnswerFloorTaken_When_AnotherLiveLevelOfTheTerminalHasTheFloor`: the entity path on a create, the service path on an update, a code taken stays Duplicate, and a refused update keeps nothing.
+    - `Create_Should_FailAndKeepNothing_When_TheDatabaseRefusesTheAirportForAnotherReason`: a trigger raises a 23505 named for another index, or a P0001. The create throws the driver's error; no row and no audit are kept.
+    - `CreateDraft_Should_AnswerDraftExistsToTheSecond_When_TwoMeet`, `DeviceRegistryTests.Register_Should_AnswerDuplicateToTheSecond_When_TwoRegistrationsOfOneCodeMeet`.
+    - `TopologyGuardTests` (unit, new): framework exceptions pass through both guards, the domain's own pass as rules, and a failed flush (driver error, cancellation) promises not to commit and comes through unchanged.
+    - E2E `topology.spec.ts`: 409 with each detail for a floor taken and a code taken.
+    - Mutation proofs (temporary edits, each built and run, then restored byte for byte): without the flush, 8 of 8 race rows fail (and the 2 flush unit tests); without any promise not to commit, 8 of 8 rows fail; without `SendAsync`'s promise only, the rows pass (the 23505 catch's own promise covers them) and the unit theory fails.
+  - Docs: wiki 11 (the topology API sentence: the two 409 texts, 400 keeps nothing, 500 or 503 without text), asvs-l2 V2.3.4 and V16.5.1 (evidence).
+  - Filed ARV-282: rule refusals matched by an Ariva.Core exception type instead of the first stack frame (Release build inlining) and the "already exists" text.
+- Files: Ariva.Core `Domain/Entities/Topology.cs`, `Services/Topology/ISvcTopology.cs`; Ariva.Infra `Services/Topology/SvcTopology.cs`, `Services/Sensing/SvcDevices.cs`, `Services/Administration/SvcSites.cs`; Ariva.IntegrationTests `Setup/ConcurrentCreates.cs` (new), `Topology/TopologyTests.cs`, `Security/SiteScopeTests.cs`, `Sensing/DeviceRegistryTests.cs`; Ariva.UnitTests `Services/TopologyGuardTests.cs` (new); Ariva.E2E `tests/api/topology.spec.ts`; wiki/11-Administration-Guide.md; docs/security/asvs-l2.md; backlog/prd-phase3.json.
+- Gates: `node scripts/verify.mjs story --specs tests/api/topology.spec.ts,tests/api/devices.spec.ts,tests/api/sites.spec.ts,tests/api/zone-profiles.spec.ts,tests/api/site-configuration.spec.ts,tests/api/strict-input.spec.ts --integration "FullyQualifiedName~Ariva.IntegrationTests."` PASS: build, unit 8436 (0 failed), security scan, audits, docs, chart; integration (the whole suite, since the race harness is shared) 886 (0 failed, 1 skipped); E2E 11 spec files (the six named and those the gate added), 386 passed; visual skipped (no web change). Before it: unit `TopologyGuardTests` 7 of 7, integration `TopologyTests` 15 of 15, and the mutation proofs above. The first gate run, started before the round 1 review, was stopped by explicit PIDs in its integration step. Disk fell to 166 MB free near the end of the integration step; freed by removing a PowerShell tool from the session scratchpad (stale xUnit argument files in /tmp, 527 MB, were left for the owner). `verify.mjs docs` and `verify.mjs quick` PASS before the commit.
+- Security review (CWE-209, CWE-20; CWE-862 and CWE-863 checked; ASVS V2.3.4, V16.5.1):
+  - Round 1 FAIL. The code was sound for CWE-209 and CWE-20, but three claimed behaviours had no test and one criterion was not met.
+    - Required:
+      - No desk range row. It is the only create whose flush spans several insert batches.
+      - One error for every index: a floor collision was answered as a code taken.
+      - The audit was checked on one row only.
+      - "Any failed flush promises not to commit" had no test.
+    - Advisories:
+      - A1: the TargetSite and Source checks read the first frame, which inlining can drop in a Release build (fails closed). File a Core rule exception type, and drop SvcDevices' unreachable `DeclaringType` branch.
+      - A2: promise not to commit on domain rule errors.
+      - A3: document the flush on the request token.
+      - A4: `BlocksAsync` counts any lock wait in the database.
+      - A5: ASVS evidence.
+      - A6: the wiki's 500 wording.
+      - A7: an update floor race is untested.
+  - Fixed: every required fix, each with the mutation proofs above. Taken: A1's branch drop (the exception type is ARV-282), A2, A3, A5, A6. A7 is covered for the service path by the new fact. A4 stays as is: every it_administration test is in PostgresCollection and runs one at a time.
+  - Round 2 PASS.
+    - The 23505 catch's promise duplicates `SendAsync`'s (a 23505 reaches the guard only through it); kept as defence in depth.
+    - File ARV-282 now. A SvcSites unit test is not required.
+    - Still open as advisories: A4, and A7's index path.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - After a failed flush the PostgreSQL transaction is aborted. If the unit of work is still promised to commit, its end (a disposal included) flushes again and throws 25P02, which hides the first error. Promise not to commit before the error goes on.
+  - NHibernate batches inserts 25 at a time. A refusal from an early batch leaves the later ones queued, and only a rollback clears them.
+  - `Exception.TargetSite` and `Exception.Source` name the method that threw. A throw helper (`ArgumentException.ThrowIfNullOrWhiteSpace`) makes that a System method, so a domain rule thrown through one reads as the framework's.
+  - Race tests that expect an index refusal must make the two creates differ in everything but the one index (the same code on two floors, two codes on one floor), so no other index refuses first.

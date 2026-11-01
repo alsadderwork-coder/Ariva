@@ -98,6 +98,13 @@ internal sealed class SvcSites(IUnitOfWork unitOfWork, ICurrentUser currentUser,
             UnitOfWork.PromiseNotToCommit();
             return false;
         }
+        catch (Exception)
+        {
+            // ARV-281: the transaction is aborted either way, so nothing may try to commit it (a unit ended by its disposal
+            // would, and answer with that attempt's error instead of this one).
+            UnitOfWork.PromiseNotToCommit();
+            throw;
+        }
     }
 
     private async Task<Site> VisibleAsync(string code, CancellationToken ct)

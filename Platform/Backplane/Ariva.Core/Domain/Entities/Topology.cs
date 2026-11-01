@@ -46,7 +46,10 @@ public static partial class TopologyCodes
 
     internal static string RequireName(string name, string paramName)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name, paramName);
+        // Thrown here rather than by ArgumentException.ThrowIfNullOrWhiteSpace, so the services read it as the domain's rule
+        // and answer its text (ARV-281: an exception thrown outside the domain model is never answered, CWE-209).
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("A name is required.", paramName);
         var trimmed = name.Trim();
         if (trimmed.Length > MaxNameLength)
             throw new ArgumentException("A name is at most 200 characters.", paramName);
@@ -178,6 +181,12 @@ public class Terminal : BaseSoftDeletableEntity<Terminal>, ISiteBound
 
     public virtual void Rename(string name) => Name = TopologyCodes.RequireName(name, nameof(name));
 
+    /// <summary>
+    /// The fixed text for a floor number another live level of the terminal has (ARV-281): its own refusal, not a code taken,
+    /// answered as a conflict (409) by the topology service.
+    /// </summary>
+    public const string FloorTakenMessage = "Another level of this terminal has that floor number.";
+
     /// <summary>Adds a floor; codes are unique among the terminal's live levels, and so are floor numbers.</summary>
     public virtual Level AddLevel(string code, string name, int floorNumber, double widthMetres, double depthMetres)
     {
@@ -187,7 +196,7 @@ public class Terminal : BaseSoftDeletableEntity<Terminal>, ISiteBound
         var live = Levels.Where(l => !l.IsDeleted).ToList();
         TopologyCodes.RequireUnique(live, l => l.Code, code, "Level");
         if (live.Any(l => l.FloorNumber == floorNumber))
-            throw new InvalidOperationException($"Floor {floorNumber} already exists in terminal {Code}.");
+            throw new InvalidOperationException(FloorTakenMessage);
         var level = new Level(this, code, name, floorNumber, widthMetres, depthMetres);
         Levels.Add(level);
         return level;

@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Linq.Expressions;
 using Ariva.Core.Domain.Criteria;
 using Ariva.Core.Domain.Enums;
@@ -28,6 +29,21 @@ internal sealed class SvcTopology(
     IFusionCache cache) : SvcBase(unitOfWork, currentUser, timeProvider), ISvcTopology
 {
     public const string CacheTag = "topology";
+
+    /// <summary>
+    /// The topology's unique indexes on codes and floors (scripts 0008 and 0033), each with the error its refusal answers: the
+    /// one the checks before the insert answer for the same collision (a floor number taken is not a code taken).
+    /// </summary>
+    private static readonly FrozenDictionary<string, string> UniqueIndexes = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["ux_airport_iata_code"] = TopologyErrors.Duplicate,
+        ["ux_terminal_airport_code"] = TopologyErrors.Duplicate,
+        ["ux_level_terminal_code"] = TopologyErrors.Duplicate,
+        ["ux_level_terminal_floor"] = TopologyErrors.FloorTaken,
+        ["ux_checkpoint_level_code"] = TopologyErrors.Duplicate,
+        ["ux_checkpoint_site_code"] = TopologyErrors.Duplicate,
+        ["ux_desk_checkpoint_code"] = TopologyErrors.Duplicate
+    }.ToFrozenDictionary(StringComparer.Ordinal);
 
     #region Airports
 
@@ -60,7 +76,7 @@ internal sealed class SvcTopology(
             await SaveAsync(airport, ct);
             await AuditAsync("Airport", "Created", airport.Id, airport.IataCode, null, Summary(airport), ct);
             return new Result<AirportViewModel>(ToView(airport));
-        });
+        }, ct);
 
     public Task<Result<AirportViewModel>> UpdateAirportAsync(Guid id, UpdateAirportRequest request, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -76,7 +92,7 @@ internal sealed class SvcTopology(
             await UpdateAsync(airport, ct);
             await AuditAsync("Airport", "Updated", airport.Id, airport.IataCode, before, Summary(airport), ct);
             return new Result<AirportViewModel>(ToView(airport));
-        });
+        }, ct);
 
     public Task<Result<bool>> DeleteAirportAsync(Guid id, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -90,7 +106,7 @@ internal sealed class SvcTopology(
                 return Result.Error<bool>(TopologyErrors.HasChildren);
 
             return await SoftDeleteAsync(airport, "Airport", airport.IataCode, Summary(airport), ct);
-        });
+        }, ct);
 
     #endregion
 
@@ -129,7 +145,7 @@ internal sealed class SvcTopology(
             await SaveAsync(terminal, ct);
             await AuditAsync("Terminal", "Created", terminal.Id, Path(terminal), null, Summary(terminal), ct);
             return new Result<TerminalViewModel>(ToView(terminal));
-        });
+        }, ct);
 
     public Task<Result<TerminalViewModel>> UpdateTerminalAsync(Guid id, UpdateTerminalRequest request, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -143,7 +159,7 @@ internal sealed class SvcTopology(
             await UpdateAsync(terminal, ct);
             await AuditAsync("Terminal", "Updated", terminal.Id, Path(terminal), before, Summary(terminal), ct);
             return new Result<TerminalViewModel>(ToView(terminal));
-        });
+        }, ct);
 
     public Task<Result<bool>> DeleteTerminalAsync(Guid id, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -154,7 +170,7 @@ internal sealed class SvcTopology(
             if (await Query<Level>().AnyAsync(l => l.Terminal.Id == id, ct))
                 return Result.Error<bool>(TopologyErrors.HasChildren);
             return await SoftDeleteAsync(terminal, "Terminal", Path(terminal), Summary(terminal), ct);
-        });
+        }, ct);
 
     #endregion
 
@@ -189,7 +205,7 @@ internal sealed class SvcTopology(
             await SaveAsync(level, ct);
             await AuditAsync("Level", "Created", level.Id, Path(level), null, Summary(level), ct);
             return new Result<LevelViewModel>(ToView(level));
-        });
+        }, ct);
 
     public Task<Result<LevelViewModel>> UpdateLevelAsync(Guid id, UpdateLevelRequest request, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -200,7 +216,7 @@ internal sealed class SvcTopology(
             if (request.FloorNumber != level.FloorNumber &&
                 await Query<Level>().AnyAsync(l => l.Terminal.Id == level.Terminal.Id && l.Id != id && l.FloorNumber == request.FloorNumber, ct))
             {
-                return Result.Error<LevelViewModel>(TopologyErrors.Duplicate);
+                return Result.Error<LevelViewModel>(TopologyErrors.FloorTaken);
             }
 
             var before = Summary(level);
@@ -208,7 +224,7 @@ internal sealed class SvcTopology(
             await UpdateAsync(level, ct);
             await AuditAsync("Level", "Updated", level.Id, Path(level), before, Summary(level), ct);
             return new Result<LevelViewModel>(ToView(level));
-        });
+        }, ct);
 
     public Task<Result<bool>> DeleteLevelAsync(Guid id, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -222,7 +238,7 @@ internal sealed class SvcTopology(
                 await Query<Device>().AnyAsync(d => d.Level.Id == id && d.State != Ariva.Core.Domain.Enums.DeviceState.Retired, ct))
                 return Result.Error<bool>(TopologyErrors.HasChildren);
             return await SoftDeleteAsync(level, "Level", Path(level), Summary(level), ct);
-        });
+        }, ct);
 
     #endregion
 
@@ -265,7 +281,7 @@ internal sealed class SvcTopology(
             await SaveAsync(checkpoint, ct);
             await AuditAsync("Checkpoint", "Created", checkpoint.Id, Path(checkpoint), null, Summary(checkpoint), ct);
             return new Result<CheckpointViewModel>(ToView(checkpoint));
-        });
+        }, ct);
 
     public Task<Result<CheckpointViewModel>> UpdateCheckpointAsync(Guid id, UpdateCheckpointRequest request, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -279,7 +295,7 @@ internal sealed class SvcTopology(
             await UpdateAsync(checkpoint, ct);
             await AuditAsync("Checkpoint", "Updated", checkpoint.Id, Path(checkpoint), before, Summary(checkpoint), ct);
             return new Result<CheckpointViewModel>(ToView(checkpoint));
-        });
+        }, ct);
 
     public Task<Result<bool>> DeleteCheckpointAsync(Guid id, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -290,7 +306,7 @@ internal sealed class SvcTopology(
             if (await Query<Desk>().AnyAsync(d => d.Checkpoint.Id == id, ct))
                 return Result.Error<bool>(TopologyErrors.HasChildren);
             return await SoftDeleteAsync(checkpoint, "Checkpoint", Path(checkpoint), Summary(checkpoint), ct);
-        });
+        }, ct);
 
     #endregion
 
@@ -327,7 +343,7 @@ internal sealed class SvcTopology(
             await SaveAsync(desk, ct);
             await AuditAsync("Desk", "Created", desk.Id, Path(desk), null, Summary(desk), ct);
             return new Result<DeskViewModel>(ToView(desk));
-        });
+        }, ct);
 
     public Task<Result<IReadOnlyList<DeskViewModel>>> CreateDeskRangeAsync(CreateDeskRangeRequest request, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -345,7 +361,7 @@ internal sealed class SvcTopology(
             await AuditAsync("Desk", "RangeCreated", checkpoint.Id, Path(checkpoint), null,
                 $"kind={kind}; codes={desks[0].Code}..{desks[^1].Code}; count={desks.Count}; lanes={desks[0].LaneCategoryCodes}", ct);
             return new Result<IReadOnlyList<DeskViewModel>>(desks.Select(ToView).ToList());
-        });
+        }, ct);
 
     public Task<Result<DeskViewModel>> UpdateDeskAsync(Guid id, UpdateDeskRequest request, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -361,7 +377,7 @@ internal sealed class SvcTopology(
             await UpdateAsync(desk, ct);
             await AuditAsync("Desk", "Updated", desk.Id, Path(desk), before, Summary(desk), ct);
             return new Result<DeskViewModel>(ToView(desk));
-        });
+        }, ct);
 
     public Task<Result<bool>> DeleteDeskAsync(Guid id, CancellationToken ct = default) =>
         GuardedAsync(async () =>
@@ -370,37 +386,78 @@ internal sealed class SvcTopology(
             return desk is null
                 ? Result.Error<bool>(TopologyErrors.NotFound)
                 : await SoftDeleteAsync(desk, "Desk", Path(desk), Summary(desk), ct);
-        });
+        }, ct);
 
     #endregion
 
     #region Helpers
 
-    /// <summary>Domain rule violations (ARV-013) become 400 answers with the entity's message; duplicates become 409.</summary>
-    private static async Task<Result<T>> GuardedAsync<T>(Func<Task<Result<T>>> work)
+    /// <summary>
+    /// Runs a command and, when it succeeds, sends its changes at once (ARV-281). The session flushes only at commit, which
+    /// <c>UnitOfWorkFilter</c> runs after the service has returned, so two creates of one code at the same moment both pass
+    /// the checks before their inserts and the second used to fail at the commit (500). Sent here, the second insert waits on
+    /// the first one's index entry and, once the first commits, one of <see cref="UniqueIndexes"/> refuses it: that answers
+    /// the index's own error (409), as the checks before the insert do, with the unit of work promised not to commit. Domain
+    /// rule violations (ARV-013), thrown by the entities, become 400 answers with the entity's message, except a code taken
+    /// (Duplicate) and a floor number taken (<see cref="TopologyErrors.FloorTaken"/>, the entity's own text), which are
+    /// conflicts (409); any other exception, a framework, driver or other index's one included, is not caught, so its text
+    /// never reaches an answer (CWE-209). A refused command keeps nothing: the unit of work is promised not to commit, so a
+    /// tracked record a rule refused halfway, or a site row lock taken before the refusal, is rolled back. The flush runs on
+    /// the request's token: a client gone mid-flush cancels it, and the command keeps nothing rather than half of it.
+    /// </summary>
+    private async Task<Result<T>> GuardedAsync<T>(Func<Task<Result<T>>> work, CancellationToken ct)
     {
         try
         {
-            return await work();
+            var result = await work();
+            if (result.HasErrors)
+                UnitOfWork.PromiseNotToCommit();
+            else
+                await SendAsync(ct);
+            return result;
         }
-        catch (InvalidOperationException e) when (e.Message.Contains("already exists", StringComparison.Ordinal))
+        catch (InvalidOperationException e) when (FromDomain(e) && e.Message.Contains("already exists", StringComparison.Ordinal))
         {
+            UnitOfWork.PromiseNotToCommit();
             return Result.Error<T>(TopologyErrors.Duplicate);
         }
-        catch (global::NHibernate.Exceptions.GenericADOException e) when (e.InnerException is global::Npgsql.PostgresException { SqlState: "23505" })
+        catch (global::NHibernate.Exceptions.GenericADOException e) when (e.InnerException is global::Npgsql.PostgresException
+                   { SqlState: global::Npgsql.PostgresErrorCodes.UniqueViolation, ConstraintName: { } index } && UniqueIndexes.TryGetValue(index, out var taken))
         {
-            // Two creates of one code at the same moment: both pass the check, the unique index refuses the second.
-            return Result.Error<T>(TopologyErrors.Duplicate);
+            UnitOfWork.PromiseNotToCommit();
+            return Result.Error<T>(taken);
         }
-        catch (ArgumentException e)
+        catch (ArgumentException e) when (FromDomain(e))
         {
+            UnitOfWork.PromiseNotToCommit();
             return Result.Error<T>(e.Message.Split(" (Parameter", 2)[0]);
         }
-        catch (InvalidOperationException e)
+        catch (InvalidOperationException e) when (FromDomain(e))
         {
+            UnitOfWork.PromiseNotToCommit();
             return Result.Error<T>(e.Message);
         }
     }
+
+    /// <summary>
+    /// Flushes; a failed flush leaves the transaction aborted, so the unit of work is promised not to commit before the error
+    /// goes on, and a unit ended by its disposal does not try again and answer with that attempt's error instead.
+    /// </summary>
+    private async Task SendAsync(CancellationToken ct)
+    {
+        try
+        {
+            await FlushAsync(ct);
+        }
+        catch (Exception)
+        {
+            UnitOfWork.PromiseNotToCommit();
+            throw;
+        }
+    }
+
+    /// <summary>Whether an exception was thrown by the domain model (Ariva.Core), whose messages are written for the caller.</summary>
+    internal static bool FromDomain(Exception e) => e?.TargetSite?.DeclaringType?.Assembly == typeof(Airport).Assembly;
 
     /// <summary>The live entity (Get ignores the soft delete filter, so deleted rows are checked here).</summary>
     private async Task<T> LiveAsync<T>(Guid id, CancellationToken ct) where T : class, IDomain, ISoftDeletable

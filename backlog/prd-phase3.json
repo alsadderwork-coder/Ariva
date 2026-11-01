@@ -2163,10 +2163,32 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 48,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3. Filed 2026-10-31 from ARV-278 (unconfirmed, see the description); corrected by the ARV-278 security review (round 1). No sign-in code.",
       "dependsOn": [
         "ARV-278"
+      ]
+    },
+    {
+      "id": "ARV-282",
+      "title": "[E15] Domain rule refusals matched by their exception type, not by the first stack frame",
+      "description": "Found by the ARV-281 security review (round 1 advisory A1, round 2 asked to file it, 2026-11-01). SvcTopology.FromDomain and SvcZoneProfiles.FromDomain read Exception.TargetSite, and SvcDevices.GuardedAsync reads Exception.Source; both name the method that threw, the first stack frame. Microsoft documents that inlining can drop frames: in a Release build a small Ariva.Core method that throws (TopologyCodes.RequireName through Rename, the Airport constructor, a Device rule) could be inlined into the service's async state machine, and its rule would then answer 500 instead of 400 with the rule's text. This fails closed (no text leaks, CWE-209 holds), but the unit tests run in Debug, where nothing is inlined, so it is untested. SvcTopology also reads a code taken from the message text (\"already exists\"). Fix: a rule exception type in Ariva.Core (for example DomainRuleException deriving from InvalidOperationException, and an ArgumentException counterpart, or one type carrying a kind such as CodeTaken, FloorTaken or Rule) thrown by the entities' rules; SvcTopology, SvcDevices and SvcZoneProfiles catch it by type, map a code taken and a floor taken by kind rather than by text, and drop FromDomain, the Source check and the \"already exists\" match. Framework and driver exceptions still pass through to the generic 500 (CWE-209). No API answer text changes. CWEs to review: CWE-209, CWE-20.",
+      "acceptanceCriteria": [
+        "Every rule the entities of the topology, zone profiles and devices refuse with throws the Ariva.Core rule exception type (or its argument counterpart); thrown by the entity, not by a .NET throw helper",
+        "SvcTopology.GuardedAsync, SvcZoneProfiles and SvcDevices.GuardedAsync match rule refusals by type only: no TargetSite, Source or message text match remains (a code taken and a floor taken are told apart by the exception, not by its text)",
+        "Unit tests: a rule refusal answers its text as before (400, or 409 for a code or floor taken); an ArgumentException or InvalidOperationException from outside the domain still passes through; the unit tests also run against a Release build of Ariva.Infra and Ariva.Core (or an architecture test proves the services hold no stack frame check)",
+        "Existing API answers keep their texts and status codes: the topology, zone profile and device E2E specs pass unchanged",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 302,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-281 security review (advisory A1). No sign-in code.",
+      "dependsOn": [
+        "ARV-281"
       ]
     }
   ]

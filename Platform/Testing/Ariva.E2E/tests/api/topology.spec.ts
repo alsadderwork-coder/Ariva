@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
-import { createAirport, randomLetters } from '../support/airports';
+import { airportTaken, createAirport, randomLetters } from '../support/airports';
 import { hosts } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
 
@@ -53,6 +53,15 @@ test('an administrator builds the tree: airport, terminals in two sites, level, 
 	expect((await create('desks', { checkpointId: ids.checkpoint, code: 'EG-01', kind: 'EGate', laneCategories: ['EG'] })).kind).toBe('EGate');
 
 	expect((await call('POST', `${api}/airports`, { token: admin, data: { iataCode: iata, name: 'Again', timeZoneId: 'Asia/Amman' } })).status(), 'duplicate').toBe(409);
+	// ARV-281: a floor number another level of the terminal has is its own conflict, not a code taken.
+	for (const [what, code, floorNumber, detail] of [
+		['floor taken', 'L8', 0, 'Another level of this terminal has that floor number.'],
+		['code taken', 'L0', 8, airportTaken]
+	] as const) {
+		const refused = await call('POST', `${api}/levels`, { token: admin, data: { terminalId: ids.t1, code, name: 'Again', floorNumber, widthMetres: 10, depthMetres: 10 } });
+		expect(refused.status(), what).toBe(409);
+		expect((await refused.json()).detail, what).toBe(detail);
+	}
 	// Airports store IANA ids only, so the web and every host read the same zone on Linux and Windows alike.
 	for (const zone of ['Arabian Standard Time', 'asia/amman', 'Mars/Olympus', '../../etc/passwd']) {
 		const refused = await call('POST', `${api}/airports`, { token: admin, data: { iataCode: 'ZZQ', name: 'Zone', timeZoneId: zone } });

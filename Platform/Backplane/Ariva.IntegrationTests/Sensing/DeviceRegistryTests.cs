@@ -68,6 +68,21 @@ public sealed class DeviceRegistryTests(PostgresFixture fixture) : IAsyncDisposa
 
     private static RecordCalibrationRequest Calibration(double accuracy) => new("ManualCountTally", 200, accuracy, 0.4, null, "Morning peak");
 
+    /// <summary>
+    /// ARV-281: a registration needs no flush for this, since it locks the site's row before it checks the code: two
+    /// registrations of one code at once run one after the other, and the second answers Duplicate (409), not a 500.
+    /// </summary>
+    [Fact]
+    public async Task Register_Should_AnswerDuplicateToTheSecond_When_TwoRegistrationsOfOneCodeMeet()
+    {
+        var (admin, level) = await SiteAsync("DVR");
+
+        var (_, second) = await ConcurrentCreates.RaceAsync(_host, admin, s => Devices(s).RegisterAsync(Register("S-RACE", level), Ct));
+
+        second.ErrorMessages.Should().Equal(TopologyErrors.Duplicate);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM device WHERE site_code = 'DVR' AND code = 'S-RACE'")).Should().Be(1);
+    }
+
     [Fact]
     public async Task Lifecycle_Should_RegisterCalibrateMoveRotateAndRetire_When_RunEndToEnd()
     {

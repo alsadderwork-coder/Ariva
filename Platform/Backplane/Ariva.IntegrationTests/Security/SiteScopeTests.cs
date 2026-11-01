@@ -2,7 +2,6 @@ using Ariva.Core;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Domain.ViewModels;
 using Ariva.Core.Security;
-using Ariva.Core.Services;
 using Ariva.Core.Services.Administration;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
@@ -65,22 +64,11 @@ public sealed class SiteScopeTests(PostgresFixture fixture) : IAsyncDisposable
     {
         var admin = await AllSitesAdminAsync("it.site.racer");
 
-        Fluentx.Result<SiteViewModel> first;
-        Task<Fluentx.Result<SiteViewModel>> second;
-        await using (var scope = _host.Provider.CreateAsyncScope())
-        {
-            var caller = (TestCurrentUser)scope.ServiceProvider.GetRequiredService<ICurrentUser>();
-            caller.Id = admin;
-            caller.UserName = "it-admin";
-            first = await Sites(scope.ServiceProvider).CreateAsync(new CreateSiteRequest("ITR", "Race first"), Ct);
-            second = _host.AsCallerAsync(admin, s => Sites(s).CreateAsync(new CreateSiteRequest("ITR", "Race second"), Ct));
-            (await BlocksAsync(second)).Should().BeTrue("the second insert waits on the first one's index entry, so the first has sent its row");
-            await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().EndAsync(Ct);
-        }
+        var (first, second) = await ConcurrentCreates.RaceAsync(_host, admin, s => Sites(s).CreateAsync(new CreateSiteRequest("ITR", "Race first"), Ct));
 
         first.Data.Code.Should().Be("ITR");
-        (await second).ErrorMessages.Should().Equal(AdministrationErrors.SiteTaken);
-        (await _host.ReadAsync<string>("SELECT string_agg(name, ',') FROM site WHERE code = 'ITR'")).Should().Be("Race first");
+        second.ErrorMessages.Should().Equal(AdministrationErrors.SiteTaken);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM site WHERE code = 'ITR'")).Should().Be(1, "the refused create keeps nothing");
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE target_name = 'ITR' AND action = 'Site.Created'")).Should().Be(1);
     }
 
@@ -123,20 +111,6 @@ public sealed class SiteScopeTests(PostgresFixture fixture) : IAsyncDisposable
 
         (await _host.ReadAsync<long>("SELECT count(*) FROM site WHERE code LIKE 'ITX%'")).Should().Be(0);
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE target_name LIKE 'ITX%'")).Should().Be(0);
-    }
-
-    /// <summary>True once <paramref name="work"/> waits for a lock in this test's database; false when it ends first, or after 30 seconds.</summary>
-    private async Task<bool> BlocksAsync(Task work)
-    {
-        var until = DateTime.UtcNow.AddSeconds(30);
-        while (DateTime.UtcNow < until && !work.IsCompleted)
-        {
-            if (await _host.ReadAsync<long>("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND a.datname = current_database()") > 0)
-                return true;
-            await Task.Delay(25, Ct);
-        }
-
-        return false;
     }
 
     [Fact]

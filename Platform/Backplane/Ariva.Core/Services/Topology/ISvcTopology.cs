@@ -8,6 +8,9 @@ public static class TopologyErrors
 {
     public const string NotFound = "The record does not exist.";
     public const string Duplicate = "A record with that code already exists here.";
+
+    /// <summary>ARV-281: a level's floor number another live level of its terminal has (409); not a code taken.</summary>
+    public const string FloorTaken = Terminal.FloorTakenMessage;
     public const string HasChildren = "Delete the records under it first.";
     public const string UnknownKind = "Unknown kind.";
     public const string UnknownSite = "Unknown site.";
@@ -22,7 +25,7 @@ public static class TopologyErrors
     public const string UnsafeName = TopologyCodes.UnsafeNameMessage;
 
     /// <summary>Errors that mean "already exists or in use" (409).</summary>
-    public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal) { Duplicate, HasChildren };
+    public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal) { Duplicate, FloorTaken, HasChildren };
 }
 
 /// <summary>
