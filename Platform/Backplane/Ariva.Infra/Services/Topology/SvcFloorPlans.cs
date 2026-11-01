@@ -71,7 +71,8 @@ internal sealed class SvcFloorPlans(
         var bytes = await UploadReader.ReadAtMostAsync(upload.Content, FloorPlan.MaxBytes, ct);
         if (bytes is null)
             return Result.Error<FloorPlanViewModel>(TopologyErrors.TooLarge);
-        // The bytes read are the bytes scanned, inspected and stored: nothing reads the file before the scan.
+        // The bytes read are the bytes scanned and inspected: nothing reads the file before the scan. What is stored is the
+        // inspector's file: an SVG written anew, or a PNG or JPEG without its metadata (ARV-201), pieces of what was scanned.
         var screened = await screening.ScreenAsync(UploadKind.FloorPlan, bytes, ct);
         if (screened.HasErrors)
             return Result.Error<FloorPlanViewModel>(screened.ErrorMessages);

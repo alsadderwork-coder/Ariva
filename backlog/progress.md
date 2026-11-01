@@ -4552,3 +4552,47 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - Prefix paths `/api` and `/api/` are one nginx location: compare modes without the trailing slash.
   - A live refusal check must accept only the ingress's own status. Anything else at 4xx may come from the pod, which is what a missing snippet looks like.
   - The affinity cookie is written only when the controller routes the request. A source range or ModSecurity 403 carries none, so a cookie check must run from where the request is routed.
+
+## 2026-11-01: ARV-201 [E5] Floor plan rasters stored without their metadata
+
+- What changed:
+  - `FloorPlanFiles.Inspect`, which both the upload (`SvcFloorPlans.UploadAsync`) and the site configuration bundle import (`SvcSiteConfiguration`) call, now copies a PNG or JPEG piece by piece through an allowlist instead of keeping it byte for byte. Nothing is decoded: the compressed pixels, the pixel size and so the calibration stay as uploaded. The record's size and SHA-256 are those of the stored bytes, and export and serving carry them.
+  - PNG (`StripPng`):
+    - Kept, each chunk whole: `IHDR`, `PLTE`, `IDAT`, `IEND`, and `tRNS`, `gAMA`, `cHRM`, `sRGB` and `sBIT` (numbers about how the samples read, no text; SkiaSharp writes `sBIT`), each only at its own size (tRNS at most 256 bytes, gAMA 4, cHRM 32, sRGB 1, sBIT 1 to 4; otherwise dropped, as a decoder ignores it).
+    - Dropped: text chunks (`tEXt`, `zTXt`, `iTXt` with XMP), `eXIf`, `tIME`, `iCCP`, `pHYs`, `bKGD`, `sPLT`, `hIST`, `cICP`, APNG chunks (the default image stays), content credentials, private chunks, and anything after `IEND`.
+    - Refused: an unknown critical chunk (Apple's `CgBI`), a type that is not four letters, a length past the end (a length over 2^31 included), `IHDR` not first, not 13 bytes or twice, a `PLTE` that is not 1 to 256 three-byte entries, an `IEND` with data, no `IDAT`, no `IEND`.
+  - JPEG (`StripJpeg`):
+    - Kept, each segment whole and of the length its contents give: one frame header (SOF0 to SOF3 and SOF9 to SOF11, length 8 plus 3 a component), DQT, DHT and DAC as whole tables (DQT 65 or 129 bytes a table, DHT 17 plus its codes, at most 256, DAC 2), DRI and DNL of 4 bytes, and each scan header (6 plus 2 a component) with its entropy-coded data (stuffed bytes and restarts included; fill bytes before a marker dropped).
+    - A JFIF APP0 ahead of every kept segment is written again without its thumbnail, so decoders still read YCbCr. An Adobe APP14 of its fixed 14 bytes is kept for its colour transform flag.
+    - Dropped: every other APPn (EXIF, XMP, ICC, MPF, Photoshop), COM, and anything after EOI.
+    - Refused: a second frame, a scan before the frame, EOI before a scan, no EOI, stray RST, SOI or TEM, DHP, EXP, a differential frame (SOF5 to SOF7, SOF13 to SOF15), JPGn (JPEG-LS), the reserved JPG marker, lengths past the end, below 2 or other than the contents give, bytes between segments.
+  - The EXIF orientation and the colour profile go with the rest: a plan shows as its pixels are stored, its colours as sRGB. Plans stored before ARV-201 keep their metadata until they are uploaded again.
+  - Re-encoding (as the advertisement images are) was not used: a 128 megapixel plan is about 512 MB decoded, and decoding would change JPEG pixels.
+  - Tests:
+    - Unit `FloorPlanFilesTests` (Rasters region): a PNG and a JPEG from SkiaSharp with every kind of metadata come back byte for byte as the encoder wrote them, with the same decoded pixels; 16 ancillary PNG chunks dropped, 9 kept at their own size and 6 dropped at another; 9 JPEG segment kinds dropped; JFIF without its thumbnail and Adobe kept, a JFIF behind a kept segment or a second one dropped; a synthetic progressive JPEG with two scans, stuffed bytes, restarts, a fill byte, DRI and DNL kept exactly; 13 PNG and 23 JPEG refusals. The size fixtures became whole images.
+    - Unit `FloorPlanRasterPropertyTests` (CsCheck, 400 per format by default, run at 20,000): mutated and cut PNG and JPEG plans with metadata give a raster within the limits, no larger than the upload, that passes `Inspect` again unchanged with the same size, or null; never an exception.
+    - `StoredFileHeadersTests` uses whole images (`PlanImages`, shared with Ariva.IntegrationTests).
+    - Integration `FloorPlanTests.Upload_Should_StoreAndServeTheRasterWithoutItsMetadata_When_ItCarriesExifXmpTextAndATrailingPage` and `SiteConfigurationTests.Import_Should_StoreAndServeARasterPlanWithoutItsMetadata_When_TheBundleCarriesOneWithExifXmpAndText` (PNG and JPEG each): stored and served bytes equal the bare image; size, hash, pixel size and calibration as expected.
+    - E2E `floor-plans.spec.ts`: a PNG with `tEXt`, `eXIf` and a page after `IEND` is served as the bare PNG.
+  - `SvcFloorPlans` comment: the bytes read are the bytes scanned and inspected; the stored file is the inspector's.
+  - Docs: wiki 11 (the floor plan paragraph: metadata dropped, export upright and in sRGB, broken rasters refused), wiki 13a (sections 1, 3.1, 3.4 and 4), wiki 13 (section 4a), wiki 17 (two FAQ entries), asvs-l2 V5.1.1 and V5.2.2, cwe-controls CWE-120.
+  - Filed ARV-283 (owner decision): re-strip the PNG and JPEG plans stored before ARV-201, which keep their metadata and go into exports as stored.
+- Files: Ariva.Infra `Storage/FloorPlanFiles.cs`, `Services/Topology/SvcFloorPlans.cs` (comment); Ariva.UnitTests `Setup/PlanImages.cs` (new), `Storage/FloorPlanFilesTests.cs`, `Properties/FloorPlanRasterPropertyTests.cs` (new), `Security/StoredFileHeadersTests.cs`; Ariva.IntegrationTests `Ariva.IntegrationTests.csproj`, `Topology/FloorPlanTests.cs`, `Topology/SiteConfigurationTests.cs`; Ariva.E2E `tests/api/floor-plans.spec.ts`; wiki/11-Administration-Guide.md, wiki/13a-File-Handling.md, wiki/13-Security-Guide.md, wiki/17-Troubleshooting-and-FAQ.md, docs/security/asvs-l2.md, docs/security/cwe-controls.md; backlog/prd-phase3.json.
+- Gates: `node scripts/verify.mjs story` with `--specs tests/api/floor-plans.spec.ts,tests/api/site-configuration.spec.ts,tests/api/upload-scanning.spec.ts` and the FloorPlanTests and SiteConfigurationTests integration filter: green on the second run (34 steps: build, 8,519 unit tests, security scan 2,345 files 0 errors and the expected warnings, chart and script self-tests, audits, docs, 30 integration tests, 365 E2E tests over 8 spec files). The first run failed only on the PNG bundle import row (airport QRA, made by FloorPlanTests in the same database), fixed by codes no other test makes. `node scripts/verify.mjs quick` green before the commit.
+- Security review (CWE-120, CWE-501, CWE-79; ASVS V5.1.1, V5.2.2; V5.3.1 and V5.4.3 unchanged):
+  - Round 1 PASS, no required fixes. Advisories:
+    1. Kept chunks and segments were copied at any declared length.
+    2. Differential and lossless frames were accepted although the docs said hierarchical files were refused.
+    3. The upload service's "bytes scanned, inspected and stored" comment was inexact.
+    4. No E2E for a JPEG upload or a raster in a bundle, and no unit case for a late or second JFIF.
+    5. Wiki 11 and a troubleshooting entry.
+    6. Plans stored before ARV-201.
+  - Taken: 1 (spec sizes for kept PNG chunks, contents' length for every kept JPEG segment, whole tables), 2 (differential frames refused, lossless SOF3 and SOF11 kept), 3, 4's unit cases, 5. Filed: 6 as ARV-283. Not taken: 4's E2E cases (integration covers JPEG and the bundle path; the PNG E2E covers the HTTP layer).
+  - Follow-up PASS on the delta. Still open as advisories: E2E for a JPEG upload and a raster bundle import; the table destinations, the DHT table class and a zero component count are not checked (malformed but harmless, refused by decoders).
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors (quick gate and story gate).
+- Gotchas:
+  - SkiaSharp's PNG encoder writes `sBIT`; an allowlist without it changes every plan Ariva itself would export from a Skia pipeline.
+  - In JPEG entropy-coded data, FF followed by more FF bytes and then 00 is one stuffed byte (libjpeg skips the fill), so copy the scan data as it is and look only for the first marker that is neither 00 nor a restart.
+  - The E2E `call()` helper reads the body as text; compare binary content through `fetch` and `arrayBuffer()`.
+  - Theory data with NUL or other control characters in `InlineData` strings ends up in test names; add them in code instead.
+  - The integration tests of the Administration database share it within a run: `FloorPlanTests` makes airports Q plus its prefix (QRA, QRB and others), so a new test's codes must avoid those too, not only the literal codes a search finds. The first gate run failed on QRA.

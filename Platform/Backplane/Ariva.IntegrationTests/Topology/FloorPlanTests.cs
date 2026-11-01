@@ -1,10 +1,13 @@
+using System.Security.Cryptography;
 using System.Text;
 using Ariva.Core;
 using Ariva.Core.Domain.InputModels;
 using Ariva.Core.Services.Administration;
+using Ariva.Core.Services.Storage;
 using Ariva.Core.Services.Topology;
 using Ariva.IntegrationTests.Security;
 using Ariva.IntegrationTests.Setup;
+using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -13,7 +16,8 @@ namespace Ariva.IntegrationTests.Topology;
 /// <summary>
 /// ARV-018 against PostgreSQL with script 0010: a second upload replaces the first in one transaction (the partial
 /// unique index allows one live plan per level), a level with a live plan cannot be deleted, concurrent uploads for one level queue on the level row instead of
-/// failing, and every change is audited.
+/// failing, and every change is audited. ARV-201: a PNG or JPEG plan carrying EXIF, XMP, text and a trailing page is
+/// stored and served without them, with its pixel size and calibration as uploaded.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class FloorPlanTests(PostgresFixture fixture) : IAsyncDisposable
@@ -44,6 +48,48 @@ public sealed class FloorPlanTests(PostgresFixture fixture) : IAsyncDisposable
         var level = await _host.AsCallerAsync(admin, s => topology(s).CreateLevelAsync(new CreateLevelRequest(terminal.Data.Id, "L0", "Ground", 0, 100, 50), Ct));
         level.HasErrors.Should().BeFalse(string.Join(", ", level.ErrorMessages ?? []));
         return (admin, level.Data.Id);
+    }
+
+    [Theory]
+    [InlineData("png")]
+    [InlineData("jpeg")]
+    public async Task Upload_Should_StoreAndServeTheRasterWithoutItsMetadata_When_ItCarriesExifXmpTextAndATrailingPage(string type)
+    {
+        var (admin, level) = await LevelAsync(type == "png" ? "mp" : "mj");
+        var plain = type == "png" ? PlanImages.Png(120, 80) : PlanImages.Jpeg(120, 80);
+        var bytes = type == "png" ? PlanImages.PngWithMetadata(120, 80) : PlanImages.JpegWithMetadata(120, 80);
+        PlanImages.Found(bytes, "GPSLatitude", "x:xmpmeta", "Plan author", "<script>").Should().HaveCount(4, "the upload carries them");
+
+        var uploaded = await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcFloorPlans>()
+            .UploadAsync(level, new FloorPlanUpload(new MemoryStream(bytes), bytes.Length, $"plan.{type}", 0.05, 1.5, 2.5), Ct));
+
+        uploaded.HasErrors.Should().BeFalse(string.Join(", ", uploaded.ErrorMessages ?? []));
+        var plan = uploaded.Data;
+        (plan.WidthPixels, plan.HeightPixels, plan.MetresPerPixel, plan.OriginX, plan.OriginY).Should().Be((120, 80, 0.05, 1.5, 2.5));
+        var key = await _host.ReadAsync<string>("SELECT storage_key FROM floor_plan WHERE level_id = @id AND deleted_on IS NULL", level);
+        byte[] stored;
+        await using (var file = await _host.Provider.GetRequiredService<IFileStorage>().OpenReadAsync(key, Ct))
+        {
+            using var copy = new MemoryStream();
+            await file.CopyToAsync(copy, Ct);
+            stored = copy.ToArray();
+        }
+
+        PlanImages.Found(stored, PlanImages.Markers).Should().BeEmpty("no metadata is kept");
+        stored.Should().Equal(plain, "the encoder's own pieces are kept as they were");
+        (plan.SizeBytes, plan.Sha256).Should().Be((stored.LongLength, Convert.ToHexStringLower(SHA256.HashData(stored))), "the record describes the stored bytes");
+        PlanImages.Decode(stored).Should().BeEquivalentTo(PlanImages.Decode(plain), "the same pixels");
+
+        var content = await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcFloorPlans>().OpenAsync(level, Ct));
+        content.HasErrors.Should().BeFalse(string.Join(", ", content.ErrorMessages ?? []));
+        await using (content.Data.Content)
+        {
+            using var served = new MemoryStream();
+            await content.Data.Content.CopyToAsync(served, Ct);
+            served.ToArray().Should().Equal(stored, "served as stored");
+        }
+
+        content.Data.Sha256.Should().Be(plan.Sha256);
     }
 
     [Fact]

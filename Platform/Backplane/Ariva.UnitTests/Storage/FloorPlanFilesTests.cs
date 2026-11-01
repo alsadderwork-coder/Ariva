@@ -1,6 +1,7 @@
 using System.Text;
 using Ariva.Core.Domain.Entities;
 using Ariva.Infra.Storage;
+using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 
@@ -8,7 +9,10 @@ namespace Ariva.UnitTests.Storage;
 
 /// <summary>
 /// ARV-018: plan uploads are typed by their bytes, SVG is rebuilt without active content, and storage keys cannot
-/// reach outside the storage root.
+/// reach outside the storage root. ARV-201: PNG and JPEG plans are kept without their metadata (text, EXIF, XMP, colour
+/// profiles, comments, thumbnails, animation and private chunks, and anything after the image's end), with the pieces
+/// that draw the pixels copied as they are, so the pixels and their size do not change; a file whose chunks or segments
+/// do not read through to its end is refused.
 /// </summary>
 public sealed class FloorPlanFilesTests
 {
@@ -32,7 +36,7 @@ public sealed class FloorPlanFilesTests
     [Fact]
     public void Inspect_Should_ReadJpegSize_When_BytesAreJpeg()
     {
-        byte[] jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0x2C, 0x02, 0x58, 0x03, 0x01, 0x22, 0x00];
+        var jpeg = PlanImages.Jpeg(600, 300);
 
         var file = FloorPlanFiles.Inspect(jpeg);
 
@@ -160,6 +164,8 @@ public sealed class FloorPlanFilesTests
     [Fact]
     public void Inspect_Should_RefuseRasterBombsAndBrokenHeaders_When_Uploaded()
     {
+        // A header of the given size (and first chunk type), then an empty IDAT and IEND: the size is read from the header,
+        // and nothing decodes the pixels.
         static byte[] Png(int width, int height, string chunk = "IHDR")
         {
             var bytes = new byte[33];
@@ -167,7 +173,7 @@ public sealed class FloorPlanFilesTests
             Encoding.ASCII.GetBytes(chunk).CopyTo(bytes, 12);
             System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(16), width);
             System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(20), height);
-            return bytes;
+            return [.. bytes, .. PlanImages.Chunk("IDAT", []), .. PlanImages.Chunk("IEND", [])];
         }
 
         FloorPlanFiles.Inspect(Png(60_000, 60_000)).Should().BeNull("about 14 GB once decoded");
@@ -261,4 +267,289 @@ public sealed class FloorPlanFilesTests
 
         create.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    #region Rasters (ARV-201)
+
+    /// <summary>The chunk types of a PNG, in order.</summary>
+    private static string[] ChunkTypes(byte[] png) => [.. PlanImages.Chunks(png).Select(c => c.Type)];
+
+    [Fact]
+    public void Inspect_Should_KeepAPngWithoutItsMetadata_When_ItCarriesTextExifXmpAProfileAndATrailingPage()
+    {
+        var plain = PlanImages.Png(64, 48);
+        var upload = PlanImages.PngWithMetadata(64, 48);
+        PlanImages.Found(upload, PlanImages.Markers).Should().Equal(PlanImages.Markers, "the upload carries every piece");
+
+        var file = FloorPlanFiles.Inspect(upload);
+
+        (file.ContentType, file.Extension, file.WidthPixels, file.HeightPixels).Should().Be(("image/png", "png", 64, 48));
+        PlanImages.Found(file.Bytes, PlanImages.Markers).Should().BeEmpty();
+        ChunkTypes(file.Bytes).Should().Equal(ChunkTypes(plain));
+        file.Bytes.Should().Equal(plain, "the encoder's own chunks are all kept, each as it was");
+        PlanImages.Decode(file.Bytes).Should().BeEquivalentTo(PlanImages.Decode(plain), "the same pixels");
+    }
+
+    [Fact]
+    public void Inspect_Should_KeepAJpegWithoutItsMetadata_When_ItCarriesExifXmpAProfileCommentsAndATrailingPage()
+    {
+        var plain = PlanImages.Jpeg(64, 48);
+        var upload = PlanImages.JpegWithMetadata(64, 48);
+        string[] jpegMarkers = [.. PlanImages.Markers.Except(["acTL", "prVt"])];
+        PlanImages.Found(upload, jpegMarkers).Should().Equal(jpegMarkers, "the upload carries every piece");
+
+        var file = FloorPlanFiles.Inspect(upload);
+
+        (file.ContentType, file.Extension, file.WidthPixels, file.HeightPixels).Should().Be(("image/jpeg", "jpg", 64, 48));
+        PlanImages.Found(file.Bytes, PlanImages.Markers).Should().BeEmpty();
+        PlanImages.HeaderMarkers(file.Bytes).Should().Equal(PlanImages.HeaderMarkers(plain));
+        file.Bytes.Should().Equal(plain, "the encoder's own segments and scan are all kept, each as it was");
+        PlanImages.Decode(file.Bytes).Should().BeEquivalentTo(PlanImages.Decode(plain), "the same pixels");
+    }
+
+    [Theory]
+    [InlineData("tEXt")]
+    [InlineData("zTXt")]
+    [InlineData("iTXt")]
+    [InlineData("eXIf")]
+    [InlineData("tIME")]
+    [InlineData("iCCP")]
+    [InlineData("pHYs")]
+    [InlineData("bKGD")]
+    [InlineData("sPLT")]
+    [InlineData("hIST")]
+    [InlineData("acTL")]
+    [InlineData("fcTL")]
+    [InlineData("fdAT")]
+    [InlineData("cICP")]
+    [InlineData("caBX")]
+    [InlineData("prVt")]
+    public void Inspect_Should_DropAnAncillaryPngChunk_When_ItIsMetadata(string type)
+    {
+        var plain = PlanImages.Png(8, 8);
+        var upload = PlanImages.InsertPng(plain, PlanImages.Chunk(type, PlanImages.Latin1("CadExport")), PlanImages.Chunk(type, [1, 2, 3]));
+
+        FloorPlanFiles.Inspect(upload).Bytes.Should().Equal(plain, "before the pixels and after them");
+    }
+
+    [Theory]
+    [InlineData("PLTE", 3)]
+    [InlineData("PLTE", 768)]
+    [InlineData("tRNS", 6)]
+    [InlineData("tRNS", 256)]
+    [InlineData("gAMA", 4)]
+    [InlineData("cHRM", 32)]
+    [InlineData("sRGB", 1)]
+    [InlineData("sBIT", 1)]
+    [InlineData("sBIT", 4)]
+    public void Inspect_Should_KeepAPngChunk_When_ItSaysHowTheSamplesReadAtItsOwnSize(string type, int length)
+    {
+        var upload = PlanImages.InsertPng(PlanImages.Png(8, 8), PlanImages.Chunk(type, [.. Enumerable.Repeat((byte)1, length)]));
+
+        FloorPlanFiles.Inspect(upload).Bytes.Should().Equal(upload);
+    }
+
+    [Theory]
+    [InlineData("tRNS", 257)]
+    [InlineData("gAMA", 5)]
+    [InlineData("cHRM", 4)]
+    [InlineData("sRGB", 2)]
+    [InlineData("sBIT", 0)]
+    [InlineData("sBIT", 5)]
+    public void Inspect_Should_DropAKeptAncillaryPngChunk_When_ItIsNotItsOwnSize(string type, int length)
+    {
+        // A decoder ignores such a chunk; its bytes beyond the numbers it holds could carry anything.
+        var plain = PlanImages.Png(8, 8);
+
+        FloorPlanFiles.Inspect(PlanImages.InsertPng(plain, PlanImages.Chunk(type, [.. Enumerable.Repeat((byte)0x41, length)]))).Bytes.Should().Equal(plain);
+    }
+
+    [Theory]
+    [InlineData("no IEND")]
+    [InlineData("cut inside a chunk")]
+    [InlineData("no IDAT")]
+    [InlineData("a critical chunk Ariva does not know")]
+    [InlineData("a chunk type that is not four letters")]
+    [InlineData("a length past the end")]
+    [InlineData("a length over two gigabytes")]
+    [InlineData("IHDR twice")]
+    [InlineData("IHDR of another length")]
+    [InlineData("an empty palette")]
+    [InlineData("a palette not of three-byte entries")]
+    [InlineData("a palette of more than 256 entries")]
+    [InlineData("IEND with data")]
+    public void Inspect_Should_RefuseAPng_When_ItsChunksDoNotReadThroughToIend(string fault)
+    {
+        var png = PlanImages.Png(8, 8);
+        var header = png.AsSpan(8, 25).ToArray();
+        byte[] signature = [.. png.AsSpan(0, 8)];
+        byte[] broken = fault switch
+        {
+            "no IEND" => png[..^12],
+            "cut inside a chunk" => png[..^20],
+            "no IDAT" => [.. signature, .. PlanImages.Chunks(png).Where(c => c.Type != "IDAT").SelectMany(c => PlanImages.Chunk(c.Type, c.Data))],
+            // Apple's CgBI makes a file no other decoder reads.
+            "a critical chunk Ariva does not know" => PlanImages.InsertPng(png, PlanImages.Chunk("CgBI", [0x50, 0, 0x20, 2])),
+            "a chunk type that is not four letters" => PlanImages.InsertPng(png, PlanImages.Chunk("t3Xt", [1])),
+            "a length past the end" => [.. png[..^12], 0, 0, 0x03, 0xE8, .. "IDAT"u8, 1, 2, 3, .. png[^12..]],
+            "a length over two gigabytes" => [.. png[..^12], 0xFF, 0xFF, 0xFF, 0xF0, .. "tEXt"u8, 1, 2, 3, .. png[^12..]],
+            "IHDR twice" => PlanImages.InsertPng(png, header),
+            "IHDR of another length" => [.. signature, .. PlanImages.Chunk("IHDR", [.. header.AsSpan(8, 13), 0]), .. png[33..]],
+            "an empty palette" => PlanImages.InsertPng(png, PlanImages.Chunk("PLTE", [])),
+            "a palette not of three-byte entries" => PlanImages.InsertPng(png, PlanImages.Chunk("PLTE", [1, 2, 3, 4])),
+            "a palette of more than 256 entries" => PlanImages.InsertPng(png, PlanImages.Chunk("PLTE", new byte[771])),
+            "IEND with data" => [.. png[..^12], .. PlanImages.Chunk("IEND", PlanImages.Latin1("<html>a page</html>"))],
+            _ => throw new ArgumentOutOfRangeException(nameof(fault))
+        };
+
+        FloorPlanFiles.Inspect(broken).Should().BeNull();
+    }
+
+    [Fact]
+    public void Inspect_Should_KeepJfifWithoutItsThumbnailAndAdobesColourTransform_When_AJpegHasThem()
+    {
+        var plain = PlanImages.Jpeg(16, 8);
+        var encoderApp0 = plain[3] == 0xE0 ? 2 + ((plain[4] << 8) | plain[5]) : 0;
+        byte[] bare = [.. plain[..2], .. plain[(2 + encoderApp0)..]];
+        // Version 1.02, dots per inch, 72 by 72, and a 2 by 1 thumbnail of six bytes.
+        var jfif = PlanImages.Segment(0xE0, [.. "JFIF\0"u8, 1, 2, 1, 0, 72, 0, 72, 2, 1, 0xFF, 0, 0, 0, 0xFF, 0]);
+        var adobe = PlanImages.Segment(0xEE, [.. "Adobe"u8, 0, 100, 0, 0, 0, 0, 1]);
+
+        var file = FloorPlanFiles.Inspect(PlanImages.InsertJpeg(bare, [.. jfif, .. adobe]));
+
+        file.Bytes.AsSpan(2, 18).ToArray().Should().Equal(PlanImages.Segment(0xE0, [.. "JFIF\0"u8, 1, 2, 1, 0, 72, 0, 72, 0, 0]),
+            "the identifier, version, units and densities as they were, without the thumbnail");
+        file.Bytes.AsSpan(20, adobe.Length).ToArray().Should().Equal(adobe, "the transform flag says how the colours are coded");
+        file.Bytes[(20 + adobe.Length)..].Should().Equal(bare[2..]);
+        PlanImages.Decode(file.Bytes).Should().BeEquivalentTo(PlanImages.Decode(plain), "the same pixels");
+    }
+
+    [Fact]
+    public void Inspect_Should_DropJfif_When_ItComesAfterAKeptSegmentOrASecondTime()
+    {
+        var plain = PlanImages.Jpeg(16, 8);
+        var encoderApp0 = plain[3] == 0xE0 ? 2 + ((plain[4] << 8) | plain[5]) : 0;
+        byte[] bare = [.. plain[..2], .. plain[(2 + encoderApp0)..]];
+        var jfif = PlanImages.Segment(0xE0, [.. "JFIF\0"u8, 1, 2, 0, 0, 1, 0, 1, 0, 0]);
+        var adobe = PlanImages.Segment(0xEE, [.. "Adobe"u8, 0, 100, 0, 0, 0, 0, 1]);
+
+        FloorPlanFiles.Inspect(PlanImages.InsertJpeg(bare, [.. adobe, .. jfif])).Bytes.Should().Equal(PlanImages.InsertJpeg(bare, adobe),
+            "a JFIF header belongs first; one behind a kept segment is not the file's");
+        FloorPlanFiles.Inspect(PlanImages.InsertJpeg(bare, [.. jfif, .. jfif])).Bytes.Should().Equal(PlanImages.InsertJpeg(bare, jfif),
+            "one JFIF header only");
+    }
+
+    [Theory]
+    [InlineData(0xE0, "JFXX")]
+    [InlineData(0xE1, "Exif")]
+    [InlineData(0xE1, "http://ns.adobe.com/xap/1.0/")]
+    [InlineData(0xE2, "ICC_PROFILE")]
+    [InlineData(0xE2, "MPF")]
+    [InlineData(0xED, "Photoshop 3.0")]
+    [InlineData(0xEE, "Adobe")]
+    [InlineData(0xEF, "anything")]
+    [InlineData(0xFE, "a comment")]
+    public void Inspect_Should_DropAJpegSegment_When_ItIsMetadata(int marker, string identifier)
+    {
+        // The identifier, its NUL and a payload: an Adobe segment of another size than its fixed one is metadata too.
+        var plain = PlanImages.Jpeg(8, 8);
+        var segment = PlanImages.Segment((byte)marker, PlanImages.Latin1(identifier + "\0 CadExport"));
+
+        FloorPlanFiles.Inspect(PlanImages.InsertJpeg(plain, segment, segment)).Bytes.Should().Equal(plain, "before the frame and after the scan");
+    }
+
+    [Fact]
+    public void Inspect_Should_KeepEveryScanWithItsStuffedBytesAndRestarts_When_AJpegHasSeveral()
+    {
+        // A progressive frame of 6 by 4 pixels, one component, with a restart interval, two scans and a number of lines. Their
+        // entropy-coded data holds a stuffed byte (FF 00), restarts (FF D0, and FF D1 after a fill byte) and a fill byte
+        // before the second scan. Nothing decodes it: the structure is what is kept.
+        var tables = PlanImages.Segment(0xDB, [0, .. Enumerable.Repeat((byte)1, 64)]);
+        var huffman = PlanImages.Segment(0xC4, [0, 1, .. new byte[15], 0]);
+        var restarts = PlanImages.Segment(0xDD, [0, 2]);
+        var frame = PlanImages.Segment(0xC2, [8, 0, 4, 0, 6, 1, 1, 0x11, 0]);
+        byte[] first = [.. PlanImages.Segment(0xDA, [1, 1, 0, 0, 0, 0]), 0x12, 0xFF, 0x00, 0x34, 0xFF, 0xD0, 0x56, 0xFF, 0xFF, 0xD1, 0x78];
+        byte[] second = [.. PlanImages.Segment(0xDA, [1, 1, 0, 1, 5, 0]), 0x9A, 0xFF, 0x00];
+        var lines = PlanImages.Segment(0xDC, [0, 4]);
+        var comment = PlanImages.Segment(0xFE, PlanImages.Latin1("between the scans"));
+        byte[] upload = [0xFF, 0xD8, .. tables, .. huffman, .. restarts, .. frame, .. first, .. comment, .. huffman, 0xFF, 0xFF, .. second, .. lines, 0xFF, 0xD9];
+
+        var file = FloorPlanFiles.Inspect(upload);
+
+        file.Bytes.Should().Equal([0xFF, 0xD8, .. tables, .. huffman, .. restarts, .. frame, .. first, .. huffman, .. second, .. lines, 0xFF, 0xD9]);
+        (file.WidthPixels, file.HeightPixels).Should().Be((6, 4));
+    }
+
+    [Theory]
+    [InlineData("no end-of-image")]
+    [InlineData("an end-of-image before any scan")]
+    [InlineData("a scan without a frame")]
+    [InlineData("a second frame")]
+    [InlineData("a frame header too short for its size")]
+    [InlineData("a frame without a height")]
+    [InlineData("a stray restart marker")]
+    [InlineData("a second start-of-image")]
+    [InlineData("a hierarchical marker")]
+    [InlineData("a JPEG-LS frame")]
+    [InlineData("the reserved JPG marker")]
+    [InlineData("a segment past the end")]
+    [InlineData("a length below two")]
+    [InlineData("bytes between segments")]
+    [InlineData("entropy-coded data to the end")]
+    [InlineData("a differential frame")]
+    [InlineData("a frame header of another length than its components")]
+    [InlineData("a scan header of another length than its components")]
+    [InlineData("a quantisation table cut short")]
+    [InlineData("a quantisation table of another precision")]
+    [InlineData("Huffman codes beyond the table")]
+    [InlineData("an empty table segment")]
+    [InlineData("a restart interval of another length")]
+    public void Inspect_Should_RefuseAJpeg_When_ItsSegmentsDoNotReadThroughToItsEnd(string fault)
+    {
+        var jpeg = PlanImages.Jpeg(8, 8);
+        var (frameAt, frameLength) = SegmentOf(jpeg, 0xC0);
+        var (scanAt, _) = SegmentOf(jpeg, 0xDA);
+        var frame = jpeg[frameAt..(frameAt + frameLength)];
+        byte[] broken = fault switch
+        {
+            "no end-of-image" => jpeg[..^2],
+            "an end-of-image before any scan" => [.. jpeg[..scanAt], 0xFF, 0xD9],
+            "a scan without a frame" => [.. jpeg[..frameAt], .. jpeg[(frameAt + frameLength)..]],
+            "a second frame" => [.. jpeg[..scanAt], .. frame, .. jpeg[scanAt..]],
+            "a frame header too short for its size" => PlanImages.InsertJpeg(jpeg, PlanImages.Segment(0xC0, [8, 0])),
+            "a frame without a height" => [.. jpeg[..(frameAt + 5)], 0, 0, .. jpeg[(frameAt + 7)..]],
+            "a stray restart marker" => PlanImages.InsertJpeg(jpeg, [0xFF, 0xD0]),
+            "a second start-of-image" => PlanImages.InsertJpeg(jpeg, [0xFF, 0xD8]),
+            "a hierarchical marker" => PlanImages.InsertJpeg(jpeg, PlanImages.Segment(0xDE, [0, 0, 0, 0])),
+            "a JPEG-LS frame" => PlanImages.InsertJpeg(jpeg, PlanImages.Segment(0xF7, [8, 0, 8, 0, 8, 1, 1, 0x11, 0])),
+            "the reserved JPG marker" => PlanImages.InsertJpeg(jpeg, PlanImages.Segment(0xC8, [0, 0])),
+            "a segment past the end" => PlanImages.InsertJpeg(jpeg, [0xFF, 0xE1, 0xFF, 0xFF]),
+            "a length below two" => PlanImages.InsertJpeg(jpeg, [0xFF, 0xE1, 0x00, 0x01]),
+            "bytes between segments" => PlanImages.InsertJpeg(jpeg, [0x00]),
+            "entropy-coded data to the end" => [.. jpeg[..^2], 0x12, 0xFF, 0x00],
+            // SOF5 is only meaningful in a hierarchical file, which is refused.
+            "a differential frame" => [.. jpeg[..frameAt], 0xFF, 0xC5, .. jpeg[(frameAt + 2)..]],
+            // The test JPEG's frame names three components; its last three bytes are cut and the length says so.
+            "a frame header of another length than its components" => [.. jpeg[..frameAt], .. PlanImages.Segment(0xC0, frame[4..^3]), .. jpeg[(frameAt + frameLength)..]],
+            "a scan header of another length than its components" => [.. jpeg[..scanAt], .. PlanImages.Segment(0xDA, [1, 1, 0, 0, 0x3F, 0, 0]), .. jpeg[scanAt..]],
+            "a quantisation table cut short" => PlanImages.InsertJpeg(jpeg, PlanImages.Segment(0xDB, [0, .. new byte[63]])),
+            "a quantisation table of another precision" => PlanImages.InsertJpeg(jpeg, PlanImages.Segment(0xDB, [0x20, .. new byte[64]])),
+            "Huffman codes beyond the table" => PlanImages.InsertJpeg(jpeg, PlanImages.Segment(0xC4, [0, 2, .. new byte[15], 7])),
+            "an empty table segment" => PlanImages.InsertJpeg(jpeg, PlanImages.Segment(0xC4, [])),
+            "a restart interval of another length" => PlanImages.InsertJpeg(jpeg, PlanImages.Segment(0xDD, [0, 2, 0])),
+            _ => throw new ArgumentOutOfRangeException(nameof(fault))
+        };
+
+        FloorPlanFiles.Inspect(broken).Should().BeNull();
+    }
+
+    /// <summary>Where the first segment with this marker starts (its FF) and how long it is with its marker.</summary>
+    private static (int At, int Length) SegmentOf(byte[] jpeg, byte marker)
+    {
+        var at = 2;
+        while (jpeg[at + 1] != marker)
+            at += 2 + ((jpeg[at + 2] << 8) | jpeg[at + 3]);
+        return (at, 2 + ((jpeg[at + 2] << 8) | jpeg[at + 3]));
+    }
+
+    #endregion
 }

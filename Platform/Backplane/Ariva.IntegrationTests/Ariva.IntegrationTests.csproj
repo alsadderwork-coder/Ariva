@@ -103,6 +103,8 @@
         <!-- ARV-092b: the EICAR test file built at run time and the fake clamd, for the upload services' scan tests. -->
         <Compile Include="..\Ariva.UnitTests\Setup\Eicar.cs" Link="Setup\Eicar.cs" />
         <Compile Include="..\Ariva.UnitTests\Setup\FakeClamd.cs" Link="Setup\FakeClamd.cs" />
+        <!-- ARV-201: PNG and JPEG plans with metadata, for the upload and bundle import tests. -->
+        <Compile Include="..\Ariva.UnitTests\Setup\PlanImages.cs" Link="Setup\PlanImages.cs" />
     </ItemGroup>
 
 </Project>

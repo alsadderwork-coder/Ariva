@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using Ariva.Api.Common.Security;
 using Ariva.Core.Domain.Entities;
 using Ariva.Infra.Storage;
+using Ariva.UnitTests.Setup;
 using FluentAssertions;
 
 namespace Ariva.UnitTests.Security;
@@ -29,8 +30,9 @@ public sealed class StoredFileHeadersTests
     public static TheoryData<string, string> StoredTypes()
     {
         var types = new Dictionary<string, string>(StringComparer.Ordinal);
-        byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, .. "IHDR"u8, 0, 0, 0, 16, 0, 0, 0, 16];
-        byte[] jpeg = [0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x10, 0x00, 0x10, 0x03, 0, 0, 0, 0];
+        // Whole images (ARV-201): the inspector reads a raster through to its end.
+        var png = PlanImages.Png(16, 16);
+        var jpeg = PlanImages.Jpeg(16, 16);
         var svg = Encoding.UTF8.GetBytes("""<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>""");
         foreach (var plan in new[] { png, jpeg, svg }.Select(FloorPlanFiles.Inspect))
             types[plan.ContentType] = plan.Extension;

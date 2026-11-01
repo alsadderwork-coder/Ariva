@@ -16,6 +16,9 @@ public sealed record InspectedFile(string ContentType, string Extension, byte[] 
 /// written anew: only listed SVG drawing elements and listed attributes survive; references must point inside the
 /// document (<c>#id</c>); CSS escapes, comments, processing instructions and everything in another namespace are
 /// dropped; CDATA becomes escaped text; DTDs are refused (CWE-611); element count and depth are capped (CWE-400).
+/// PNG and JPEG are copied piece by piece through an allowlist (ARV-201), never decoded: the pixels, their size and
+/// what draws them stay as uploaded, while metadata (EXIF, XMP, text chunks, comments, colour profiles, thumbnails) and
+/// anything after the image's end are dropped, and a file whose structure does not read through to its end is refused.
 /// </summary>
 public static partial class FloorPlanFiles
 {
@@ -64,15 +67,16 @@ public static partial class FloorPlanFiles
                 return null;
             var width = BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(16, 4));
             var height = BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(20, 4));
-            return FloorPlanLimits.Fits(width, height) ? new InspectedFile("image/png", "png", bytes, width, height) : null;
+            if (!FloorPlanLimits.Fits(width, height))
+                return null;
+            var png = StripPng(bytes);
+            return png is null ? null : new InspectedFile("image/png", "png", png, width, height);
         }
 
         if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
         {
-            var (width, height) = JpegSize(bytes);
-            return width is { } w && height is { } h && FloorPlanLimits.Fits(w, h)
-                ? new InspectedFile("image/jpeg", "jpg", bytes, w, h)
-                : null;
+            var jpeg = StripJpeg(bytes, out var width, out var height);
+            return jpeg is not null && FloorPlanLimits.Fits(width, height) ? new InspectedFile("image/jpeg", "jpg", jpeg, width, height) : null;
         }
 
         var svg = SanitizeSvg(bytes, out var svgWidth, out var svgHeight);
@@ -271,25 +275,266 @@ public static partial class FloorPlanFiles
             ? value
             : null;
 
-    /// <summary>Width and height from the first start-of-frame marker, or nulls.</summary>
-    private static (int? Width, int? Height) JpegSize(byte[] bytes)
+    #region Rasters (ARV-201)
+
+    /// <summary>
+    /// PNG chunks kept: the four critical ones and the ancillary ones about how the samples read (palette transparency,
+    /// gamma, chromaticities, sRGB intent, significant bits), which hold numbers and no text and are kept only at their own
+    /// size (<see cref="PngChunkFits"/>). Every other ancillary chunk is dropped: text (<c>tEXt</c>, <c>zTXt</c>,
+    /// <c>iTXt</c>, where XMP lives), <c>eXIf</c>, <c>tIME</c>, <c>iCCP</c> (a profile carries its own name and text),
+    /// <c>pHYs</c>, <c>bKGD</c>, <c>sPLT</c>, <c>hIST</c>, <c>cICP</c>, the animation chunks, content credentials and private
+    /// chunks. An APNG keeps its default image (IDAT) and loses its frames.
+    /// </summary>
+    private static readonly uint[] PngChunksKept =
+    [
+        Tag("IHDR"u8), Tag("PLTE"u8), Tag("tRNS"u8), Tag("gAMA"u8), Tag("cHRM"u8), Tag("sRGB"u8), Tag("sBIT"u8), Tag("IDAT"u8),
+        Tag("IEND"u8)
+    ];
+
+    private static readonly uint Ihdr = Tag("IHDR"u8);
+    private static readonly uint Plte = Tag("PLTE"u8);
+    private static readonly uint Trns = Tag("tRNS"u8);
+    private static readonly uint Gama = Tag("gAMA"u8);
+    private static readonly uint Chrm = Tag("cHRM"u8);
+    private static readonly uint Srgb = Tag("sRGB"u8);
+    private static readonly uint Sbit = Tag("sBIT"u8);
+    private static readonly uint Idat = Tag("IDAT"u8);
+    private static readonly uint Iend = Tag("IEND"u8);
+
+    private static uint Tag(ReadOnlySpan<byte> type) => BinaryPrimitives.ReadUInt32BigEndian(type);
+
+    /// <summary>
+    /// The PNG rewritten from its signature and the chunks in <see cref="PngChunksKept"/>, each copied whole (length,
+    /// type, data and CRC), up to IEND; anything after IEND is dropped, and so is a kept ancillary chunk of another size
+    /// than its own (as a decoder ignores it). Null when a chunk type is not four ASCII letters, a length runs past the end,
+    /// IHDR is not the first chunk (of 13 bytes) or comes twice, a critical chunk is one Ariva does not know (its first
+    /// letter upper case: a decoder must refuse it, so it is refused here), PLTE is not one to 256 entries of three bytes,
+    /// IEND holds data, or there is no IDAT or no IEND.
+    /// </summary>
+    private static byte[] StripPng(byte[] bytes)
     {
-        var i = 2;
-        while (i + 9 < bytes.Length)
+        using var output = new MemoryStream(bytes.Length);
+        output.Write(bytes, 0, 8);
+        var at = 8;
+        var pixels = false;
+        while (bytes.Length - at >= 12)
         {
-            if (bytes[i] != 0xFF)
-                return (null, null);
-            var marker = bytes[i + 1];
-            var length = (bytes[i + 2] << 8) | bytes[i + 3];
-            if (marker is >= 0xC0 and <= 0xCF and not 0xC4 and not 0xC8 and not 0xCC)
-                return ((bytes[i + 7] << 8) | bytes[i + 8], (bytes[i + 5] << 8) | bytes[i + 6]);
-            if (length < 2)
-                return (null, null);
-            i += 2 + length;
+            var length = BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(at, 4));
+            var type = bytes.AsSpan(at + 4, 4);
+            if (length > (uint)(bytes.Length - at - 12) || !IsChunkType(type))
+                return null;
+            var tag = Tag(type);
+            if ((at == 8) != (tag == Ihdr) || (tag == Ihdr && length != 13))
+                return null;
+            if ((tag == Plte && (length is 0 or > 768 || length % 3 != 0)) || (tag == Iend && length != 0))
+                return null;
+            var size = 12 + (int)length;
+            if (Array.IndexOf(PngChunksKept, tag) >= 0)
+            {
+                if (PngChunkFits(tag, length))
+                    output.Write(bytes, at, size);
+            }
+            else if (char.IsAsciiLetterUpper((char)type[0]))
+            {
+                return null;
+            }
+
+            pixels |= tag == Idat;
+            if (tag == Iend)
+                return pixels ? output.ToArray() : null;
+            at += size;
         }
 
-        return (null, null);
+        return null;
     }
+
+    /// <summary>Whether a kept ancillary chunk has its own size (PNG 11.3): tRNS at most 256 bytes, gAMA 4, cHRM 32, sRGB 1, sBIT 1 to 4.</summary>
+    private static bool PngChunkFits(uint tag, uint length) =>
+        tag == Trns ? length <= 256
+        : tag == Gama ? length == 4
+        : tag == Chrm ? length == 32
+        : tag == Srgb ? length == 1
+        : tag != Sbit || length is >= 1 and <= 4;
+
+    private static bool IsChunkType(ReadOnlySpan<byte> type) =>
+        char.IsAsciiLetter((char)type[0]) && char.IsAsciiLetter((char)type[1]) &&
+        char.IsAsciiLetter((char)type[2]) && char.IsAsciiLetter((char)type[3]);
+
+    /// <summary>
+    /// The JPEG rewritten from its start-of-image marker and the segments that draw it, each copied whole and each of the
+    /// length its contents give: the frame header (one only: baseline, extended, progressive or lossless, with Huffman or
+    /// arithmetic coding), quantisation (DQT), Huffman (DHT) and arithmetic (DAC) tables, restart interval (DRI), number of
+    /// lines (DNL), and each scan header (SOS) with its entropy-coded data as uploaded (stuffed bytes and restart markers
+    /// included), then the end-of-image marker; anything after it is dropped.
+    /// Two segments are rewritten or kept for how the pixels read: a JFIF APP0 ahead of every segment kept, written again
+    /// without its thumbnail, so a decoder still reads the colours as YCbCr, and an Adobe APP14 of its fixed size, whose
+    /// transform flag says how the colours are coded. Every other APPn (EXIF, XMP and ICC profiles live in APP1 and APP2)
+    /// and every comment (COM) is dropped. Null when the bytes do not read as markers and segments through to an
+    /// end-of-image after at least one scan: a segment past the end or of another length than its contents, a scan before
+    /// the frame, a second frame, a stray restart, start-of-image or reserved marker, or a hierarchical or extension marker
+    /// (DHP, EXP, a differential frame, JPGn), which no browser draws.
+    /// </summary>
+    /// <param name="bytes">The upload, starting FF D8 FF.</param>
+    /// <param name="width">The frame's width in pixels, 0 when there is no frame.</param>
+    /// <param name="height">The frame's height in pixels, 0 when there is no frame (or the height is left to DNL).</param>
+    private static byte[] StripJpeg(byte[] bytes, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+        using var output = new MemoryStream(bytes.Length);
+        output.Write([0xFF, 0xD8]);
+        var at = 2;
+        var frame = false;
+        var scanned = false;
+        while (true)
+        {
+            // A marker: FF, any fill bytes (more FF), then its code.
+            if (at >= bytes.Length || bytes[at] != 0xFF)
+                return null;
+            while (at < bytes.Length && bytes[at] == 0xFF)
+                at++;
+            if (at >= bytes.Length)
+                return null;
+            var marker = bytes[at++];
+            if (marker == 0xD9)
+            {
+                if (!scanned)
+                    return null;
+                output.Write([0xFF, 0xD9]);
+                return output.ToArray();
+            }
+
+            // Every other marker here starts a segment whose length counts itself and its payload.
+            if (bytes.Length - at < 2)
+                return null;
+            var length = (bytes[at] << 8) | bytes[at + 1];
+            if (length < 2 || length > bytes.Length - at)
+                return null;
+            var start = at - 2;
+            var end = at + length;
+            switch (marker)
+            {
+                case 0xC0 or 0xC1 or 0xC2 or 0xC3 or 0xC9 or 0xCA or 0xCB:
+                    // Precision, height, width and the component count, then three bytes a component (T.81 B.2.2).
+                    if (frame || length < 8 || length != 8 + (3 * bytes[at + 7]))
+                        return null;
+                    frame = true;
+                    height = (bytes[at + 3] << 8) | bytes[at + 4];
+                    width = (bytes[at + 5] << 8) | bytes[at + 6];
+                    output.Write(bytes, start, end - start);
+                    break;
+                case 0xC4 or 0xCC or 0xDB:
+                    if (!IsWholeTables(marker, bytes.AsSpan(at + 2, length - 2)))
+                        return null;
+                    output.Write(bytes, start, end - start);
+                    break;
+                case 0xDC or 0xDD:
+                    // A number of lines or a restart interval: two bytes.
+                    if (length != 4)
+                        return null;
+                    output.Write(bytes, start, end - start);
+                    break;
+                case 0xDA:
+                    // The component count, two bytes a component, then three bytes of spectral selection (T.81 B.2.3).
+                    if (!frame || length < 3 || length != 6 + (2 * bytes[at + 2]))
+                        return null;
+                    var data = EntropyCodedEnd(bytes, end);
+                    if (data < 0)
+                        return null;
+                    output.Write(bytes, start, data - start);
+                    scanned = true;
+                    end = data;
+                    break;
+                case 0xE0:
+                    if (output.Length == 2 && length >= 16 && bytes.AsSpan(at + 2, 5).SequenceEqual("JFIF\0"u8))
+                    {
+                        // Identifier, version, units and densities as they are; no thumbnail (its width and height 0).
+                        output.Write([0xFF, 0xE0, 0x00, 0x10]);
+                        output.Write(bytes, at + 2, 12);
+                        output.Write([0x00, 0x00]);
+                    }
+
+                    break;
+                case 0xEE:
+                    if (length == 14 && bytes.AsSpan(at + 2, 5).SequenceEqual("Adobe"u8))
+                        output.Write(bytes, start, end - start);
+                    break;
+                case (>= 0xE1 and <= 0xEF) or 0xFE:
+                    break;
+                default:
+                    return null;
+            }
+
+            at = end;
+        }
+    }
+
+    /// <summary>
+    /// Whether a table segment's payload is whole tables and nothing else (T.81 B.2.4): DQT 65 bytes a table of 8-bit values
+    /// or 129 of 16-bit ones, DHT 17 bytes and its codes (at most 256) a table, DAC 2 bytes a table.
+    /// </summary>
+    private static bool IsWholeTables(byte marker, ReadOnlySpan<byte> payload)
+    {
+        if (payload.IsEmpty)
+            return false;
+        while (!payload.IsEmpty)
+        {
+            int size;
+            switch (marker)
+            {
+                case 0xDB:
+                    var precision = payload[0] >> 4;
+                    if (precision > 1)
+                        return false;
+                    size = precision == 0 ? 65 : 129;
+                    break;
+                case 0xC4:
+                    if (payload.Length < 17)
+                        return false;
+                    var codes = 0;
+                    foreach (var count in payload.Slice(1, 16))
+                        codes += count;
+                    if (codes > 256)
+                        return false;
+                    size = 17 + codes;
+                    break;
+                default:
+                    size = 2;
+                    break;
+            }
+
+            if (size > payload.Length)
+                return false;
+            payload = payload[size..];
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Where a scan's entropy-coded data ends: at the first marker that is neither a stuffed byte (FF 00) nor a restart
+    /// (FF D0 to FF D7), fill bytes before it excluded. -1 when the data runs to the end of the file.
+    /// </summary>
+    private static int EntropyCodedEnd(byte[] bytes, int at)
+    {
+        while (true)
+        {
+            var found = bytes.AsSpan(at).IndexOf((byte)0xFF);
+            if (found < 0)
+                return -1;
+            var marker = at + found;
+            var code = marker + 1;
+            while (code < bytes.Length && bytes[code] == 0xFF)
+                code++;
+            if (code >= bytes.Length)
+                return -1;
+            if (bytes[code] is not 0x00 and not (>= 0xD0 and <= 0xD7))
+                return marker;
+            at = code + 1;
+        }
+    }
+
+    #endregion
 
     [GeneratedRegex(@"^#[A-Za-z_][A-Za-z0-9_.:-]*$")]
     private static partial Regex LocalReference();

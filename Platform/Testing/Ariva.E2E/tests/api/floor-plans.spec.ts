@@ -1,3 +1,4 @@
+import { crc32 } from 'node:zlib';
 import { expect, test } from '@playwright/test';
 import { accounts, call, databaseAvailable, signIn } from '../support/accounts';
 import { createAirport } from '../support/airports';
@@ -8,7 +9,8 @@ import { expectStatus, expectStatusIn } from '../support/expect-status';
 // attributes, foreignObject and external references removed) and served under a sandboxing CSP; 20 MB limit (413);
 // file names with a path are refused (CWE-22), and longer than 200 code points too (ARV-153); the stored name is always
 // generated, and the image goes out inline under a name the server makes from the level, never the uploaded one, an SVG
-// with charset=utf-8 (ARV-092). The seed binds e2e.border to E2E1 and e2e.terminal to E2E2.
+// with charset=utf-8 (ARV-092). A PNG or JPEG plan is kept without its metadata (text chunks, EXIF) and anything after
+// its end, its pixels as uploaded (ARV-201). The seed binds e2e.border to E2E1 and e2e.terminal to E2E2.
 
 test.skip(!databaseAvailable, 'floor plans need the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -30,6 +32,16 @@ const hostileSvg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://
 let admin: string;
 let levelId: string;
 let levelUrl: string;
+
+/** A PNG chunk: its length, type, data and CRC. */
+function chunk(type: string, data: Buffer): Buffer {
+	const typed = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+	const out = Buffer.alloc(12 + data.length);
+	out.writeUInt32BE(data.length, 0);
+	typed.copy(out, 4);
+	out.writeUInt32BE(crc32(typed), 8 + data.length);
+	return out;
+}
 
 function upload(content: Buffer | string, fileName: string, type: string, scale = '0.05'): FormData {
 	const form = new FormData();
@@ -71,6 +83,28 @@ test('a PNG is stored under a generated name and served with a sandboxing policy
 	expect(content.headers()['content-security-policy']).toContain('sandbox');
 	expect(content.headers()['content-security-policy']).toContain("default-src 'none'");
 	expect(content.headers()['x-content-type-options']).toBe('nosniff');
+});
+
+test('a PNG with text, EXIF and a page after its end is served without them, its pixels and size unchanged', async () => {
+	// The test PNG holds IHDR (8 + 25 bytes), IDAT and IEND only: what comes back is exactly that.
+	const marked = Buffer.concat([
+		png.subarray(0, 33),
+		chunk('tEXt', Buffer.from('Author\0Plan author', 'latin1')),
+		chunk('eXIf', Buffer.from('MM\0*GPSLatitude 31.9539N', 'latin1')),
+		png.subarray(33),
+		Buffer.from('<html><script>alert(1)</script></html>', 'latin1')
+	]);
+	const created = await call('POST', levelUrl, { token: admin, form: upload(marked, 'marked.png', 'image/png') });
+	await expectStatus(created, 201);
+	const plan = await created.json();
+	expect([plan.widthPixels, plan.heightPixels, plan.sizeBytes, plan.metresPerPixel]).toEqual([2, 2, png.length, 0.05]);
+
+	// Read as bytes (call() decodes the body as text).
+	const content = await fetch(`${levelUrl}/content`, { headers: { Authorization: `Bearer ${admin}` } });
+	expect(content.status).toBe(200);
+	const served = Buffer.from(await content.arrayBuffer());
+	expect(served.toString('latin1'), 'no metadata and no page').not.toMatch(/Plan author|GPSLatitude|<script/);
+	expect(served.equals(png), 'only the image itself').toBe(true);
 });
 
 test('an SVG with script is neutralised and replaces the previous plan', async () => {

@@ -731,7 +731,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 300,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-19 from the ARV-092 docs review.",
       "dependsOn": []
     },
@@ -2189,6 +2189,25 @@
       "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-281 security review (advisory A1). No sign-in code.",
       "dependsOn": [
         "ARV-281"
+      ]
+    },
+    {
+      "id": "ARV-283",
+      "title": "[E5] Floor plans stored before ARV-201 lose their metadata (owner decision on when)",
+      "description": "Found by the ARV-201 security review (advisory 6, 2026-11-01). ARV-201 strips metadata from PNG and JPEG plans on upload and bundle import, but plans stored before it keep their EXIF, XMP, text chunks and anything after the image's end, and a site configuration export carries those stored bytes into the bundle (an import elsewhere strips them, the bundle itself does not). A one-off pass would run each live raster plan through FloorPlanFiles.Inspect and replace its file: a new storage key, size and SHA-256 in the floor_plan record, the old file deleted after the commit, pixel size and calibration unchanged, audited per plan. It rewrites stored files, so the owner decides whether and when (for example a Cronz job or an Ariva.Api.Main command run once before go-live, or nothing if no raster plan was uploaded before ARV-201). A plan Inspect now refuses (cut short, broken) is reported, never deleted. CWEs to review: CWE-22, CWE-434, CWE-862.",
+      "acceptanceCriteria": [
+        "The owner's decision (run it, when and how, or not needed) is recorded in docs/product/decisions.md",
+        "If run: every live PNG or JPEG plan is stored without its metadata, with a new key, size and SHA-256 and the same pixel size and calibration; a plan the inspector refuses is listed and left as it is; each replacement is audited; the old file is deleted only after the commit; integration tests on each case",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 302,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-201 security review (advisory 6). Owner decision needed before building: it rewrites stored files. No sign-in code.",
+      "dependsOn": [
+        "ARV-201"
       ]
     }
   ]

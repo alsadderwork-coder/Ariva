@@ -17,6 +17,7 @@ using Ariva.Infra.Storage;
 using Ariva.IntegrationTests.CsvImports;
 using Ariva.IntegrationTests.Security;
 using Ariva.IntegrationTests.Setup;
+using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -40,7 +41,8 @@ namespace Ariva.IntegrationTests.Topology;
 /// ARV-154: every create that adds configuration to a site holds the site's row from before its first write to its commit;
 /// a create started during an import waits and succeeds after it, and an import started during a create waits for it and
 /// finds the site not empty. ARV-250: an import waits at most SiteConfigurationLimits.SiteLockWait for the site's row and
-/// answers SiteBusy past it.
+/// answers SiteBusy past it. ARV-201: a PNG or JPEG plan in a bundle, carrying EXIF, XMP, text and a trailing page, is
+/// stored and served without them, with its pixel size and the bundle's calibration.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisposable
@@ -828,6 +830,48 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
         using var reader = new StreamReader(stored);
         var text = await reader.ReadToEndAsync(Ct);
         text.Should().Contain("<rect").And.NotContain("script").And.NotContain("onload");
+    }
+
+    [Theory]
+    [InlineData("png")]
+    [InlineData("jpeg")]
+    public async Task Import_Should_StoreAndServeARasterPlanWithoutItsMetadata_When_TheBundleCarriesOneWithExifXmpAndText(string type)
+    {
+        var png = type == "png";
+        // Codes no other test of the shared database makes (FloorPlanTests makes Q plus its prefixes: QRA, QRB and others).
+        var admin = await AdministratorAsync(png ? "zp" : "zj");
+        var (source, target, sourceAirport, targetAirport) = png ? ("XCZA", "XCZB", "QZA", "QZB") : ("XCZC", "XCZD", "QZC", "QZD");
+        await SourceAsync(admin, source, sourceAirport);
+        var bundle = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync(source, Ct))).Bundle;
+        await SiteAsync(admin, target);
+        await AirportAsync(admin, targetAirport);
+        var plain = png ? PlanImages.Png(160, 90) : PlanImages.Jpeg(160, 90);
+        var raster = png ? PlanImages.PngWithMetadata(160, 90) : PlanImages.JpegWithMetadata(160, 90);
+
+        var imported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync(target, Rehashed(bundle, SiteConfigurationBundles.FloorPlanFile(1), raster), targetAirport, Ct)));
+
+        imported.Counts.FloorPlans.Should().Be(1);
+        var plan = Ok(await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcFloorPlans>().ListAsync(target, Ct))).Should().ContainSingle().Which;
+        (plan.ContentType, plan.WidthPixels, plan.HeightPixels).Should().Be((png ? "image/png" : "image/jpeg", 160, 90));
+        (plan.MetresPerPixel, plan.OriginX, plan.OriginY).Should().Be((0.05, 1, 2), "the bundle's calibration, from the source");
+        var key = await _host.ReadAsync<string>("SELECT storage_key FROM floor_plan WHERE site_code = @secret", secret: target);
+        key.Should().EndWith(png ? ".png" : ".jpg");
+        var content = Ok(await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcFloorPlans>().OpenAsync(plan.LevelId, Ct)));
+        byte[] served;
+        await using (content.Content)
+        {
+            using var copy = new MemoryStream();
+            await content.Content.CopyToAsync(copy, Ct);
+            served = copy.ToArray();
+        }
+
+        PlanImages.Found(served, PlanImages.Markers).Should().BeEmpty("no metadata is kept");
+        served.Should().Equal(plain, "the encoder's own pieces are kept as they were");
+        (plan.SizeBytes, plan.Sha256, content.Sha256).Should().Be((served.LongLength, SiteConfigurationBundles.Sha256(served), plan.Sha256));
+        await using var stored = await _host.Provider.GetRequiredService<IFileStorage>().OpenReadAsync(key, Ct);
+        using var storedCopy = new MemoryStream();
+        await stored.CopyToAsync(storedCopy, Ct);
+        storedCopy.ToArray().Should().Equal(served, "served as stored");
     }
 
     [Fact]

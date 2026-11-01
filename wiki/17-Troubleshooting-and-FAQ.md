@@ -89,6 +89,10 @@ Symptom, likely cause, check, fix. For longer incident procedures see the [Opera
 
 **Why does a bin's value change after I saw it?** Bins are provisional until everyone who joined in them has left or been resolved and late data has had time to arrive. Final bins do not change, except through an audited recomputation, which creates a new revision and keeps the old one.
 
+**Why does a floor plan photo show on its side, or its colours look different?** Since ARV-201 a PNG or JPEG plan is kept without its metadata, so a phone or camera's EXIF rotation and the file's colour profile are dropped: the plan shows as its pixels are stored, in sRGB. Rotate it in an image editor so its pixels are upright, export it in sRGB, upload it again and check the calibration. Plans uploaded before ARV-201 still carry their metadata until they are uploaded again.
+
+**Why was my PNG or JPEG plan refused as unsupported?** Ariva reads a raster through to its end. A file cut short (an interrupted download or copy), one with data where none belongs, or an unusual JPEG kind (hierarchical, JPEG-LS) is refused. Open it in an image editor and export it again as a plain PNG or baseline JPEG.
+
 **Can Ariva show who was in the queue or follow a passenger from check-in to the gate?** No. Tracks are anonymous, rotated at zone exit, and never linked across processes.
 
 **Can a supervisor see which officer was at a desk?** Not in Ariva. Officer data stays in AMAN; the Immigration screen links to AMAN's own reports.
