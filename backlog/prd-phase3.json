@@ -918,7 +918,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 300,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-19 from the ARV-094 security review (Low).",
       "dependsOn": []
     },
@@ -2228,6 +2228,25 @@
       "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-206 security review (advisories 1 to 3). Chart and chart test only. No sign-in code.",
       "dependsOn": [
         "ARV-206"
+      ]
+    },
+    {
+      "id": "ARV-285",
+      "title": "[E17] Exception text protected outside the logs: dead letters, the outbox's last error, the TickerQ dashboard",
+      "description": "Found by the ARV-212 security review (advisory 12, 2026-11-01). ARV-212 protects an exception's text on its way to every log sink (ProtectedExceptionSink), but three places keep an exception's text as it is, outside the log pipeline: the dead-letter record's error header (Ariva.Infra/Messaging/Kafka/DeadLetters.cs), outbox_message.last_error (Ariva.Infra/Messaging/Outbox/OutboxRelay.cs) and the job exceptions TickerQ stores and shows on the Cronz dashboard. A library's message there can carry a credential or an address (a broker or SMTP refusal, an outbound endpoint's error body). Run each through RedactionEnricher.ProtectText (or its successor) before it is written, keep the length bounds each has, and state the TickerQ part's limits (TickerQ writes its own tables; the dashboard is behind the sign-in freeze, ARV-087). CWEs to review: CWE-532, CWE-200.",
+      "acceptanceCriteria": [
+        "A dead letter's error header and outbox_message.last_error hold an exception's text protected as log text is (credentials by shape and name, email addresses masked), with unit or integration tests that put an ics_ secret, a TOTP seed and an address in the exception and find none in the header or the column",
+        "The TickerQ job exception path is protected the same way, or its limit is recorded in the log inventory with the reason",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 302,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-212 security review (advisory 12). The TickerQ dashboard part touches the Cronz dashboard, which is under the sign-in freeze; the dead letter and outbox parts are not.",
+      "dependsOn": [
+        "ARV-212"
       ]
     }
   ]

@@ -4,6 +4,7 @@ using Ariva.ServiceDefaults;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Serilog;
+using Serilog.Configuration;
 using Serilog.Events;
 using Serilog.Formatting.Json;
 using Serilog.Sinks.Grafana.Loki;
@@ -113,53 +114,58 @@ public static class ArivaLogging
             .Enrich.FromLogContext()
             .Enrich.WithProperty("Application", application)
             .Enrich.WithProperty("Environment", environment ?? "unknown")
-            .Enrich.With(new RedactionEnricher(protection, metrics))
-            // Always on, beside any collector: the kubelet keeps the pod's lines (log inventory, section 2.2).
-            .WriteTo.Async(sink => sink.Console(new JsonFormatter(renderMessage: true)));
+            .Enrich.With(new RedactionEnricher(protection, metrics));
 
+        // ARV-212: every sink sits behind the protection of the exception's text, which an enricher cannot give.
         var file = configuration[FileSetting];
-        if (!string.IsNullOrWhiteSpace(file))
-            logger.WriteTo.File(new JsonFormatter(renderMessage: true), file, shared: true);
-
-        if (lokiUri is not null)
+        logger.WriteTo.Sink(LoggerSinkConfiguration.Wrap(sink => new ProtectedExceptionSink(sink, metrics), sinks =>
         {
-            logger.WriteTo.GrafanaLoki(
-                lokiUri.ToString(),
-                labels:
-                [
-                    new LokiLabel { Key = "app", Value = application },
-                    new LokiLabel { Key = "environment", Value = environment ?? "unknown" },
-                    new LokiLabel { Key = "log_type", Value = "application" }
-                ],
-                propertiesAsLabels: ["level"],
-                credentials: lokiCredentials,
-                httpClient: lokiClient);
-        }
+            // Always on, beside any collector: the kubelet keeps the pod's lines (log inventory, section 2.2).
+            sinks.Async(sink => sink.Console(new JsonFormatter(renderMessage: true)));
 
-        if (otlp.Enabled)
-        {
-            logger.WriteTo.OpenTelemetry(
-                options =>
-                {
-                    options.Endpoint = otlp.Endpoint.ToString();
-                    if (otlpHandler is not null)
-                        options.HttpMessageHandler = otlpHandler;
-                    options.Protocol = otlp.UseHttp
-                        ? Serilog.Sinks.OpenTelemetry.OtlpProtocol.HttpProtobuf
-                        : Serilog.Sinks.OpenTelemetry.OtlpProtocol.Grpc;
-                    options.ResourceAttributes = new Dictionary<string, object>
+            if (!string.IsNullOrWhiteSpace(file))
+                sinks.File(new JsonFormatter(renderMessage: true), file, shared: true);
+
+            if (lokiUri is not null)
+            {
+                sinks.GrafanaLoki(
+                    lokiUri.ToString(),
+                    labels:
+                    [
+                        new LokiLabel { Key = "app", Value = application },
+                        new LokiLabel { Key = "environment", Value = environment ?? "unknown" },
+                        new LokiLabel { Key = "log_type", Value = "application" }
+                    ],
+                    propertiesAsLabels: ["level"],
+                    credentials: lokiCredentials,
+                    httpClient: lokiClient);
+            }
+
+            if (otlp.Enabled)
+            {
+                sinks.OpenTelemetry(
+                    options =>
                     {
-                        ["service.name"] = application,
-                        ["service.namespace"] = "ariva",
-                        ["deployment.environment"] = environment ?? "unknown"
-                    };
-                },
-                // ARV-091a: the sink then applies the standard variables (OTEL_EXPORTER_OTLP_ENDPOINT, _PROTOCOL, _HEADERS,
-                // OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME). It reads them from the host's configuration, which holds the
-                // environment, rather than from the process environment, so it ships to exactly the endpoint the guards above
-                // judged, even when a command line setting replaced the environment's value.
-                getConfigurationVariable: name => configuration[name]);
-        }
+                        options.Endpoint = otlp.Endpoint.ToString();
+                        if (otlpHandler is not null)
+                            options.HttpMessageHandler = otlpHandler;
+                        options.Protocol = otlp.UseHttp
+                            ? Serilog.Sinks.OpenTelemetry.OtlpProtocol.HttpProtobuf
+                            : Serilog.Sinks.OpenTelemetry.OtlpProtocol.Grpc;
+                        options.ResourceAttributes = new Dictionary<string, object>
+                        {
+                            ["service.name"] = application,
+                            ["service.namespace"] = "ariva",
+                            ["deployment.environment"] = environment ?? "unknown"
+                        };
+                    },
+                    // ARV-091a: the sink then applies the standard variables (OTEL_EXPORTER_OTLP_ENDPOINT, _PROTOCOL, _HEADERS,
+                    // OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME). It reads them from the host's configuration, which holds the
+                    // environment, rather than from the process environment, so it ships to exactly the endpoint the guards above
+                    // judged, even when a command line setting replaced the environment's value.
+                    getConfigurationVariable: name => configuration[name]);
+            }
+        }));
 
         return logger;
     }
