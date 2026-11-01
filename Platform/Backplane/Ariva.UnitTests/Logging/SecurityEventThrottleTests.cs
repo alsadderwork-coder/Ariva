@@ -91,6 +91,16 @@ public sealed class SecurityEventThrottleTests
         return context;
     }
 
+    /// <summary>A floor plan upload from the address, marked as its filter marks it, answered with the status.</summary>
+    private static HttpContext Upload(string address, int status)
+    {
+        var context = new DefaultHttpContext { Request = { Method = "POST" }, Response = { StatusCode = status } };
+        var log = new RequestLogContext(IPAddress.Parse(address));
+        log.MarkUpload("floor-plan", "api/v1/admin/levels/{levelId:guid}/floor-plan");
+        context.Features.Set(log);
+        return context;
+    }
+
     #endregion
 
     #region The throttle
@@ -241,6 +251,34 @@ public sealed class SecurityEventThrottleTests
         summary.Values["Kind"].Should().Be(nameof(SecurityEventKind.RateLimitRejected));
         summary.Values["KindEventId"].Should().Be(SecurityEvents.RateLimitRejectedId);
         summary.Values["Seconds"].Should().Be(10L);
+    }
+
+    [Fact]
+    public void UploadRefused_Should_BeThrottledPerSourceAndSummarised_When_OneUserRepeatsRefusedUploads()
+    {
+        // ARV-203: a refused upload is a request-level event like the others: three a second per source, the rest counted.
+        var logger = new CapturedLogger();
+        var clock = new StepClock();
+        using var events = new SecurityEventLog(logger, timeProvider: clock);
+        for (var i = 0; i < 10; i++)
+            events.UploadRefused(Upload("198.51.100.1", StatusCodes.Status413PayloadTooLarge));
+        events.UploadRefused(Upload("203.0.113.9", StatusCodes.Status400BadRequest));
+
+        var written = logger.Entries.Where(e => e.Id.Id == SecurityEvents.UploadRefusedId).ToList();
+        written.Should().HaveCount(SecurityEventLog.MaxPerSourcePerSecond + 1, "one source's flood leaves another source's event in");
+        written[0].Id.Name.Should().Be(SecurityEvents.UploadRefusedName);
+        written[0].Values["UploadKind"].Should().Be("floor-plan");
+        written[0].Values["Endpoint"].Should().Be("api/v1/admin/levels/{levelId:guid}/floor-plan", "the endpoint the upload's filter saw");
+        written[0].Values["Status"].Should().Be(413);
+        written[0].Values["Reason"].Should().Be(SecurityEvents.UploadTooLarge);
+        written[^1].Values["Reason"].Should().Be(SecurityEvents.UploadInvalid);
+
+        clock.Milliseconds += 10_000;
+        events.WriteSummaries();
+        var summary = logger.Entries.Should().ContainSingle(e => e.Id.Id == SecurityEvents.EventsSuppressedId).Subject;
+        summary.Values["Count"].Should().Be(7L);
+        summary.Values["Kind"].Should().Be(nameof(SecurityEventKind.UploadRefused));
+        summary.Values["KindEventId"].Should().Be(SecurityEvents.UploadRefusedId);
     }
 
     [Fact]

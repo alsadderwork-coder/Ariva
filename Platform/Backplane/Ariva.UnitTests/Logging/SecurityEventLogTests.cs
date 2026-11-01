@@ -36,7 +36,8 @@ namespace Ariva.UnitTests.Logging;
 /// rate limiter's 429, an invalid model, a body that is not strict JSON, a repeated query parameter, a NUL character in the
 /// query, the body or a form field or file name of an upload otherwise invalid (ARV-096c: the NUL check runs first), a site outside the caller's or a value that is not a site code, and, through the generic
 /// RequestRefused event, the refusals made elsewhere (an ended session, a pending account, a service's border-only 403, an
-/// integration client's own limit). Each names the caller (CallerUserId and CallerSessionId, or anonymous; CallerClientId for
+/// integration client's own limit), and, through UploadRefused (ARV-203), an upload its service refuses (400, 409) with the
+/// upload's kind. Each names the caller (CallerUserId and CallerSessionId, or anonymous; CallerClientId for
 /// an integration client, CallerDeviceId for a device), the client address the trusted proxy names, the trace id, the method
 /// and the endpoint's route pattern, and none of the refused input; the answers are the ones the hosts gave before. An
 /// ordinary request's lines carry the same who and where, with the staff email masked and the desk code and track id
@@ -91,7 +92,9 @@ public sealed class SecurityEventLogTests : IDisposable
         { "the global rate limit", 1, HttpStatusCode.TooManyRequests, SecurityEvents.RateLimitRejectedId, null, "anonymous" },
         { "an ended session", 0, HttpStatusCode.Unauthorized, SecurityEvents.RequestRefusedId, SecurityEvents.CredentialRefused, "admin" },
         { "a pending account", 0, HttpStatusCode.Forbidden, SecurityEvents.RequestRefusedId, SecurityEvents.AccessRefused, "plain" },
-        { "a border-only rule", 0, HttpStatusCode.Forbidden, SecurityEvents.RequestRefusedId, SecurityEvents.AccessRefused, "admin" }
+        { "a border-only rule", 0, HttpStatusCode.Forbidden, SecurityEvents.RequestRefusedId, SecurityEvents.AccessRefused, "admin" },
+        { "an upload its service refuses", 0, HttpStatusCode.BadRequest, SecurityEvents.UploadRefusedId, SecurityEvents.UploadInvalid, "admin" },
+        { "an upload with a stale preview token", 0, HttpStatusCode.Conflict, SecurityEvents.UploadRefusedId, SecurityEvents.UploadConflict, "admin" }
     };
 
     #endregion
@@ -158,8 +161,10 @@ public sealed class SecurityEventLogTests : IDisposable
             properties.GetProperty("Partition").GetString().Should().Be(SecurityEvents.AddressPartition);
         }
 
-        if (eventId == SecurityEvents.RequestRefusedId)
+        if (eventId is SecurityEvents.RequestRefusedId or SecurityEvents.UploadRefusedId)
             properties.GetProperty("Status").GetInt32().Should().Be((int)status);
+        if (eventId == SecurityEvents.UploadRefusedId)
+            properties.GetProperty("UploadKind").GetString().Should().Be(refusal.Contains("stale", StringComparison.Ordinal) ? "flight-schedule-import" : "flight-schedule-preview");
         properties.GetProperty("EventId").GetProperty("Name").GetString().Should().StartWith("SecurityEvent.");
         File.ReadAllText(log).Should().NotContain(Canary, "no log line holds the refused input").And.NotContain("<script>");
     }
@@ -522,8 +527,15 @@ public sealed class SecurityEventLogTests : IDisposable
                 services.Replace(ServiceDescriptor.Scoped<IPermissionResolver>(_ => new Grants()));
                 services.Replace(ServiceDescriptor.Scoped<ISiteScope>(_ => new OneSiteScope()));
                 services.Replace(ServiceDescriptor.Scoped<ISvcAlertRules, BorderOnlyRules>());
-                // ARV-096c: the upload is refused before its action, so the service is never called.
-                services.Replace(ServiceDescriptor.Scoped(_ => new Mock<ISvcFlightSchedules>(MockBehavior.Strict).Object));
+                // ARV-096c: the NUL uploads are refused before their action, so the service is never called for them; ARV-203: the
+                // service refuses the valid ones with a fixed text (the canary is in the file and its name).
+                var schedules = new Mock<ISvcFlightSchedules>(MockBehavior.Strict);
+                schedules.Setup(s => s.SiteExistsAsync("DMO", It.IsAny<CancellationToken>())).ReturnsAsync(true);
+                schedules.Setup(s => s.PreviewAsync("DMO", It.IsAny<Stream>(), 7, It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(Fluentx.Result.Error<SsimPreviewViewModel>("Line 1 is not an SSIM record."));
+                schedules.Setup(s => s.ImportAsync("DMO", It.IsAny<Stream>(), 7, "token", It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(Fluentx.Result.Error<SsimImportViewModel>(FlightScheduleErrors.NotThePreview));
+                services.Replace(ServiceDescriptor.Scoped(_ => schedules.Object));
                 FakeAdministration.Register(services);
                 BindingProbeController.Mount(services);
                 LogProbeController.Mount(services);
@@ -554,8 +566,25 @@ public sealed class SecurityEventLogTests : IDisposable
         "a site outside the caller's" => Request(HttpMethod.Get, "/fixture/log/sites/BEY?note=" + Uri.EscapeDataString(Marker), token),
         "a value that is not a site code" => Request(HttpMethod.Get, "/fixture/log/sites/B_EY?note=" + Uri.EscapeDataString(Marker), token),
         "a border-only rule" => Request(HttpMethod.Get, $"/api/v1/admin/alert-rules/{Guid.CreateVersion7()}?note={Uri.EscapeDataString(Marker)}", token),
+        "an upload its service refuses" => Schedule(token, "preview", Canary + ".ssim"),
+        "an upload with a stale preview token" => Schedule(token, "import", Canary + ".ssim"),
         _ => Request(HttpMethod.Get, "/fixture/log/ordinary?note=" + Uri.EscapeDataString(Marker), null)
     };
+
+    /// <summary>A valid flight schedule preview or import (ARV-203), its file named as given and holding the canary.</summary>
+    private static HttpRequestMessage Schedule(string token, string step, string fileName)
+    {
+        var request = Request(HttpMethod.Post, $"/api/v1/admin/sites/DMO/flight-schedules/{step}", token);
+        var form = new MultipartFormDataContent();
+        var file = new ByteArrayContent(Encoding.UTF8.GetBytes(Marker + "\r\n"));
+        file.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        form.Add(file, "file", fileName);
+        form.Add(new StringContent("7"), "horizonDays");
+        if (step == "import")
+            form.Add(new StringContent("token"), "previewToken");
+        request.Content = form;
+        return request;
+    }
 
     /// <summary>A flight schedule upload whose horizonDays is not a number, with the note and the file name given.</summary>
     private static HttpRequestMessage Upload(string token, string note, string fileName)

@@ -13,7 +13,8 @@ public enum SecurityEventKind
     RepeatedQueryRefused,
     NulCharacterRefused,
     SiteScopeRefused,
-    RequestRefused
+    RequestRefused,
+    UploadRefused
 }
 
 /// <summary>

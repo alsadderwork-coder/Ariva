@@ -146,6 +146,16 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-203: refused uploads are security events (2026-11-01)
+
+- Behaviour: an upload refused with 400, 404, 408, 409, 413, 415 or 422 (by its controller or its service) now writes `SecurityEvent.UploadRefused` (9134) at Warning when no other security event recorded it: the caller, the upload's kind, the endpoint's route pattern, the status and a fixed reason, never the file or its name. Floor plans, SSIM previews and imports, the CSV imports' refusals before their service, site configuration imports and advertisement uploads were not logged before. The answers do not change.
+- After the upgrade: a saved search or SIEM rule on the request-level events (9114 to 9119, 9127 to 9129) can add 9134; [log inventory](../docs/security/log-inventory.md) section 10.2 proposes an alert on repeated `UploadInvalid` or `UploadTooLarge` from one caller.
+
+### ARV-201: PNG and JPEG floor plans are kept without their metadata (2026-11-01)
+
+- Behaviour: a PNG or JPEG floor plan, uploaded or in a site configuration bundle, is stored and served without its metadata (EXIF, XMP, text chunks, comments, colour profiles, thumbnails, animation and private chunks) and without anything after the image's end; its compressed pixels, pixel size and calibration stay as uploaded. With the EXIF orientation and the colour profile gone, a plan shows as its pixels are stored and in sRGB. A raster cut short or otherwise broken is now refused, where it was taken before: an upload with 400 ("Upload a PNG, JPEG or SVG image."), a bundle import with its floor plan file refusal.
+- Before the upgrade: nothing. After it: a plan photographed on its side shows on its side; rotate it in an image editor, export it upright and in sRGB, upload it again and check the calibration ([Troubleshooting](17-Troubleshooting-and-FAQ.md)). Plans stored before the upgrade keep their metadata until uploaded again (ARV-283, an owner decision).
+
 ### ARV-199: the web host's /api and /hubs refuse plain HTTP, and the affinity cookies carry the __Host- prefix (2026-11-01)
 
 - Behaviour: on the web host, `/api` and `/hubs` now answer plain HTTP with 403, as the machine hosts do, while the web app still redirects to HTTPS (308). The affinity cookies are named `__Host-ariva-<Ingress name>` instead of `ariva-<Ingress name>` (still Secure, SameSite=Strict, Path=/, and no Domain). The first request after the upgrade carries only the old cookie, so it may reach another replica once; the affinity cookie only routes requests and holds no sign-in state.

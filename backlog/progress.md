@@ -4596,3 +4596,47 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - The E2E `call()` helper reads the body as text; compare binary content through `fetch` and `arrayBuffer()`.
   - Theory data with NUL or other control characters in `InlineData` strings ends up in test names; add them in code instead.
   - The integration tests of the Administration database share it within a run: `FloorPlanTests` makes airports Q plus its prefix (QRA, QRB and others), so a new test's codes must avoid those too, not only the literal codes a search finds. The first gate run failed on QRA.
+
+## 2026-11-01: ARV-203 [E17] Refused uploads audited
+
+- What changed:
+  - A new request-level security event, `SecurityEvent.UploadRefused` (9134, `Ariva.Api.Common/Logging/SecurityEvents.cs`). It is written at Warning by `SecurityEventLog.UploadRefused` within the ARV-091 throttle (its own `SecurityEventKind`: 60 a second per process, 3 per source, the rest counted in the 9130 summary and the `ariva.security.events` metric). It is in `RequestEventIds`, so the redaction enricher drops the path from it.
+  - What it records: who (the request context's `CallerUserId`, session and address), which upload (`UploadKind`, a constant of the filter, and the endpoint's route pattern), the status, and a fixed reason per status (`UploadRefusedReasonOf`: `UploadInvalid` 400, `UploadTargetNotFound` 404, `UploadTooSlow` 408, `UploadConflict` 409, `UploadTooLarge` 413, `UploadUnsupportedMediaType` 415, `UploadUnprocessable` 422). It never records the file, its name, its hash or the answer's text, which can name a row or a line.
+  - `UploadLimitAttribute`, the resource filter every endpoint of the `upload` policy carries (after authorization, before any body is read), marks the request's `RequestLogContext` with its kind and route pattern (`MarkUpload`). It does this for every kind but the site configuration export (`IsUpload`).
+  - `RequestLogContextMiddleware` writes the event when a marked request ends with one of those statuses and no other security event was recorded for it. 401, 403 and 429 keep the generic `RequestRefused` (9129), and an invalid model, strict JSON or NUL refusal keeps its own event: one event a refusal. The route pattern is taken at marking, since the exception handler clears the endpoint before a Kestrel 408 or 413.
+  - Covered, all of which wrote nothing before: floor plan and advertisement uploads refused by their controller or service, SSIM previews, SSIM imports refused before or at the token, the CSV imports' refusals before their service (no file, over 1 MB), and site configuration imports refused by the service.
+  - Kept as they are: the imports' own audit entries. A malware detection writes 9131 and `Upload.MalwareRefused`, and its 400 also writes 9134. 5xx answers are not 9134 (the scanner's 503 has 9132). The ingress's own 413 above `proxy-body-size` never reaches the pod.
+  - Tests:
+    - `UploadRefusalEventTests` (unit, Ariva.Api.Main in process, 29):
+      - One theory row per upload endpoint (9 endpoints, 7 kinds), each refused by its service. Each writes exactly one request-level event: 9134 with its kind, status, reason, route pattern and caller, and no canary from the file, its name or the service's text in any line.
+      - Status rows 404, 409 and 413 (a CSV file of 1 MB and one byte).
+      - No event for a taken upload, for a refusal another event records (an invalid model 9117, a missing permission 9114, the allowance 9129), or for the export.
+      - The status-to-reason table.
+    - `SecurityEventThrottleTests.UploadRefused_Should_BeThrottledPerSourceAndSummarised_When_OneUserRepeatsRefusedUploads`.
+    - Two real-token rows in `SecurityEventLogTests`' refusal theory (an SSIM preview its service refuses, 400; an import with a stale token, 409): the caller's id and session, the trusted proxy's client address, the trace id, the route pattern and the upload's kind.
+    - Mutation proof (the middleware's upload branch removed, built and run, then restored): 13 of the 29 new tests fail.
+  - Docs:
+    - docs/security/log-inventory.md (section 10.2 row 9134, section 10.3), asvs-l2 V16.3.3.
+    - wiki 10 (the security events section), wiki 13 (security events paragraph).
+    - wiki 13a (section 2's fixed answers, and the audit row of each upload).
+    - wiki 18 (migration note). Also the ARV-201 migration note, which that story's commit missed.
+- Files:
+  - Ariva.Api.Common: `Logging/SecurityEvents.cs`, `Logging/SecurityEventLog.cs`, `Logging/SecurityEventMetrics.cs`, `Logging/RequestLogContext.cs`, `Middlewares/RequestLogContextMiddleware.cs`.
+  - Ariva.Api.Main: `Controllers/AdminArea/Uploads/UploadLimitAttribute.cs`.
+  - Ariva.UnitTests: `Logging/UploadRefusalEventTests.cs` (new), `Logging/SecurityEventThrottleTests.cs`, `Logging/SecurityEventLogTests.cs`.
+  - Docs: docs/security/log-inventory.md, docs/security/asvs-l2.md, wiki/10-Operations-Runbook.md, wiki/13-Security-Guide.md, wiki/13a-File-Handling.md, wiki/18-Release-Notes-and-Versioning.md.
+  - Backlog: backlog/prd-phase3.json.
+- Gates: `node scripts/verify.mjs story --specs tests/api/floor-plans.spec.ts,tests/api/upload-scanning.spec.ts,tests/api/csv-imports.spec.ts` green. It widened to the full suites because Ariva.Api.Common changed: build, 8,551 unit tests, security scan of 2,346 files with 0 errors and the expected warnings, the full integration suite (890), and 945 E2E API and functional tests. After the review's documentation fixes and the 415 row: `node scripts/verify.mjs backend` green (8,552 unit tests), `node scripts/verify.mjs docs` green, the logging unit namespace (386) green after the last advisory, and `node scripts/verify.mjs quick` before the commit. Disk fell to 582 MB during the integration step; 2.3 GB of earlier runs' E2E host logs (`Platform/Testing/Ariva.E2E/logs`, gitignored) were removed.
+- Security review: (CWE-501 and CWE-79 on the logging path, the logging rules; ASVS V16.3.3, V16.2.1, V16.3.2, V5.1.1):
+  - Round 1 FAIL. The code was sound; three documentation fixes were required.
+    1. V16.3.3 still said "Missing until ARV-203", and its 415 sentence no longer held for the site configuration import.
+    2. The docs claimed every refused upload is an event, but two 415s are answered before the upload's filter marks the request: the unbound form filter's for a form sent to the JSON import, and routing's Consumes 415 for a body that is not multipart sent to a form upload. 5xx answers are not 9134 either.
+    3. The runbook's `ariva.security.events` row missed the new kind.
+  - Fixed: all three, by naming the exceptions in wiki 13a section 2, the 9134 row and sections 10.4 and 10.5 of the log inventory, and in V16.3.3 (rather than marking earlier). Advisories taken: a 415 row (MVC's own 415 at the site configuration import, after the marking, writes 9134), 9134 named in wiki 13a section 4's detection bullet and its CSV row, the double records in log inventory section 10.5.
+  - Follow-up PASS. Then taken: the release note heading ("refused uploads are security events") and a canary assertion on the 415 row.
+  - Still open as advisories: an E2E on real Kestrel for the 408 and 413 paths; the "after authentication and authorization" wording for routing's 415, which predates this story.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - The exception handler (inside `RequestLogContextMiddleware`) clears the endpoint before it answers a `BadHttpRequestException`'s 408 or 413, so anything that names the endpoint at the request's end must capture it earlier.
+  - A mocked service's refusal text reaches the answer's detail: a test that checks the answer repeats nothing the caller sent must not put the canary in the mock's text.
+  - xUnit filters of different kinds (`--filter-namespace` with `--filter-class`) are ANDed; repeat one kind to OR them.

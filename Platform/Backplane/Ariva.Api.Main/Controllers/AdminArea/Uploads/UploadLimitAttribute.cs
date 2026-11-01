@@ -83,6 +83,10 @@ public sealed class UploadLimitAttribute(string kind) : Attribute, IAsyncResourc
 
     #region Methods
 
+    /// <summary>Whether a kind takes a file or a bundle (every kind but the site configuration's export, ARV-203).</summary>
+    /// <param name="kind">The kind.</param>
+    public static bool IsUpload(string kind) => kind is not SiteConfigurationExport;
+
     /// <summary>Whether a kind is a CSV import's (counted in <c>Security:RateLimiting:CsvImports</c>).</summary>
     /// <param name="kind">The kind.</param>
     public static bool IsCsvImport(string kind) => kind is CsvPreview or CsvCommit;
@@ -93,6 +97,9 @@ public sealed class UploadLimitAttribute(string kind) : Attribute, IAsyncResourc
         ArgumentNullException.ThrowIfNull(next);
         var http = context.HttpContext;
         var services = http.RequestServices;
+        // ARV-203: a refusal of the upload from here on (a filter's, the controller's, the service's) is a security event.
+        if (IsUpload(Kind))
+            RequestLogContext.Of(http)?.MarkUpload(Kind, SecurityEventLog.EndpointOf(http));
         if (CallerOf(services.GetRequiredService<ICurrentUser>()) is not { } caller)
         {
             context.Result = SteadyUploadAttribute.Answer(StatusCodes.Status403Forbidden, "Forbidden", null);

@@ -8,7 +8,7 @@ namespace Ariva.Api.Common.Logging;
 /// account events of <c>SvcAuthenticator</c> (9101 to 9113), which keep their numbers; 9120 to 9126 are the account
 /// administration and proof of play events, and 9131 and 9132 the upload malware scan's (<c>UploadScreening</c>, ARV-092b)
 /// and 9133 its signatures' staleness alarm (<c>ScannerSignatureMonitor</c>, ARV-092c), which Ariva.Infra declares and
-/// writes itself. Each request-level event is written at Warning by <see cref="SecurityEventLog"/>,
+/// writes itself; 9134 is a refused upload's (ARV-203). Each request-level event is written at Warning by <see cref="SecurityEventLog"/>,
 /// so it passes the Microsoft Warning override and reaches every sink. Each names who (the request enricher's <c>CallerUserId</c>, or anonymous,
 /// <c>CallerSessionId</c> and <c>CallerAddress</c>), where (the method and the endpoint's route pattern, never a path or a query
 /// string), the trace id (Serilog's <c>TraceId</c> and <c>SpanId</c>) and why (a fixed reason), and never the refused input, a
@@ -38,6 +38,8 @@ public static class SecurityEvents
     public const string RequestRefusedName = "SecurityEvent.RequestRefused";
     public const int EventsSuppressedId = 9130;
     public const string EventsSuppressedName = "SecurityEvent.EventsSuppressed";
+    public const int UploadRefusedId = 9134;
+    public const string UploadRefusedName = "SecurityEvent.UploadRefused";
 
     /// <summary>403 from the authorization middleware: authenticated, but a requirement of the endpoint's policy is not met.</summary>
     public static readonly EventId AuthorizationForbidden = new(AuthorizationForbiddenId, AuthorizationForbiddenName);
@@ -73,11 +75,20 @@ public static class SecurityEvents
     /// <summary>The events of one kind the throttle left out in the last period (a summary line, written every 10 s while there are any, and at shutdown).</summary>
     public static readonly EventId EventsSuppressed = new(EventsSuppressedId, EventsSuppressedName);
 
+    /// <summary>
+    /// An upload (an endpoint of the <c>upload</c> policy that takes a file or a bundle, ARV-203) refused with 400, 404, 408, 409,
+    /// 413, 415 or 422 when no other security event was recorded for the request: its file or form refused, its target not
+    /// found, its body too slow, a conflict, too large, of a type not taken. Written when the request ends, with the upload's
+    /// kind, the status and a fixed reason per status (<see cref="UploadRefusedReasonOf"/>), never the file, its name or a
+    /// service's own text.
+    /// </summary>
+    public static readonly EventId UploadRefused = new(UploadRefusedId, UploadRefusedName);
+
     /// <summary>The request-level events: they carry the endpoint's route pattern, so the redaction enricher drops the request path from them.</summary>
     public static readonly IReadOnlySet<int> RequestEventIds = new HashSet<int>
     {
         AuthorizationForbiddenId, AuthorizationChallengedId, RateLimitRejectedId, InvalidModelRefusedId, StrictJsonRefusedId,
-        RepeatedQueryRefusedId, NulCharacterRefusedId, SiteScopeRefusedId, RequestRefusedId
+        RepeatedQueryRefusedId, NulCharacterRefusedId, SiteScopeRefusedId, RequestRefusedId, UploadRefusedId
     };
 
     #endregion
@@ -129,6 +140,27 @@ public static class SecurityEvents
     /// <summary>A 429 answered outside the rate limiter (an integration client's own limit, the upload limit).</summary>
     public const string LimitReached = "LimitReached";
 
+    /// <summary>An upload answered 400: its file or form refused (a type not taken, a file over a limit inside, a malformed file, a stale token).</summary>
+    public const string UploadInvalid = "UploadInvalid";
+
+    /// <summary>An upload answered 404: its level, site or other target not found, or outside the caller's sites.</summary>
+    public const string UploadTargetNotFound = "UploadTargetNotFound";
+
+    /// <summary>An upload answered 408: its body arrived too slowly.</summary>
+    public const string UploadTooSlow = "UploadTooSlow";
+
+    /// <summary>An upload answered 409: it conflicts with what is stored (a site not empty, a full library, a busy site).</summary>
+    public const string UploadConflict = "UploadConflict";
+
+    /// <summary>An upload answered 413: its body or file is larger than the endpoint takes.</summary>
+    public const string UploadTooLarge = "UploadTooLarge";
+
+    /// <summary>An upload answered 415: a body of a media type the endpoint does not take.</summary>
+    public const string UploadUnsupportedType = "UploadUnsupportedMediaType";
+
+    /// <summary>An upload answered 422.</summary>
+    public const string UploadUnprocessable = "UploadUnprocessable";
+
     #endregion
 
     #region Rate limit partitions
@@ -163,6 +195,19 @@ public static class SecurityEvents
         _ => LimitReached
     };
 
+    /// <summary>The fixed reason of an <see cref="UploadRefused"/> event for its status; null for a status that is no upload refusal it records.</summary>
+    public static string UploadRefusedReasonOf(int status) => status switch
+    {
+        400 => UploadInvalid,
+        404 => UploadTargetNotFound,
+        408 => UploadTooSlow,
+        409 => UploadConflict,
+        413 => UploadTooLarge,
+        415 => UploadUnsupportedType,
+        422 => UploadUnprocessable,
+        _ => null
+    };
+
     /// <summary>The event id of a kind, as its summary line names it.</summary>
     public static int EventIdOf(SecurityEventKind kind) => kind switch
     {
@@ -174,6 +219,7 @@ public static class SecurityEvents
         SecurityEventKind.RepeatedQueryRefused => RepeatedQueryRefusedId,
         SecurityEventKind.NulCharacterRefused => NulCharacterRefusedId,
         SecurityEventKind.SiteScopeRefused => SiteScopeRefusedId,
+        SecurityEventKind.UploadRefused => UploadRefusedId,
         _ => RequestRefusedId
     };
 

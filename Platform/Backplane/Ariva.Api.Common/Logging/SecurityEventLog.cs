@@ -188,6 +188,24 @@ public sealed partial class SecurityEventLog : IDisposable
             });
     }
 
+    /// <summary>
+    /// An upload refused with a status <see cref="SecurityEvents.UploadRefusedReasonOf"/> names that no other security event
+    /// recorded (ARV-203). Written by <see cref="Middlewares.RequestLogContextMiddleware"/> when the request ends, with the
+    /// upload's kind and the endpoint its filter saw (<see cref="RequestLogContext.MarkUpload"/>).
+    /// </summary>
+    /// <param name="context">The request, its answer decided.</param>
+    public void UploadRefused(HttpContext context)
+    {
+        if (Admit(SecurityEventKind.UploadRefused, context))
+            Write(SecurityEventKind.UploadRefused, () =>
+            {
+                var log = RequestLogContext.Of(context);
+                var status = context.Response.StatusCode;
+                LogUploadRefused(_logger, status, MethodOf(context), log?.UploadEndpoint ?? EndpointOf(context), log?.UploadKind ?? NoEndpoint,
+                    SecurityEvents.UploadRefusedReasonOf(status));
+            });
+    }
+
     #endregion
 
     #region Summaries
@@ -351,6 +369,10 @@ public sealed partial class SecurityEventLog : IDisposable
     [LoggerMessage(EventId = SecurityEvents.RequestRefusedId, EventName = SecurityEvents.RequestRefusedName, Level = LogLevel.Warning,
         Message = "Request refused ({Status}) at {Method} {Endpoint}: {Reason}")]
     private static partial void LogRefused(ILogger logger, int status, string method, string endpoint, string reason);
+
+    [LoggerMessage(EventId = SecurityEvents.UploadRefusedId, EventName = SecurityEvents.UploadRefusedName, Level = LogLevel.Warning,
+        Message = "Upload refused ({Status}) at {Method} {Endpoint}: {UploadKind}, {Reason}")]
+    private static partial void LogUploadRefused(ILogger logger, int status, string method, string endpoint, string uploadKind, string reason);
 
     [LoggerMessage(EventId = SecurityEvents.EventsSuppressedId, EventName = SecurityEvents.EventsSuppressedName, Level = LogLevel.Warning,
         Message = "{Count} {Kind} security events ({KindEventId}) were left out by the throttle in the last {Seconds} s")]

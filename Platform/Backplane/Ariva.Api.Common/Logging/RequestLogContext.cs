@@ -72,6 +72,7 @@ public sealed class RequestLogContext : ILogEventEnricher
     private volatile Caller _caller = AnonymousCaller;
     private volatile bool _identified;
     private volatile bool _recorded;
+    private volatile Upload _upload;
 
     #endregion
 
@@ -107,6 +108,12 @@ public sealed class RequestLogContext : ILogEventEnricher
     /// </summary>
     public string SourceKey => _caller.Key ?? _addressSource;
 
+    /// <summary>The kind of upload this request carries (ARV-203), set by the upload policy's filter; null for any other request.</summary>
+    public string UploadKind => _upload?.Kind;
+
+    /// <summary>The upload's endpoint (its route pattern) as the filter saw it: the exception handler clears the request's own before a 408 or 413.</summary>
+    public string UploadEndpoint => _upload?.Endpoint;
+
     #endregion
 
     #region Methods
@@ -125,6 +132,14 @@ public sealed class RequestLogContext : ILogEventEnricher
 
     /// <summary>Notes that a security event was recorded for this request, so the request's end writes no generic one.</summary>
     public void MarkRecorded() => _recorded = true;
+
+    /// <summary>
+    /// Notes that this request is an upload of <paramref name="kind"/> at <paramref name="endpoint"/> (ARV-203), so a refusal of it
+    /// that no other security event recorded is written as <see cref="SecurityEvents.UploadRefused"/> when it ends.
+    /// </summary>
+    /// <param name="kind">The upload's kind, a constant of the filter that calls this, never a request value.</param>
+    /// <param name="endpoint">The endpoint's route pattern (<see cref="SecurityEventLog.EndpointOf"/>).</param>
+    public void MarkUpload(string kind, string endpoint) => _upload = new Upload(kind, endpoint);
 
     public void Enrich(LogEvent logEvent, ILogEventPropertyFactory propertyFactory)
     {
@@ -179,6 +194,9 @@ public sealed class RequestLogContext : ILogEventEnricher
 
     /// <summary>The caller's properties, and the key of its throttle share (null: the address's).</summary>
     private sealed record Caller(LogEventProperty[] Properties, string Key);
+
+    /// <summary>The upload a request carries: its kind and the endpoint's route pattern.</summary>
+    private sealed record Upload(string Kind, string Endpoint);
 
     #endregion
 }
