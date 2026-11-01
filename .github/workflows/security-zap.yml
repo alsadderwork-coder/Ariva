@@ -110,8 +110,20 @@ jobs:
       - name: Start clamd (malware scan of uploads)
         run: docker run -d --name ariva-zap-clamd -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -v "$GITHUB_WORKSPACE/Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        id: sdk
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '10.0.4xx'
+      # ARV-214: without a global.json dotnet runs the newest SDK on the runner, preinstalled ones included (setup-dotnet's
+      # README), so the job writes a temporary one at the repository root (whatever the job's working directory, so every
+      # dotnet under it finds it) naming the SDK setup-dotnet installed, and proves dotnet runs it there.
+      - name: Hold the job to the SDK installed (10.0.4xx)
+        env:
+          SDK: ${{ steps.sdk.outputs.dotnet-version }}
+        run: |
+          case "$SDK" in 10.0.4[0-9][0-9]) ;; *) echo "::error::setup-dotnet installed '$SDK', not the images' band 10.0.4xx"; exit 1 ;; esac
+          printf '{ "sdk": { "version": "%s", "rollForward": "disable" } }\n' "$SDK" > "$GITHUB_WORKSPACE/global.json"
+          cd "$GITHUB_WORKSPACE"
+          test "$(dotnet --version)" = "$SDK" || { echo "::error::dotnet runs $(dotnet --version) at the repository root, not $SDK"; exit 1; }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}

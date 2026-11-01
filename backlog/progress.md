@@ -4767,3 +4767,73 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - Stopping a gate during its E2E step leaves Playwright's web servers (smtp4dev on 5081, the hosts' builds) running in process groups of their own: find them by their command lines and stop them by PID, or the next run's E2E step refuses to start on a port in use.
   - A rule that takes quoted values whole hides the pairs inside them when the outer name is harmless (`ConnectionStrings="...;Password=..."`): a second pass that takes no quoted value walks into them; each pass stays linear.
   - Mixed-case 5-5 hyphenated words (track-event) look like recovery codes typed in lower case; the shape rule takes the upper case form Ariva shows, and a typed code reaches the log only in a request body, whose `recoveryCode` member the JSON rule masks.
+
+## 2026-11-01: ARV-214 [E17] Supply chain residuals of CI and test tooling
+
+- Split: criterion 1 (the AsyncAPI CLI from a committed lock file, audited like the other npm trees) moved to ARV-214a. Split by the implementation; it needs the owner's decision.
+  - Probe (`npm install --package-lock-only --ignore-scripts`, then `npm audit`; lock files not committed): `@asyncapi/cli` 6.2.0 and 6.2.2 each resolve about 1,405 packages with 8 critical and 2 high advisories.
+  - Overrides of `jsonpath-plus` (10.4.0) and `simple-git` (4.0.2) leave 0 critical and 1 high: the undici 6.29.0 bundled inside npm 11.21.1 (through `@oclif/plugin-plugins`). Overrides cannot reach it, and npm 12.2.1 still bundles it. So the audit at high cannot pass without an exception only the owner can approve, or another validator.
+  - The alternatives probed the same day: `@asyncapi/specs` 6.11.1 with ajv 8.20.0 and ajv-formats 3.0.1, 8 packages, no advisory; `@asyncapi/parser` 3.6.6, 167 packages, 0 critical, 0 high and 5 moderate. ARV-214a lists the options; decisions.md's open decision "AsyncAPI validator" carries the figures.
+- What changed:
+  - `scripts/base-images.mjs`, the Dockerfile RUN reader that feeds the npm ci and locked restore rules:
+    - `parseDockerfile`, `rawWords`: here-documents found as BuildKit finds them (a word of a RUN, COPY or ADD, ONBUILD included, outside quotes, `<<NAME` or `<<-NAME` after optional digits, any name without white space); one never closed is reported and takes no lines; continuations joined, comment lines inside them dropped.
+    - `commandWords`, `shellCommands`, `runCommands`, `instructionCommands`: the exec form (a shell, `eval` or `env` at its head reads the rest as a script; any word holding white space is also read as a script), a tool named by a path, `env` and its options, `VAR=value`, `exec`, `command`, `nohup`, `time`, `timeout`, `nice`, `corepack`, shell keywords and shells with their options, node running `npm-cli.js` or `npx-cli.js`, quotes and backslashes removed as the shell removes them, subshells and command substitutions, lower case `run`, `ONBUILD RUN`, a COPY or ADD here-document read as a script.
+    - `withEmbeddedTools`: fail closed, npm, npx, yarn, yarnpkg, pnpm, pnpx, bun, bunx, dotnet or dnx named anywhere in a command after its first word yields a command from there (sudo, su -c, gosu, su-exec, runuser, xargs, find -execdir, a redirection first, an npm install handed to npm explore).
+    - `npmVerbs`: npm's command after its options, resolved as npm resolves it (aliases, unique abbreviations, camelCase), every candidate when an option not known to take no value comes before it (`npm --cpu ci install`); install, update, install-test, link, dedupe, init and create, audit fix, exec, npx, pnpx and bunx (with something to run), yarn, yarnpkg, pnpm and bun are refused.
+    - `.NET`: `dotnet run`, `test`, `pack` and `format` held like `build` and `publish` (`--no-build` accepted); msbuild with any restore switch or target is a restore; host options skipped; `dnx`, .NET tools, added packages and workloads refused; `RestoreLockedMode` turned off and `--source`/`--configfile` (and `-s` on restore) refused.
+    - `unreadableRunProblems`: a command whose tool is a shell expansion, node on a script named by one, a SHELL that is not a shell, an unterminated here-document.
+    - Not read (said in the docs): a script copied from the build context and run (`RUN ./install.sh`), a tool another program starts from its own configuration.
+  - `ryukProblems`, `stepEnvValue`, `literalImageReference`: every step of any CI file that runs the integration tests sets `TESTCONTAINERS_RYUK_CONTAINER_IMAGE` in its own `env` (not `inputs:`, `with:`, the job, or nested) to a literal reference by tag and digest (no `$`, braces or parentheses; read by splitting, in linear time); ci.yml and the Azure DevOps analysis must keep one; the value is a pin of a new `testcontainers/ryuk` line, so `--list`, the third-party image scan and `--patches` see it.
+  - `sdkPinProblems`, `workflowJobs`: the Dockerfiles build with one SDK band; every `actions/setup-dotnet` names it (`10.0.4xx`) or an exact SDK tag, reads no `global-json-file`, has an id, and its very next step (same job, same `if:`, no `continue-on-error`) checks `steps.<id>.outputs.dotnet-version` against `10.0.4[0-9][0-9]`, writes it to `"$GITHUB_WORKSPACE/global.json"` and proves `dotnet --version` after `cd "$GITHUB_WORKSPACE"`, all in its run script with comments ignored; a GitHub job that runs dotnet needs setup-dotnet; `UseDotNet@2` names `10.x`, `10.0.x` or an exact SDK tag.
+  - `toolPinProblems`, `toolManifests`: every `dotnet-tools.json` (discovered, the two known ones required) names exact versions with `rollForward` false; the Aspire SDK equals every `Aspire.Hosting` package and aspire.cli; versions held in a Map. Dockerfiles named `Dockerfile.<name>` or `<name>.Dockerfile` are read too.
+  - Self-tests: `selfTestRunCommands`, `selfTestCommandTables` (every table entry from a list written in the test), `selfTestPipelinePins` (Ryuk, SDK band and hold step, tools and discovery), and new cases in `selfTestLockedNpm` and `selfTestLockedRestore`. Four mutation batches in a scratch copy (16, 30, 10 and 8 rule mutations): every mutation failed a self-test once its case was added.
+  - Pipelines:
+    - Every `actions/setup-dotnet` (ci.yml twice, codeql.yml, mutation.yml, security-zap.yml) names `10.0.4xx`, has `id: sdk` and is followed by "Hold the job to the SDK installed".
+    - ci.yml's integration step and the Azure DevOps test task set `TESTCONTAINERS_RYUK_CONTAINER_IMAGE: testcontainers/ryuk:0.14.0@sha256:7c1a8a9a...`, the reference Testcontainers 4.15.0 embeds (read from its assembly). A run of `FusionCacheBackplaneTests` with the variable started exactly that image (docker events).
+    - The hold step was checked locally: it holds the exact SDK, a missing SDK fails dotnet, and a hostile value is refused by the `case` pattern.
+  - Decisions (docs/product/decisions.md, 2026-11-01, pending the owner):
+    - No committed `global.json`: it binds every machine, and the cloud agent sessions build with SDK 10.0.112. The band is pinned in CI's setup steps, held by the temporary root `global.json` setup-dotnet's README describes.
+    - Azure DevOps stays on `10.x`: `UseDotNet@2` rejects a band, per its source.
+    - The Toxiproxy tag-only path stays, proposed as an accepted residual: ghcr.io's blobs were refused again on 2026-11-01, and a mirror needs a registry push agents may not make.
+  - Docs:
+    - wiki 13 section 9: the base-images row, and a "Tooling resolved by version" table covering CI's and Azure DevOps' SDK, the local tools, Stryker, the Aspire SDK, the runtime packs, Ryuk, Toxiproxy and the AsyncAPI CLI, each with its pin, verification and residual. NuGet's tool restore and SDK resolver behaviour is labelled To confirm, and accept-mode signatures are named.
+    - wiki 04 section 13: the runtime pack residual, and CI on the images' band.
+    - wiki 16: the Ryuk statement was wrong, since Testcontainers 4.15.0 already references Ryuk by digest.
+    - wiki 18: migration note.
+    - asvs-l2 V15.1.2: evidence and residuals, including Ryuk drift.
+    - The ci.yml asyncapi job comment.
+- Files:
+  - scripts/base-images.mjs.
+  - .github/workflows/ci.yml, codeql.yml, mutation.yml, security-zap.yml; Platform/Cloud/Ariva.Cicd/AzureDevOps/Common/Analyze-solution.yaml.
+  - Backlog: backlog/prd-phase3.json (ARV-214 passes with criterion 1 moved; ARV-214a filed).
+  - Docs: docs/product/decisions.md, docs/security/asvs-l2.md, wiki/04-Deployment-Guide.md, wiki/13-Security-Guide.md, wiki/16-Testing-Strategy.md, wiki/18-Release-Notes-and-Versioning.md.
+- Gates: `node scripts/verify.mjs story` (no specs: no host, persistence or web code changed) green on the tree round 4 reviewed: build, unit tests, security scan 0 errors and the expected warnings, base images pinned with every new self-test, the chart and script self-tests, audits, docs; integration, visual and E2E skipped by the gate. Round 1's tree was green too; the runs on rounds 2 and 3 were stopped for the next round's fixes. After the round 4 advisories (base-images.mjs only): `node scripts/base-images.mjs --check` exit 0, `node scripts/security/scan.mjs` 0 errors, `node scripts/verify.mjs quick` green before the commit. `FusionCacheBackplaneTests` run with the Ryuk variable set: 2 passed, and docker events showed the pinned image.
+- Security review (CWE-1395, CWE-494, CWE-829; CWE-78 and CWE-77 as text read only; CWE-1333; ASVS V15.1.2):
+  - Round 1 FAIL, six required fixes:
+    1. The here-document reader failed open: `<<END-OF` and a quoted `<<EOF` swallowed the rest of the file.
+    2. The Ryuk check passed with an expression, a macro, or the key under `inputs:`.
+    3. Several rules had no self-test.
+    4. The docs claimed every command form was read.
+    5. The SDK band pin was nominal: without a global.json the newest SDK on the runner runs, and a job without setup-dotnet passed.
+    6. The PRD read as an owner decision.
+    Fixed as above. Advisories taken: dnx, tools, workloads, added packages, format, msbuild spellings, locked mode off, sources, `--no-build`, the Map, anchored regexes, Dockerfile name variants, tool manifest discovery, Toxiproxy "proposed", the signature labels, the dated AsyncAPI figures, and the ARV-214a probes.
+  - Round 2 FAIL, two required fixes:
+    1. The hold step was searched in the rest of the file, so another job's hold, a hold after the build, or `continue-on-error` passed.
+    2. Four sub-rules were untested (the env key column, the `dotnet --version` proof, dnx behind sudo, tool discovery).
+    Fixed. Advisories taken: exec-form script words, and the linear Ryuk value check.
+  - Round 3 FAIL, two required fixes:
+    1. In the e2e and ZAP jobs (`defaults: run: working-directory: Platform/Testing/Ariva.E2E`) the relative `> global.json` landed in that folder, so Playwright's smtp4dev tool restore at the repository root ran the runner's newest SDK.
+    2. The `$` and parentheses refusals were untested.
+    Fixed: the write and the proof at `$GITHUB_WORKSPACE`, required in the run script with comments ignored, plus the tag requirement test.
+  - Round 4 PASS. Its two advisories were taken after the gate (base-images.mjs only): a self-test for a hold whose outputs reference is only in a comment, and trailing shell comments left out of the run script (each mutation-proven). Left as they are: the same-dash-indent test (defensive only), and the accepted fail-closed false positives (an echo naming npm install, a bare yarn, pnpm or bun).
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors (quick gate and story gate).
+- Gotchas:
+  - Testcontainers for .NET 4.15.0 already names Ryuk by tag and digest (`testcontainers/ryuk:0.14.0@sha256:7c1a...`, a string in Testcontainers.dll). Setting the variable in the pipelines makes the pin visible to the scans and the patch watch.
+  - `npm audit` reports a dependency bundled inside another package (npm's own undici), and `overrides` cannot change a bundled dependency: only a new release of the bundling package can.
+  - `actions/setup-dotnet` takes a feature band (`10.0.4xx`), but without a global.json the newest SDK on the runner (preinstalled ones included) still runs: write a temporary one from its `dotnet-version` output. Write it at `$GITHUB_WORKSPACE`: a job's `defaults: run: working-directory:` sends a relative path into a subfolder, which a tool started at the root does not see. Azure DevOps `UseDotNet@2` takes no band at all.
+  - A committed global.json binds every machine that builds the repository; pin CI's SDK in its setup steps when the developers' and agents' SDKs differ.
+  - BuildKit finds a here-document as a whole word (`<<NAME`, quotes kept while splitting), and the name may hold any character but white space. A reader that guesses with a narrower pattern, or takes the rest of the file when the end is missing, fails open.
+  - The CWE scanner (SEC-002) refuses a quoted `/bin/sh` or `/bin/bash` followed by a comma or bracket anywhere in JavaScript, test fixtures included: name another shell (`/bin/dash`) in a fixture.
+  - Braces are not command separators in the reader: `${A}` would split into a lone `$` read as an expansion; `{` and `}` are skipped as words instead.
+  - A table-driven self-test that loops over the implementation's own table cannot catch an entry removed from it: write the expected list in the test.
+  - A mutation that sets a loop index from a failed `findIndex` (-1) hangs the run; keep a timeout on every mutation run.

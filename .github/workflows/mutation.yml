@@ -32,8 +32,20 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        id: sdk
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '10.0.4xx'
+      # ARV-214: without a global.json dotnet runs the newest SDK on the runner, preinstalled ones included (setup-dotnet's
+      # README), so the job writes a temporary one at the repository root (whatever the job's working directory, so every
+      # dotnet under it finds it) naming the SDK setup-dotnet installed, and proves dotnet runs it there.
+      - name: Hold the job to the SDK installed (10.0.4xx)
+        env:
+          SDK: ${{ steps.sdk.outputs.dotnet-version }}
+        run: |
+          case "$SDK" in 10.0.4[0-9][0-9]) ;; *) echo "::error::setup-dotnet installed '$SDK', not the images' band 10.0.4xx"; exit 1 ;; esac
+          printf '{ "sdk": { "version": "%s", "rollForward": "disable" } }\n' "$SDK" > "$GITHUB_WORKSPACE/global.json"
+          cd "$GITHUB_WORKSPACE"
+          test "$(dotnet --version)" = "$SDK" || { echo "::error::dotnet runs $(dotnet --version) at the repository root, not $SDK"; exit 1; }
       # The tool has its own manifest beside stryker-config.json: with SDK 10.0.4xx, restoring it from the same manifest
       # as aspire.cli fails ("not contained in the package"), which broke every job that restores the root tools.
       - name: Restore the pinned tool (dotnet-stryker)

@@ -39,8 +39,21 @@ jobs:
           persist-credentials: false
       - if: matrix.language == 'csharp'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        id: sdk
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '10.0.4xx'
+      # ARV-214: without a global.json dotnet runs the newest SDK on the runner, preinstalled ones included (setup-dotnet's
+      # README), so the job writes a temporary one at the repository root (whatever the job's working directory, so every
+      # dotnet under it finds it) naming the SDK setup-dotnet installed, and proves dotnet runs it there.
+      - name: Hold the job to the SDK installed (10.0.4xx)
+        if: matrix.language == 'csharp'
+        env:
+          SDK: ${{ steps.sdk.outputs.dotnet-version }}
+        run: |
+          case "$SDK" in 10.0.4[0-9][0-9]) ;; *) echo "::error::setup-dotnet installed '$SDK', not the images' band 10.0.4xx"; exit 1 ;; esac
+          printf '{ "sdk": { "version": "%s", "rollForward": "disable" } }\n' "$SDK" > "$GITHUB_WORKSPACE/global.json"
+          cd "$GITHUB_WORKSPACE"
+          test "$(dotnet --version)" = "$SDK" || { echo "::error::dotnet runs $(dotnet --version) at the repository root, not $SDK"; exit 1; }
       - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           languages: ${{ matrix.language }}

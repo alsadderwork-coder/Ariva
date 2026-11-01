@@ -945,7 +945,7 @@
       "title": "[E17] Supply chain residuals of CI and test tooling",
       "description": "Found in the ARV-096 review (Low): what ships is locked (NuGet lock files with locked restores, npm ci from package-lock.json, images by digest), but some tooling still floats or is checked by version only. The AsyncAPI CLI runs through npx at a pinned version with no lock file and no audit (ci.yml docs job); Testcontainers starts its Ryuk container (Docker socket mounted) by tag; the local tools (.config/dotnet-tools.json, Stryker manifest), the Aspire AppHost SDK and CI's .NET SDK (setup-dotnet 10.0.x, no global.json) are pinned by version or not at all; the runtime packs a self-contained publish downloads are not recorded in the lock files (fixed by the digest-pinned SDK, checked by version in published-runtime.mjs and by NuGet package signatures).",
       "acceptanceCriteria": [
-        "The AsyncAPI CLI is installed from a committed lock file (a small package.json under scripts/) with npm ci and audited like the other npm trees",
+        "Moved to ARV-214a (2026-11-01; split by the implementation, it needs the owner's decision): the AsyncAPI CLI is installed from a committed lock file (a small package.json under scripts/) with npm ci and audited like the other npm trees",
         "The integration job pins Testcontainers' Ryuk image by tag and digest (TESTCONTAINERS_RYUK_CONTAINER_IMAGE), and scripts/base-images.mjs checks it",
         "A global.json pins the SDK feature band CI uses, or the decision not to is recorded with its reason; the local tool manifests and the Aspire SDK version are listed in wiki 13 section 9 with how they are verified",
         "The runtime pack residual is recorded in wiki 04 section 13 and asvs-l2 V15.1.2 with what holds it (the SDK digest, published-runtime.mjs, package signatures)",
@@ -958,10 +958,33 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 301,
-      "passes": false,
-      "notes": "Filed by ARV-096 on 2026-10-20 from its security review (L2, L3, L4, L5) and its third review (L2: Dockerfile command forms); Low findings go to Phase 3 by the owner's rule.",
+      "passes": true,
+      "notes": "Filed by ARV-096 on 2026-10-20 from its security review (L2, L3, L4, L5) and its third review (L2: Dockerfile command forms); Low findings go to Phase 3 by the owner's rule. Criterion 1 moved to ARV-214a on 2026-11-01: the CLI's tree cannot pass npm audit at high (npm 11.21.1 bundled in it carries undici 6.29.0, which no npm release fixes yet), so it needs the owner's choice of an exception or another validator.",
       "dependsOn": [
         "ARV-096"
+      ]
+    },
+    {
+      "id": "ARV-214a",
+      "title": "[E17] AsyncAPI validator from a committed lock file (owner decision: an exception for npm's bundled undici, or another validator)",
+      "description": "Split from ARV-214 (2026-11-01). CI validates docs/architecture/asyncapi.yaml with npx --yes @asyncapi/cli@6.2.0 (ci.yml, job asyncapi; approved 2026-10-04, decisions.md \"AsyncAPI validator\"): the CLI is pinned but its tree is not locked or audited. Probe of 2026-11-01 (npm install --package-lock-only --ignore-scripts, then npm audit): 6.2.0 and 6.2.2 each resolve about 1,405 packages with 8 critical and 2 high advisories (jsonpath-plus 7.2.0 under parserapiv1 and parserapiv2, simple-git 3.36.0 and @simple-git/argv-parser 1.1.1 under @asyncapi/generator, undici 6.29.0 bundled in npm 11.21.1 under @oclif/plugin-plugins) and 72 moderate. Overrides of jsonpath-plus to 10.4.0 and simple-git to 4.0.2 leave 0 critical and 1 high: the undici 6.29.0 bundled inside the npm package, which overrides cannot reach and which every npm release up to 12.2.1 still bundles. So a lock file audited like the other npm trees (npm audit --audit-level=high) cannot pass today, and the Trivy filesystem scan (HIGH and CRITICAL with a fix, ignore-unfixed) would likely report the same undici entry of the lock file. Options for the owner: (a) the CLI from a lock file with the two overrides, audited at high with a recorded exception for the bundled undici (proposed by the agent, approved by the owner, with an expiry; the record ARV-096a is to define), revisited when npm bundles undici 6.29.1 or later; (b) the validator recommended in decisions.md: the AsyncAPI 3 JSON Schema from @asyncapi/specs with ajv in a small locked tree (needs approval of those two packages; the reference checks the CLI adds are already held by the generator's tests, AsyncApiTests); (c) @asyncapi/parser alone, the library behind the CLI's validate (no generator, no bundled npm). Probes of the same day (lock files only, not committed): (b) @asyncapi/specs 6.11.1, ajv 8.20.0 and ajv-formats 3.0.1 resolve 8 packages with no advisory; (c) @asyncapi/parser 3.6.6 resolves 167 packages with 0 critical, 0 high and 5 moderate advisories. CWEs to review: CWE-1395 (vulnerable third-party component), CWE-494 (code downloaded without an integrity check).",
+      "acceptanceCriteria": [
+        "The owner's choice among the options is recorded in docs/product/decisions.md (row \"AsyncAPI validator\")",
+        "The validator CI runs is installed from a committed lock file (a small package.json under scripts/) with npm ci and no install scripts, and audited like the other npm trees in ci.yml and node scripts/verify.mjs security (with the approved exception, if that is the choice)",
+        "The asyncapi job still fails on an invalid docs/architecture/asyncapi.yaml (a broken document proven to fail once) and passes on the generated one",
+        "The Trivy filesystem scan stays green with the new lock file, or its finding is under the same recorded exception",
+        "Dependabot watches the new npm tree (.github/dependabot.yml)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md V15.1.2 and wiki 13 section 9 updated (the AsyncAPI residual closed or its exception named)",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 301,
+      "passes": false,
+      "notes": "Size S once decided. Phase 3. Split from ARV-214 on 2026-11-01: owner decision needed (an exception for npm's bundled undici, or a validator other than the approved CLI). Probe lock files kept out of the repository.",
+      "dependsOn": [
+        "ARV-214"
       ]
     },
     {

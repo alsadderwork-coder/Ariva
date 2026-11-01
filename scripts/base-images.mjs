@@ -4,8 +4,12 @@
 //   node scripts/base-images.mjs --check      every FROM uses a full version tag plus @sha256 digest, every image run
 //                                             outside the chart is pinned by tag and digest with one digest per tag, every
 //                                             other copy of a third-party pin carries its digest, the third-party watch
-//                                             covers every pin file, and every .NET restore in a Dockerfile is locked
-//                                             (offline; CI gate)
+//                                             covers every pin file, every .NET restore and npm install in a Dockerfile
+//                                             is locked (ARV-214 reads the exec form, a tool named by a path, env and
+//                                             VAR=value prefixes, shell wrappers, here-documents, ONBUILD, COPY scripts and
+//                                             a guarded tool anywhere in a command; not a script file a RUN runs), the
+//                                             pipelines that run the integration tests pin Testcontainers' Ryuk image, and
+//                                             CI's SDK steps install and run the images' SDK band (offline; CI gate)
 //   node scripts/base-images.mjs --resolve    finds the newest patch of each pinned line and its digest, and the current
 //                                             digest of each image run outside the chart (needs registry access and
 //                                             docker buildx; runs in .github/workflows/base-images.yml)
@@ -21,6 +25,7 @@
 // Dependabot (docker ecosystem) keeps the Dockerfile digests current once they are pinned.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -79,8 +84,21 @@ const OUTSIDE_LINES = {
 	'ghcr.io/zaproxy/zaproxy': { patterns: [/^$/], ghcrName: 'zaproxy/zaproxy', resolveTag: 'stable' },
 	// The integration tests' broker and fault proxy (INTEGRATION_IMAGES); their TimescaleDB and Redis are the lines above.
 	'confluentinc/cp-kafka': { patterns: [/^7\.\d+\.\d+$/], hubName: 'confluentinc/cp-kafka' },
-	'ghcr.io/shopify/toxiproxy': { patterns: [/^2\.\d+\.\d+$/], ghcrName: 'shopify/toxiproxy' }
+	'ghcr.io/shopify/toxiproxy': { patterns: [/^2\.\d+\.\d+$/], ghcrName: 'shopify/toxiproxy' },
+	// ARV-214: Testcontainers' resource reaper, which mounts the Docker socket; the pipelines that run the integration tests name it
+	// by tag and digest (TESTCONTAINERS_RYUK_CONTAINER_IMAGE, RYUK_RUNNERS) instead of the package's built-in reference.
+	'testcontainers/ryuk': { patterns: [/^0\.\d+\.\d+$/], hubName: 'testcontainers/ryuk' }
 };
+
+/**
+ * ARV-214: the pipeline steps that run the integration tests, each found by a pattern of its file, and the variable each must
+ * set to Testcontainers' Ryuk image (read as a pin by outsideImagePins, so it is held to a tag and a digest like the others).
+ */
+const RYUK_VARIABLE = 'TESTCONTAINERS_RYUK_CONTAINER_IMAGE';
+/** A line that runs the integration tests: dotnet on their assembly or project, or the project alone in a task's list. */
+const RYUK_RUNNER_LINES = [/\bdotnet\s+(?:test\s+)?\S*Ariva\.IntegrationTests\.(?:dll|csproj)\b/, /^\s*(?:projects:\s*)?['"]?\S*Ariva\.IntegrationTests\.csproj['"]?\s*$/];
+/** The files that must hold such a step (each found in every CI file; these two must not lose theirs). */
+const RYUK_RUNNERS = ['.github/workflows/ci.yml', 'Platform/Cloud/Ariva.Cicd/AzureDevOps/Common/Analyze-solution.yaml'];
 
 /**
  * AppHost resources allowed on a tag, each with the reason (resource name: reason). None today: TimescaleDB carries the chart's
@@ -610,24 +628,753 @@ function selfTestOutsideImages() {
 }
 
 /**
+ * ARV-214: the YAML step (a list item and the lines indented under it) that holds line index, as [first, end) line indexes.
+ * A step starts at the nearest list item above at an indent no deeper than the line's and ends at the next line indented no
+ * deeper than that item.
+ */
+function yamlStep(lines, index) {
+	let start = index;
+	while (start >= 0 && !(/^\s*-\s/.test(lines[start]) && lines[start].search(/\S/) <= lines[index].search(/\S/))) start--;
+	if (start < 0) return [index, index + 1];
+	const indent = lines[start].search(/\S/);
+	let end = start + 1;
+	while (end < lines.length && (!lines[end].trim() || lines[end].search(/\S/) > indent)) end++;
+	return [start, end];
+}
+
+/**
+ * ARV-214: the value of a variable set directly in a YAML step's own env mapping (the key at the step's key column, the variable
+ * one level under it), or undefined when the step sets none there (a key under inputs: or with:, or a job-level env, does
+ * not count: only the step's env reaches its process).
+ */
+function stepEnvValue(step, name) {
+	const keyColumn = step[0].match(/^\s*-\s+/)?.[0].length;
+	if (keyColumn === undefined) return undefined;
+	const at = step.findIndex((line, index) => (index === 0 ? /^\s*-\s+env:\s*(#.*)?$/ : /^\s*env:\s*(#.*)?$/).test(line) && (index === 0 || line.search(/\S/) === keyColumn));
+	if (at < 0) return undefined;
+	const children = [];
+	for (let i = at + 1; i < step.length; i++) {
+		if (!step[i].trim() || /^\s*#/.test(step[i])) continue;
+		if (step[i].search(/\S/) <= keyColumn) break;
+		children.push(step[i]);
+	}
+	const childColumn = children[0]?.search(/\S/);
+	const line = children.find((child) => child.search(/\S/) === childColumn && child.trim().startsWith(`${name}:`));
+	return line?.replace(/\s#.*$/, '').trim().slice(name.length + 1).trim().replace(/^(["'])(.*)\1$/, '$2');
+}
+
+/**
+ * ARV-214: whether a value is a literal image reference by tag and digest (name/path:tag@sha256:64 hex), with nothing a CI
+ * system would expand ($, braces, parentheses) or white space; read in linear time by splitting it, not by one pattern.
+ */
+function literalImageReference(value) {
+	if (/[\s${}()]/.test(value)) return false;
+	const at = value.indexOf('@');
+	if (at < 0 || !/^sha256:[0-9a-f]{64}$/.test(value.slice(at + 1))) return false;
+	const name = value.slice(0, at);
+	const slash = name.lastIndexOf('/');
+	const colon = name.lastIndexOf(':');
+	return slash > 0 && colon > slash + 1 && colon < name.length - 1;
+}
+
+/**
+ * ARV-214: problems for the CI files ([file, text]) that run the integration tests: every step that runs them (a line of
+ * RYUK_RUNNER_LINES) sets TESTCONTAINERS_RYUK_CONTAINER_IMAGE in its own env to a literal image reference by tag and digest
+ * (no GitHub expression, no Azure DevOps macro), and each file of RYUK_RUNNERS has such a step (a step renamed or moved is
+ * reported, not passed). The value's line, tag and digest are checked with the other pins.
+ */
+export function ryukProblems(files) {
+	const problems = [];
+	for (const required of RYUK_RUNNERS) {
+		const entry = files.find(([file]) => file === required);
+		if (!entry || entry[1] === null) problems.push(`${required}: missing; it runs the integration tests, whose Ryuk image it must pin (${RYUK_VARIABLE})`);
+	}
+	for (const [file, text] of files) {
+		if (text === null) continue;
+		const lines = text.split(/\r?\n/);
+		const runs = lines.map((line, index) => (RYUK_RUNNER_LINES.some((pattern) => pattern.test(line.replace(/\s#.*$/, ''))) ? index : -1)).filter((index) => index >= 0);
+		if (!runs.length && RYUK_RUNNERS.includes(file)) problems.push(`${file}: no step runs the integration tests; RYUK_RUNNER_LINES in scripts/base-images.mjs finds the step that must pin Testcontainers' Ryuk image`);
+		for (const index of runs) {
+			const [start, end] = yamlStep(lines, index);
+			const value = stepEnvValue(lines.slice(start, end), RYUK_VARIABLE);
+			if (value === undefined) problems.push(`${file}:${index + 1}: the step that runs the integration tests must set ${RYUK_VARIABLE} in its own env (not under inputs:, with: or the job) to Testcontainers' Ryuk image by tag and digest`);
+			else if (!literalImageReference(value)) problems.push(`${file}:${index + 1}: ${RYUK_VARIABLE} must be a literal image reference by tag and digest (no expression or macro), got ${value}`);
+		}
+	}
+	return problems;
+}
+
+/** ARV-214: the feature band of an SDK version (10.0.402 is 10.0.4xx), or null when it is not one. */
+export function sdkBand(version) {
+	const match = /^(\d+)\.(\d+)\.(\d)\d\d$/.exec(version ?? '');
+	return match ? `${match[1]}.${match[2]}.${match[3]}xx` : null;
+}
+
+/**
+ * ARV-214 (no global.json, decision recorded in docs/product/decisions.md): CI builds and tests with an SDK of the feature band
+ * the images build with. Problems for the SDK versions of every Dockerfile (sdkTags) and the CI files ([file, text]): the
+ * Dockerfiles use one band; each actions/setup-dotnet step names that band (10.0.4xx) or one of those versions in dotnet-version,
+ * and reads no global-json-file; each Azure DevOps UseDotNet task, which takes no band, names the SDK's major (10.x) or major
+ * and minor (10.0.x), or one of those versions.
+ */
+export function sdkPinProblems(sdkTags, files) {
+	const problems = [];
+	const bands = [...new Set(sdkTags.map(sdkBand))];
+	if (!sdkTags.length || bands.includes(null) || bands.length !== 1) {
+		problems.push(`the Dockerfiles must build with SDKs of one feature band (found ${sdkTags.join(', ') || 'none'})`);
+		return problems;
+	}
+	const band = bands[0];
+	const [major, minor] = band.split('.');
+	const bandPattern = band.replace('xx', '[0-9][0-9]');
+	for (const [file, text] of files) {
+		const lines = text.split(/\r?\n/);
+		lines.forEach((line, index) => {
+			const setup = /\buses:\s*["']?actions\/setup-dotnet@/.test(line.replace(/\s#.*$/, ''));
+			const useDotNet = /^\s*(?:-\s*)?task:\s*UseDotNet@/.test(line);
+			if (!setup && !useDotNet) return;
+			const [start, end] = yamlStep(lines, index);
+			const step = lines.slice(start, end);
+			const field = (name) => {
+				const at = step.findIndex((entry) => new RegExp(`^\\s*(?:-\\s+)?${name}:`).test(entry));
+				if (at < 0) return undefined;
+				const value = step[at].replace(/\s#.*$/, '').replace(new RegExp(`^\\s*(?:-\\s+)?${name}:\\s*`), '').replace(/^["']|["']$/g, '').trim();
+				return value === '|' || value === '>' || value === '' ? null : value;
+			};
+			const where = `${file}:${index + 1}`;
+			if (setup) {
+				if (field('global-json-file') !== undefined) problems.push(`${where}: setup-dotnet must not read a global-json-file (the repository has none: ARV-214); name dotnet-version: '${band}'`);
+				const version = field('dotnet-version');
+				if (version === undefined || version === null) problems.push(`${where}: setup-dotnet must name one dotnet-version, the images' SDK band '${band}'`);
+				else if (version !== band && !sdkTags.includes(version)) problems.push(`${where}: setup-dotnet's dotnet-version ${version} must be the images' SDK band '${band}' (or ${[...new Set(sdkTags)].join(', ')})`);
+				// The band pin holds only if the job then runs that SDK: the very next step of the same job (so before any step
+				// that runs dotnet) writes a temporary global.json from the version setup-dotnet installed, after checking it is in
+				// the band, and proves dotnet --version is it; it runs whenever the setup does (the same if:, no continue-on-error).
+				const id = field('id');
+				const dash = step[0].search(/\S/);
+				let next = end;
+				while (next < lines.length && (!lines[next].trim() || /^\s*#/.test(lines[next]))) next++;
+				const holdStep = next < lines.length && /^\s*-\s/.test(lines[next]) && lines[next].search(/\S/) === dash ? lines.slice(...yamlStep(lines, next)) : null;
+				// Only the step's own lines count, comments left out; the band check, the write and the proof must be in its run
+				// script. The file is written at the repository root and the proof runs there, whatever working directory the job
+				// or the step sets, so every dotnet in the job (one under the root included) finds it.
+				const holdLines = (holdStep ?? []).filter((entry) => !/^\s*#/.test(entry));
+				const runAt = holdLines.findIndex((entry) => /^\s*(?:-\s+)?run:/.test(entry));
+				// A trailing shell comment holds nothing that runs: it is left out too (fail closed: a # inside quotes cuts the line).
+				const holdRun = runAt < 0 ? '' : holdLines.slice(runAt).map((entry) => entry.replace(/\s#.*$/, '')).join('\n');
+				const ifOf = (entries) => entries.map((entry) => entry.match(/^\s*(?:-\s+)?if:\s*(.*?)\s*$/)?.[1]).find((value) => value !== undefined) ?? null;
+				const proofAt = holdRun.indexOf('cd "$GITHUB_WORKSPACE"');
+				const hold = id && holdStep && holdLines.some((entry) => entry.includes(`steps.${id}.outputs.dotnet-version`)) && holdRun.includes(bandPattern) && holdRun.includes('> "$GITHUB_WORKSPACE/global.json"') && proofAt >= 0 && holdRun.indexOf('dotnet --version', proofAt) > proofAt;
+				if (!hold) problems.push(`${where}: setup-dotnet needs an id, and its next step must check steps.<id>.outputs.dotnet-version is in ${bandPattern}, write it to "$GITHUB_WORKSPACE/global.json" and prove dotnet --version runs it after cd "$GITHUB_WORKSPACE", in its run script (otherwise the newest SDK on the runner runs)`);
+				else if (holdStep.some((entry) => /^\s*(?:-\s+)?continue-on-error:/.test(entry))) problems.push(`${where}: the step that holds the job to the SDK must not continue on error`);
+				else if (ifOf(holdStep) !== ifOf(step)) problems.push(`${where}: the step that holds the job to the SDK must run whenever setup-dotnet does (the same if:)`);
+			} else {
+				const version = field('version');
+				const allowed = [`${major}.x`, `${major}.${minor}.x`, ...sdkTags];
+				if (!allowed.includes(version)) problems.push(`${where}: UseDotNet's version ${version ?? 'missing'} must be ${allowed.join(', ')} (UseDotNet@2 takes no feature band)`);
+			}
+		});
+		// A GitHub job that runs dotnet without setup-dotnet runs whatever SDK the runner has.
+		if (file.startsWith('.github/workflows/')) {
+			for (const job of workflowJobs(lines)) {
+				const runsDotnet = job.lines.some((entry) => !/^\s*#/.test(entry) && /(^|[\s;&|(])dotnet\s+(?:build|test|restore|run|publish|tool|pack|format|msbuild|list|\S+\.dll)\b/.test(entry));
+				const setsUp = job.lines.some((entry) => /\buses:\s*["']?actions\/setup-dotnet@/.test(entry));
+				if (runsDotnet && !setsUp) problems.push(`${file}: job ${job.name} runs dotnet without an actions/setup-dotnet step (the runner's own SDK would run)`);
+			}
+		}
+	}
+	return problems;
+}
+
+/** The jobs of a GitHub workflow, as { name, lines }: each key two spaces under jobs:, with the lines indented under it. */
+function workflowJobs(lines) {
+	const jobs = [];
+	const start = lines.findIndex((line) => /^jobs:\s*(#.*)?$/.test(line));
+	if (start < 0) return jobs;
+	for (let i = start + 1; i < lines.length; i++) {
+		if (/^\S/.test(lines[i]) && lines[i].trim() && !/^#/.test(lines[i])) break;
+		const name = lines[i].match(/^ {2}([A-Za-z0-9_-]+):\s*(#.*)?$/)?.[1];
+		if (name) jobs.push({ name, lines: [] });
+		else if (jobs.length) jobs.at(-1).lines.push(lines[i]);
+	}
+	return jobs;
+}
+
+/**
+ * ARV-214: the local .NET tool manifests (each pins its tools by exact version; these two must stay, and any other
+ * dotnet-tools.json in the repository is checked too, toolManifests) and the AppHost project with the Aspire SDK.
+ */
+const TOOL_MANIFESTS = ['.config/dotnet-tools.json', 'Platform/Backplane/Ariva.UnitTests/.config/dotnet-tools.json'];
+export function toolManifests(root = ROOT, required = TOOL_MANIFESTS) {
+	const out = new Set(required);
+	const walk = (dir) => {
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			if (SKIP.includes(entry.name) || (entry.isDirectory() && entry.name.startsWith('.') && entry.name !== '.config')) continue;
+			const full = path.join(dir, entry.name);
+			if (entry.isDirectory()) walk(full);
+			else if (entry.name === 'dotnet-tools.json') out.add(path.relative(root, full).split(path.sep).join('/'));
+		}
+	};
+	walk(root);
+	return [...out].sort();
+}
+const APPHOST_PROJECT = 'Platform/Cloud/Ariva.AppHost/Ariva.AppHost.csproj';
+
+/**
+ * ARV-214: the tooling NuGet resolves by version alone, without a lock file. Problems for the tool manifests ([file, text or
+ * null]), the AppHost project's text and Directory.Packages.props' text: every tool names an exact version (no range, no
+ * wildcard) with rollForward false; the AppHost's MSBuild SDK (Aspire.AppHost.Sdk/x.y.z) is an exact version equal to every
+ * Aspire.Hosting package's version and to the aspire.cli tool's, so one Aspire release is in use. Where they come from and
+ * that their content is what nuget.org signed is NuGet's (nuget.config, package signatures; wiki 13 section 9).
+ */
+export function toolPinProblems(manifests, appHost, packagesProps) {
+	const problems = [];
+	const exact = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+	const tools = new Map();
+	for (const [file, text] of manifests) {
+		if (text === null) {
+			problems.push(`${file}: missing (TOOL_MANIFESTS in scripts/base-images.mjs lists the tool manifests)`);
+			continue;
+		}
+		let manifest;
+		try {
+			manifest = JSON.parse(text);
+		} catch {
+			problems.push(`${file}: not JSON`);
+			continue;
+		}
+		for (const [id, tool] of Object.entries(manifest.tools ?? {})) {
+			tools.set(id, tool.version);
+			if (!exact.test(tool.version ?? '')) problems.push(`${file}: ${id} must name an exact version (got ${tool.version ?? 'none'})`);
+			if (tool.rollForward !== false) problems.push(`${file}: ${id} must set rollForward to false`);
+		}
+	}
+	const sdk = appHost?.match(/<Project\s+Sdk="Aspire\.AppHost\.Sdk\/([^"]+)"/)?.[1];
+	if (!sdk || !exact.test(sdk)) problems.push(`${APPHOST_PROJECT}: the Aspire SDK must be named with an exact version (Aspire.AppHost.Sdk/x.y.z; got ${sdk ?? 'none'})`);
+	else {
+		for (const [, id, version] of (packagesProps ?? '').matchAll(/<PackageVersion\s+Include="(Aspire\.Hosting[^"]*)"\s+Version="([^"]+)"/g)) {
+			if (version !== sdk) problems.push(`Directory.Packages.props: ${id} ${version} must be the Aspire SDK's version ${sdk} (${APPHOST_PROJECT})`);
+		}
+		if (tools.has('aspire.cli') && tools.get('aspire.cli') !== sdk) problems.push(`.config/dotnet-tools.json: aspire.cli ${tools.get('aspire.cli')} must be the Aspire SDK's version ${sdk}`);
+	}
+	return problems;
+}
+
+function selfTestPipelinePins() {
+	const failures = [];
+	const ryuk = 'testcontainers/ryuk:0.14.0@sha256:' + 'a'.repeat(64);
+	const ci = (env) => `jobs:\n  backend:\n    steps:\n      - name: Integration tests\n        id: integration\n${env}        run: timeout 27m dotnet Platform/Backplane/Ariva.IntegrationTests/bin/Release/net10.0/Ariva.IntegrationTests.dll > integration.log\n      - name: Count guard\n        env:\n          ${RYUK_VARIABLE}: ${ryuk}\n        run: node scripts/test-count-guard.mjs --dll Platform/Backplane/Ariva.IntegrationTests/bin/Release/net10.0/Ariva.IntegrationTests.dll\n`;
+	const ado = (env, inputs = '') => `steps:\n      - task: DotNetCoreCLI@2\n        displayName: 'Dotnet Test'\n${env}        inputs:\n          command: 'test'\n${inputs}          projects: |\n            Platform/Backplane/Ariva.UnitTests/Ariva.UnitTests.csproj\n            Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj\n`;
+	const env = (value = ryuk) => `        env:\n          OTHER: 1\n          ${RYUK_VARIABLE}: ${value}\n`;
+	const runners = (ciText, adoText, more = []) => [[RYUK_RUNNERS[0], ciText], [RYUK_RUNNERS[1], adoText], ...more];
+	for (const [name, files, expected] of [
+		['both set', runners(ci(env()), ado(env())), []],
+		['quoted value', runners(ci(env(`'${ryuk}'`)), ado(env(`"${ryuk}"`))), []],
+		['ci sets it in the count guard step only', runners(ci(''), ado(env())), [`.github/workflows/ci.yml:6: the step that runs the integration tests must set ${RYUK_VARIABLE} in its own env`]],
+		['set at the job level only', runners(ci('').replace('    steps:\n', `    env:\n      ${RYUK_VARIABLE}: ${ryuk}\n    steps:\n`), ado(env())), ['ci.yml:8: the step that runs the integration tests must set']],
+		['azure devops without it', runners(ci(env()), ado('')), ['Analyze-solution.yaml:8: the step that runs the integration tests must set']],
+		['azure devops under inputs', runners(ci(env()), ado('', `          ${RYUK_VARIABLE}: ${ryuk}\n`)), ['Analyze-solution.yaml:9: the step that runs the integration tests must set']],
+		['github under with', runners(ci(`        with:\n          ${RYUK_VARIABLE}: ${ryuk}\n`), ado(env())), ['ci.yml:8: the step that runs the integration tests must set']],
+		['nested under another env key', runners(ci(`        env:\n          OTHER:\n            ${RYUK_VARIABLE}: ${ryuk}\n`), ado(env())), ['ci.yml:9: the step that runs the integration tests must set']],
+		['a github expression', runners(ci(env('${{ env.RYUK }}')), ado(env())), [`ci.yml:9: ${RYUK_VARIABLE} must be a literal image reference by tag and digest (no expression or macro)`]],
+		['an azure devops macro', runners(ci(env()), ado(env('$(ryukImage)'))), [`Analyze-solution.yaml:11: ${RYUK_VARIABLE} must be a literal image reference`]],
+		['by tag only', runners(ci(env('testcontainers/ryuk:0.14.0')), ado(env())), ['must be a literal image reference by tag and digest']],
+		['a commented value does not count', runners(ci(`        env:\n          # ${RYUK_VARIABLE}: ${ryuk}\n`), ado(env())), ['the step that runs the integration tests must set']],
+		['an env mapping nested under inputs', runners(ci(env()), ado('', `          env:\n            ${RYUK_VARIABLE}: ${ryuk}\n`)), ['Analyze-solution.yaml:10: the step that runs the integration tests must set']],
+		['no slash in the name', runners(ci(env('ryuk:0.14.0@sha256:' + 'a'.repeat(64))), ado(env())), ['must be a literal image reference by tag and digest']],
+		['a registry macro in front', runners(ci(env()), ado(env('$(containerRegistry)/testcontainers/ryuk:0.14.0@sha256:' + 'a'.repeat(64)))), ['must be a literal image reference by tag and digest']],
+		['a registry variable in front', runners(ci(env('$REG/testcontainers/ryuk:0.14.0@sha256:' + 'a'.repeat(64))), ado(env())), ['must be a literal image reference by tag and digest']],
+		['parentheses in the name', runners(ci(env('(x)/testcontainers/ryuk:0.14.0@sha256:' + 'a'.repeat(64))), ado(env())), ['must be a literal image reference by tag and digest']],
+		['braces in the name', runners(ci(env('{x}/testcontainers/ryuk:0.14.0@sha256:' + 'a'.repeat(64))), ado(env())), ['must be a literal image reference by tag and digest']],
+		['no tag', runners(ci(env('testcontainers/ryuk@sha256:' + 'a'.repeat(64))), ado(env())), ['must be a literal image reference by tag and digest']],
+		['a registry with a port', runners(ci(env('registry.example:5000/testcontainers/ryuk:0.14.0@sha256:' + 'a'.repeat(64))), ado(env())), []],
+		['a short digest', runners(ci(env('testcontainers/ryuk:0.14.0@sha256:' + 'a'.repeat(63))), ado(env())), ['must be a literal image reference by tag and digest']],
+		['another workflow runs the suite', runners(ci(env()), ado(env()), [['.github/workflows/nightly.yml', 'jobs:\n  n:\n    steps:\n      - run: dotnet test Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj\n']]), ['nightly.yml:4: the step that runs the integration tests must set']],
+		['the runner step gone', runners(ci(env()).replace(/dotnet Platform\S+IntegrationTests\.dll/, 'true'), ado(env())), ['.github/workflows/ci.yml: no step runs the integration tests']],
+		['a file gone', runners(ci(env()), null), ['Analyze-solution.yaml: missing']]
+	]) {
+		const found = ryukProblems(files).join('\n');
+		if (!expected.length && found) failures.push(`ryuk ${name}: expected clean, got ${found}`);
+		for (const fragment of expected) if (!found.includes(fragment)) failures.push(`ryuk ${name}: did not report "${fragment}" (got: ${found || 'nothing'})`);
+	}
+	const holdStep = (id = 'sdk', pattern = '10.0.4[0-9][0-9]', write = '> "$GITHUB_WORKSPACE/global.json"') => `      - name: Hold\n        env:\n          SDK: \${{ steps.${id}.outputs.dotnet-version }}\n        run: |\n          case "$SDK" in ${pattern}) ;; *) exit 1 ;; esac\n          printf '{}' ${write}\n          cd "$GITHUB_WORKSPACE"\n          test "$(dotnet --version)" = "$SDK"\n`;
+	{
+		// The value is read in linear time: a long value without a digest is refused at once.
+		const started = performance.now();
+		const long = ryukProblems(runners(ci(env(`a/${'b:'.repeat(20000)}c`)), ado(env())));
+		if (!long.some((problem) => problem.includes('must be a literal image reference')) || performance.now() - started > 1000) failures.push('ryuk a 40,000 character value: not refused within a second');
+	}
+	const setup = (version, hold = holdStep(), id = '        id: sdk\n') => `jobs:\n  build:\n    steps:\n      - uses: actions/setup-dotnet@a98b # v6.0.0\n${id}        with:\n${version}${hold}      - run: dotnet build\n`;
+	const useDotNet = (version) => `steps:\n      - task: UseDotNet@2\n        inputs:\n          packageType: 'sdk'\n${version}`;
+	for (const [name, tags, files, expected] of [
+		['band and major', ['10.0.402', '10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n")], ['a.yaml', useDotNet("          version: '10.x'\n")]], []],
+		['an exact version', ['10.0.402'], [['ci.yml', setup('          dotnet-version: 10.0.402\n')], ['a.yaml', useDotNet('          version: 10.0.402\n')]], []],
+		['a floating version', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.x'\n")]], ["ci.yml:4: setup-dotnet's dotnet-version 10.0.x must be the images' SDK band '10.0.4xx'"]],
+		['another band', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.1xx'\n")]], ["dotnet-version 10.0.1xx must be the images' SDK band"]],
+		['no version', ['10.0.402'], [['ci.yml', setup('          cache: true\n')]], ['setup-dotnet must name one dotnet-version']],
+		['a version list', ['10.0.402'], [['ci.yml', setup('          dotnet-version: |\n            8.0.x\n            10.0.4xx\n')]], ['setup-dotnet must name one dotnet-version']],
+		['a global.json', ['10.0.402'], [['ci.yml', setup("          global-json-file: global.json\n          dotnet-version: '10.0.4xx'\n")]], ['setup-dotnet must not read a global-json-file']],
+		['setup on the item line', ['10.0.402'], [['ci.yml', "jobs:\n  b:\n    steps:\n      - name: SDK\n        uses: actions/setup-dotnet@a98b\n        with:\n          dotnet-version: '9.0.x'\n"]], ['ci.yml:5: setup-dotnet\'s dotnet-version 9.0.x']],
+		['no hold step', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", '')]], ['ci.yml:4: setup-dotnet needs an id, and its next step must']],
+		['no id', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep(), '')]], ['setup-dotnet needs an id, and its next step must']],
+		['a hold step reading another id', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep('other'))]], ['setup-dotnet needs an id, and its next step must']],
+		['a hold step on another band', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep('sdk', '10.0.1[0-9][0-9]'))]], ['setup-dotnet needs an id, and its next step must']],
+		['a hold step that writes no global.json', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep('sdk', '10.0.4[0-9][0-9]', '> /dev/null'))]], ['setup-dotnet needs an id, and its next step must']],
+		['a hold step that proves nothing', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep().replace('          test "$(dotnet --version)" = "$SDK"\n', ''))]], ['setup-dotnet needs an id, and its next step must']],
+		['a relative global.json under a job working directory', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep('sdk', '10.0.4[0-9][0-9]', '> global.json')).replace('    steps:\n', '    defaults:\n      run:\n        working-directory: Platform/Testing/Ariva.E2E\n    steps:\n')]], ['write it to "$GITHUB_WORKSPACE/global.json"']],
+		['the proof outside the repository root', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep().replace('          cd "$GITHUB_WORKSPACE"\n', ''))]], ['prove dotnet --version runs it after cd "$GITHUB_WORKSPACE"']],
+		['the proof before the cd', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep().replace('          cd "$GITHUB_WORKSPACE"\n          test "$(dotnet --version)" = "$SDK"\n', '          test "$(dotnet --version)" = "$SDK"\n          cd "$GITHUB_WORKSPACE"\n'))]], ['setup-dotnet needs an id, and its next step must']],
+		['the hold only in comments', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", `      - name: Hold\n        env:\n          SDK: \${{ steps.sdk.outputs.dotnet-version }}\n        # case "$SDK" in 10.0.4[0-9][0-9]) > "$GITHUB_WORKSPACE/global.json" cd "$GITHUB_WORKSPACE" dotnet --version\n        run: echo skipped\n`)]], ['setup-dotnet needs an id, and its next step must']],
+		['the hold in comments inside its run script', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", `      - name: Hold\n        env:\n          SDK: \${{ steps.sdk.outputs.dotnet-version }}\n        run: |\n          echo skipped\n          # case "$SDK" in 10.0.4[0-9][0-9]) > "$GITHUB_WORKSPACE/global.json"\n          # cd "$GITHUB_WORKSPACE"; dotnet --version\n`)]], ['setup-dotnet needs an id, and its next step must']],
+		['the outputs reference only in a comment', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep().replace('          SDK: ${{ steps.sdk.outputs.dotnet-version }}\n', '          # SDK: ${{ steps.sdk.outputs.dotnet-version }}\n          SDK: 10.0.402\n'))]], ['setup-dotnet needs an id, and its next step must']],
+		['the hold in trailing shell comments', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", `      - name: Hold\n        env:\n          SDK: \${{ steps.sdk.outputs.dotnet-version }}\n        run: |\n          true # 10.0.4[0-9][0-9] > "$GITHUB_WORKSPACE/global.json" cd "$GITHUB_WORKSPACE" dotnet --version\n`)]], ['setup-dotnet needs an id, and its next step must']],
+		['the hold outside its run script', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", `      - name: Hold 10.0.4[0-9][0-9] > "$GITHUB_WORKSPACE/global.json" cd "$GITHUB_WORKSPACE" dotnet --version\n        env:\n          SDK: \${{ steps.sdk.outputs.dotnet-version }}\n        run: echo skipped\n`)]], ['setup-dotnet needs an id, and its next step must']],
+		['only another job holds', ['10.0.402'], [['ci.yml', `${setup("          dotnet-version: '10.0.4xx'\n", '')}  e2e:\n    steps:\n${setup("          dotnet-version: '10.0.4xx'\n").split('    steps:\n')[1]}`]], ['ci.yml:4: setup-dotnet needs an id, and its next step must']],
+		['the hold after a dotnet step', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", `      - run: dotnet restore Ariva.slnx\n${holdStep()}`)]], ['setup-dotnet needs an id, and its next step must']],
+		['a comment between them', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", `      # holds the job\n\n${holdStep()}`)]], []],
+		['a hold step that continues on error', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep().replace('        env:\n', '        continue-on-error: true\n        env:\n'))]], ['the step that holds the job to the SDK must not continue on error']],
+		['a hold step with its own if', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep().replace('        env:\n', "        if: github.event_name == 'push'\n        env:\n"))]], ['must run whenever setup-dotnet does (the same if:)']],
+		['the same if on both', ['10.0.402'], [['ci.yml', "jobs:\n  a:\n    steps:\n      - if: matrix.language == 'csharp'\n        uses: actions/setup-dotnet@a98b\n        id: sdk\n        with:\n          dotnet-version: '10.0.4xx'\n" + holdStep().replace('        env:\n', "        if: matrix.language == 'csharp'\n        env:\n")]], []],
+		['an if on the setup only', ['10.0.402'], [['ci.yml', "jobs:\n  a:\n    steps:\n      - if: matrix.language == 'csharp'\n        uses: actions/setup-dotnet@a98b\n        id: sdk\n        with:\n          dotnet-version: '10.0.4xx'\n" + holdStep()]], ['must run whenever setup-dotnet does (the same if:)']],
+		['a job runs dotnet with no setup', ['10.0.402'], [['.github/workflows/x.yml', `${setup("          dotnet-version: '10.0.4xx'\n")}  other:\n    steps:\n      - run: dotnet test Ariva.slnx\n`]], ['.github/workflows/x.yml: job other runs dotnet without an actions/setup-dotnet step']],
+		['a job runs a test assembly with no setup', ['10.0.402'], [['.github/workflows/x.yml', 'jobs:\n  t:\n    steps:\n      - run: timeout 5m dotnet Tests/bin/Release/net10.0/Tests.dll\n']], ['job t runs dotnet without an actions/setup-dotnet step']],
+		['a job that only names dotnet in a comment', ['10.0.402'], [['.github/workflows/x.yml', 'jobs:\n  t:\n    steps:\n      # dotnet test would go here\n      - run: echo ok\n']], []],
+		['use dotnet on another major', ['10.0.402'], [['a.yaml', useDotNet("          version: '11.x'\n")]], ["UseDotNet's version 11.x must be 10.x, 10.0.x, 10.0.402"]],
+		['images on two bands', ['10.0.402', '10.0.110'], [], ['the Dockerfiles must build with SDKs of one feature band']],
+		['no SDK image', [], [], ['the Dockerfiles must build with SDKs of one feature band (found none)']]
+	]) {
+		const found = sdkPinProblems(tags, files).join('\n');
+		if (!expected.length && found) failures.push(`sdk ${name}: expected clean, got ${found}`);
+		for (const fragment of expected) if (!found.includes(fragment)) failures.push(`sdk ${name}: did not report "${fragment}" (got: ${found || 'nothing'})`);
+	}
+	const manifest = (version, rollForward = false) => JSON.stringify({ version: 1, isRoot: true, tools: { 'aspire.cli': { version, commands: ['aspire'], rollForward } } });
+	const appHost = (version) => `<Project Sdk="Aspire.AppHost.Sdk/${version}">\n</Project>`;
+	const props = (version) => `<Project><ItemGroup><PackageVersion Include="Aspire.Hosting.Redis" Version="${version}" /><PackageVersion Include="Npgsql" Version="9.0.0" /></ItemGroup></Project>`;
+	{
+		// toolManifests finds every dotnet-tools.json under a root (a .config folder included, node_modules, bin and obj not)
+		// besides the required ones, which stay listed even when missing so a removed manifest is reported.
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-tools-'));
+		try {
+			for (const file of ['.config/dotnet-tools.json', 'src/App/.config/dotnet-tools.json', 'src/App/node_modules/x/dotnet-tools.json', 'src/App/bin/dotnet-tools.json', '.hidden/dotnet-tools.json']) {
+				fs.mkdirSync(path.join(root, path.dirname(file)), { recursive: true });
+				fs.writeFileSync(path.join(root, file), '{}');
+			}
+			const found = toolManifests(root, ['gone/.config/dotnet-tools.json']);
+			const expected = ['.config/dotnet-tools.json', 'gone/.config/dotnet-tools.json', 'src/App/.config/dotnet-tools.json'];
+			if (JSON.stringify(found) !== JSON.stringify(expected)) failures.push(`tools discovery: expected ${JSON.stringify(expected)}, got ${JSON.stringify(found)}`);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	}
+	for (const [name, manifests, project, packages, expected] of [
+		['one Aspire release, exact tools', [['a.json', manifest('13.6.0')]], appHost('13.6.0'), props('13.6.0'), []],
+		['a tool on a range', [['a.json', manifest('13.*')]], appHost('13.6.0'), props('13.6.0'), ['a.json: aspire.cli must name an exact version (got 13.*)']],
+		['a tool rolling forward', [['a.json', manifest('13.6.0', true)]], appHost('13.6.0'), props('13.6.0'), ['a.json: aspire.cli must set rollForward to false']],
+		['the SDK on a range', [['a.json', manifest('13.6.0')]], appHost('13.*'), props('13.6.0'), ['the Aspire SDK must be named with an exact version']],
+		['a package on another release', [['a.json', manifest('13.6.0')]], appHost('13.6.0'), props('13.5.0'), ['Directory.Packages.props: Aspire.Hosting.Redis 13.5.0 must be the Aspire SDK\'s version 13.6.0']],
+		['the CLI on another release', [['a.json', manifest('13.5.0')]], appHost('13.6.0'), props('13.6.0'), ['aspire.cli 13.5.0 must be the Aspire SDK\'s version 13.6.0']],
+		['a manifest gone', [['a.json', null]], appHost('13.6.0'), props('13.6.0'), ['a.json: missing']]
+	]) {
+		const found = toolPinProblems(manifests, project, packages).join('\n');
+		if (!expected.length && found) failures.push(`tools ${name}: expected clean, got ${found}`);
+		for (const fragment of expected) if (!found.includes(fragment)) failures.push(`tools ${name}: did not report "${fragment}" (got: ${found || 'nothing'})`);
+	}
+	if (failures.length) {
+		console.error(`base images: pipeline pins self-test failed:\n  ${failures.join('\n  ')}`);
+		process.exit(1);
+	}
+}
+
+/**
+ * ARV-214: a line's words as BuildKit splits it to find here-documents: white space outside quotes ends a word, and quotes
+ * and backslashes stay in the word.
+ */
+function rawWords(line) {
+	const words = [];
+	let word = '';
+	let quote = null;
+	for (let i = 0; i < line.length; i++) {
+		const c = line[i];
+		if (quote) {
+			word += c;
+			if (c === quote) quote = null;
+			else if (c === '\\' && quote === '"' && i + 1 < line.length) word += line[++i];
+		} else if (c === '"' || c === "'") {
+			quote = c;
+			word += c;
+		} else if (c === '\\' && i + 1 < line.length) word += c + line[++i];
+		else if (/\s/.test(c)) {
+			if (word) words.push(word);
+			word = '';
+		} else word += c;
+	}
+	if (word) words.push(word);
+	return words;
+}
+
+/**
+ * ARV-214: a Dockerfile's instructions and the problems met reading them. Each instruction is one entry, its continuation lines
+ * joined (a trailing backslash; comment lines inside a continuation dropped, as Docker drops them). A RUN, COPY or ADD (ONBUILD
+ * included) with a here-document gets the document's lines appended after a new line, so a command written in it is read with
+ * the instruction. A here-document is found as BuildKit finds it: a word of the instruction, outside quotes, that is <<NAME or
+ * <<-NAME (optionally after digits), its name unquoted (any characters but white space and <); the document ends at the first
+ * line equal to the name (tabs stripped first for <<-). One whose end is never found is reported (it cannot be read) and takes
+ * no lines, so the instructions after it are still read.
+ */
+export function parseDockerfile(dockerfile) {
+	const lines = dockerfile.split(/\r?\n/);
+	const instructions = [];
+	const problems = [];
+	for (let i = 0; i < lines.length; i++) {
+		let text = lines[i];
+		if (!text.trim() || /^\s*#/.test(text)) continue;
+		while (/\\\s*$/.test(text) && i + 1 < lines.length) {
+			i++;
+			if (/^\s*#/.test(lines[i])) continue;
+			text = `${text.replace(/\\\s*$/, ' ')}${lines[i]}`;
+		}
+		if (/^\s*(?:ONBUILD\s+)?(?:RUN|COPY|ADD)\b/i.test(text)) {
+			for (const word of rawWords(text)) {
+				const heredoc = /^(\d*)<<(-?)([^<]*)$/.exec(word);
+				if (!heredoc) continue;
+				const name = heredoc[3].replace(/\\(.)/g, '$1').replace(/["']/g, '');
+				if (!name || /\s/.test(name)) continue;
+				const end = lines.findIndex((line, index) => index > i && (heredoc[2] ? line.replace(/^\t+/, '') : line) === name);
+				if (end < 0) {
+					problems.push(`an unterminated here-document (<<${heredoc[2]}${name}) cannot be read: ${text.trim().slice(0, 120)}`);
+					break;
+				}
+				text = `${text}\n${lines.slice(i + 1, end).join('\n')}`;
+				i = end;
+			}
+		}
+		instructions.push(text);
+	}
+	return { instructions, problems };
+}
+
+/** ARV-214: a Dockerfile's instructions (parseDockerfile). */
+export function dockerInstructions(dockerfile) {
+	return parseDockerfile(dockerfile).instructions;
+}
+
+const SHELLS = new Set(['sh', 'bash', 'ash', 'dash', 'zsh', 'ksh', 'mksh']);
+/** Words that run the command after them (shell keywords included), skipped with the options they take. */
+const COMMAND_PREFIXES = new Set(['exec', 'command', 'builtin', 'nohup', 'time', 'eval', 'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}']);
+const baseName = (word) => word.replace(/^.*\//, '');
+/** A word the shell expands before it runs (a variable, a command substitution, a glob, a brace list): its tool is unknown. */
+const isExpansion = (word) => /[$`*?]/.test(word) || (word.length > 1 && word.indexOf('[') >= 0 && word.indexOf('[') < word.lastIndexOf(']')) || /\{[^}]*,[^}]*\}/.test(word);
+
+/**
+ * ARV-214: one command's words with the tool first. Skipped in front of the tool: VAR=value assignments; env with its options
+ * (-u NAME, -C DIR and their long forms take a value; -S is read as the command line itself); exec, command, builtin, nohup,
+ * time, eval and the shell keywords; a shell with its options (sh -c, bash -euo pipefail -c: with quotes dropped the script's
+ * words follow); timeout with its options and its duration; nice with -n; corepack (the tool it runs follows). A tool named
+ * by a path is named by its file name (/usr/local/bin/npm is npm), and node running npm's own script (npm-cli.js, npx-cli.js)
+ * is npm or npx. An empty list when nothing is left.
+ */
+export function commandWords(input) {
+	let words = input;
+	let i = 0;
+	const valueOf = (options) => {
+		if (i < words.length && options.has(words[i])) i += 2;
+		else i++;
+	};
+	while (i < words.length) {
+		const word = words[i];
+		// An expansion keeps its whole text, so unreadableRunProblems sees it rather than the name after its last slash.
+		const base = isExpansion(word) ? word : baseName(word);
+		if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word) || COMMAND_PREFIXES.has(word)) {
+			i++;
+			if (word === 'command' || word === 'builtin') while (i < words.length && /^-[pvV]+$/.test(words[i])) i++;
+			continue;
+		}
+		if (base === 'env') {
+			i++;
+			while (i < words.length && words[i].startsWith('-')) {
+				// -S 'npm install' splits its text into the command; written -S'npm install', the text starts in the same word.
+				const split = words[i].match(/^(?:-S|--split-string=)(.+)$/)?.[1];
+				if (split) words = [...words.slice(0, i), split, ...words.slice(i + 1)];
+				else valueOf(new Set(['-u', '--unset', '-C', '--chdir']));
+			}
+			continue;
+		}
+		if (SHELLS.has(base)) {
+			i++;
+			// -o and -O take a value, also at the end of a cluster (bash -euo pipefail -c ...).
+			while (i < words.length && /^[-+]/.test(words[i])) i += /^[-+][a-zA-Z]*[oO]$/.test(words[i]) ? 2 : 1;
+			continue;
+		}
+		if (base === 'timeout') {
+			i++;
+			while (i < words.length && words[i].startsWith('-')) valueOf(new Set(['-s', '--signal', '-k', '--kill-after']));
+			i++;
+			continue;
+		}
+		if (base === 'nice') {
+			i++;
+			while (i < words.length && words[i].startsWith('-')) valueOf(new Set(['-n', '--adjustment']));
+			continue;
+		}
+		if (base === 'corepack') {
+			i++;
+			continue;
+		}
+		if (base === 'node' || base === 'nodejs') {
+			const script = words.slice(i + 1).find((next) => !next.startsWith('-'));
+			if (script && /^(npm|npx)-cli\.js$/.test(baseName(script))) {
+				const rest = words.slice(words.indexOf(script, i + 1) + 1);
+				return [baseName(script).slice(0, 3), ...rest];
+			}
+		}
+		return [base, ...words.slice(i + 1)];
+	}
+	return [];
+}
+
+/**
+ * ARV-214: the commands of a shell script as a RUN line's shell form runs them, each as commandWords. Read fail closed, so a
+ * command is never missed for its spelling: commands are split at &&, ||, ;, a pipe, a background &, a new line, a subshell's
+ * or a group's brackets and a command substitution ($(...) or backticks), also inside quotes; quotes are removed and a
+ * backslash keeps the character after it, as the shell's quote removal does (n"p"m and n\pm are npm), so a script wrapped in
+ * sh -c or eval is read as commands of its own. A word that held a space inside quotes is read as several words.
+ */
+export function shellCommands(script) {
+	const flat = script.replace(/\\\r?\n/g, ' ').replace(/\\(.)/g, '$1').replace(/["']/g, '');
+	return flat.split(/&&|\|\||[;|&\n()`]/).map((part) => commandWords(part.trim().split(/\s+/).filter(Boolean))).filter((words) => words.length);
+}
+
+/**
+ * ARV-214: the commands of one Dockerfile instruction (dockerInstructions), each as commandWords; none unless it is RUN (in any
+ * case, as Docker reads instructions). The RUN flags (--mount=..., --network=...) are skipped. The exec form, a JSON array of
+ * strings, is one command with its words as written, except that a shell or eval at its head has the rest read as a script
+ * (["sh", "-c", "npm install"]); text that is not such an array is the shell form, as Docker runs it.
+ */
+export function runCommands(instruction) {
+	const words = execWords(instruction);
+	let commands;
+	if (words) {
+		const command = commandWords(words);
+		commands = command.length ? [command] : [];
+		// A word holding white space is a script some wrapper hands a shell (["su", "node", "-c", "npm install"]): read it too.
+		for (const word of words.slice(1)) if (/\s/.test(word.trim())) commands.push(...shellCommands(word));
+	} else {
+		const script = runScript(instruction);
+		commands = script === null ? [] : shellCommands(script);
+	}
+	return withEmbeddedTools(commands);
+}
+
+/**
+ * ARV-214: the tools whose packages the npm and restore rules guard. A command that holds one of them after its first word
+ * (sudo npm install, xargs npm install, su node -c npm install, find -execdir dotnet restore, a redirection before the tool,
+ * npm explore pkg -- npm install, node /usr/local/bin/npm install) also yields a command that starts there, so a wrapper the
+ * reader does not know cannot hide the tool: read fail closed, a word that only names the tool (apt-get install npm) yields a
+ * command with no verb, which no rule refuses.
+ */
+const GUARDED_TOOLS = new Set(['npm', 'npx', 'yarn', 'yarnpkg', 'pnpm', 'pnpx', 'bun', 'bunx', 'dotnet', 'dnx']);
+function withEmbeddedTools(commands) {
+	const out = [];
+	for (const words of commands) {
+		out.push(words);
+		for (let k = 1; k < words.length; k++) {
+			if (!words[k].startsWith('-') && GUARDED_TOOLS.has(baseName(words[k]))) out.push([baseName(words[k]), ...words.slice(k + 1)]);
+		}
+	}
+	return out;
+}
+
+/**
+ * ARV-214: the commands an instruction runs or writes for a later RUN: a RUN's (runCommands), and a COPY's or ADD's
+ * here-document read as a script (COPY <<EOF /install.sh ... EOF, then RUN sh /install.sh), fail closed even when the
+ * document is not run.
+ */
+export function instructionCommands(instruction) {
+	if (/^\s*(?:ONBUILD\s+)?RUN\b/i.test(instruction)) return runCommands(instruction);
+	if (/^\s*(?:ONBUILD\s+)?(?:COPY|ADD)\b/i.test(instruction) && instruction.includes('\n')) return withEmbeddedTools(shellCommands(instruction.slice(instruction.indexOf('\n') + 1)));
+	return [];
+}
+
+/** The body of a RUN instruction after its flags, or null for another instruction. */
+function runBody(instruction) {
+	const match = instruction.match(/^\s*(?:ONBUILD\s+)?RUN\s+((?:--[a-z-]+(?:=\S*)?\s+)*)([\s\S]*)$/i);
+	return match ? match[2].trim() : null;
+}
+
+/** The words of a RUN instruction in the exec form whose head is not a shell, eval or env (those run a script); else null. */
+function execWords(instruction) {
+	const body = runBody(instruction);
+	if (body === null || !body.startsWith('[')) return null;
+	try {
+		const parsed = JSON.parse(body);
+		if (!Array.isArray(parsed) || !parsed.every((word) => typeof word === 'string')) return null;
+		const head = parsed.length ? baseName(parsed[0]) : '';
+		return SHELLS.has(head) || head === 'eval' || head === 'env' ? null : parsed;
+	} catch {
+		return null; // not an array: Docker runs it as the shell form
+	}
+}
+
+/**
+ * The shell script a RUN instruction runs: its shell form's text, or for the exec form with a shell, eval or env at its head
+ * (["sh", "-c", "npm install"]) its words joined, quotes and backslashes taken out of each; null for the exec form of any other
+ * tool and for another instruction.
+ */
+function runScript(instruction) {
+	const body = runBody(instruction);
+	if (body === null) return null;
+	if (body.startsWith('[')) {
+		try {
+			const parsed = JSON.parse(body);
+			if (Array.isArray(parsed) && parsed.every((word) => typeof word === 'string')) {
+				if (execWords(instruction)) return null;
+				return parsed.map((word) => word.replace(/[\\"']/g, '')).join(' ');
+			}
+		} catch {
+			// not an array: the shell form
+		}
+	}
+	return body;
+}
+
+/**
+ * ARV-214: the npm command a command's words run (canonical name), or undefined: the first word after npm that is neither an
+ * option nor an option's value (--prefix web, -C web, --cache dir and the other options that take one; a word after an unknown
+ * option is read as its value unless it is a command), resolved as npm resolves it: an alias (i, add, isntall, ci's ic) or a
+ * unique abbreviation of a command or alias (npm insta, npm upd) names the command it stands for.
+ */
+const NPM_VALUE_OPTIONS = new Set(['--prefix', '-C', '--cache', '--registry', '--userconfig', '--globalconfig', '--loglevel', '-w', '--workspace', '--omit', '--include', '--location', '--script-shell', '--tag', '--otp', '--before', '--cafile', '--ca', '--cert', '--key', '--proxy', '--https-proxy', '--noproxy', '--install-strategy', '--node-options', '--shell', '--editor', '--auth-type', '--scope', '--init-module', '--workspaces-update', '--call', '-c', '--package']);
+/** npm options known to take no value, so the word after one is the command (npm --no-audit install). */
+const NPM_FLAGS = new Set(['-g', '--global', '-f', '--force', '-s', '--silent', '-q', '--quiet', '-d', '-dd', '-ddd', '--verbose', '--no-audit', '--audit', '--no-fund', '--fund', '--ignore-scripts', '--no-ignore-scripts', '--legacy-peer-deps', '--strict-peer-deps', '--prefer-offline', '--prefer-online', '--offline', '--dry-run', '--production', '--no-optional', '--no-save', '-D', '-S', '-E', '-O', '-B', '-P', '--save', '--save-dev', '--save-exact', '--save-optional', '--save-peer', '--no-package-lock', '--package-lock-only', '--foreground-scripts', '--if-present', '--ws', '--workspaces', '--include-workspace-root', '-y', '--yes', '--no', '--color', '--no-color', '--progress', '--no-progress', '--json', '--parseable', '--long', '-l', '--version', '-v', '-h', '--help', '--usage', '--unicode', '--no-update-notifier', '--update-notifier']);
+const NPM_COMMANDS = ['access', 'adduser', 'audit', 'bugs', 'cache', 'ci', 'completion', 'config', 'dedupe', 'deprecate', 'diff', 'dist-tag', 'docs', 'doctor', 'edit', 'exec', 'explain', 'explore', 'find-dupes', 'fund', 'get', 'help', 'help-search', 'hook', 'init', 'install', 'install-ci-test', 'install-test', 'link', 'll', 'login', 'logout', 'ls', 'org', 'outdated', 'owner', 'pack', 'ping', 'pkg', 'prefix', 'profile', 'prune', 'publish', 'query', 'rebuild', 'repo', 'restart', 'root', 'run-script', 'sbom', 'search', 'set', 'shrinkwrap', 'star', 'stars', 'start', 'stop', 'team', 'test', 'token', 'undeprecate', 'uninstall', 'unpublish', 'unstar', 'update', 'version', 'view', 'whoami'];
+const NPM_ALIASES = {
+	add: 'install', i: 'install', in: 'install', ins: 'install', inst: 'install', insta: 'install', instal: 'install', isnt: 'install', isnta: 'install', isntal: 'install', isntall: 'install',
+	'clean-install': 'ci', ic: 'ci', 'install-clean': 'ci', 'isntall-clean': 'ci', cit: 'install-ci-test', 'clean-install-test': 'install-ci-test', sit: 'install-ci-test', it: 'install-test',
+	up: 'update', upgrade: 'update', udpate: 'update', x: 'exec', create: 'init', innit: 'init', ln: 'link', run: 'run-script', rum: 'run-script', urn: 'run-script',
+	t: 'test', tst: 'test', un: 'uninstall', unlink: 'uninstall', remove: 'uninstall', rm: 'uninstall', r: 'uninstall', list: 'ls', la: 'ls', c: 'config', ddp: 'dedupe', rb: 'rebuild',
+	v: 'view', info: 'view', show: 'view', find: 'search', s: 'search', se: 'search', author: 'owner', home: 'docs', issues: 'bugs', login: 'adduser', 'add-user': 'adduser', hlep: 'help', verison: 'version', why: 'explain'
+};
+function npmCommand(written) {
+	// npm reads camelCase as kebab case (installTest is install-test), then an exact name, then a unique abbreviation.
+	const word = written.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+	const names = [...NPM_COMMANDS, ...Object.keys(NPM_ALIASES)];
+	let name = names.includes(word) ? word : undefined;
+	if (!name) {
+		const matches = names.filter((candidate) => candidate.startsWith(word));
+		if (matches.length === 1) name = matches[0];
+	}
+	while (name && NPM_ALIASES[name]) name = NPM_ALIASES[name];
+	return name;
+}
+export function npmVerbs(words) {
+	const verbs = [];
+	for (let i = 1; i < words.length; i++) {
+		const word = words[i];
+		if (word === '--') {
+			if (words[i + 1] !== undefined) verbs.push(npmCommand(words[i + 1]) ?? words[i + 1]);
+			return verbs;
+		}
+		if (word.startsWith('-')) {
+			if (!word.includes('=') && NPM_VALUE_OPTIONS.has(word)) i++;
+			continue;
+		}
+		// A word right after an option npm may read a value for (one not known to take none) is either that value or the
+		// command: both are candidates, and the next word that follows no such option is the command for certain.
+		const previous = words[i - 1];
+		const ambiguous = i > 1 && previous.startsWith('-') && !previous.includes('=') && !NPM_VALUE_OPTIONS.has(previous) && !NPM_FLAGS.has(previous);
+		verbs.push(npmCommand(word) ?? word);
+		if (!ambiguous) return verbs;
+	}
+	return verbs;
+}
+/** The npm command words most likely run (the last candidate of npmVerbs), or undefined. */
+export const npmVerb = (words) => npmVerbs(words).at(-1);
+
+/**
+ * ARV-214: the dotnet command a command's words run, or undefined: the first word after dotnet that is neither a host option
+ * (-d, --diagnostics) nor the value of one that takes a value (--additionalprobingpath, --depsfile, --runtimeconfig,
+ * --roll-forward, --fx-version and the like). msbuild with a restore switch or target (-restore, -r, -t:Restore) is a restore.
+ */
+const DOTNET_VALUE_OPTIONS = new Set(['--additionalprobingpath', '--additional-deps', '--depsfile', '--runtimeconfig', '--roll-forward', '--fx-version', '--roll-forward-on-no-candidate-fx']);
+export function dotnetVerb(words) {
+	for (let i = 1; i < words.length; i++) {
+		const word = words[i];
+		if (word.startsWith('-')) {
+			if (DOTNET_VALUE_OPTIONS.has(word)) i++;
+			continue;
+		}
+		if (word.toLowerCase() === 'msbuild' && words.slice(i + 1).some((arg) => /^(?:-{1,2}|\/)(?:restore|r)(?::true)?$/i.test(arg) || /^(?:-{1,2}|\/)(?:t|target):(?:[^;,]*[;,])*restore(?:[;,].*)?$/i.test(arg))) return 'restore';
+		return word.toLowerCase();
+	}
+	return undefined;
+}
+
+/** ARV-214: the commands of every RUN instruction of a Dockerfile, with the instruction each came from. */
+export function dockerRunCommands(dockerfile) {
+	return dockerInstructions(dockerfile).flatMap((instruction) => instructionCommands(instruction).map((words) => ({ instruction, words })));
+}
+
+/**
+ * ARV-214: a RUN command whose tool is a shell expansion ($TOOL install, ${NPM} ci, $(which npm) install, `which npm` install)
+ * could be npm or dotnet, which the checks below could then not see: it is refused, with the command named. The shell text is
+ * split at &&, ||, ;, a pipe, a background & and new lines only, so a command substitution stays in the word it starts and is
+ * seen as the tool. The exec form expands nothing, so its words are what runs (a shell or eval at its head excepted).
+ */
+export function unreadableRunProblems(dockerfile) {
+	const { instructions, problems } = parseDockerfile(dockerfile);
+	for (const instruction of instructions) {
+		// A SHELL other than a shell would run every later shell-form RUN through another tool (SHELL ["/usr/local/bin/npm"]).
+		const shell = instruction.match(/^\s*SHELL\s+(\[[\s\S]*\])\s*$/i)?.[1];
+		if (/^\s*SHELL\b/i.test(instruction)) {
+			let head = null;
+			try {
+				head = JSON.parse(shell ?? '')[0];
+			} catch {
+				// not an array
+			}
+			if (typeof head !== 'string' || !SHELLS.has(baseName(head))) problems.push(`SHELL must name a shell (${[...SHELLS].join(', ')}): ${instruction.trim().slice(0, 120)}`);
+		}
+		const script = runScript(instruction);
+		if (script === null) continue;
+		const flat = script.replace(/\\\r?\n/g, ' ').replace(/\\(.)/g, '$1').replace(/["']/g, '');
+		for (const part of flat.split(/&&|\|\||[;|&\n]/)) {
+			const words = commandWords(part.trim().replace(/^[({\s]+/, '').split(/\s+/).filter(Boolean));
+			if (words.length && isExpansion(words[0])) problems.push(`a RUN command named by an expansion cannot be checked: name its tool (${words.join(' ')})`);
+			// node running a script named by an expansion (node "$(command -v npm)" install) could be npm.
+			const script = (words[0] === 'node' || words[0] === 'nodejs') ? words.slice(1).find((word) => !word.startsWith('-')) : undefined;
+			if (script && isExpansion(script)) problems.push(`a RUN command runs node on a script named by an expansion, which cannot be checked: name the script (${words.join(' ')})`);
+		}
+	}
+	return problems;
+}
+
+/**
  * ARV-096 (ASVS 5.0 V15.1.2, supply chain): a Dockerfile that restores NuGet packages restores what the lock files name, from
  * the repository's sources. Problems for a Dockerfile text, given read(path) for repository files (null when missing):
  * nuget.config is copied before the first restore; every dotnet restore passes --locked-mode; every dotnet publish or build
- * holds the restore it runs to the lock files (-p:RestoreLockedMode=true) or skips it (--no-restore); the projects copied
+ * holds the restore it runs to the lock files (-p:RestoreLockedMode=true) or skips it (--no-restore), and so do dotnet build,
+ * run, test and pack (ARV-214, which also reads the RUN forms runCommands reads); the projects copied
  * before a restore are the restored project's whole closure (ProjectReference, followed), each with its packages.lock.json
  * beside it; and each of those lock files records the runtime the restore names (-r linux-x64 needs RuntimeIdentifiers).
  */
 export function lockedRestoreProblems(dockerfile, read) {
-	const lines = dockerfile.replace(/\\\r?\n/g, ' ').split(/\r?\n/);
-	const isRestore = (line) => /^\s*RUN\b.*\bdotnet\s+restore\b/.test(line);
-	const builds = lines.filter((line) => /^\s*RUN\b.*\bdotnet\s+(publish|build)\b/.test(line));
-	const restores = lines.filter(isRestore);
-	if (!restores.length && !builds.length) return [];
+	// ARV-214: the forms instructionCommands reads: the exec form, a tool named by a path, env and VAR=value prefixes, a
+	// shell wrapper, a here-document, dotnet anywhere in a command; build, publish, run, test, pack and format restore on their
+	// own unless told not to.
+	const instructions = dockerInstructions(dockerfile);
+	const commandsOf = (instruction) => instructionCommands(instruction).filter((words) => words[0] === 'dotnet' || words[0] === 'dnx');
+	const verbOf = (words) => (words[0] === 'dnx' ? 'dnx' : dotnetVerb(words));
+	const isRestore = (instruction) => commandsOf(instruction).some((words) => verbOf(words) === 'restore');
+	const all = instructions.flatMap(commandsOf);
+	const restores = all.filter((words) => verbOf(words) === 'restore');
+	const builds = all.filter((words) => DOTNET_RESTORING.includes(verbOf(words)));
+	const fetches = all.filter((words) => DOTNET_FETCHING(words));
+	if (!restores.length && !builds.length && !fetches.length) return [];
 	const problems = [];
-	const first = lines.findIndex(isRestore);
+	const first = instructions.findIndex(isRestore);
 	const copied = new Set();
-	for (const line of lines.slice(0, first < 0 ? lines.length : first)) {
-		const args = line.match(/^\s*COPY\s+(?!--from)(.+)$/i)?.[1]?.trim();
+	for (const line of instructions.slice(0, first < 0 ? instructions.length : first)) {
+		const args = line.match(/^\s*COPY\s+(?!--from)(.+)$/i)?.[1]?.trim().replace(/^(--[a-z-]+(=\S*)?\s+)+/i, '');
 		if (!args) continue;
 		let parts;
 		try {
@@ -638,21 +1385,28 @@ export function lockedRestoreProblems(dockerfile, read) {
 		}
 		for (const source of parts.slice(0, -1)) copied.add(source.replace(/^\.\//, ''));
 	}
+	for (const words of fetches) problems.push(`${words[0] === 'dnx' ? 'dnx' : `dotnet ${words.slice(1, 3).join(' ')}`} fetches or changes packages the lock files do not name: an image build restores only what packages.lock.json names (${words.join(' ')})`);
+	for (const words of [...restores, ...builds]) {
+		if (words.some((word) => /^(?:-{1,2}|\/)p(?:roperty)?:RestoreLockedMode=(?!true$)/i.test(word))) problems.push(`dotnet ${verbOf(words)} must not turn locked mode off (${words.join(' ')})`);
+		if (words.some((word) => /^--(?:source|configfile)(?:[=:].*)?$/.test(word)) || (verbOf(words) === 'restore' && words.includes('-s'))) problems.push(`dotnet ${verbOf(words)} must take its package sources from nuget.config alone (${words.join(' ')})`);
+	}
+	const lockedProperty = (word) => /^(?:-{1,2}|\/)p(?:roperty)?:RestoreLockedMode=true$/i.test(word);
 	if (!restores.length) problems.push('a Dockerfile that builds .NET must restore first, in locked mode (dotnet restore --locked-mode)');
 	else if (!copied.has('nuget.config')) problems.push('nuget.config (package sources and their mapping) must be copied before the restore');
 	for (const restore of restores) {
-		if (!/\s--locked-mode\b/.test(restore)) problems.push(`dotnet restore must pass --locked-mode (${restore.trim().replace(/^RUN\s+(--mount=\S+\s+)*/, '')})`);
+		if (!restore.includes('--locked-mode') && !restore.some(lockedProperty)) problems.push(`dotnet restore must pass --locked-mode (or -p:RestoreLockedMode=true) (${restore.join(' ')})`);
 	}
 	for (const build of builds) {
-		if (!/\s(--no-restore|-p:RestoreLockedMode=true)\b/.test(build)) problems.push('dotnet publish must hold the restore it runs to the lock files (-p:RestoreLockedMode=true) or skip it (--no-restore)');
+		if (!build.includes('--no-restore') && !build.includes('--no-build') && !build.some(lockedProperty)) problems.push(`dotnet ${dotnetVerb(build)} must hold the restore it runs to the lock files (-p:RestoreLockedMode=true) or skip it (--no-restore, or --no-build) (${build.join(' ')})`);
 	}
 	for (const restore of restores) {
-		const project = restore.match(/\bdotnet\s+restore\s+"?([^"\s]+\.csproj)"?/)?.[1];
+		const project = restore.find((word) => /\.csproj$/i.test(word))?.replace(/^\.\//, '');
 		if (!project) {
-			problems.push('dotnet restore must name the project it restores');
+			problems.push(`dotnet restore must name the project it restores (${restore.join(' ')})`);
 			continue;
 		}
-		const runtime = restore.match(/\s(?:-r|--runtime)\s+(\S+)/)?.[1];
+		const runtimeAt = restore.findIndex((word) => word === '-r' || word === '--runtime');
+		const runtime = runtimeAt >= 0 ? restore[runtimeAt + 1] : restore.map((word) => word.match(/^(?:-r|--runtime)[=:](.+)$/)?.[1]).find(Boolean);
 		const closure = new Set();
 		const visit = (csproj) => {
 			if (closure.has(csproj)) return;
@@ -683,44 +1437,65 @@ export function lockedRestoreProblems(dockerfile, read) {
 			if (runtime && !graphs.some((graph) => graph.endsWith(`/${runtime}`))) problems.push(`${lock} has no ${runtime} graph, which the restore needs (RuntimeIdentifiers in Directory.Build.props)`);
 		}
 	}
-	return problems;
+	return [...new Set(problems)];
 }
+
+/** ARV-214: dotnet commands that restore on their own unless told not to. */
+const DOTNET_RESTORING = ['publish', 'build', 'run', 'test', 'pack', 'format'];
+/** ARV-214: dotnet commands that fetch or change packages outside the lock files: a .NET tool, a package added, a workload, dnx. */
+const DOTNET_FETCHING = (words) => {
+	if (words[0] === 'dnx') return words.length > 1;
+	const verb = dotnetVerb(words);
+	const next = words[words.indexOf(words.find((word, index) => index > 0 && word.toLowerCase() === verb)) + 1]?.toLowerCase();
+	if (verb === 'tool') return ['install', 'exec', 'restore', 'update', 'execute'].includes(next);
+	// dotnet add [<project>] package <id>
+	if (verb === 'add') return words.slice(1).map((word) => word.toLowerCase()).includes('package');
+	if (verb === 'package') return ['add', 'update'].includes(next);
+	if (verb === 'workload') return ['install', 'update', 'restore', 'repair'].includes(next);
+	return false;
+};
 
 /**
  * ARV-096 (ASVS 5.0 V15.1.2): a Dockerfile that installs npm packages installs exactly what its package-lock.json names.
- * Problems for a Dockerfile text: any install that may resolve on its own (npm install, i, add, update, or yarn and pnpm,
- * which have no lock file here) is refused, and every npm ci needs a package-lock.json copied before it, so that it
- * cannot run against a lock file that is not there.
+ * Problems for a Dockerfile text: any command that may resolve on its own (npm install and its aliases, update, install-test,
+ * link, dedupe, init and create, audit fix, exec and npx, or yarn, pnpm and bun, which have no lock file here) is refused,
+ * and every npm ci needs a package-lock.json copied before it, so that it cannot run against a lock file that is not there.
+ * ARV-214: the RUN forms runCommands reads are read, and npm's command is found as npm finds it (npmVerb).
  */
 export function lockedNpmProblems(dockerfile) {
-	const lines = dockerfile.replace(/\\\r?\n/g, ' ').split(/\r?\n/);
 	const problems = [];
 	let lockCopied = false;
-	for (const line of lines) {
+	for (const instruction of dockerInstructions(dockerfile)) {
 		// Each stage starts with what its FROM gives it: a lock file copied into another stage does not count.
-		if (/^\s*FROM\s/i.test(line)) lockCopied = false;
-		const copy = line.match(/^\s*COPY\s+(?!--from)(.+)$/i)?.[1];
+		if (/^\s*FROM\s/i.test(instruction)) lockCopied = false;
+		const copy = instruction.match(/^\s*COPY\s+(?!--from)(.+)$/i)?.[1];
 		if (copy && /(^|[\s"/])package-lock\.json\b/.test(copy)) lockCopied = true;
-		if (!/^\s*RUN\b/.test(line)) continue;
-		// Commands chained by &&, ||, ;, a pipe, or wrapped in sh -c or bash -c (quotes dropped, so the wrapped text is read too).
-		const body = line.replace(/^\s*RUN\s+(--mount=\S+\s+)*/, '').replace(/\b(?:sh|bash|ash)\s+-c\s+/g, '').replace(/["']/g, ' ');
-		for (const command of body.split(/&&|;|\|\||\|/)) {
-			const words = command.trim().split(/\s+/);
+		// ARV-214: the forms instructionCommands reads: the exec form, a tool named by a path, env and VAR=value prefixes,
+		// shell wrappers, here-documents, a guarded tool anywhere in a command; npm's command found as npm finds it, every
+		// candidate when an option before it may take a value (npmVerbs).
+		for (const words of instructionCommands(instruction)) {
 			const tool = words[0];
-			if (tool === 'npx' || (tool === 'npm' && ['exec', 'x'].includes(words.find((word, index) => index > 0 && !word.startsWith('-'))))) {
-				problems.push(`${tool === 'npx' ? 'npx' : 'npm exec'} fetches a package the lock file does not name: run it from package-lock.json's tree (${command.trim()})`);
+			const command = words.join(' ');
+			const verbs = tool === 'npm' ? npmVerbs(words) : [];
+			if (NPM_FETCHERS.has(tool) ? words.length > 1 : verbs.includes('exec')) {
+				problems.push(`${tool === 'npm' ? 'npm exec' : tool} fetches a package the lock file does not name: run it from package-lock.json's tree (${command})`);
 				continue;
 			}
-			const verb = words.find((word, index) => index > 0 && !word.startsWith('-'));
-			if (tool === 'npm' && ['install', 'i', 'add', 'update', 'up', 'upgrade', 'isntall', 'in', 'ins', 'inst', 'insta', 'instal', 'isnt', 'isnta', 'isntal'].includes(verb))
-				problems.push(`npm ${verb} may change the tree the lock file names: install with npm ci from package-lock.json (${command.trim()})`);
-			else if (tool === 'npm' && ['ci', 'clean-install', 'install-clean', 'isntall-clean'].includes(verb) && !lockCopied)
-				problems.push('npm ci needs package-lock.json copied before it');
-			else if (tool === 'yarn' || tool === 'pnpm') problems.push(`${tool} is not used here: install with npm ci from package-lock.json (${command.trim()})`);
+			const refused = verbs.find((verb) => NPM_REFUSED.includes(verb)) ?? (verbs.includes('audit') && words.includes('fix') ? 'audit' : undefined);
+			if (refused) problems.push(`npm ${refused}${refused === 'audit' ? ' fix' : ''} may change the tree the lock file names: install with npm ci from package-lock.json (${command})`);
+			else if (verbs.some((verb) => ['ci', 'install-ci-test'].includes(verb)) && !lockCopied) problems.push(`npm ci needs package-lock.json copied before it (${command})`);
+			else if (NPM_OTHERS.has(tool)) problems.push(`${tool} is not used here: install with npm ci from package-lock.json (${command})`);
 		}
 	}
-	return problems;
+	return [...new Set(problems)];
 }
+
+/** ARV-214: npm commands that may change the tree its lock file names (canonical names), refused in an image build. */
+const NPM_REFUSED = ['install', 'update', 'install-test', 'link', 'dedupe', 'init'];
+/** ARV-214: tools that fetch and run a package by name. */
+const NPM_FETCHERS = new Set(['npx', 'pnpx', 'bunx']);
+/** ARV-214: package managers with no lock file here. */
+const NPM_OTHERS = new Set(['yarn', 'yarnpkg', 'pnpm', 'bun']);
 
 function selfTestLockedNpm() {
 	const good = [
@@ -737,7 +1512,7 @@ function selfTestLockedNpm() {
 		['good', good, []],
 		['not node', 'FROM sdk\nRUN dotnet restore x.csproj --locked-mode\n', []],
 		['npm install', good.replace('npm ci', 'npm install --force'), ['npm install may change the tree']],
-		['npm i', good.replace('npm ci', 'npm i'), ['npm i may change the tree']],
+		['npm i', good.replace('npm ci', 'npm i'), ['npm install may change the tree']],
 		['npm with a flag first', good.replace('npm ci', 'npm --no-audit install'), ['npm install may change the tree']],
 		['npm update', good.replace('npm run build --prod', 'npm update && npm run build'), ['npm update may change the tree']],
 		['yarn', good.replace('npm ci', 'yarn install --frozen-lockfile'), ['yarn is not used here']],
@@ -748,7 +1523,43 @@ function selfTestLockedNpm() {
 		['npx', good.replace('npm run build --prod', 'npx vite build'), ['npx fetches a package the lock file does not name']],
 		['npm exec', good.replace('npm run build --prod', 'npm exec -- vite build'), ['npm exec fetches a package the lock file does not name']],
 		['wrapped in sh -c', good.replace('npm ci', 'sh -c "npm install"'), ['npm install may change the tree']],
-		['after a pipe', good.replace('npm run build --prod', 'echo ok | npm i left-pad'), ['npm i may change the tree']]
+		['after a pipe', good.replace('npm run build --prod', 'echo ok | npm i left-pad'), ['npm install may change the tree']],
+		// ARV-214: the RUN forms the reader reads.
+		['exec form install', good.replace('RUN npm run build --prod', 'RUN ["npm", "install"]'), ['install with npm ci from package-lock.json (npm install)']],
+		['exec form through sh -c', good.replace('RUN npm run build --prod', 'RUN ["/bin/dash", "-c", "npm install --omit=dev && npm run build"]'), ['npm install may change the tree']],
+		['exec form npx', good.replace('RUN npm run build --prod', 'RUN ["npx", "vite", "build"]'), ['npx fetches a package the lock file does not name']],
+		['exec form ci without a lock file', good.replace(' ./web/package-lock.json', '').replace('npm set cache /root/.npm && \\\n    npm ci', 'true').replace('RUN npm run build --prod', 'RUN ["npm", "ci"]'), ['npm ci needs package-lock.json copied before it']],
+		['exec form ci with its lock file', good.replace('RUN npm run build --prod', 'RUN ["npm", "ci", "--omit=dev"]'), []],
+		['tool named by a path', good.replace('npm ci', '/usr/local/bin/npm install'), ['npm install may change the tree']],
+		['exec form tool named by a path', good.replace('RUN npm run build --prod', 'RUN ["/usr/local/bin/npm", "i", "left-pad"]'), ['npm install may change the tree']],
+		['node running npm-cli.js', good.replace('npm ci', 'node /usr/local/lib/node_modules/npm/bin/npm-cli.js install'), ['npm install may change the tree']],
+		['env prefix', good.replace('npm ci', 'env NODE_ENV=production npm install'), ['npm install may change the tree']],
+		['env with options', good.replace('npm ci', 'env -i -u HOME PATH=/usr/bin npm install'), ['npm install may change the tree']],
+		['env -S joined to its text', good.replace('npm ci', "env -S'npm install'"), ['npm install may change the tree']],
+		['VAR=value prefix', good.replace('npm ci', 'CI=1 NODE_ENV=production npm install'), ['npm install may change the tree']],
+		['verb after --prefix', good.replace('npm ci', 'npm --prefix web install'), ['npm install may change the tree']],
+		['verb after --prefix=', good.replace('npm ci', 'npm --prefix=web install'), ['npm install may change the tree']],
+		['verb after -C and --cache', good.replace('npm ci', 'npm -C web --cache /tmp/npm i'), ['npm install may change the tree']],
+		['verb after an unknown option', good.replace('npm ci', 'npm --some-flag value install'), ['npm install may change the tree']],
+		['ci after --prefix is still ci', good.replace('npm ci', 'npm --prefix web ci'), []],
+		['an abbreviation', good.replace('npm ci', 'npm upd'), ['npm update may change the tree']],
+		['camel case', good.replace('npm ci', 'npm installTest'), ['npm install-test may change the tree']],
+		['after --', good.replace('npm ci', 'npm -- install'), ['npm install may change the tree']],
+		['audit fix', good.replace('npm run build --prod', 'npm audit fix'), ['npm audit fix may change the tree']],
+		['link', good.replace('npm run build --prod', 'npm link left-pad'), ['npm link may change the tree']],
+		['init fetches an initializer', good.replace('npm run build --prod', 'npm create vite'), ['npm init may change the tree']],
+		['quotes inside the tool', good.replace('npm ci', 'n"p"m install'), ['npm install may change the tree']],
+		['backslash inside the tool', good.replace('npm ci', 'n\\pm install'), ['npm install may change the tree']],
+		['bash with options', good.replace('npm ci', 'bash -euo pipefail -c "npm install"'), ['npm install may change the tree']],
+		['eval', good.replace('npm ci', 'eval "npm install"'), ['npm install may change the tree']],
+		['command substitution', good.replace('npm run build --prod', 'echo "$(npm install)"'), ['npm install may change the tree']],
+		['subshell and group', good.replace('npm run build --prod', '(npm install) && { npm update; }'), ['npm install may change the tree', 'npm update may change the tree']],
+		['if then', good.replace('npm run build --prod', 'if true; then npm install; fi'), ['npm install may change the tree']],
+		['timeout and nice', good.replace('npm run build --prod', 'timeout -s KILL 60 nice -n 5 npm install'), ['npm install may change the tree']],
+		['corepack', good.replace('npm run build --prod', 'corepack pnpm install'), ['pnpm is not used here']],
+		['lower case run', good.replace('RUN npm run build --prod', 'run npm install'), ['npm install may change the tree']],
+		['here-document', good.replace('RUN npm run build --prod', 'RUN <<EOF\nset -e\nnpm install\nEOF\nRUN npm run build'), ['npm install may change the tree']],
+		['comment inside a continuation', good.replace('npm set cache /root/.npm && \\\n', 'npm set cache /root/.npm && \\\n# a comment\n'), []]
 	];
 	const failures = [];
 	for (const [name, text, expected] of cases) {
@@ -758,6 +1569,125 @@ function selfTestLockedNpm() {
 	}
 	if (failures.length) {
 		console.error(`base images: locked npm self-test failed:\n  ${failures.join('\n  ')}`);
+		process.exit(1);
+	}
+}
+
+/**
+ * ARV-214: every entry of the reader's tables, each from a list written here rather than read from the table, so removing an
+ * entry fails: the prefixes, shells and wrappers commandWords skips, npm's value options and flags, the refused npm commands,
+ * fetchers and other managers, the guarded tools found anywhere in a command, here-documents, ONBUILD, a COPY here-document,
+ * SHELL and node on an expansion.
+ */
+function selfTestCommandTables() {
+	const failures = [];
+	const same = (name, actual, expected) => {
+		if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${name}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+	};
+	for (const prefix of ['exec', 'command', 'builtin', 'nohup', 'time', 'eval', 'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}', 'X=1'])
+		same(`prefix ${prefix}`, commandWords([prefix, 'npm', 'install']), ['npm', 'install']);
+	for (const shell of ['sh', 'bash', 'ash', 'dash', 'zsh', 'ksh', 'mksh', '/usr/bin/zsh'])
+		same(`shell ${shell}`, commandWords([shell, '-e', '-o', 'pipefail', '-c', 'npm', 'install']), ['npm', 'install']);
+	same('env options', commandWords(['env', '-i', '-u', 'A', '--unset', 'B', '-C', '/w', '--chdir', '/x', 'npm', 'ci']), ['npm', 'ci']);
+	same('env -S', commandWords(['env', '-Snpm', 'install']), ['npm', 'install']);
+	same('timeout short options', commandWords(['timeout', '-s', 'KILL', '-k', '5', '60', 'npm', 'ci']), ['npm', 'ci']);
+	same('timeout long options', commandWords(['timeout', '--signal', 'KILL', '--kill-after', '5', '60', 'npm', 'ci']), ['npm', 'ci']);
+	same('nice -n', commandWords(['nice', '-n', '5', 'npm', 'ci']), ['npm', 'ci']);
+	same('nice --adjustment', commandWords(['nice', '--adjustment', '5', 'npm', 'ci']), ['npm', 'ci']);
+	same('command -v', commandWords(['command', '-v', 'npm']), ['npm']);
+	same('corepack', commandWords(['corepack', 'pnpm', 'i']), ['pnpm', 'i']);
+	same('node npm-cli.js', commandWords(['node', '/usr/lib/node_modules/npm/bin/npm-cli.js', 'install']), ['npm', 'install']);
+	same('nodejs npx-cli.js', commandWords(['nodejs', 'npx-cli.js', 'vite']), ['npx', 'vite']);
+	const valueOptions = ['--prefix', '-C', '--cache', '--registry', '--userconfig', '--globalconfig', '--loglevel', '-w', '--workspace', '--omit', '--include', '--location', '--script-shell', '--tag', '--otp', '--before', '--cafile', '--ca', '--cert', '--key', '--proxy', '--https-proxy', '--noproxy', '--install-strategy', '--node-options', '--shell', '--editor', '--auth-type', '--scope', '--init-module', '--workspaces-update', '--call', '-c', '--package'];
+	for (const option of valueOptions) same(`npm value option ${option}`, npmVerbs(['npm', option, 'ci', 'install']), ['install']);
+	const flags = ['-g', '--global', '-f', '--force', '-s', '--silent', '-q', '--quiet', '-d', '-dd', '-ddd', '--verbose', '--no-audit', '--audit', '--no-fund', '--fund', '--ignore-scripts', '--no-ignore-scripts', '--legacy-peer-deps', '--strict-peer-deps', '--prefer-offline', '--prefer-online', '--offline', '--dry-run', '--production', '--no-optional', '--no-save', '-D', '-S', '-E', '-O', '-B', '-P', '--save', '--save-dev', '--save-exact', '--save-optional', '--save-peer', '--no-package-lock', '--package-lock-only', '--foreground-scripts', '--if-present', '--ws', '--workspaces', '--include-workspace-root', '-y', '--yes', '--no', '--color', '--no-color', '--progress', '--no-progress', '--json', '--parseable', '--long', '-l', '--version', '-v', '-h', '--help', '--usage', '--unicode', '--no-update-notifier', '--update-notifier'];
+	for (const flag of flags) same(`npm flag ${flag}`, npmVerbs(['npm', flag, 'run', 'install']), ['run-script']);
+	same('npm unknown option before a command', npmVerbs(['npm', '--cpu', 'ci', 'install']), ['ci', 'install']);
+	const npmGood = 'FROM node AS web\nCOPY package.json package-lock.json ./\nRUN npm ci\n';
+	const npmFinds = (name, run, fragment) => {
+		const found = lockedNpmProblems(`${npmGood}${run}\n`).join('\n');
+		if (fragment === null ? found : !found.includes(fragment)) failures.push(`${name}: ${fragment === null ? `expected clean, got ${found}` : `did not report "${fragment}" (got: ${found || 'nothing'})`}`);
+	};
+	for (const verb of ['install', 'update', 'install-test', 'link', 'dedupe', 'init']) npmFinds(`npm ${verb} refused`, `RUN npm ${verb} left-pad`, `npm ${verb} may change the tree`);
+	for (const tool of ['npx', 'pnpx', 'bunx']) npmFinds(`${tool} refused`, `RUN ${tool} vite build`, `${tool} fetches a package`);
+	for (const tool of ['npx', 'pnpx', 'bunx']) npmFinds(`${tool} alone runs nothing`, `RUN ln -s /x /usr/local/bin/${tool}`, null);
+	for (const tool of ['yarn', 'yarnpkg', 'pnpm', 'bun']) npmFinds(`${tool} refused`, `RUN ${tool} install`, `${tool} is not used here`);
+	for (const [tool, fragment] of [['npm', 'npm install may change'], ['npx', 'npx fetches'], ['yarn', 'yarn is not used'], ['yarnpkg', 'yarnpkg is not used'], ['pnpm', 'pnpm is not used'], ['pnpx', 'pnpx fetches'], ['bun', 'bun is not used'], ['bunx', 'bunx fetches']])
+		npmFinds(`${tool} behind sudo`, `RUN sudo -u node ${tool} install`, fragment);
+	for (const [name, run] of [
+		['su -c', 'RUN su node -c "npm install"'], ['xargs', 'RUN echo left-pad | xargs npm install'], ['find -execdir', 'RUN find . -name package.json -execdir npm install \;'],
+		['a redirection first', 'RUN >/dev/null npm install'], ['npm explore', 'RUN npm explore left-pad -- npm install'], ['node on the npm path', 'RUN node /usr/local/bin/npm install'],
+		['time -p', 'RUN time -p npm install'], ['exec -a', 'RUN exec -a x npm install'], ['busybox sh', 'RUN busybox sh -c "npm install"'], ['stdbuf', 'RUN stdbuf -oL npm install'],
+		['gosu', 'RUN gosu node npm install'], ['su-exec', 'RUN su-exec node npm install'], ['runuser', 'RUN runuser -u node -- npm install'], ['setsid', 'RUN setsid npm install'],
+		['ONBUILD', 'ONBUILD RUN npm install'], ['a COPY here-document', 'COPY <<EOF /install.sh\nnpm install\nEOF\nRUN sh /install.sh'],
+		['a here-document with a dash in its name', 'RUN <<END-OF\nnpm install\nEND-OF'], ['a quoted here-document name', "RUN <<'EOF'\nnpm install\nEOF"],
+		['a here-document after digits', 'RUN cat 0<<EOF | sh\nnpm install\nEOF'],
+		['exec form su -c', 'RUN ["su", "node", "-c", "npm install"]'], ['exec form sudo sh -c', 'RUN ["sudo", "sh", "-c", "npm install"]'],
+		['exec form tini then sh -c', 'RUN ["tini", "--", "sh", "-c", "npm install"]'], ['exec form busybox sh -c', 'RUN ["busybox", "sh", "-c", "npm install"]']
+	]) npmFinds(name, run, 'npm install may change the tree');
+	for (const [name, run] of [['apt names npm', 'RUN apt-get install -y nodejs npm'], ['npm version', 'RUN npm --version'], ['the dev container links', 'RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx'], ['npm run with a flag first', 'RUN npm --silent run install']])
+		npmFinds(name, run, null);
+	same('a quoted <<EOF is not a here-document', dockerInstructions('FROM node\nRUN echo "see <<EOF"\nRUN npm install\nEOF\n').length, 4);
+	same('an unterminated here-document takes no lines', dockerInstructions('FROM node\nRUN <<EOF\nRUN npm install\n').length, 3);
+	same('an unterminated here-document is reported', unreadableRunProblems('FROM node\nRUN <<EOF\nRUN npm install\n').some((problem) => problem.includes('unterminated here-document (<<EOF)')), true);
+	npmFinds('after an unterminated here-document', 'RUN <<EOF\nRUN npm install', 'npm install may change the tree');
+	same('a later restore after a dashed here-document', lockedRestoreProblems('FROM sdk\nRUN <<END-OF\ntrue\nEND-OF\nRUN dotnet restore a.csproj\n', () => null).some((problem) => problem.includes('dotnet restore must pass --locked-mode')), true);
+	same('SHELL a tool', unreadableRunProblems('FROM node\nSHELL ["/usr/local/bin/npm"]\nRUN install x\n').some((problem) => problem.startsWith('SHELL must name a shell')), true);
+	same('SHELL a shell', unreadableRunProblems('FROM node\nSHELL ["bash", "-o", "pipefail", "-c"]\nRUN true\n').length, 0);
+	same('SHELL not an array', unreadableRunProblems('FROM node\nSHELL bash -c\n').length, 1);
+	same('node on an expansion', unreadableRunProblems('FROM node\nRUN node "$(command -v npm)" install\n').some((problem) => problem.includes('node on a script named by an expansion')), true);
+	for (const option of ['--additionalprobingpath', '--additional-deps', '--depsfile', '--runtimeconfig', '--roll-forward', '--fx-version', '--roll-forward-on-no-candidate-fx'])
+		same(`dotnet host option ${option}`, dotnetVerb(['dotnet', option, 'restore', 'build']), 'build');
+	for (const argument of ['-restore', '/restore', '--restore', '-r', '/r', '-restore:true', '-t:Restore', '/t:restore', '--target:Restore', '-target:Build;Restore', '-t:Restore,Build', '-t:Build,Restore'])
+		same(`msbuild ${argument}`, dotnetVerb(['dotnet', 'msbuild', 'a.csproj', argument]), 'restore');
+	same('msbuild without a restore', dotnetVerb(['dotnet', 'msbuild', 'a.csproj', '-t:Build', '-p:Restore=x']), 'msbuild');
+	if (failures.length) {
+		console.error(`base images: RUN reader tables self-test failed:\n  ${failures.join('\n  ')}`);
+		process.exit(1);
+	}
+}
+
+/** ARV-214: the RUN reader itself (dockerInstructions, runCommands, npmVerb, dotnetVerb) and the expansion refusal. */
+function selfTestRunCommands() {
+	const failures = [];
+	const same = (name, actual, expected) => {
+		if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${name}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+	};
+	same('a here-string is not a here-document', dockerInstructions('FROM node\nRUN cat <<< "x"\nRUN npm install\nx\n').length, 4);
+	same('a here-document joins its instruction', dockerInstructions('FROM node\nRUN <<EOF\nnpm install\nEOF\nRUN true\n').length, 3);
+	same('a tab-stripped here-document', dockerInstructions('FROM node\nRUN <<-EOF\n\tnpm install\n\tEOF\nRUN true\n').length, 3);
+	same('continuations joined, comments dropped', dockerInstructions('RUN a \\\n# note\n    b\n').map((text) => text.replace(/\s+/g, ' ')), ['RUN a b']);
+	same('exec form keeps its words, a word with a space also read as a script', runCommands('RUN ["dotnet", "restore", "my app/App.csproj"]'), [['dotnet', 'restore', 'my app/App.csproj'], ['my', 'app/App.csproj']]);
+	same('exec form through a shell', runCommands('RUN ["bash", "-c", "a && npm ci"]'), [['a'], ['npm', 'ci']]);
+	same('RUN flags skipped', runCommands('RUN --mount=type=cache,target=/x --network=none npm ci'), [['npm', 'ci']]);
+	same('a path names its tool', runCommands('RUN /usr/local/bin/npm ci'), [['npm', 'ci']]);
+	same('env and assignments skipped', runCommands('RUN env -u A -C /w B=1 C=2 npm ci'), [['npm', 'ci']]);
+	same('npx-cli.js is npx', runCommands('RUN node --no-warnings /usr/lib/node_modules/npm/bin/npx-cli.js vite'), [['npx', 'vite']]);
+	same('not RUN', runCommands('CMD ["npm", "install"]'), []);
+	for (const [words, verb] of [
+		[['npm', 'ci'], 'ci'], [['npm', 'i'], 'install'], [['npm', 'isntall'], 'install'], [['npm', 'insta'], 'install'], [['npm', 'ic'], 'ci'],
+		[['npm', '--prefix', 'web', 'install'], 'install'], [['npm', '-C', 'web', 'ci'], 'ci'], [['npm', '--no-audit', 'install'], 'install'],
+		[['npm', '--loglevel', 'install', 'ci'], 'ci'], [['npm', '--version'], undefined], [['npm', 'run', 'install'], 'run-script'], [['npm', 'cit'], 'install-ci-test']
+	]) same(`npm verb of ${words.join(' ')}`, npmVerb(words), verb);
+	for (const [words, verb] of [
+		[['dotnet', 'restore', 'a.csproj'], 'restore'], [['dotnet', '-d', 'publish'], 'publish'], [['dotnet', '--roll-forward', 'Major', 'build'], 'build'],
+		[['dotnet', 'msbuild', '-restore'], 'restore'], [['dotnet', 'msbuild', '/t:Build;Restore'], 'restore'], [['dotnet', 'msbuild', '-t:Build'], 'msbuild'], [['dotnet', '--version'], undefined]
+	]) same(`dotnet verb of ${words.join(' ')}`, dotnetVerb(words), verb);
+	for (const [name, dockerfile, expected] of [
+		['a variable as the tool', 'FROM node\nRUN $NPM install\n', 1],
+		['a braced variable as the tool', 'FROM node\nRUN A=1 ${NPM} ci\n', 1],
+		['a command substitution as the tool', 'FROM node\nRUN $(which npm) install\n', 1],
+		['backticks as the tool', 'FROM node\nRUN `which npm` install\n', 1],
+		['an expansion inside sh -c', 'FROM node\nRUN ["sh", "-c", "$TOOL install"]\n', 1],
+		['a glob as the tool', 'FROM node\nRUN /usr/*/npm install\n', 1],
+		['a bracket glob as the tool', 'FROM node\nRUN /usr/bin/np[m] install\n', 1],
+		['a brace list as the tool', 'FROM node\nRUN /usr/bin/{npm,true} install\n', 1],
+		['test brackets are a tool', 'FROM node\nRUN [ -f x ] && [[ -d y ]] || true\n', 0],
+		['variables as arguments', 'FROM node\nRUN cp ${A} ${B} && echo $(date) && X=$((1+2)) true\n', 0],
+		['exec form expands nothing', 'FROM node\nRUN ["$NPM", "install"]\n', 0]
+	]) same(name, unreadableRunProblems(dockerfile).length, expected);
+	if (failures.length) {
+		console.error(`base images: RUN reader self-test failed:\n  ${failures.join('\n  ')}`);
 		process.exit(1);
 	}
 }
@@ -785,6 +1715,12 @@ function selfTestLockedRestore() {
 		'RUN dotnet publish "src/App/App.csproj" -r linux-x64 -c Release -p:RestoreLockedMode=true',
 		''
 	].join('\n');
+	const restore = 'RUN --mount=type=cache,target=/root/.nuget/packages \\\n    dotnet restore "src/App/App.csproj" -r linux-x64 --locked-mode';
+	const PUBLISH = 'RUN dotnet publish "src/App/App.csproj" -r linux-x64 -c Release -p:RestoreLockedMode=true';
+	if (!good.includes(restore) || !good.includes(PUBLISH)) {
+		console.error('base images: locked restore self-test is out of date (its restore line moved)');
+		process.exit(1);
+	}
 	const cases = [
 		['good', good, read(), []],
 		['not .NET', 'FROM node AS build\nRUN npm ci\n', read(), []],
@@ -795,7 +1731,37 @@ function selfTestLockedRestore() {
 		['a project of the closure missing', good.replace('COPY ["src/Lib/Lib.csproj", "src/Lib/packages.lock.json", "src/Lib/"]\n', ''), read(), ['src/Lib/Lib.csproj is in the closure of src/App/App.csproj and must be copied', 'src/Lib/packages.lock.json must be copied beside src/Lib/Lib.csproj']],
 		['a lock file not copied', good.replace(' src/Base/packages.lock.json', ''), read(), ['src/Base/packages.lock.json must be copied beside src/Base/Base.csproj']],
 		['a lock file without the runtime', good, read({ 'src/Base/packages.lock.json': lock() }), ['src/Base/packages.lock.json has no linux-x64 graph']],
-		['a referenced project that does not exist', good, read({ 'src/Base/Base.csproj': '<Project><ItemGroup><ProjectReference Include="../Gone/Gone.csproj" /></ItemGroup></Project>' }), ['src/Gone/Gone.csproj (in the closure of src/App/App.csproj) does not exist']]
+		['a referenced project that does not exist', good, read({ 'src/Base/Base.csproj': '<Project><ItemGroup><ProjectReference Include="../Gone/Gone.csproj" /></ItemGroup></Project>' }), ['src/Gone/Gone.csproj (in the closure of src/App/App.csproj) does not exist']],
+		// ARV-214: the RUN forms the reader reads.
+		['exec form restore not locked', good.replace(restore, 'RUN ["dotnet", "restore", "src/App/App.csproj", "-r", "linux-x64"]'), read(), ['dotnet restore must pass --locked-mode']],
+		['exec form restore locked', good.replace(restore, 'RUN ["dotnet", "restore", "src/App/App.csproj", "-r", "linux-x64", "--locked-mode"]'), read(), []],
+		['exec form publish restores freely', good.replace('RUN dotnet publish "src/App/App.csproj" -r linux-x64 -c Release -p:RestoreLockedMode=true', 'RUN ["dotnet", "publish", "src/App/App.csproj", "-c", "Release"]'), read(), ['dotnet publish must hold the restore it runs to the lock files']],
+		['exec form restore through sh -c', good.replace(restore, 'RUN ["sh", "-c", "dotnet restore src/App/App.csproj -r linux-x64"]'), read(), ['dotnet restore must pass --locked-mode']],
+		['tool named by a path', good.replace(restore, 'RUN /usr/share/dotnet/dotnet restore "src/App/App.csproj" -r linux-x64'), read(), ['dotnet restore must pass --locked-mode']],
+		['env prefix', good.replace(restore, 'RUN env DOTNET_CLI_TELEMETRY_OPTOUT=1 dotnet restore "src/App/App.csproj" -r linux-x64'), read(), ['dotnet restore must pass --locked-mode']],
+		['VAR=value prefix on publish', good.replace(' -p:RestoreLockedMode=true', '').replace('RUN dotnet publish', 'RUN DOTNET_NOLOGO=1 dotnet publish'), read(), ['dotnet publish must hold the restore it runs to the lock files']],
+		['a host option before the verb', good.replace(restore, 'RUN dotnet --diagnostics restore "src/App/App.csproj" -r linux-x64'), read(), ['dotnet restore must pass --locked-mode']],
+		['the locked property on restore', good.replace(restore, 'RUN dotnet restore "src/App/App.csproj" -r linux-x64 -p:RestoreLockedMode=true'), read(), []],
+		['msbuild restore', good.replace(restore, 'RUN dotnet msbuild "src/App/App.csproj" -t:Restore -p:RuntimeIdentifier=linux-x64'), read(), ['dotnet restore must pass --locked-mode']],
+		['test restores on its own', good.replace('RUN dotnet publish "src/App/App.csproj" -r linux-x64 -c Release -p:RestoreLockedMode=true', 'RUN dotnet test "src/App/App.csproj"'), read(), ['dotnet test must hold the restore it runs to the lock files']],
+		['runtime written with =', good.replace(restore, 'RUN dotnet restore "src/App/App.csproj" --runtime=linux-x64 --locked-mode'), read({ 'src/Base/packages.lock.json': lock() }), ['src/Base/packages.lock.json has no linux-x64 graph']],
+		['lower case run', good.replace(restore, 'run dotnet restore "src/App/App.csproj" -r linux-x64'), read(), ['dotnet restore must pass --locked-mode']],
+		['COPY with flags', good.replace('COPY src/Base/Base.csproj', 'COPY --chown=10001:10001 --link src/Base/Base.csproj'), read(), []],
+		...['publish', 'build', 'run', 'test', 'pack', 'format'].map((verb) => [`${verb} restores on its own`, good.replace(PUBLISH, `RUN dotnet ${verb} "src/App/App.csproj"`), read(), [`dotnet ${verb} must hold the restore it runs to the lock files`]]),
+		...['publish', 'test', 'run', 'pack'].map((verb) => [`${verb} --no-build restores nothing`, good.replace(PUBLISH, `RUN dotnet ${verb} "src/App/App.csproj" --no-build`), read(), []]),
+		...[['dnx', 'RUN dnx dotnetsay'], ['tool install', 'RUN dotnet tool install -g dotnet-ef'], ['tool exec', 'RUN dotnet tool exec dotnet-ef'], ['tool restore', 'RUN dotnet tool restore'], ['tool update', 'RUN dotnet tool update -g dotnet-ef'], ['tool execute', 'RUN dotnet tool execute dotnet-ef'],
+			['add package', 'RUN dotnet add src/App/App.csproj package Newtonsoft.Json'], ['package add', 'RUN dotnet package add Newtonsoft.Json'], ['package update', 'RUN dotnet package update'],
+			['workload install', 'RUN dotnet workload install wasm-tools'], ['workload update', 'RUN dotnet workload update'], ['workload restore', 'RUN dotnet workload restore'], ['workload repair', 'RUN dotnet workload repair']
+		].map(([name, run]) => [name, good.replace(PUBLISH, `${PUBLISH}\n${run}`), read(), ['fetches or changes packages the lock files do not name']]),
+		['dnx alone runs nothing', good.replace(PUBLISH, `${PUBLISH}\nRUN ln -s /x /usr/local/bin/dnx`), read(), []],
+		['dnx behind sudo', good.replace(PUBLISH, `${PUBLISH}\nRUN sudo -u app dnx dotnetsay`), read(), ['dnx fetches or changes packages the lock files do not name']],
+		['locked mode turned off after it', good.replace(restore, 'RUN dotnet restore "src/App/App.csproj" -r linux-x64 --locked-mode -p:RestoreLockedMode=false'), read(), ['dotnet restore must not turn locked mode off']],
+		['locked mode turned off on publish', good.replace(PUBLISH, `${PUBLISH} -p:RestoreLockedMode=false`), read(), ['dotnet publish must not turn locked mode off']],
+		['a source on the command line', good.replace(restore, 'RUN dotnet restore "src/App/App.csproj" -r linux-x64 --locked-mode --source https://example.invalid/v3/index.json'), read(), ['dotnet restore must take its package sources from nuget.config alone']],
+		['a config file on the command line', good.replace(PUBLISH, `${PUBLISH} --configfile other.config`), read(), ['dotnet publish must take its package sources from nuget.config alone']],
+		['-s on restore', good.replace(restore, 'RUN dotnet restore "src/App/App.csproj" -r linux-x64 --locked-mode -s https://example.invalid/'), read(), ['must take its package sources from nuget.config alone']],
+		['-s on test is its settings', good.replace(PUBLISH, 'RUN dotnet test "src/App/App.csproj" --no-restore -s test.runsettings'), read(), []],
+		['restore and publish both wrapped', good.replace(restore, 'RUN gosu app dotnet restore "src/App/App.csproj" -r linux-x64').replace(PUBLISH, 'RUN gosu app dotnet publish "src/App/App.csproj"'), read(), ['dotnet restore must pass --locked-mode', 'dotnet publish must hold the restore']]
 	];
 	const failures = [];
 	for (const [name, text, reader, expected] of cases) {
@@ -819,7 +1785,8 @@ function dockerfiles(dir = ROOT, out = []) {
 		if (SKIP.includes(entry.name)) continue;
 		const full = path.join(dir, entry.name);
 		if (entry.isDirectory()) dockerfiles(full, out);
-		else if (entry.name === 'Dockerfile') out.push(full);
+		// ARV-214: Dockerfile.<name> and <name>.Dockerfile too (none today), so a variant is not left unchecked.
+		else if (/^Dockerfile(\.[^/]+)?$|\.Dockerfile$/i.test(entry.name)) out.push(full);
 	}
 	return out;
 }
@@ -1042,6 +2009,9 @@ function check() {
 	selfTestDevcontainer();
 	selfTestPublishedRuntime();
 	selfTestSigningJobs();
+	selfTestRunCommands();
+	selfTestCommandTables();
+	selfTestPipelinePins();
 	selfTestLockedRestore();
 	selfTestLockedNpm();
 	selfTestOutsideImages();
@@ -1062,13 +2032,17 @@ function check() {
 		for (const problem of runtimeProblems) problems.push(`${path.relative(ROOT, file)}: ${problem}`);
 		if (/^\s*FROM\s+mcr\.microsoft\.com\/dotnet\/runtime-deps:/m.test(fs.readFileSync(file, 'utf8')) && !runtimeProblems.length) runtimeChecked++;
 		// ARV-096: a .NET restore in an image build is locked, from nuget.config, with the whole closure and its lock files.
-		const restoreProblems = lockedRestoreProblems(fs.readFileSync(file, 'utf8'), readRepo);
+		const text = fs.readFileSync(file, 'utf8');
+		const commands = dockerRunCommands(text).map(({ words }) => words);
+		const restoreProblems = lockedRestoreProblems(text, readRepo);
 		for (const problem of restoreProblems) problems.push(`${path.relative(ROOT, file)}: ${problem}`);
-		if (/\bdotnet\s+restore\b/.test(fs.readFileSync(file, 'utf8')) && !restoreProblems.length) lockedRestores++;
+		if (commands.some((words) => words[0] === 'dotnet' && dotnetVerb(words) === 'restore') && !restoreProblems.length) lockedRestores++;
 		// ARV-096: an npm install in an image build is npm ci from the committed package-lock.json.
-		const npmProblems = lockedNpmProblems(fs.readFileSync(file, 'utf8'));
+		const npmProblems = lockedNpmProblems(text);
 		for (const problem of npmProblems) problems.push(`${path.relative(ROOT, file)}: ${problem}`);
-		if (/\bnpm\s+ci\b/.test(fs.readFileSync(file, 'utf8')) && !npmProblems.length) lockedNpmInstalls++;
+		if (commands.some((words) => words[0] === 'npm' && npmVerb(words) === 'ci') && !npmProblems.length) lockedNpmInstalls++;
+		// ARV-214: a RUN command named by an expansion could be either, unseen.
+		for (const problem of unreadableRunProblems(text)) problems.push(`${path.relative(ROOT, file)}: ${problem}`);
 		for (const from of fromLines(file)) {
 			count++;
 			const where = `${path.relative(ROOT, file)}:${from.line}`;
@@ -1113,6 +2087,15 @@ function check() {
 			for (const problem of signingJobProblems(workflow(file))) problems.push(`.github/workflows/${file}: ${problem}`);
 		}
 	}
+	// ARV-214: the pipelines that run the integration tests pin Testcontainers' Ryuk image, and CI builds with the images' SDK band.
+	const ciTexts = outsideFiles().filter(([file, kind]) => kind === 'yaml' && file !== 'docker-compose.dev.yml').map(([file]) => [file.split(path.sep).join('/'), fs.readFileSync(path.join(ROOT, file), 'utf8')]);
+	for (const problem of ryukProblems([...ciTexts, ...RYUK_RUNNERS.filter((file) => !ciTexts.some(([name]) => name === file)).map((file) => [file, readRepo(file)])])) problems.push(problem);
+	{
+		const sdkTags = dockerfiles().flatMap(fromLines).filter((from) => from.image === 'mcr.microsoft.com/dotnet/sdk').map((from) => from.tag);
+		for (const problem of sdkPinProblems(sdkTags, ciTexts)) problems.push(problem);
+	}
+	// ARV-214: the local tools and the Aspire SDK, which NuGet resolves by version without a lock file, are exact and one release.
+	for (const problem of toolPinProblems(toolManifests().map((file) => [file, readRepo(file)]), readRepo(APPHOST_PROJECT), readRepo('Directory.Packages.props'))) problems.push(problem);
 	// ARV-062: the cluster's TimescaleDB runs the image the developers, the integration tests and CI run, pinned by digest.
 	const databaseValues = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'Helm', 'Charts', 'timescaledb', 'values.yaml');
 	if (fs.existsSync(databaseValues)) {
@@ -1172,7 +2155,7 @@ function check() {
 	}
 	const tagOnly = pins.filter((pin) => pin.resource && APPHOST_TAG_ONLY[pin.resource] && !pin.digest).map((pin) => `${pin.resource} (${APPHOST_TAG_ONLY[pin.resource]})`);
 	const integration = pins.filter((pin) => pin.where.startsWith(`${INTEGRATION_TESTS.split(path.sep).join('/')}/`)).length;
-	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged; ${runtimeChecked} runtime-deps images check their published runtime against their base; ${lockedRestores} image builds restore in locked mode with their whole closure; ${lockedNpmInstalls} image builds install npm packages with npm ci from their lock file; ${pins.length} images run outside the chart pinned by tag and digest (${integration} of them the integration tests')${tagOnly.length ? `, except on a tag: ${tagOnly.join(', ')}` : ''}; ${copies.length} further copies of third-party pins carry their digests.`);
+	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged; ${runtimeChecked} runtime-deps images check their published runtime against their base; ${lockedRestores} image builds restore in locked mode with their whole closure; ${lockedNpmInstalls} image builds install npm packages with npm ci from their lock file; ${pins.length} images run outside the chart pinned by tag and digest (${integration} of them the integration tests')${tagOnly.length ? `, except on a tag: ${tagOnly.join(', ')}` : ''}; ${copies.length} further copies of third-party pins carry their digests; the ${RYUK_RUNNERS.length} pipelines that run the integration tests pin Testcontainers' Ryuk image; CI's .NET SDK steps name the images' SDK band; the local tools and the Aspire SDK are exact versions of one release.`);
 }
 
 /** The TimescaleDB chart's image tag and digest, the pin every other copy follows (null without the chart). */

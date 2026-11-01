@@ -63,6 +63,8 @@ jobs:
         displayName: 'Security: published runtime check self-test'
 
       # 2. .NET build; the CWE analyzers in .editorconfig run as errors.
+      #    ARV-214: UseDotNet@2 takes no feature band (only 10.x, 10.0.x or an exact version), so this pipeline takes the newest
+      #    10.0 SDK; GitHub's CI pins the images' band (10.0.4xx). scripts/base-images.mjs keeps this on the images' major.
       - task: UseDotNet@2
         inputs:
           packageType: 'sdk'
@@ -89,8 +91,11 @@ jobs:
           arguments: '--configuration $(BuildConfiguration) --no-restore'
 
       # 3. Unit tests (architecture, security and domain; the hosts boot in memory with WebApplicationFactory).
+      #    ARV-214: the integration tests' Testcontainers resource reaper by tag and digest, as in ci.yml (scripts/base-images.mjs).
       - task: DotNetCoreCLI@2
         displayName: 'Dotnet Test'
+        env:
+          TESTCONTAINERS_RYUK_CONTAINER_IMAGE: testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0
         inputs:
           command: 'test'
           projects: |

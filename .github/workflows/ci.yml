@@ -106,7 +106,8 @@ jobs:
 
   # ARV-067: the generated event catalogue is valid AsyncAPI 3 (AsyncApiTests in the backend job keeps it equal to the code).
   # A job of its own: the CLI's package tree is not pinned by a lockfile (it carries advisories the Trivy gate would fail
-  # on; open decision "AsyncAPI validator" in decisions.md), so it runs where it can change no other gate's files. CI=true
+  # on; open decision "AsyncAPI validator" in decisions.md, ARV-214a: with overrides one high advisory stays, the undici
+  # bundled inside npm), so it runs where it can change no other gate's files. CI=true
   # keeps the CLI's usage metrics off; no install scripts run; the token reads only.
   asyncapi:
     name: AsyncAPI document valid
@@ -143,9 +144,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # ARV-214: the feature band of the SDK image every host image builds with (scripts/base-images.mjs holds them equal). No
+      # committed global.json, which would bind every machine that builds the repository (docs/product/decisions.md).
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        id: sdk
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '10.0.4xx'
+      # ARV-214: without a global.json dotnet runs the newest SDK on the runner, preinstalled ones included (setup-dotnet's
+      # README), so the job writes a temporary one at the repository root (whatever the job's working directory, so every
+      # dotnet under it finds it) naming the SDK setup-dotnet installed, and proves dotnet runs it there.
+      - name: Hold the job to the SDK installed (10.0.4xx)
+        env:
+          SDK: ${{ steps.sdk.outputs.dotnet-version }}
+        run: |
+          case "$SDK" in 10.0.4[0-9][0-9]) ;; *) echo "::error::setup-dotnet installed '$SDK', not the images' band 10.0.4xx"; exit 1 ;; esac
+          printf '{ "sdk": { "version": "%s", "rollForward": "disable" } }\n' "$SDK" > "$GITHUB_WORKSPACE/global.json"
+          cd "$GITHUB_WORKSPACE"
+          test "$(dotnet --version)" = "$SDK" || { echo "::error::dotnet runs $(dotnet --version) at the repository root, not $SDK"; exit 1; }
       # ARV-096: locked mode, as every CI restore is (Directory.Build.props, CI=true): a package graph that differs from the
       # committed packages.lock.json files, or a package whose content differs from its recorded hash, fails here.
       - name: Restore (locked to packages.lock.json, sources from nuget.config)
@@ -175,9 +190,13 @@ jobs:
       # ARV-164b: the integration tests' executable too, as the integration gate runs it (scripts/verify.mjs): under dotnet test
       # the hosts' console logs share the runner's message stream, from which the VSTest adapter drops a line it cannot read.
       # ARV-252: to integration.log, as the unit suite's output goes to unit.log, and under the same kind of timeout.
+      # ARV-214: Testcontainers' resource reaper (it mounts the Docker socket) by tag and digest, not the package's built-in
+      # reference; scripts/base-images.mjs requires it here and checks it like the other third-party pins.
       - name: Integration tests (Testcontainers, Docker on the runner)
         id: integration
         timeout-minutes: 28
+        env:
+          TESTCONTAINERS_RYUK_CONTAINER_IMAGE: testcontainers/ryuk:0.14.0@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0
         run: timeout -k 30s 27m dotnet Platform/Backplane/Ariva.IntegrationTests/bin/Release/net10.0/Ariva.IntegrationTests.dll --no-ansi --results-directory "$GITHUB_WORKSPACE/TestResults" --report-xunit-trx --report-xunit-trx-filename integration-tests.trx > integration.log 2>&1
       - name: Integration test count guard (every listed case has its results)
         if: ${{ !cancelled() && steps.integration.outcome != 'skipped' }}
@@ -464,8 +483,20 @@ jobs:
       - name: Start clamd (malware scan of uploads)
         run: docker run -d --name ariva-e2e-clamd -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -v "$GITHUB_WORKSPACE/Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        id: sdk
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '10.0.4xx'
+      # ARV-214: without a global.json dotnet runs the newest SDK on the runner, preinstalled ones included (setup-dotnet's
+      # README), so the job writes a temporary one at the repository root (whatever the job's working directory, so every
+      # dotnet under it finds it) naming the SDK setup-dotnet installed, and proves dotnet runs it there.
+      - name: Hold the job to the SDK installed (10.0.4xx)
+        env:
+          SDK: ${{ steps.sdk.outputs.dotnet-version }}
+        run: |
+          case "$SDK" in 10.0.4[0-9][0-9]) ;; *) echo "::error::setup-dotnet installed '$SDK', not the images' band 10.0.4xx"; exit 1 ;; esac
+          printf '{ "sdk": { "version": "%s", "rollForward": "disable" } }\n' "$SDK" > "$GITHUB_WORKSPACE/global.json"
+          cd "$GITHUB_WORKSPACE"
+          test "$(dotnet --version)" = "$SDK" || { echo "::error::dotnet runs $(dotnet --version) at the repository root, not $SDK"; exit 1; }
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
