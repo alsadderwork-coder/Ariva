@@ -4837,3 +4837,76 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - Braces are not command separators in the reader: `${A}` would split into a lone `$` read as an expansion; `{` and `}` are skipped as words instead.
   - A table-driven self-test that loops over the implementation's own table cannot catch an entry removed from it: write the expected list in the test.
   - A mutation that sets a loop index from a failed `findIndex` (-1) hangs the run; keep a timeout on every mutation run.
+
+## 2026-11-01: ARV-224 [E17] Test report secret check: unresolved addresses, request options and server-issued values in the CI log
+
+- What changed:
+  - `Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs`: a new address reader.
+    - Scope: every request context call, `goto`, `waitForURL`, `waitForRequest`, `waitForResponse`, `route` and `unroute`.
+    - Values (`values`, `nameValues`, `bindingValues`, `parameterValues`, `memberValues`, `elementsOfValue`, `objectEntries`, `callSites`, `returnRanges`, `calledFunctions`):
+      - a name reads through its binding (every assignment of a variable);
+      - a parameter through the call being read, or every call of its function in the file (unresolved when the function is passed on as a value), or a list method's callback through the list's elements; a parameter default is not a binding, and a binding made before the function loses to its parameter;
+      - a member through the object literal it comes from (a spread or computed key after it makes it unknown);
+      - an element through its list (list literals, `Object.values`, `entries`, `keys` of an object literal only, `filter`, `slice`, `map`);
+      - a call through the returns of the file's functions or a support file's exported function (support files read as their own contexts);
+      - `??`, `||`, `&&` and `?:` (nested too) through every branch.
+    - Forms (`exprForms`, `readForms`, `formsCarry`): the address is flattened into literal text, origins and opaque expressions. Its leading part must resolve to a literal, a regular expression, a predicate, a `new RegExp(...)` pattern or an origin; it is absolute when that part is an origin or `http(s):`. Later parts are inlined when they resolve, else read for secrets only (secretValue in the path; the ARV-152 rule in the query or fragment). Parameters are read across all parts; a secret parameter fails in the query, and in the fragment unless the address is absolute and its step drops the fragment.
+    - Origins (`ORIGIN_ROOT`): only an import of the file whose name ends in an origin word (camelCase suffix: `webUrl`, `hosts`, `apiHosts`, `baseURL`), a member of one, or the destructured `baseURL` fixture. `database` and an unbound `shownUrl` are not origins.
+    - `paramsCarry`: options must be an object literal or a name bound to one that nothing changes afterwards (`options.params =`, `Object.assign`), with no spread or computed name; params may not name, hold, spread or compute a secret.
+    - URL matchers (`readsAddress`): in a file whose addresses name a secret parameter, `toHaveURL` and any matcher on a `.url()` read, `new URL(...)` of one, or its hash, href, search or search parameters fail; in any file, a matcher on `searchParams.get` of a secret parameter, or an argument naming a secret parameter (no `=` needed) or a prefix (`ardp_`, `ardk_`, `ics_`).
+    - Bounds: top-level interpolations only, `exprForms` memoised per call frame, at most 64 forms and 256 parts per form (fails closed); a chain 40 templates deep and 16 wide reads in under 20 ms. `trimRange` takes a cast only at the top level, found by position.
+    - `bindings()` records each binding's kind (const, variable, assignment, logical assignment, destructure, loop) and a destructured name's path.
+    - Round 3: `+=` read as a concatenation; a name set by a destructuring assignment, or whose object or list the file changes (member or element set, mutating methods, `Object.assign`), is unread; origins only from support modules (`../support/<name>`) or `REVIEWED_ORIGINS` (smoke's `target.base`); baseURL only from a test's or a hook's callback; every function of a name read; secretValue in every part (the smoke suite's `credential(credentialVariables.displayCode)` a named exception); in a file with key addresses any matcher subject holding a `.url()` or `location` read unless it ends in a boolean, a number or a part with no secret; secret parameter names gain otp, totp, session and auth.
+    - Round 4: every name in a matcher subject followed (helper returns, spreads), `&&`, `||` and `??` not safe, search parameter names safe; origin-named support imports must be `const` exports nothing changes (constantExport).
+    - Round 5: matcher subjects read through any number of bindings, loop lists, a helper's parameters (the argument at each call), a list callback's list and a support helper's returns, with a visited set and a fail-closed cap at 40 steps; read only where a rule needs it.
+    - Self-test: 248 bad patterns found, 112 good ones quiet; samples get an import prelude and three stand-in support modules (`SELF_SUPPORT`). Mutation batches in scratch copies: 102 rule mutations, 101 fail the self-test, one is equivalent (removing the explicit destructuring-assignment check leaves the pattern's own value, which reads as unresolved).
+  - `tests/functional/displays.spec.ts`: the six `goto(playerAddress)` (an address read from the page) now go to `playerUrl()`, rebuilt from the imported `webUrl`, the display's code and its key in the fragment of an absolute address, which the step drops. The check reads it through the function's return.
+  - Criterion 2: displays.spec.ts and advertising-player.spec.ts already asserted the key's absence as booleans (ARV-249); the new matcher rules hold them to it.
+  - Docs: asvs-l2 V13.3.1 (evidence and residuals), test-cadence item 4, wiki 16, cwe-controls CWE-287 row. No wiki 18 note: no operator step changes.
+- Residuals (held by review, written in V13.3.1): an address's later parts are read for secret names and values, not resolved; changes made through another name (an alias), a binding read as the latest one before its use whatever its scope, support modules found by base name, a navigation a support helper makes (the secret-address flag is per file), an address set in `page.evaluate`, `newContext({ baseURL })` and `goto`'s `referer` are not read; the matcher checks read names, not data flow.
+- Files: Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs, Platform/Testing/Ariva.E2E/tests/functional/displays.spec.ts, docs/security/asvs-l2.md, docs/security/cwe-controls.md, docs/harness/test-cadence.md, wiki/16-Testing-Strategy.md, backlog/prd-phase3.json, backlog/progress.md.
+- Gates: `node scripts/verify.mjs story --specs tests/functional/displays.spec.ts` exit 0 (build, 8,615 unit tests, the security gate with the expect message check's self-test and the real check, docs, E2E 354 passed over six specs: displays.spec.ts and the gate's five fixed specs; integration and visual skipped, no persistence or web change). Four earlier gate runs were stopped when review rounds 1 to 4 failed. After the gate, the method-parameter residual was added to the header comment, V13.3.1 and test-cadence; self-test, real check and quick gate passed.
+- Security review:
+  - Round 1 FAIL, seven required fixes:
+    1. Absolute was decided from a name's look, and parameters only after a `?` in the same literal (`${playerBase}#key=`, `${url}&access_token=` passed).
+    2. Members and calls fell back to a candidate list that resolved on any quote.
+    3. An unbound name counted as an origin by its shape (callback parameters, `issued.playerUrl`, `database`).
+    4. Four rule mutations survived; `Object.keys` accepted any binding.
+    5. Spread options and computed params keys were not read.
+    6. URL matchers by value were not caught unless the argument named `key=`.
+    7. The docs overstated the check.
+    Fixed by the rewrite above; advisories taken: nested template cost, the cast regex, shadowing, the waits and routes, the CWE row, nested conditionals.
+  - Round 2 FAIL, seven required fixes:
+    1. Assignments the values model did not see: `+=`, destructuring assignments, member and element sets, `push`, `Object.assign`.
+    2. Imports still counted as origins by their name, from any module; any import's member named like an origin counted.
+    3. The query and fragment were checked more weakly than the path (a value from the reveal element passed there).
+    4. URL matchers in a file with key addresses recognised only fixed endings (`split`, `slice`, `replace`, templates, `location.hash` passed).
+    5. Two functions with the same name: only the first was read.
+    6. Self-test gaps: KEEPS_ORIGIN, ARGUMENT_FUNCTIONS and a non-destructured baseURL.
+    7. The docs claimed more than the code.
+    Fixed: `+=` read as a concatenation, destructuring assignments and changed objects unread (changedAfterWritten), origins only from support modules or REVIEWED_ORIGINS, baseURL only from a test's callback, secretValue in every part (the smoke display code a named exception), any subject holding a `.url()` or `location` read unless it ends in a boolean, a number or a part with no secret, every function of a name; samples for each; docs restated with the residuals. Advisories taken: baseURL scope, secret parameter names (otp, totp, session, auth), the per-file flag recorded as a residual.
+  - Round 3 FAIL, two required fixes:
+    1. A name bound to an address read and then wrapped (`${where}`, `{ where }`), a helper's return (`hashOf(page)`) and an operand of `&&` or `||` were not read as addresses, though the docs said so.
+    2. No sample for a compound member set (`d.path += x`) or for another member of the reviewed `target`.
+    Fixed: every name in a matcher subject is followed to its binding (a spread's name too), a call of the file's functions through its returns, a name's own safe use left alone; `&&`, `||` and `??` no longer count as safe; samples for both. Advisory taken: an origin-named support import must be a `const` export nothing changes. Recorded as residuals: binding scope, support modules found by base name.
+  - Round 4 (the round 3 follow-up) FAIL, two required fixes:
+    1. A depth cap of 4 let a chain of five aliases through.
+    2. An address passed to a helper's parameter was not followed (the ARV-249 `not.toContain('#key=')` moved into a helper passed).
+    Fixed: a visited set per read, failing closed past 40 steps; a parameter followed to the argument at each call of its function (a list callback through its list), a loop variable through its list, a support module's helper through its returns, the arguments of readable calls blanked so a helper is judged by what it returns. The read runs only where a rule needs it (1.1 s for the suite, not 3.5 s).
+  - Round 5 PASS. Both round 4 fixes verified (alias chains of 4, 5 and 45; named, arrow, destructured and two-level helpers, callbacks, loops, a support helper; `lengthOf(page.url())` quiet). Advisories:
+    1. Method parameters (an object's or a class's) are not followed: recorded after the gate as a residual in the header, V13.3.1 and test-cadence.
+    2. The named search parameter rule reads the subject's text only.
+    3. The documented residuals.
+    4. `secretValue`'s cost on wide chains of sums, which predates the story.
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 errors.
+- Gotchas:
+  - Playwright's step subtitle drops the fragment of an absolute address but keeps a relative one's; waitForURL is treated as keeping its argument whole.
+  - Reading a name by how it looks fails open (`playerBase`, `rowsForRunningHosts` both "look like" origins): resolve what it holds, and let only an import count as an origin.
+  - A self-test for "every branch must resolve" needs a sample where exactly one branch fails; a mutation to `some` passes one where none resolves.
+  - A resolver that fans out (a template naming the previous one several times) is exponential without memoisation and a cap on parts: an address can double at each step.
+  - A function's return type can hold braces (`Promise<{ id: string }>`): find its body past the type, not at the first `{`.
+  - A value model that reads bindings must also read what changes them later: `+=`, destructuring assignments, member sets, `push`, `Object.assign`. Each is a write the binding regex never sees.
+  - A name-suffix rule for origins matches function names too (`rowsForRunningHosts` ends in Hosts): decide by where the name comes from (a support module) and what it is used as (a call reads the function's returns).
+  - Following a name's binding through any method chain makes everything derived from a response look like its URL; follow only string and URL accessors, and ignore reads inside nested functions (predicates).
+  - A depth cap that returns "not found" fails open on a long chain; cut cycles with a visited set instead and fail closed at the cap.
+  - Reading every matcher subject through every binding is slow (3.5 s for the suite); run the read only where a rule needs it.

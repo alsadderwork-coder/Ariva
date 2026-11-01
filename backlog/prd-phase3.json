@@ -1001,8 +1001,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 301,
-      "passes": false,
-      "notes": "Filed by ARV-152 on 2026-10-20 from its third security review (recommendations 5, 6 and 9); Low by the owner's rule.",
+      "passes": true,
+      "notes": "Filed by ARV-152 on 2026-10-20 from its third security review (recommendations 5, 6 and 9); Low by the owner's rule. Done 2026-11-01: expect-messages.mjs reads every address down to a literal, a pattern or a reviewed support origin (bindings, changes after them, parameters at their calls, lists, support modules, every branch), request options and params, waitForURL and the waits and routes, and URL matchers by value in a file with key addresses; displays.spec.ts navigates to an address built from its origin; residuals in V13.3.1. Security review: rounds 1 to 4 FAIL fixed, round 5 PASS.",
       "dependsOn": [
         "ARV-152"
       ]

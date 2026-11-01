@@ -28,6 +28,16 @@ const place = `Gate hall ${xssPayloads[4]}`;
 const fallback = { ar: 'يرجى اتباع اللافتات', en: 'Please follow the signs', pt: `Siga as indicações ${xssPayloads[0]}`, sw: 'Tafadhali fuata alama' };
 const injected = 'img[src="x"], [onerror], [onload], iframe, svg[onload]';
 let playerAddress = '';
+let displayKey = '';
+
+/**
+ * ARV-224: the player's address rebuilt from its parts, the origin, the display's code and its key in the fragment. It is
+ * absolute, so a navigation's step leaves the fragment out, and built from an imported origin and literals in this file, so
+ * scripts/expect-messages.mjs can read it (the address the screen showed is a value it cannot read).
+ */
+function playerUrl(): string {
+	return `${webUrl}/display?code=${code}#key=${encodeURIComponent(displayKey)}`;
+}
 
 function snapshot(zone: string, nowcastMinutes: number | null, options: { degraded?: boolean; ageSeconds?: number } = {}) {
 	return {
@@ -147,6 +157,7 @@ test('a duty manager sets up a four-language board after a step-up; the player a
 	await expect(reveal).toBeVisible();
 	playerAddress = ((await page.getByTestId('credential-value').textContent()) ?? '').trim();
 	expect(new RegExp(`^${webUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/display\\?code=${code}#key=ardp_`).test(playerAddress), "the player's address with its key").toBe(true);
+	displayKey = decodeURIComponent(playerAddress.split('#key=')[1]);
 	await page.getByTestId('credential-done').click();
 	await expect(reveal).toHaveCount(0);
 	expect((await page.content()).includes('#key='), 'gone once done').toBe(false);
@@ -182,7 +193,7 @@ test('the player shows bands in every language, holds them within the hysteresis
 		await plant(snapshot('D-CIT', 12.4));
 		await drop(redis, 'D-VIS');
 
-		await page.goto(playerAddress);
+		await page.goto(playerUrl());
 		await expect.poll(() => new URL(page.url()).hash.includes('key='), { message: 'the credential leaves the address bar' }).toBe(false);
 		const entries = page.getByTestId('board-entry');
 		await expect(entries).toHaveCount(2);
@@ -376,7 +387,7 @@ test('a running player switches to the split screen at its next poll; the queues
 		await change(token, { layout: 'Full', orientation: 'Landscape', languages: ['ar', 'en', 'pt', 'sw'] });
 		await keep(redis, snapshot('D-CIT', 12.4));
 		await drop(redis, 'D-VIS');
-		await page.goto(playerAddress);
+		await page.goto(playerUrl());
 		const boardView = page.getByTestId('board');
 		await expect(boardView).toHaveAttribute('data-layout', 'Full');
 		await expect(page.getByTestId('board-entry').nth(0)).toHaveAttribute('data-band', '10-15');
@@ -461,7 +472,7 @@ for (const split of splitCases) {
 		try {
 			await change(token, { layout: 'Split', queueShare: split.share, orientation: split.orientation, languages: split.languages });
 			await keep(redis, snapshot('D-CIT', 12.4));
-			await page.goto(playerAddress);
+			await page.goto(playerUrl());
 			const boardView = page.getByTestId('board');
 			await expect(boardView).toHaveAttribute('data-layout', 'Split');
 			await expect(boardView).toHaveAttribute('dir', split.dir);
@@ -518,7 +529,7 @@ test('the second region failing to load leaves the queue region whole', async ({
 				await page.route('**/board/instructions.json', (route) =>
 					failure === 'abort' ? route.abort() : route.fulfill({ status: 200, contentType: 'application/json', body: '{"__proto__":{"title":"x","steps":["y"]},"en":{"title":1}}' })
 				);
-				await page.goto(playerAddress);
+				await page.goto(playerUrl());
 				await expect(page.getByTestId('board')).toHaveAttribute('data-layout', 'Split');
 				await expect(page.getByTestId('board-second')).toHaveAttribute('data-state', 'failed');
 				await expect(page.getByTestId('board-instructions')).toHaveCount(0);
@@ -553,7 +564,7 @@ test('the instructions are text: markup in them is shown as it is, never run or 
 		await page.route('**/board/instructions.json', (route) =>
 			route.fulfill({ status: 200, contentType: 'application/json', json: { en: { title: xssPayloads[1], steps: [xssPayloads[0], xssPayloads[2], xssPayloads[4]] } } })
 		);
-		await page.goto(playerAddress);
+		await page.goto(playerUrl());
 		const second = page.getByTestId('board-second-region');
 		await expect(page.getByTestId('board-second')).toHaveAttribute('data-state', 'ready');
 		// Each language without its own instructions shows the English ones, once.
@@ -578,7 +589,7 @@ test('the full view at 1080 by 1920 in a portrait display is unchanged by the la
 	const guards = await guardPage(page);
 	try {
 		await change(token, { layout: 'Full', orientation: 'Portrait', languages: ['en', 'ar', 'pt', 'sw'] });
-		await page.goto(playerAddress);
+		await page.goto(playerUrl());
 		await expect(page.getByTestId('board')).toHaveAttribute('data-layout', 'Full');
 		await expect(page.getByTestId('board-entry')).toHaveCount(2);
 		await expect(page.getByTestId('board-second-region')).toHaveCount(0);
