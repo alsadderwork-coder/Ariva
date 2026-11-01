@@ -23,8 +23,9 @@
 # After the release, a TLS check reads the hosts back (ARV-084, scripts/ops/tls-check.mjs; it deploys and changes nothing): for
 # every host of the release's Ingresses, TLS 1.2 and 1.3 only, TLS 1.2 suites ECDHE with AEAD only (the controller values in
 # Platform/Cloud/Ariva.K8s/Helm/ingress-nginx-values.yaml), a certificate that verifies for the host, HSTS of a year with
-# includeSubDomains on a page and on the ingress's own 413, and plain HTTP refused on the machine hosts and redirected on the
-# web host and the Cronz dashboard. A finding fails the run after the release, for the site to fix its controller or
+# includeSubDomains on a page and on the ingress's own 413, plain HTTP at each routed path as its mode says (refused with the
+# ingress's 403 on the machine hosts and the web host's /api and /hubs, redirected on the web app and the Cronz dashboard), and
+# the affinity cookie the controller writes, __Host- named, Secure, Path=/, SameSite=Strict, without Domain (ARV-199). A finding fails the run after the release, for the site to fix its controller or
 # certificates. Optional variable ARIVA_DEV_TLS_CA_PEM: the CA certificate (PEM, not a secret) the hosts' certificates chain
 # to, when it is not in the runner's store; the check then trusts that CA only.
 name: release-dev

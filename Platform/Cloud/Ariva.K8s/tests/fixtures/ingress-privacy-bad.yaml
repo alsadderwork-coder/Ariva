@@ -41,7 +41,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -106,7 +106,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -168,7 +168,7 @@ metadata:
       if ($host != "api-main-ariva.dalilhub.tech") {
         return 421;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -233,7 +233,7 @@ metadata:
       if ($uri ~ "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -298,7 +298,7 @@ metadata:
       if ($request_uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -363,7 +363,7 @@ metadata:
       if ($host != "api-main-ariva.dalilhub.tech") {
         return 421;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -428,7 +428,7 @@ metadata:
       if ($uri ~* "^/health") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -493,7 +493,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 301 /;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -558,7 +558,7 @@ metadata:
       location ~* "^/healthz?(/|$)" {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -621,7 +621,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-cronz
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-cronz
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -685,7 +685,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-cronz
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-cronz
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -748,7 +748,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-cronz
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-cronz
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -811,7 +811,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-cronz
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-cronz
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -874,7 +874,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-cronz
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-cronz
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -936,7 +936,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-cronz
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-cronz
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -1001,7 +1001,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -1067,7 +1067,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -1134,7 +1134,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"

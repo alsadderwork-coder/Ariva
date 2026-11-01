@@ -568,8 +568,11 @@ appends a site's server-snippet, configuration-snippet and modsecurity-snippet t
 site annotation for any other key here. Usage: {{ include "ariva-platform.ingressChartAnnotations" (list $ $ingress) | fromYaml }}
 - plain HTTP: refuse sets ssl-redirect and force-ssl-redirect false (the configuration-snippet answers 403), redirect sets
   both true (308 to HTTPS); ariva.dalil.tech/plain-http records the mode for scripts/ops/tls-check.mjs (ingress-nginx
-  ignores it).
-- the affinity cookie: Secure, SameSite=Strict, Path=/ (ASVS 5.0 V3.3.1, V3.3.2).
+  ignores it). ingress-nginx applies both per location, so the mode holds for this Ingress's paths only (ARV-199: the web
+  host redirects its app and refuses /api and /hubs).
+- the affinity cookie: __Host-ariva-<name>, Secure, SameSite=Strict, Path=/ and no Domain (ARV-199; ASVS 5.0 V3.3.1, V3.3.2):
+  the __Host- prefix makes a browser keep it only from this host, so a sibling host cannot set or replace it. ingress-nginx
+  reads it by its name from the Cookie header (balancer/sticky.lua, resty.cookie), so the prefix changes nothing else.
 - ssl-prefer-server-ciphers false: the client's order among the controller's suites, as the Mozilla intermediate
   configuration says (guidelines 6.0, server_preferred_order false); ingress-nginx writes ssl_prefer_server_ciphers on at the
   http level whenever ssl-ciphers is set and has no ConfigMap key for it, so the host's server block turns it off.
@@ -614,7 +617,7 @@ site annotation for any other key here. Usage: {{ include "ariva-platform.ingres
 {{- $_ := set $a "nginx.ingress.kubernetes.io/force-ssl-redirect" $redirect -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers" "false" -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/affinity" "cookie" -}}
-{{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-name" (printf "ariva-%s" $ingress.name) -}}
+{{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-name" (printf "__Host-ariva-%s" $ingress.name) -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-secure" "true" -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-samesite" "Strict" -}}
 {{- $_ := set $a "nginx.ingress.kubernetes.io/session-cookie-path" "/" -}}

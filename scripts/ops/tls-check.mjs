@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 // TLS check of an Ariva site's hosts (ARV-084; the release gate after .github/workflows/release-dev.yml's release, wiki 04).
 // No dependencies beyond Node 22. It reads, it never changes anything: TLS handshakes, GET /, GET /health/readiness, one POST
-// without a body and a plain HTTP GET / per host.
+// without a body and a plain HTTP GET per path of each host.
 //
-//   node scripts/ops/tls-check.mjs --host <name>[=refuse|redirect] [--host ...] [--ingresses <file>] [--ca <PEM file>]
+//   node scripts/ops/tls-check.mjs --host <name>[<path>][=refuse|redirect] [--host ...] [--ingresses <file>] [--ca <PEM file>]
 //        [--resolve <name>=<address>] [--port 443] [--http-port 80] [--timeout <seconds, 10>] [--summary <file>]
 //   node scripts/ops/tls-check.mjs --self-test
 //
-// --host names a host and what it does with plain HTTP: refuse (the machine hosts, the default) or redirect (the web host and
-// the Cronz dashboard). --ingresses reads the hosts from `kubectl get ingress -o json`: every Ingress the Ariva chart rendered
-// carries ariva.dalil.tech/plain-http, and only those are checked. --ca verifies the certificates against that CA only
+// --host names a host and what it does with plain HTTP: refuse (the machine endpoints, the default) or redirect (the web app
+// and the Cronz dashboard), at / or at the path written after the name (ARV-199: --host ariva.example/api=refuse; the mode
+// holds per path, as ingress-nginx redirects per location). --ingresses reads the hosts and paths from `kubectl get ingress
+// -o json`: every Ingress the Ariva chart rendered carries ariva.dalil.tech/plain-http, and only those are checked, at every
+// path they route. --ca verifies the certificates against that CA only
 // (otherwise Node's bundled Mozilla roots, unless NODE_EXTRA_CA_CERTS or --use-system-ca adds others); --resolve connects to an address of your choice for a name (split DNS, before DNS exists).
 // --summary appends a Markdown table (for example $GITHUB_STEP_SUMMARY).
 //
@@ -22,15 +24,18 @@
 //   none skips verification; with a certificate that does not verify the host fails on that alone, and no weaker protocol, suite
 //   or HTTPS request is offered to it);
 // - GET / over HTTPS has no Strict-Transport-Security, more than one, a max-age under a year (31536000), no includeSubDomains,
-//   or preload;
+//   or preload; or, when an Ingress routes / (always with --host), sets no affinity cookie or one that is not __Host-ariva-...
+//   with Secure, Path=/, SameSite=Strict and no Domain (ARV-199: the chart's name and attributes, as the live controller
+//   writes them; a 403 without one, a source range refusing before routing, is noted instead);
 // - a response the ingress generates itself, the 413 to a POST that announces a body over every proxy-body-size (1 GiB, none
 //   sent, refused before any pod sees it), lacks that HSTS, X-Content-Type-Options: nosniff or a Content-Security-Policy with
 //   frame-ancestors 'none';
 // - GET /health/readiness over HTTPS is answered anything but 404 or 403 (the ingress routes the health probes, which stay on
 //   the pods' own ports; ARV-085), or its 404 lacks that HSTS, nosniff or frame-ancestors 'none';
-// - over plain HTTP a refuse host answers a redirect or a success instead of an error (a closed port is a refusal too), a
-//   redirect host does not redirect to https://<host>, or either answers without nosniff and frame-ancestors 'none' or with
-//   Strict-Transport-Security (RFC 6797 section 7.2: HTTPS only).
+// - over plain HTTP, at each of its paths (and, for a path other than /, that path with a trailing slash, the location real
+//   clients reach), a refuse path answers anything but the ingress's 403 (a closed port is a refusal too; any other status may
+//   come from the pod, a sign the chart's refusal is not applied), a redirect path does not redirect to https://<host>, or
+//   either answers without nosniff and frame-ancestors 'none' or with Strict-Transport-Security (RFC 6797 section 7.2).
 // Exit code 0 when every host passes, 1 when one fails, 2 on a usage error. --self-test runs the checks against throwaway local
 // servers (Node https and http servers with chosen protocols, suites, certificates and headers), so CI proves every rule
 // without a cluster (ci.yml security gate, node scripts/verify.mjs security).
@@ -54,6 +59,14 @@ export const ALLOWED_TLS12 = [
 const MODES = ['refuse', 'redirect'];
 const HOST = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
 const PLAIN_HTTP_ANNOTATION = 'ariva.dalil.tech/plain-http';
+/** A path the chart routes and the plain HTTP probe requests as it is: a literal prefix (the chart refuses regular expressions). */
+const PROBE_PATH = /^\/[A-Za-z0-9._~/-]*$/;
+/** A literal path without . or .. segments or an empty one, so it cannot normalise into another location (as Kubernetes refuses for Prefix paths). */
+const probePath = (path) => PROBE_PATH.test(path) && !/(^|\/)\.\.?(\/|$)/.test(path) && !path.includes('//');
+/** The key of a path as nginx locates it: /api and /api/ are one Prefix location, so the trailing slash is dropped (not from /). */
+const pathKey = (path) => (path.length > 1 ? path.replace(/\/+$/, '') || '/' : path);
+/** The chart's affinity cookie (ARV-199): __Host-ariva-<name>; a name such as ariva-<name> or __Secure-ariva-<name> is the same cookie misnamed. */
+const AFFINITY_COOKIE = /^(?:__[A-Za-z]+-)?ariva-/;
 const BODY_PROBE_BYTES = 1024 * 1024 * 1024;
 const FRAME_ANCESTORS = /(^|;)\s*frame-ancestors\s+'none'\s*(;|$)/i;
 /** A health probe path (ARV-085): the chart's server-snippet answers it 404 on every host, before any location. */
@@ -219,7 +232,15 @@ export async function checkHost(target, suites = refusedSuites()) {
 		notes.push('certificate verified');
 		const page = await request(target, { secure: true });
 		if (page.error) findings.push(`GET / over HTTPS fails (${page.error})`);
-		else findings.push(...hstsFindings(page.headers['strict-transport-security'], `GET / (${page.status})`));
+		else {
+			findings.push(...hstsFindings(page.headers['strict-transport-security'], `GET / (${page.status})`));
+			const affinity = (page.headers['set-cookie'] ?? []).some((value) => AFFINITY_COOKIE.test(String(value).split('=')[0].trim()));
+			if (!plainPaths(target).some((entry) => entry.path === '/')) notes.push('no affinity cookie check: no Ingress of the host routes /');
+			// A source range (or ModSecurity) refuses with 403 before the request is routed, so no affinity cookie is written then;
+			// run the check from inside the range to read it (wiki 10 section 4.14).
+			else if (page.status === 403 && !affinity) notes.push('affinity cookie not read: GET / refused 403 before routing (a source range?)');
+			else findings.push(...affinityCookieFindings(page.headers['set-cookie'], `GET / (${page.status})`));
+		}
 		const generated = await request(target, { secure: true, method: 'POST', headers: { 'Content-Length': String(BODY_PROBE_BYTES), 'Content-Type': 'application/octet-stream' } });
 		if (generated.error) findings.push(`the body limit probe fails (${generated.error})`);
 		else if (generated.status !== 413) findings.push(`a POST announcing ${BODY_PROBE_BYTES} bytes is answered ${generated.status}, not the ingress's 413`);
@@ -232,24 +253,70 @@ export async function checkHost(target, suites = refusedSuites()) {
 			findings.push(...hstsFindings(probe.headers['strict-transport-security'], `GET ${HEALTH_PROBE} (${probe.status})`), ...generatedHeaderFindings(probe.headers, `GET ${HEALTH_PROBE} (${probe.status})`));
 		}
 	}
-	const plain = await request(target, { secure: false });
-	if (plain.error) {
-		if (target.mode === 'redirect') findings.push(`plain HTTP fails (${plain.error}) instead of redirecting to HTTPS`);
-		else notes.push(`plain HTTP refused (${plain.error})`);
-	} else {
-		const where = `plain HTTP ${plain.status}`;
-		if (target.mode === 'refuse') {
-			if (plain.status >= 300 && plain.status < 400) findings.push(`answers plain HTTP with a redirect (${plain.status} to ${plain.location ?? 'nowhere'}); a machine host refuses it`);
-			else if (plain.status < 400) findings.push(`serves plain HTTP (${plain.status}); a machine host refuses it`);
-			else notes.push(`plain HTTP refused (${plain.status})`);
-		} else if (![301, 302, 307, 308].includes(plain.status)) findings.push(`does not redirect plain HTTP to HTTPS (${plain.status})`);
-		else if (!String(plain.location ?? '').toLowerCase().startsWith(`https://${target.host}`)) findings.push(`redirects plain HTTP to ${plain.location ?? 'nowhere'}, not https://${target.host}`);
-		else notes.push(`plain HTTP redirected (${plain.status})`);
-		findings.push(...generatedHeaderFindings(plain.headers, where));
-		if (plain.headers['strict-transport-security']) findings.push(`${where} sends Strict-Transport-Security over plain HTTP (RFC 6797 section 7.2)`);
+	for (const { path, mode } of plainPaths(target)) {
+		await plainFindings(target, path, mode, findings, notes);
+		if (path !== '/') await plainFindings(target, `${path}/`, mode, findings, notes);
 	}
 	return { findings, notes };
 }
+
+/** The paths whose plain HTTP answer is checked, each with its mode: the target's own, or / with the target's mode. */
+const plainPaths = (target) => target.paths ?? [{ path: '/', mode: target.mode }];
+
+/**
+ * Plain HTTP at one path of a host (ARV-084; per path since ARV-199): a refuse path answers an error or no connection, a
+ * redirect path a redirect to https://<host>; either with nosniff and frame-ancestors 'none' and without HSTS.
+ */
+async function plainFindings(target, path, mode, findings, notes) {
+	const at = path === '/' ? '' : ` ${path}`;
+	const plain = await request(target, { secure: false, path });
+	if (plain.error) {
+		if (mode === 'redirect') findings.push(`plain HTTP${at} fails (${plain.error}) instead of redirecting to HTTPS`);
+		else notes.push(`plain HTTP${at} refused (${plain.error})`);
+		return;
+	}
+	const where = `plain HTTP${at} ${plain.status}`;
+	if (mode === 'refuse') {
+		if (plain.status >= 300 && plain.status < 400) findings.push(`answers plain HTTP${at} with a redirect (${plain.status} to ${plain.location ?? 'nowhere'}); a machine endpoint refuses it`);
+		else if (plain.status < 400) findings.push(`serves plain HTTP${at} (${plain.status}); a machine endpoint refuses it`);
+		else if (plain.status !== 403) findings.push(`answers plain HTTP${at} with ${plain.status}, not the ingress's 403: the request may have reached the pod`);
+		else notes.push(`plain HTTP${at} refused (${plain.status})`);
+	} else if (![301, 302, 307, 308].includes(plain.status)) findings.push(`does not redirect plain HTTP${at} to HTTPS (${plain.status})`);
+	else if (!String(plain.location ?? '').toLowerCase().startsWith(`https://${target.host}`)) findings.push(`redirects plain HTTP${at} to ${plain.location ?? 'nowhere'}, not https://${target.host}`);
+	else notes.push(`plain HTTP${at} redirected (${plain.status})`);
+	findings.push(...generatedHeaderFindings(plain.headers, where));
+	if (plain.headers['strict-transport-security']) findings.push(`${where} sends Strict-Transport-Security over plain HTTP (RFC 6797 section 7.2)`);
+}
+
+/**
+ * The affinity cookies of one response's Set-Cookie values (ARV-199): at least one, each named __Host-ariva-..., Secure,
+ * Path=/, SameSite=Strict and without Domain. ingress-nginx writes it from the chart's annotations when its sticky balancer
+ * routes the request, so this reads what the live controller does with them.
+ */
+export function affinityCookieFindings(values, where) {
+	const cookies = (values ?? []).map((value) => {
+		const [pair, ...attributes] = String(value).split(';').map((part) => part.trim());
+		const name = pair.slice(0, Math.max(0, pair.indexOf('=')));
+		return { name, attributes: new Map(attributes.map((attribute) => {
+			const at = attribute.indexOf('=');
+			return at < 0 ? [attribute.toLowerCase(), ''] : [attribute.slice(0, at).trim().toLowerCase(), attribute.slice(at + 1).trim()];
+		})) };
+	}).filter((cookie) => AFFINITY_COOKIE.test(cookie.name));
+	if (cookies.length === 0) return [`${where} sets no affinity cookie (__Host-ariva-<name>): the chart's sticky routing is not in effect`];
+	const findings = [];
+	for (const { name, attributes } of cookies) {
+		const cookie = `${where} sets the affinity cookie ${name}`;
+		if (!name.startsWith('__Host-')) findings.push(`${cookie} without the __Host- prefix`);
+		if (!attributes.has('secure')) findings.push(`${cookie} without Secure`);
+		if (attributes.get('path') !== '/') findings.push(`${cookie} with Path ${attributes.get('path') ?? '(none)'}, not /`);
+		if (attributes.has('domain')) findings.push(`${cookie} with Domain ${attributes.get('domain')}, which a __Host- cookie must not have`);
+		if ((attributes.get('samesite') ?? '').toLowerCase() !== 'strict') findings.push(`${cookie} with SameSite ${attributes.get('samesite') ?? '(none)'}, not Strict`);
+	}
+	return findings;
+}
+
+/** A host's plain HTTP modes for the summary: the mode alone when the host has only /, otherwise each path with its mode. */
+export const describePaths = (paths) => (paths.size === 1 && paths.has('/') ? paths.get('/') : [...paths].map(([path, mode]) => `${path} ${mode}`).join(', '));
 
 /**
  * The client must be able to offer what the hosts must refuse: TLS 1.0, TLS 1.1 and a suite without AEAD, proven against a
@@ -273,16 +340,26 @@ export async function clientCapabilityFindings() {
 	return findings;
 }
 
-/** The hosts of `kubectl get ingress -o json`: those of every Ingress with ariva.dalil.tech/plain-http, with its mode. */
+/**
+ * The hosts of `kubectl get ingress -o json`: those of every Ingress with ariva.dalil.tech/plain-http, each with the paths its
+ * Ingresses route and their modes (ARV-199: one host may redirect / and refuse /api). Two Ingresses that route one path of a
+ * host with different modes are a usage error, and so is a path the probe could not request as it is.
+ */
 export function hostsFromIngresses(json) {
 	const hosts = new Map();
 	for (const item of json?.items ?? []) {
 		const mode = item?.metadata?.annotations?.[PLAIN_HTTP_ANNOTATION];
 		if (mode === undefined) continue;
 		if (!MODES.includes(mode)) throw new UsageError(`Ingress ${item.metadata?.name}: ${PLAIN_HTTP_ANNOTATION} is ${mode}, neither refuse nor redirect`);
-		for (const host of (item.spec?.rules ?? []).map((rule) => rule.host).filter(Boolean)) {
-			if (hosts.has(host) && hosts.get(host) !== mode) throw new UsageError(`host ${host}: its Ingresses disagree on plain HTTP (${hosts.get(host)} and ${mode})`);
-			hosts.set(host, mode);
+		for (const rule of (item.spec?.rules ?? []).filter((entry) => entry.host)) {
+			const paths = hosts.get(rule.host) ?? new Map();
+			hosts.set(rule.host, paths);
+			for (const routed of (rule.http?.paths ?? []).map((entry) => entry.path ?? '/').concat(rule.http?.paths?.length ? [] : ['/'])) {
+				if (!probePath(routed)) throw new UsageError(`Ingress ${item.metadata?.name}: the path ${routed} is not a literal path the probe can request`);
+				const path = pathKey(routed);
+				if (paths.has(path) && paths.get(path) !== mode) throw new UsageError(`host ${rule.host}: its Ingresses disagree on plain HTTP for ${path} (${paths.get(path)} and ${mode})`);
+				paths.set(path, mode);
+			}
 		}
 	}
 	return hosts;
@@ -296,12 +373,15 @@ export function parseCommandLine(argv) {
 			port: { type: 'string' }, 'http-port': { type: 'string' }, timeout: { type: 'string' }, summary: { type: 'string' }, 'self-test': { type: 'boolean' }
 		}
 	});
-	const hosts = new Map();
-	if (values.ingresses) for (const [host, mode] of hostsFromIngresses(JSON.parse(fs.readFileSync(values.ingresses, 'utf8')))) hosts.set(host, mode);
+	const hosts = values.ingresses ? hostsFromIngresses(JSON.parse(fs.readFileSync(values.ingresses, 'utf8'))) : new Map();
 	for (const entry of values.host ?? []) {
-		const [host, mode = 'refuse'] = entry.split('=');
+		const [target, mode = 'refuse'] = entry.split('=');
 		if (!MODES.includes(mode)) throw new UsageError(`--host ${entry}: the mode is refuse or redirect`);
-		hosts.set(host.toLowerCase(), mode);
+		const slash = target.indexOf('/');
+		const [host, path] = slash < 0 ? [target.toLowerCase(), '/'] : [target.slice(0, slash).toLowerCase(), target.slice(slash)];
+		if (!probePath(path)) throw new UsageError(`--host ${entry}: the path is a literal path such as /api`);
+		const paths = hosts.get(host) ?? new Map();
+		hosts.set(host, paths.set(pathKey(path), mode));
 	}
 	for (const host of hosts.keys()) if (!HOST.test(host)) throw new UsageError(`${host} is not a host name`);
 	const addresses = new Map();
@@ -335,8 +415,9 @@ async function main(argv) {
 	const suites = refusedSuites();
 	const rows = [];
 	let failed = false;
-	for (const [host, mode] of options.hosts) {
-		const target = { host, mode, address: options.addresses.get(host), port: options.port, httpPort: options.httpPort, ca: options.ca, timeoutMs: options.timeoutMs };
+	for (const [host, paths] of options.hosts) {
+		const mode = describePaths(paths);
+		const target = { host, paths: [...paths].map(([path, pathMode]) => ({ path, mode: pathMode })), address: options.addresses.get(host), port: options.port, httpPort: options.httpPort, ca: options.ca, timeoutMs: options.timeoutMs };
 		const { findings, notes } = await checkHost(target, suites);
 		failed ||= findings.length > 0;
 		rows.push({ host, mode, findings, notes });
@@ -443,15 +524,21 @@ export function issueCertificates(names = ['capability.ariva.test']) {
 
 const GOOD_HSTS = `max-age=${HSTS_MIN_AGE}; includeSubDomains`;
 const SECURE_HEADERS = { 'Strict-Transport-Security': GOOD_HSTS, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "frame-ancestors 'none'" };
+/** The page's affinity cookie as ingress-nginx writes it from the chart's annotations (ARV-199). */
+const GOOD_COOKIE = '__Host-ariva-web=4f6b0c; Path=/; Secure; HttpOnly; SameSite=Strict';
 const PLAIN_HEADERS = { 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "frame-ancestors 'none'" };
 
 /**
  * A stand-in for an Ariva host behind its ingress: an https server (protocols, suites and certificate of the case; GET / with
  * the page headers, GET /health/readiness answered by the "ingress" 404 with the generated headers, a POST over the body limit
- * answered by the "ingress" 413 with them) and a plain http server (refuse: 403; redirect: 308 to https://<host>/), each
- * overridable by the case.
+ * answered by the "ingress" 413 with them) and a plain http server (refuse: 403; redirect: 308 to https://<host> and the path),
+ * each overridable by the case. mode is one mode for /, or [path, mode] pairs, the longest matching prefix answering as nginx's
+ * Prefix locations do; overrides.plain is an answer, or a function of the path giving one (undefined: the mode's own).
  */
 async function standIn(certificates, host, mode, overrides) {
+	const paths = typeof mode === 'string' ? [['/', mode]] : mode;
+	const modeAt = (url) => paths.filter(([path]) => url === path || url.startsWith(path.endsWith('/') ? path : `${path}/`) || path === '/')
+		.sort(([a], [b]) => b.length - a.length)[0]?.[1] ?? 'refuse';
 	const servers = [];
 	const tlsOptions = { key: certificates.leaf.key, cert: certificates.leaf.cert, minVersion: 'TLSv1.2', maxVersion: 'TLSv1.3', ciphers: ALLOWED_TLS12.join(':'), ...overrides.tls };
 	const secure = https.createServer(tlsOptions, (req, res) => {
@@ -465,7 +552,7 @@ async function standIn(certificates, host, mode, overrides) {
 			res.end();
 			return;
 		}
-		res.writeHead(404, present(SECURE_HEADERS, overrides.page, { Connection: 'close' }));
+		res.writeHead(overrides.pageStatus ?? 404, present(SECURE_HEADERS, { 'Set-Cookie': GOOD_COOKIE }, overrides.page, { Connection: 'close' }));
 		res.end();
 	});
 	servers.push(secure);
@@ -478,7 +565,8 @@ async function standIn(certificates, host, mode, overrides) {
 		await new Promise((resolve) => probe.close(resolve));
 	} else {
 		const plain = http.createServer((req, res) => {
-			const answer = overrides.plain ?? (mode === 'redirect' ? { status: 308, headers: { Location: `https://${host}/` } } : { status: 403, headers: {} });
+			const own = typeof overrides.plain === 'function' ? overrides.plain(req.url) : overrides.plain;
+			const answer = own ?? (modeAt(req.url) === 'redirect' ? { status: 308, headers: { Location: `https://${host}${req.url}` } } : { status: 403, headers: {} });
 			res.writeHead(answer.status, present(PLAIN_HEADERS, answer.headers, { Connection: 'close' }));
 			res.end();
 		});
@@ -486,14 +574,18 @@ async function standIn(certificates, host, mode, overrides) {
 		await new Promise((resolve) => plain.listen(0, '127.0.0.1', resolve));
 		httpPort = plain.address().port;
 	}
-	return { target: { host, mode, address: '127.0.0.1', port: secure.address().port, httpPort, ca: certificates.ca, timeoutMs: 5000 }, close: () => servers.forEach((server) => server.close()) };
+	return { target: { host, paths: paths.map(([path, pathMode]) => ({ path, mode: pathMode })), address: '127.0.0.1', port: secure.address().port, httpPort, ca: certificates.ca, timeoutMs: 5000 },
+		close: () => servers.forEach((server) => server.close()) };
 }
 
 const remove = (name) => ({ [name]: undefined });
 /** Response headers without the ones a case removed (undefined). */
 const present = (...sets) => Object.fromEntries(Object.entries(Object.assign({}, ...sets)).filter(([, value]) => value !== undefined));
 
-/** [name, mode, overrides, the findings expected (substrings or patterns, one per finding, in order)] */
+/** The web host's paths and modes as the chart renders them (ARV-199). */
+const WEB_PATHS = [['/', 'redirect'], ['/api', 'refuse'], ['/hubs', 'refuse']];
+
+/** [name, mode (or [path, mode] pairs), overrides, the findings expected (substrings or patterns, one per finding, in order)] */
 function selfTestCases(certificates) {
 	return [
 		['a host that refuses plain HTTP, as the chart serves it', 'refuse', {}, []],
@@ -534,13 +626,37 @@ function selfTestCases(certificates) {
 		['a probe refusal without frame-ancestors', 'refuse', { health: { status: 403, headers: { 'Content-Security-Policy': "default-src 'none'" } } }, ["GET /health/readiness (403) lacks a Content-Security-Policy with frame-ancestors 'none'"]],
 		['a machine host that redirects plain HTTP', 'refuse', { plain: { status: 308, headers: { Location: 'https://tls-check.ariva.test/' } } }, ['answers plain HTTP with a redirect (308']],
 		['a machine host that serves plain HTTP', 'refuse', { plain: { status: 200, headers: {} } }, ['serves plain HTTP (200)']],
+		['a machine host whose pod answers plain HTTP', 'refuse', { plain: { status: 404, headers: {} } }, ["answers plain HTTP with 404, not the ingress's 403: the request may have reached the pod"]],
 		['a refusal without nosniff', 'refuse', { plain: { status: 403, headers: remove('X-Content-Type-Options') } }, ['plain HTTP 403 lacks X-Content-Type-Options: nosniff']],
 		['a refusal with HSTS', 'refuse', { plain: { status: 403, headers: { 'Strict-Transport-Security': GOOD_HSTS } } }, ['sends Strict-Transport-Security over plain HTTP']],
 		['a browser host that refuses plain HTTP', 'redirect', { plain: { status: 403, headers: {} } }, ['does not redirect plain HTTP to HTTPS (403)']],
 		['a browser host that redirects elsewhere', 'redirect', { plain: { status: 308, headers: { Location: 'http://tls-check.ariva.test/' } } }, ['redirects plain HTTP to http://tls-check.ariva.test/, not https://tls-check.ariva.test']],
 		['a browser host whose plain HTTP port is closed', 'redirect', { plainClosed: true }, ['plain HTTP fails (ECONNREFUSED) instead of redirecting']],
 		['a redirect without frame-ancestors', 'redirect', { plain: { status: 308, headers: { Location: 'https://tls-check.ariva.test/', 'Content-Security-Policy': undefined } } },
-			["plain HTTP 308 lacks a Content-Security-Policy with frame-ancestors 'none'"]]
+			["plain HTTP 308 lacks a Content-Security-Policy with frame-ancestors 'none'"]],
+		// ARV-199: the web host redirects its app and refuses /api and /hubs, each path checked against its own mode.
+		['a web host that redirects / and refuses /api and /hubs, as the chart serves it', WEB_PATHS, {}, []],
+		['a web host whose /api redirects plain HTTP', WEB_PATHS, { plain: (url) => (url === '/api' ? { status: 308, headers: { Location: 'https://tls-check.ariva.test/api' } } : undefined) },
+			['answers plain HTTP /api with a redirect (308 to https://tls-check.ariva.test/api); a machine endpoint refuses it']],
+		['a web host whose /hubs serves plain HTTP', WEB_PATHS, { plain: (url) => (url === '/hubs' ? { status: 200, headers: {} } : undefined) }, ['serves plain HTTP /hubs (200)']],
+		['a web host that refuses its app too', WEB_PATHS, { plain: { status: 403, headers: {} } }, ['does not redirect plain HTTP to HTTPS (403)']],
+		['a web host whose /api refusal lacks nosniff', WEB_PATHS, { plain: (url) => (url === '/api' ? { status: 403, headers: remove('X-Content-Type-Options') } : undefined) },
+			['plain HTTP /api 403 lacks X-Content-Type-Options: nosniff']],
+		['a web host whose /api reaches the pod over plain HTTP', WEB_PATHS, { plain: (url) => (url.startsWith('/api') ? { status: 404, headers: {} } : undefined) },
+			["answers plain HTTP /api with 404, not the ingress's 403", "answers plain HTTP /api/ with 404, not the ingress's 403"]],
+		['a web host whose /hubs/ location redirects', WEB_PATHS, { plain: (url) => (url === '/hubs/' ? { status: 308, headers: { Location: 'https://tls-check.ariva.test/hubs/' } } : undefined) },
+			['answers plain HTTP /hubs/ with a redirect (308']],
+		// ARV-199: the affinity cookie as the live controller writes it.
+		['no affinity cookie', 'refuse', { page: { 'Set-Cookie': undefined } }, ['GET / (404) sets no affinity cookie']],
+		['an affinity cookie without its prefix', 'refuse', { page: { 'Set-Cookie': 'ariva-web=1; Path=/; Secure; SameSite=Strict' } }, ['sets the affinity cookie ariva-web without the __Host- prefix']],
+		['an affinity cookie with the __Secure- prefix', 'refuse', { page: { 'Set-Cookie': '__Secure-ariva-web=1; Path=/; Secure; SameSite=Strict' } }, ['sets the affinity cookie __Secure-ariva-web without the __Host- prefix']],
+		['an affinity cookie without Secure', 'refuse', { page: { 'Set-Cookie': '__Host-ariva-web=1; Path=/; SameSite=Strict' } }, ['sets the affinity cookie __Host-ariva-web without Secure']],
+		['an affinity cookie for one path', 'refuse', { page: { 'Set-Cookie': '__Host-ariva-web=1; Path=/api; Secure; SameSite=Strict' } }, ['with Path /api, not /']],
+		['an affinity cookie with a Domain', 'refuse', { page: { 'Set-Cookie': '__Host-ariva-web=1; Path=/; Domain=ariva.test; Secure; SameSite=Strict' } }, ['with Domain ariva.test, which a __Host- cookie must not have']],
+		['an affinity cookie sent cross site', 'refuse', { page: { 'Set-Cookie': '__Host-ariva-web=1; Path=/; Secure; SameSite=Lax' } }, ['with SameSite Lax, not Strict']],
+		["a pod's own cookie beside the affinity cookie", 'refuse', { page: { 'Set-Cookie': [GOOD_COOKIE, '__Secure-ariva_rt=x; Path=/api/auth; Secure; HttpOnly; SameSite=Strict'] } }, []],
+		['a host behind a source range, checked from outside it', 'redirect', { pageStatus: 403, page: { 'Set-Cookie': undefined }, health: { status: 403, headers: {} } }, []],
+		['a refused page that still sets a bad affinity cookie', 'refuse', { pageStatus: 403, page: { 'Set-Cookie': 'ariva-web=1; Path=/; Secure; SameSite=Strict' } }, ['sets the affinity cookie ariva-web without the __Host- prefix']]
 	];
 }
 
@@ -569,7 +685,8 @@ async function selfTest() {
 	const usage = [
 		[['--host', 'a.example=allow'], 'the mode is refuse or redirect'], [['--host', 'a b'], 'is not a host name'],
 		[['--host', 'a.example', '--resolve', 'a.example=not-an-address'], 'expected <host>=<IP address>'], [['--host', 'a.example', '--port', '0'], '--port must be a port number'],
-		[['--host', 'a.example', '--timeout', '0'], '--timeout is 1 to 120 seconds']
+		[['--host', 'a.example', '--timeout', '0'], '--timeout is 1 to 120 seconds'], [['--host', 'a.example/a pi=refuse'], 'the path is a literal path such as /api'],
+		[['--host', 'a.example/api/../health=refuse'], 'the path is a literal path such as /api'], [['--host', 'a.example//api=refuse'], 'the path is a literal path such as /api']
 	];
 	for (const [argv, message] of usage) {
 		try {
@@ -579,12 +696,20 @@ async function selfTest() {
 			if (!(error instanceof UsageError) || !error.message.includes(message)) failures.push(`${argv.join(' ')}: ${error.message}, not "${message}"`);
 		}
 	}
-	const ingresses = (items) => ({ items: items.map(([name, host, mode]) => ({ metadata: { name, annotations: mode ? { [PLAIN_HTTP_ANNOTATION]: mode } : {} }, spec: { rules: [{ host }] } })) });
+	const ingresses = (items) => ({ items: items.map(([name, host, mode, paths]) => ({ metadata: { name, annotations: mode ? { [PLAIN_HTTP_ANNOTATION]: mode } : {} },
+		spec: { rules: [{ host, ...(paths ? { http: { paths: paths.map((path) => ({ path, pathType: 'Prefix' })) } } : {}) }] } })) });
+	const hostsOf = (json) => [...hostsFromIngresses(json)].map(([host, paths]) => [host, [...paths]]);
 	try {
-		assert.deepEqual([...hostsFromIngresses(ingresses([['api-main', 'api.example', 'refuse'], ['web', 'web.example', 'redirect'], ['web-api', 'web.example', 'redirect'], ['solver', 'acme.example', undefined]]))],
-			[['api.example', 'refuse'], ['web.example', 'redirect']]);
-		assert.throws(() => hostsFromIngresses(ingresses([['web', 'web.example', 'redirect'], ['web-api', 'web.example', 'refuse']])), /disagree on plain HTTP/);
+		assert.deepEqual(hostsOf(ingresses([['api-main', 'api.example', 'refuse'], ['web', 'web.example', 'redirect', ['/']], ['web-api', 'web.example', 'refuse', ['/api']],
+			['web-hubs', 'web.example', 'refuse', ['/hubs']], ['solver', 'acme.example', undefined, ['/.well-known/acme-challenge/x']]])),
+		[['api.example', [['/', 'refuse']]], ['web.example', [['/', 'redirect'], ['/api', 'refuse'], ['/hubs', 'refuse']]]]);
+		assert.throws(() => hostsFromIngresses(ingresses([['web', 'web.example', 'redirect', ['/api']], ['web-api', 'web.example', 'refuse', ['/api']]])), /disagree on plain HTTP for \/api/);
+		assert.throws(() => hostsFromIngresses(ingresses([['web', 'web.example', 'redirect', ['/api/']], ['web-api', 'web.example', 'refuse', ['/api']]])), /disagree on plain HTTP for \/api /, 'one location with or without the slash');
 		assert.throws(() => hostsFromIngresses(ingresses([['web', 'web.example', 'open']])), /neither refuse nor redirect/);
+		assert.throws(() => hostsFromIngresses(ingresses([['web', 'web.example', 'refuse', ['/api(/|$)(.*)']]])), /not a literal path/);
+		assert.deepEqual([...parseCommandLine(['--host', 'Web.Example=redirect', '--host', 'web.example/api']).hosts.get('web.example')], [['/', 'redirect'], ['/api', 'refuse']]);
+		assert.equal(describePaths(new Map([['/', 'redirect'], ['/api', 'refuse']])), '/ redirect, /api refuse');
+		assert.equal(describePaths(new Map([['/', 'refuse']])), 'refuse');
 	} catch (error) {
 		failures.push(`hostsFromIngresses: ${error.message}`);
 	}
@@ -594,7 +719,7 @@ async function selfTest() {
 		return 1;
 	}
 	console.log(`tls-check self-test: ${cases.length} stand-in hosts gave exactly their findings (protocols, suites, certificates, HSTS, the ingress's 413, the private probes, plain HTTP), ` +
-		`${usage.length + 3} command line and Ingress cases, and this Node (OpenSSL ${process.versions.openssl}) can offer TLS 1.0, TLS 1.1 and suites without AEAD.`);
+		`${usage.length + 8} command line and Ingress cases, and this Node (OpenSSL ${process.versions.openssl}) can offer TLS 1.0, TLS 1.1 and suites without AEAD.`);
 	return 0;
 }
 

@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-199: the web host's /api and /hubs refuse plain HTTP, and the affinity cookies carry the __Host- prefix (2026-11-01)
+
+- Behaviour: on the web host, `/api` and `/hubs` now answer plain HTTP with 403, as the machine hosts do, while the web app still redirects to HTTPS (308). The affinity cookies are named `__Host-ariva-<Ingress name>` instead of `ariva-<Ingress name>` (still Secure, SameSite=Strict, Path=/, and no Domain). The first request after the upgrade carries only the old cookie, so it may reach another replica once; the affinity cookie only routes requests and holds no sign-in state.
+- Before the upgrade: a site values file that sets `plainHttp: redirect` on its `web-api` or `web-hubs` entry must set `refuse` or drop the key (k8s-prd refuses the release otherwise), and one that sets `session-cookie-domain` or `enable-cors` on an Ingress must drop it (both refused everywhere: a Domain makes browsers drop a `__Host-` cookie, and with CORS ingress-nginx answers OPTIONS itself before the plain HTTP refusal; Ariva needs no cross-origin calls). A client configured with `http://<web host>/api` gets 403 after the upgrade: give it the `https://` URL ([Deployment guide](04-Deployment-Guide.md) section 6.4, response headers and plain HTTP).
+- After the upgrade: the TLS check now probes plain HTTP at every path the host's Ingresses route (and that path with a trailing slash), accepts only the ingress's 403 on a refuse path, lists each path with its mode in the summary (`/ redirect, /api refuse, /hubs refuse` for the web host), and fails a host whose `GET /` sets no `__Host-ariva-...` affinity cookie with Secure, `Path=/`, SameSite=Strict and no Domain. A controller that rejected the renamed cookie's annotation shows here first: read its log for the Ingress (wiki 10 section 4.14).
+
 ### ARV-205: outbound calls take TLS 1.2 and 1.3 and the pods' cipher suites only (2026-10-31)
 
 - Behaviour: every outbound integration call (AODB, ACRIS and AMAN pulls, any registered endpoint) now offers TLS 1.2 and 1.3 only and, on Linux, the same suites the pods' listeners offer (TLS 1.3's three; for TLS 1.2 ECDHE with AES-GCM or ChaCha20-Poly1305). Before, the platform's defaults applied.

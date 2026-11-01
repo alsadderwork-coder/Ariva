@@ -37,11 +37,14 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   namespace holds ca.crt and no tls.key (ariva-platform.podTlsCaRefusal); without ca.crt ingress-nginx would proxy to the
   pods unverified, and silently. lookup sees nothing when rendering offline (helm template) or before the secret exists,
   and the guard then passes: create the secret before the release, whose render against the cluster then judges it.
-- Ingress transport and headers (ARV-084): every ingresses entry's plainHttp is refuse or redirect (empty: refuse); the
-  Ingresses of one host share it; in k8s-prd an Ingress to api-main-service, api-ingest-service or api-integration-service
-  on a host that does not serve web-service refuses (the machine hosts never redirect, ASVS 5.0 V4.1.2). A site annotation
-  sets no key the chart sets (ariva-platform.ingressChartAnnotations) but the three snippets, which the chart appends to its
-  own; the Ingresses of one host carry the same site server-snippet (ingress-nginx applies one per host); a site's
+- Ingress transport and headers (ARV-084, ARV-199): every ingresses entry's plainHttp is refuse or redirect (empty: refuse),
+  and applies to its own paths (ingress-nginx redirects or not per location), so one host can redirect its web app and refuse
+  /api and /hubs; two Ingresses of one host that route the same path share it; in k8s-prd an Ingress to api-main-service,
+  api-ingest-service or api-integration-service refuses, whatever the host (machine endpoints never redirect, ASVS 5.0
+  V4.1.2). A site annotation sets no key the chart sets (ariva-platform.ingressChartAnnotations) but the three snippets,
+  which the chart appends to its own, no session-cookie-domain (the affinity cookie is __Host- prefixed, which a Domain
+  attribute would make every browser drop) and no enable-cors (ingress-nginx would answer OPTIONS 204 before the chart's
+  plain HTTP refusal; Ariva is same origin): ARV-199; the Ingresses of one host carry the same site server-snippet (ingress-nginx applies one per host); a site's
   modsecurity-snippet sets no SecRuleEngine or SecAuditEngine (the chart's). No annotation sets from-to-www-redirect (it makes
   ingress-nginx generate a server of its own for www.<host>, which carries none of the chart's headers and needs a
   certificate for a host the chart's tls section does not list) or custom-headers (a ConfigMap the chart cannot read, whose
@@ -259,11 +262,7 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- $chartSnippets := list "nginx.ingress.kubernetes.io/server-snippet" "nginx.ingress.kubernetes.io/configuration-snippet" "nginx.ingress.kubernetes.io/modsecurity-snippet" }}
 {{- $machineServices := list "api-main-service" "api-ingest-service" "api-integration-service" }}
-{{- $webHosts := list }}
-{{- range $ingress := (.Values.ingresses | default list) }}
-{{- if eq (toString $ingress.serviceName) "web-service" }}{{ $webHosts = append $webHosts (toString $ingress.subdomain) }}{{ end }}
-{{- end }}
-{{- $hostModes := dict }}
+{{- $pathModes := dict }}
 {{- $hostServerSnippets := dict }}
 {{- range $ingress := (.Values.ingresses | default list) }}
 {{- $name := toString $ingress.name }}
@@ -272,18 +271,30 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if not (has $mode (list "refuse" "redirect")) }}
 {{- fail (printf "ingresses %s: plainHttp must be refuse or redirect, not %s (ARV-084)" $name $mode) }}
 {{- end }}
-{{- if and (eq $.Values.environment "k8s-prd") (eq $mode "redirect") (has (toString $ingress.serviceName) $machineServices) (not (has $host $webHosts)) }}
-{{- fail (printf "ingresses %s: k8s-prd refuses plain HTTP on the machine hosts (api-main, api-ingest, api-integration): set plainHttp refuse, so a client sending credentials in clear is answered 403 instead of being redirected (ARV-084, ASVS 5.0 V4.1.2)" $name) }}
+{{- if and (eq $.Values.environment "k8s-prd") (eq $mode "redirect") (has (toString $ingress.serviceName) $machineServices) }}
+{{- fail (printf "ingresses %s: k8s-prd refuses plain HTTP to the machine services (api-main, api-ingest, api-integration), on the web host's /api and /hubs too: set plainHttp refuse, so a client sending credentials in clear is answered 403 instead of being redirected (ARV-084, ARV-199, ASVS 5.0 V4.1.2)" $name) }}
 {{- end }}
-{{- if and (hasKey $hostModes $host) (ne (index $hostModes $host) $mode) }}
-{{- fail (printf "ingresses %s: the Ingresses of host %s must share one plainHttp (%s and %s; ARV-084)" $name $host (index $hostModes $host) $mode) }}
+{{- range $path := ($ingress.paths | default (list "/")) }}
+{{- /* /api and /api/ are one Prefix location to ingress-nginx, so the trailing slash is not part of the key (ARV-199). */}}
+{{- $location := toString $path }}
+{{- if gt (len $location) 1 }}{{ $location = trimSuffix "/" $location }}{{ end }}
+{{- $key := printf "%s %s" $host $location }}
+{{- if and (hasKey $pathModes $key) (ne (index $pathModes $key) $mode) }}
+{{- fail (printf "ingresses %s: the Ingresses of host %s that route %s must share one plainHttp (%s and %s; ARV-084)" $name $host $location (index $pathModes $key) $mode) }}
 {{- end }}
-{{- $_ := set $hostModes $host $mode }}
+{{- $_ := set $pathModes $key $mode }}
+{{- end }}
 {{- $chart := include "ariva-platform.ingressChartAnnotations" (list $ $ingress) | fromYaml }}
 {{- $siteServerSnippet := "" }}
 {{- range $key, $value := ($ingress.annotations | default dict) }}
 {{- if and (hasKey $chart $key) (not (has $key $chartSnippets)) }}
 {{- fail (printf "ingresses %s: %s is set by the chart (ARV-084); remove it from the ingress's annotations (plain HTTP is the entry's plainHttp)" $name $key) }}
+{{- end }}
+{{- if eq $key "nginx.ingress.kubernetes.io/enable-cors" }}
+{{- fail (printf "ingresses %s: enable-cors makes ingress-nginx answer an OPTIONS request itself (204) before the chart's refusal of plain HTTP, and Ariva needs no cross-origin calls (the web app and the API share the web host, ADR-0026); remove it (ARV-199)" $name) }}
+{{- end }}
+{{- if eq $key "nginx.ingress.kubernetes.io/session-cookie-domain" }}
+{{- fail (printf "ingresses %s: session-cookie-domain gives the affinity cookie a Domain, but its name carries the __Host- prefix, which every browser drops with a Domain attribute (ARV-199, ASVS 5.0 V3.3.1); leave the Domain unset" $name) }}
 {{- end }}
 {{- if eq $key "nginx.ingress.kubernetes.io/from-to-www-redirect" }}
 {{- fail (printf "ingresses %s: from-to-www-redirect makes ingress-nginx generate a server of its own for www.<host>, which carries none of the chart's headers (HSTS, nosniff, frame-ancestors) and needs a certificate the chart's tls section does not list; add www.<host> as an entry of its own instead (ARV-084)" $name) }}

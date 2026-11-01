@@ -188,7 +188,7 @@
       ],
       "priority": 104,
       "passes": true,
-      "notes": "",
+      "notes": "Residuals (the affinity cookie prefix, plain HTTP on the web host's /api and /hubs, outbound TLS pinning) taken by ARV-199 (prd-phase3.json), with the outbound part delivered by ARV-205 and the other TLS clients by ARV-280.",
       "dependsOn": [
         "ARV-074"
       ]

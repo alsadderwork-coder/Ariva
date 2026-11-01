@@ -131,8 +131,8 @@ ingresses:
     comment: Ariva API on the web host (/api to Ariva.Api.Main)
     subdomain: dev-ariva
     serviceName: api-main-service
-    # Plain HTTP redirected to HTTPS (ARV-084): the web host, opened in a browser. The machine hosts refuse it (the default).
-    plainHttp: redirect
+    # Plain HTTP refused (403, ARV-199): a machine endpoint on the web host, which redirects only its app (the entry "web").
+    plainHttp: refuse
     paths:
       - /api
     annotations:
@@ -146,8 +146,8 @@ ingresses:
     comment: Ariva live hub on the web host (/hubs to Ariva.Api.Main)
     subdomain: dev-ariva
     serviceName: api-main-service
-    # Plain HTTP redirected to HTTPS (ARV-084): the web host, opened in a browser. The machine hosts refuse it (the default).
-    plainHttp: redirect
+    # Plain HTTP refused (403, ARV-199): a machine endpoint on the web host, which redirects only its app (the entry "web").
+    plainHttp: refuse
     tokenInQuery: true
     paths:
       - /hubs

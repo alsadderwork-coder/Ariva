@@ -1132,9 +1132,10 @@ export const INGRESS_HARDENING = {
 		'ECDHE-RSA-AES256-GCM-SHA384', 'ECDHE-ECDSA-CHACHA20-POLY1305', 'ECDHE-RSA-CHACHA20-POLY1305'
 	],
 	plainHttpAnnotation: 'ariva.dalil.tech/plain-http',
-	/** The services behind the machine hosts, which refuse plain HTTP in k8s-prd unless the host also serves the web app. */
+	/** The machine services, whose Ingresses refuse plain HTTP in k8s-prd on every host, the web host's /api and /hubs included (ARV-199). */
 	machineServices: ['api-main-service', 'api-ingest-service', 'api-integration-service'],
-	webService: 'web-service'
+	/** The affinity cookie's name prefix (ARV-199, ASVS 5.0 V3.3.1): kept by a browser only from its own host, with no Domain. */
+	cookiePrefix: '__Host-'
 };
 
 /**
@@ -1291,9 +1292,12 @@ const FRAME_ANCESTORS = /(^|;)\s*frame-ancestors\s+'none'\s*(;|$)/;
  *   Content-Security-Policy with frame-ancestors 'none' through add_header always (it adds to the pods' own policy);
  * - its configuration-snippet repeats that add_header (nginx drops the server's in a location with an add_header of its own);
  * - plain HTTP per ariva.dalil.tech/plain-http: refuse has ssl-redirect and force-ssl-redirect "false" and a 4xx for
- *   if ($scheme = http) in the configuration-snippet; redirect has both "true" and no refusal; the Ingresses of a host agree;
- *   in k8s-prd an Ingress to a machine service on a host without the web app refuses;
- * - an affinity cookie is Secure, SameSite=Strict, Path=/; ssl-prefer-server-ciphers "false"; no from-to-www-redirect, no
+ *   if ($scheme = http) in the configuration-snippet; redirect has both "true" and no refusal; ingress-nginx applies the mode
+ *   per location, so the Ingresses of a host may differ, but two that route one path of it agree (ARV-199); in k8s-prd an
+ *   Ingress to a machine service refuses, whatever its host;
+ * - an affinity cookie is named __Host-... in letters, digits, - and _ (a conservative subset of what ingress-nginx's
+ *   annotation validation takes), with no Domain, Secure, SameSite=Strict, Path=/ (ARV-199);
+ *   ssl-prefer-server-ciphers "false"; no from-to-www-redirect, no
  *   custom-headers, no more_clear_headers, and no other annotation names the three headers.
  */
 export function ingressHardeningFindings(docs, { environment }) {
@@ -1301,7 +1305,9 @@ export function ingressHardeningFindings(docs, { environment }) {
 	const ingresses = docs.filter((doc) => doc?.kind === 'Ingress');
 	const hostsOf = (ingress) => [...new Set((ingress.spec?.rules ?? []).map((rule) => rule.host).filter(Boolean))];
 	const servicesOf = (ingress) => [...new Set((ingress.spec?.rules ?? []).flatMap((rule) => (rule.http?.paths ?? []).map((entry) => entry.backend?.service?.name)).filter(Boolean))];
-	const webHosts = new Set(ingresses.filter((ingress) => servicesOf(ingress).includes(INGRESS_HARDENING.webService)).flatMap(hostsOf));
+	/** Each host and location the Ingress routes, as "host path": /api and /api/ are one Prefix location, so the trailing slash goes. */
+	const location = (path) => (path.length > 1 ? path.replace(/\/+$/, '') || '/' : path);
+	const routesOf = (ingress) => [...new Set((ingress.spec?.rules ?? []).filter((rule) => rule.host).flatMap((rule) => (rule.http?.paths ?? []).map((entry) => `${rule.host} ${location(entry.path ?? '/')}`)))];
 	const modes = new Map();
 	const serverSnippets = new Map();
 	for (const ingress of ingresses) {
@@ -1366,17 +1372,23 @@ export function ingressHardeningFindings(docs, { environment }) {
 			if (get('ssl-redirect') !== 'true' || get('force-ssl-redirect') !== 'true') findings.push(`${id}: redirects plain HTTP but ssl-redirect and force-ssl-redirect are not both "true"`);
 			if (refusal.length) findings.push(`${id}: redirects plain HTTP but its configuration-snippet refuses it`);
 		}
-		const machine = servicesOf(ingress).some((service) => INGRESS_HARDENING.machineServices.includes(service)) && !hostsOf(ingress).some((host) => webHosts.has(host));
-		if (environment === 'k8s-prd' && machine && mode === 'redirect') findings.push(`${id}: k8s-prd redirects plain HTTP on a machine host; it must refuse it (ASVS 5.0 V4.1.2)`);
+		const machine = servicesOf(ingress).some((service) => INGRESS_HARDENING.machineServices.includes(service));
+		if (environment === 'k8s-prd' && machine && mode === 'redirect') findings.push(`${id}: k8s-prd redirects plain HTTP to a machine service; it must refuse it, on the web host too (ASVS 5.0 V4.1.2)`);
+		for (const route of routesOf(ingress)) {
+			const [host, path] = [route.slice(0, route.indexOf(' ')), route.slice(route.indexOf(' ') + 1)];
+			if (modes.has(route) && modes.get(route) !== mode) findings.push(`${id}: host ${host} has Ingresses that disagree on plain HTTP for ${path} (${modes.get(route)} and ${mode})`);
+			if (!modes.has(route)) modes.set(route, mode);
+		}
 		for (const host of hostsOf(ingress)) {
-			if (modes.has(host) && modes.get(host) !== mode) findings.push(`${id}: host ${host} has Ingresses that disagree on plain HTTP (${modes.get(host)} and ${mode})`);
-			if (!modes.has(host)) modes.set(host, mode);
 			if (serverSnippets.has(host) && serverSnippets.get(host) !== (get('server-snippet') ?? '')) findings.push(`${id}: host ${host} has Ingresses with different server-snippets; ingress-nginx applies one per host`);
 			if (!serverSnippets.has(host)) serverSnippets.set(host, get('server-snippet') ?? '');
 		}
 
 		// The affinity cookie, the cipher order and the annotations that would get around the headers.
 		if (get('affinity') === 'cookie') {
+			if (!/^[A-Za-z0-9_-]+$/.test(get('session-cookie-name') ?? 'INGRESSCOOKIE')) findings.push(`${id}: the affinity cookie's name ${get('session-cookie-name')} holds characters outside letters, digits, - and _ (a conservative subset of what ingress-nginx's annotation validation takes; a refused name would reject the Ingress)`);
+			if (!String(get('session-cookie-name') ?? '').startsWith(INGRESS_HARDENING.cookiePrefix)) findings.push(`${id}: the affinity cookie ${get('session-cookie-name') ?? '(unset: INGRESSCOOKIE)'} has no ${INGRESS_HARDENING.cookiePrefix} prefix (session-cookie-name), so another host of the domain could set or replace it`);
+			if (get('session-cookie-domain') !== undefined) findings.push(`${id}: the affinity cookie names a Domain (session-cookie-domain), which a ${INGRESS_HARDENING.cookiePrefix} cookie must not, or browsers drop it`);
 			if (get('session-cookie-secure') !== 'true') findings.push(`${id}: the affinity cookie is not Secure (session-cookie-secure "true")`);
 			if (get('session-cookie-samesite') !== 'Strict') findings.push(`${id}: the affinity cookie is not SameSite=Strict (session-cookie-samesite), but ${get('session-cookie-samesite') ?? 'unset'}`);
 			if (get('session-cookie-path') !== '/') findings.push(`${id}: the affinity cookie's path is ${get('session-cookie-path') ?? 'the location\'s'}, not / (session-cookie-path)`);

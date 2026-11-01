@@ -4483,3 +4483,72 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - NHibernate batches inserts 25 at a time. A refusal from an early batch leaves the later ones queued, and only a rollback clears them.
   - `Exception.TargetSite` and `Exception.Source` name the method that threw. A throw helper (`ArgumentException.ThrowIfNullOrWhiteSpace`) makes that a System method, so a domain rule thrown through one reads as the framework's.
   - Race tests that expect an index refusal must make the two creates differ in everything but the one index (the same code on two floors, two codes on one floor), so no other index refuses first.
+
+## 2026-11-01: ARV-199 [E0] ARV-084 residuals: affinity cookie prefix, plain HTTP on the web host's API paths, outbound TLS pinning
+
+- What changed:
+  - Plain HTTP per path (ingress-nginx applies `ssl-redirect` and `force-ssl-redirect` per location, and the chart's refusal is `if ($scheme = http) { return 403; }` in each Ingress's `configuration-snippet`, which runs before ingress-nginx's own redirect):
+    - every environment's `web-api` (`/api`) and `web-hubs` (`/hubs`) entries are now `plainHttp: refuse`, so the web host redirects only its app;
+    - `validate.yaml` compares modes per host and path (the trailing slash dropped, since `/api` and `/api/` are one Prefix location) instead of per host;
+    - in k8s-prd any Ingress to api-main, api-ingest or api-integration-service must refuse, the web host's included (the old exemption is gone);
+    - a site `enable-cors` annotation is refused (ingress-nginx would answer OPTIONS 204 itself before the refusal; Ariva is same origin).
+    - A wrong-case path (`/API`) is not routed to Ariva.Api.Main and falls to the web app's redirect; the web pod serves only static files.
+  - Affinity cookie: `__Host-ariva-<ingress>` (Secure, SameSite=Strict, `Path=/`, no Domain).
+    - A site annotation `session-cookie-domain` is refused.
+    - The chart rule keeps the name to letters, digits, `-` and `_`, a conservative subset of what ingress-nginx's annotation validation takes (a refused name would reject the whole Ingress).
+    - Clients keep the old `ariva-<ingress>` cookie until it expires, so the first request after the release may land on another replica once. The cookie only routes; it carries no sign-in state.
+  - Chart tests (`tests/checks.mjs`, `tests/chart-security.mjs`, fixtures):
+    - new cases `cookie-no-prefix`, `cookie-domain`, `cookie-bad-chars` and `prd-web-machine-redirect` (with a clean `prd-web-app` sibling);
+    - `host-modes-disagree` now means one location (`/api` against `/api/`) with two modes;
+    - release guards: the web host's `/api` redirecting in prd, two Ingresses of one host and path (with or without the slash) disagreeing, a site renaming the cookie, a site cookie Domain, a site `enable-cors`;
+    - every shipped render redirects only on web-ingress and api-cronz-ingress.
+  - `scripts/ops/tls-check.mjs`:
+    - plain HTTP is probed at every path the host's Ingresses route, each by its own mode, and for a path other than `/` again with a trailing slash;
+    - a refuse path passes on the ingress's 403 or no connection only (any other status, such as the pod's own 404, means the refusal is not applied);
+    - on `GET /` it reads the affinity cookie the live controller writes (`__Host-ariva-...`, Secure, `Path=/`, SameSite=Strict, no Domain) and notes a 403 without one (a source range refusing before routing);
+    - `--host <name>[<path>][=mode]`; paths with `.`, `..` or empty segments are refused; the summary lists `/ redirect, /api refuse, /hubs refuse`;
+    - self-test 54 stand-in hosts and 16 command line and Ingress cases.
+  - Functional test `layout.spec.ts` "collapsing the sidebar to the icon rail survives a reload" now asserts the `__Host-sidebar_state` cookie's attributes (Secure, `Path=/`, SameSite=Strict, host only).
+  - Criterion 3 (outbound TLS) amended in the PRD, with the reviewer's agreement:
+    - ARV-205 delivered it for OutboundTransport (OutboundClients, the only HttpClient Ariva builds for integration calls), with the TLS 1.1 and CBC-only refusal tests.
+    - The other production HttpClients, the log and trace collector clients, and the other TLS clients belong to ARV-280, whose criteria name them and require the same tests. The simulator's clients are dev-only.
+    - No code changed for it here. The narrowing is flagged to the owner.
+  - Docs:
+    - asvs-l2: V3.3.1 and V4.1.2 Partly to Met; V3.3.2 and V3.3.3 evidence; V11.2.3, V12.1.1 and V12.1.2 name ARV-199's outbound part; the ARV-084 row; summary 160 of 203 met.
+    - ADR-0026 implementation notes; cwe-controls CWE-384.
+    - wiki 04 (ingresses row, section 6.4 headers paragraph, section 6.6 step 4), wiki 05, wiki 10 section 4.14 (probes, syntax, findings table with the cookie rows), wiki 13 (section 7 and item 19), wiki 18 migration note.
+    - `scripts/ops/README.md`, the release-dev comment, `values.yaml` and template comments, prd-asvs-gaps ARV-084 notes.
+- Files:
+  - Chart: `templates/_helpers.tpl`, `templates/validate.yaml`, `templates/ingresses.yaml`, `values.yaml`, `values-{localk8s,k8s-dev,k8s-demo,k8s-prd}.yaml`.
+  - Chart tests: `tests/checks.mjs`, `tests/chart-security.mjs`, four fixtures.
+  - `scripts/ops/tls-check.mjs`, `scripts/ops/README.md`, `.github/workflows/release-dev.yml`.
+  - Ariva.E2E `tests/functional/layout.spec.ts`.
+  - The docs above; `backlog/prd-phase3.json` and `backlog/prd-asvs-gaps.json`.
+- Gates: `node scripts/verify.mjs story --specs tests/functional/layout.spec.ts` PASS (29 changed files, not wide): build, unit 8436 (0 failed), security scan and the scripts' self-tests (tls-check among them), chart security with the release guards, audits, docs; integration skipped (no persistence change); visual skipped (no web change); E2E 6 spec files (layout.spec.ts and the smoke set), 348 passed, the sidebar cookie test among them. Before it: chart tests exit 0 (41 ingress hardening rules each tripping alone), tls-check self-test (54 stand-in hosts, 16 command line and Ingress cases), `verify.mjs quick` and `docs` PASS. Two earlier gate runs: the first (before review round 1) passed build, unit, security, docs and chart; the second was stopped by explicit PIDs in its unit step to take the round 2 fixes.
+- Security review (CWE-384, CWE-501, CWE-287 and CWE-319 in substance; ASVS V3.3.1, V3.3.2, V3.3.3, V4.1.2, V11.2.3, V12.1.1, V12.1.2):
+  - Round 1 FAIL.
+    - The per-location design held, and so did the `__Host-` attributes and the template scoping.
+    - Required:
+      - tls-check passed a refuse path on any status of 400 or more, so plain HTTP reaching the pod (its own 404) passed.
+      - The cookie rename contradicted ADR-0026 and V3.3.3, which made it wait for a check of ingress-nginx's name validation against a running controller.
+      - V3.3.1 Met rested in part on the sidebar cookie, which no test read.
+      - The operator docs (wiki 10 section 4.14, `scripts/ops/README.md`) were stale.
+      - Criterion 3 was not met as written.
+    - Advisories: normalise the trailing slash; probe `<path>/`; refuse dot segments; cwe-controls and V3.3.2 wording; refuse `enable-cors`; a note on ARV-084.
+  - Fixed: all five required fixes, and all advisories taken:
+    - the 403-only rule;
+    - the live cookie check plus the name character rule;
+    - the functional assertion;
+    - the docs;
+    - the PRD amendment.
+  - Round 2 FAIL, two small items, both fixed:
+    - a host with a source range refuses with 403 before routing, so it set no cookie and failed the check from outside its range; now a note, with a self-test case and the runbook text;
+    - a stale "no cookie is read" sentence in wiki 10.
+    - Taken from the advisories: the character rule worded as a conservative subset of the controller's.
+  - Round 3: PASS, given the functional test passing (it did) and these placeholders filled. Its residual advisory: the 403 note would also hide a missing cookie if a pod itself answered an anonymous `GET /` with 403 (no Ariva pod does; a controller-wide problem still shows on the other hosts of the run).
+  - Semgrep MCP not connected; `scripts/security/scan.mjs` 0 findings.
+- Gotchas:
+  - ingress-nginx applies the HTTPS redirect per location, so one host can redirect its app and refuse its API paths. The chart's `if ($scheme = http) { return 403; }` (rewrite module) runs before ingress-nginx's `rewrite_by_lua` redirect in the same phase.
+  - Prefix paths `/api` and `/api/` are one nginx location: compare modes without the trailing slash.
+  - A live refusal check must accept only the ingress's own status. Anything else at 4xx may come from the pod, which is what a missing snippet looks like.
+  - The affinity cookie is written only when the controller routes the request. A source range or ModSecurity 403 carries none, so a cookie check must run from where the request is routed.

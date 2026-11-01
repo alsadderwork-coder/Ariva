@@ -24,10 +24,11 @@
 // image's default.conf takes its listener from listen.d and the image ships the plain one.
 // ARV-084: every Ingress of every render (dev, demo, localk8s, prd, the Helmfile environments and the offline bundle's) sends
 // HSTS of a year with includeSubDomains over HTTPS only, nosniff and frame-ancestors 'none' on every response, its own
-// included (ingressHardeningFindings); the machine hosts refuse plain HTTP in prd and the browser hosts redirect; the affinity
-// cookie is Secure, SameSite=Strict, Path=/; ssl-prefer-server-ciphers is false; the release guards refuse a machine host that
-// redirects in prd, a plainHttp other than refuse or redirect, a host whose Ingresses disagree, a site annotation that sets a
-// key of the chart's, from-to-www-redirect, custom-headers or names the headers; the controller values the site applies
+// included (ingressHardeningFindings); the machine services refuse plain HTTP in prd, on the web host's /api and /hubs too, and
+// the browser apps redirect (ARV-199); the affinity cookie is __Host- named, Secure, SameSite=Strict, Path=/, without Domain;
+// ssl-prefer-server-ciphers is false; the release guards refuse a machine service that redirects in prd, a plainHttp other
+// than refuse or redirect, two Ingresses of one host and path that disagree, a site annotation that sets a key of the chart's
+// or a cookie Domain, from-to-www-redirect, custom-headers or names the headers; the controller values the site applies
 // (Helm/ingress-nginx-values.yaml) hold TLS 1.2 and 1.3, Mozilla's intermediate suites, HSTS and the snippet settings.
 // ARV-085: with networkPolicies.enabled (prd, which refuses it off in the chart and in both Helmfiles) every Ariva pod is denied
 // by default and gets exactly the firewall matrix's flows, compared with the release's values (networkPolicyFindings); no rule
@@ -247,12 +248,15 @@ const INGRESS_HARDENING_CASES = [
 	['refuse-ssl-redirect', 'refuses plain HTTP but ssl-redirect is true'], ['refuse-force-ssl-redirect', 'refuses plain HTTP but force-ssl-redirect is true'],
 	['refuse-no-answer', 'refuses plain HTTP without answering it'], ['refuse-redirects', 'answers plain HTTP with 301, not an error'],
 	['redirect-not-forced', 'redirects plain HTTP but ssl-redirect and force-ssl-redirect are not both "true"'], ['redirect-refuses', 'redirects plain HTTP but its configuration-snippet refuses it'],
-	['prd-machine-redirect', 'k8s-prd redirects plain HTTP on a machine host'], ['cookie-not-secure', 'the affinity cookie is not Secure'],
+	['prd-machine-redirect', 'k8s-prd redirects plain HTTP to a machine service'], ['prd-web-machine-redirect', 'k8s-prd redirects plain HTTP to a machine service'],
+	['cookie-not-secure', 'the affinity cookie is not Secure'], ['cookie-no-prefix', 'the affinity cookie ariva-cookie-no-prefix has no __Host- prefix'],
+	['cookie-domain', 'the affinity cookie names a Domain (session-cookie-domain)'],
+	['cookie-bad-chars', "the affinity cookie's name __Host-ariva.cookie-bad-chars holds characters outside letters, digits, - and _"],
 	['cookie-lax', 'the affinity cookie is not SameSite=Strict'], ['cookie-path', "the affinity cookie's path is /api, not /"],
 	['prefer-server-ciphers', 'ssl-prefer-server-ciphers is true, not "false"'], ['www-redirect', 'from-to-www-redirect generates a www server'],
 	['custom-headers', 'custom-headers can replace the chart\'s headers'], ['clear-headers', 'clears response headers (more_clear_headers)'],
 	['header-elsewhere', "auth-snippet names one of the chart's response headers"], ['location-hsts', 'configuration-snippet sets Strict-Transport-Security or X-Content-Type-Options in the location'],
-	['host-modes-disagree', 'Ingresses that disagree on plain HTTP (refuse and redirect)'], ['host-snippets-differ', 'Ingresses with different server-snippets']
+	['host-modes-disagree', 'Ingresses that disagree on plain HTTP for /api (refuse and redirect)'], ['host-snippets-differ', 'Ingresses with different server-snippets']
 ];
 
 /** ARV-084: the ingress hardening rules against their fixtures (k8s-prd): the good one clean, each bad case tripping exactly its rule. */
@@ -268,9 +272,9 @@ function ingressHardeningSelfTest() {
 	}
 	const stray = findings.filter((finding) => !INGRESS_HARDENING_CASES.some(([name]) => caseOf(finding) === name));
 	if (stray.length) failures.push(`ingress hardening findings outside the cases (the base objects must be clean):\n   ${stray.join('\n   ')}`);
-	// The machine host rule is production's: the same redirect is allowed in dev.
+	// The machine service rule is production's: the same redirects are allowed in dev.
 	const dev = ingressHardeningFindings(parseAsKubernetes(fixture('ingress-hardening-bad.yaml')), { environment: 'k8s-dev' });
-	if (dev.some((finding) => finding.startsWith('Ingress/prd-machine-redirect'))) failures.push('the machine host redirect is refused outside k8s-prd');
+	if (dev.some((finding) => /^Ingress\/prd-(web-)?machine-redirect/.test(finding))) failures.push('the machine service redirect is refused outside k8s-prd');
 	return { failures, count: INGRESS_HARDENING_CASES.length + 1 };
 }
 
@@ -1376,13 +1380,13 @@ console.log(execFileSync(helm, ['version', '--short'], { encoding: 'utf8' }).tri
 const modesOf = (docs) => Object.fromEntries(docs.filter((doc) => doc?.kind === 'Ingress').map((doc) => [doc.metadata?.name, doc.metadata?.annotations?.[INGRESS_HARDENING.plainHttpAnnotation]]));
 
 /**
- * ARV-084: the browser Ingresses (the web app, its /api and /hubs, the Cronz dashboard) redirect plain HTTP and every other
- * one refuses it, in every environment file the chart ships.
+ * ARV-084, ARV-199: the browser Ingresses (the web app and the Cronz dashboard) redirect plain HTTP and every other one
+ * refuses it, the web host's /api and /hubs included, in every environment file the chart ships.
  */
 function plainHttpModes(docs, file) {
-	const redirecting = new Set(['web-ingress', 'web-api-ingress', 'web-hubs-ingress', 'api-cronz-ingress']);
+	const redirecting = new Set(['web-ingress', 'api-cronz-ingress']);
 	return Object.entries(modesOf(docs)).filter(([name, mode]) => mode !== (redirecting.has(name) ? 'redirect' : 'refuse'))
-		.map(([name, mode]) => `${file}: Ingress/${name} ${mode === 'redirect' ? 'redirects' : 'refuses'} plain HTTP; the browser hosts (web, Cronz) redirect and the others refuse`);
+		.map(([name, mode]) => `${file}: Ingress/${name} ${mode === 'redirect' ? 'redirects' : 'refuses'} plain HTTP; the browser apps (web, Cronz) redirect and the others refuse, the web host's /api and /hubs included`);
 }
 
 const describeModes = (docs) => {
@@ -1724,24 +1728,34 @@ for (const [label, file, sets, message, annotation] of [
 	['a location-snippet that trusts the system store under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'location-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'location-snippet: "Proxy_SSL_Trusted_Certificate /etc/ssl/certs/ca-certificates.crt;"'],
 	['a configuration-snippet that passes to the pod through gRPC under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'configuration-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'configuration-snippet: "grpc_pass grpc://api-main-service:80;"'],
 	['a server-snippet with a Lua block under pod TLS', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'server-snippet writes a proxy_ssl, grpc_ssl, _pass or _by_lua directive itself', 'server-snippet: "access_by_lua_block { ngx.exit(200) }"'],
-	// ARV-084: the machine hosts refuse plain HTTP in production; plainHttp is refuse or redirect and one per host; a site
-	// annotation sets no key of the chart's, no www redirect, no custom headers, nothing that names or clears the headers,
-	// no rule or audit engine, and one server-snippet per host.
-	['production with the ingest host redirecting plain HTTP', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'k8s-prd refuses plain HTTP on the machine hosts',
+	// ARV-084, ARV-199: the machine services refuse plain HTTP in production, on the web host's /api and /hubs too; plainHttp
+	// is refuse or redirect and one per host and path; a site annotation sets no key of the chart's, no cookie Domain, no www
+	// redirect, no custom headers, nothing that names or clears the headers, no rule or audit engine, and one server-snippet
+	// per host.
+	['production with the ingest host redirecting plain HTTP', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'k8s-prd refuses plain HTTP to the machine services',
 		{ ingresses: [ingressEntry('api-ingest', 'api-ingest-service', 'api-ingest-test', { plainHttp: 'redirect' })] }],
-	['production with the integration feeds redirecting plain HTTP', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'k8s-prd refuses plain HTTP on the machine hosts',
+	['production with the integration feeds redirecting plain HTTP', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'k8s-prd refuses plain HTTP to the machine services',
 		{ ingresses: [ingressEntry('api-integration', 'api-integration-service', 'api-integration-test', { plainHttp: 'redirect' }),
 			ingressEntry('api-integration-feeds', 'api-integration-service', 'api-integration-test', { plainHttp: 'redirect', paths: ['/api/v1/integration/'] })] }],
-	['production with the main API host redirecting plain HTTP', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'k8s-prd refuses plain HTTP on the machine hosts',
+	['production with the main API host redirecting plain HTTP', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'k8s-prd refuses plain HTTP to the machine services',
 		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { plainHttp: 'redirect' })] }],
 	['a plainHttp other than refuse or redirect', 'values-k8s-dev.yaml', [], 'plainHttp must be refuse or redirect, not allow',
 		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { plainHttp: 'allow' })] }],
-	['the Ingresses of one host on different plainHttp', 'values-k8s-dev.yaml', [], 'the Ingresses of host web-test must share one plainHttp',
-		{ ingresses: [ingressEntry('web', 'web-service', 'web-test', { plainHttp: 'redirect' }), ingressEntry('web-api', 'api-main-service', 'web-test', { paths: ['/api'] })] }],
+	['production with the web host\'s /api redirecting plain HTTP', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'k8s-prd refuses plain HTTP to the machine services',
+		{ ingresses: [ingressEntry('web', 'web-service', 'web-test', { plainHttp: 'redirect' }), ingressEntry('web-api', 'api-main-service', 'web-test', { plainHttp: 'redirect', paths: ['/api'] })] }],
+	['two Ingresses of one host routing one path on different plainHttp', 'values-k8s-dev.yaml', [], 'the Ingresses of host web-test that route /api must share one plainHttp',
+		{ ingresses: [ingressEntry('web', 'web-service', 'web-test', { plainHttp: 'redirect' }), ingressEntry('web-api', 'api-main-service', 'web-test', { paths: ['/api'] }),
+			ingressEntry('web-api-again', 'api-main-service', 'web-test', { plainHttp: 'redirect', paths: ['/api'] })] }],
+	['two Ingresses of one host routing one path, one with a trailing slash, on different plainHttp', 'values-k8s-dev.yaml', [], 'the Ingresses of host web-test that route /api must share one plainHttp',
+		{ ingresses: [ingressEntry('web', 'web-service', 'web-test', { plainHttp: 'redirect' }), ingressEntry('web-api', 'api-main-service', 'web-test', { paths: ['/api'] }),
+			ingressEntry('web-api-slash', 'api-main-service', 'web-test', { plainHttp: 'redirect', paths: ['/api/'] })] }],
+	['a site annotation that turns CORS on at the ingress', 'values-k8s-dev.yaml', [], 'enable-cors makes ingress-nginx answer an OPTIONS request itself', 'enable-cors: "true"'],
 	['a site annotation that turns the HTTPS redirect back on', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'nginx.ingress.kubernetes.io/ssl-redirect is set by the chart (ARV-084)', 'ssl-redirect: "true"'],
 	['a site annotation that forces the HTTPS redirect', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/force-ssl-redirect is set by the chart (ARV-084)', 'force-ssl-redirect: "true"'],
 	['a site annotation that sends the affinity cookie cross site', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/session-cookie-samesite is set by the chart (ARV-084)', 'session-cookie-samesite: "None"'],
 	['a site annotation that drops Secure from the affinity cookie', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/session-cookie-secure is set by the chart (ARV-084)', 'session-cookie-secure: "false"'],
+	['a site annotation that renames the affinity cookie without its prefix', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/session-cookie-name is set by the chart (ARV-084)', 'session-cookie-name: "ariva"'],
+	['a site annotation that gives the affinity cookie a Domain', 'values-k8s-dev.yaml', [], 'session-cookie-domain gives the affinity cookie a Domain', 'session-cookie-domain: "example.test"'],
 	["a site annotation that prefers the server's cipher order", 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers is set by the chart (ARV-084)', 'ssl-prefer-server-ciphers: "true"'],
 	['a site annotation that marks a machine host as redirecting', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1'], 'ariva.dalil.tech/plain-http is set by the chart (ARV-084)',
 		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'ariva.dalil.tech/plain-http': 'redirect' } })] }],
@@ -1773,9 +1787,9 @@ for (const [label, file, sets, message, annotation] of [
 	["a configuration-snippet that logs the request line with nginx's combined format", 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log or error_log directive', 'configuration-snippet: "access_log /var/log/nginx/access.log combined;"'],
 	['a server-snippet that logs requests to a file of its own', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log or error_log directive', 'server-snippet: "client_header_timeout 30s; access_log /tmp/requests.log;"'],
 	['a configuration-snippet that logs the live hub below critical', 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log or error_log directive',
-		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { plainHttp: 'redirect', tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/configuration-snippet': 'error_log /dev/stderr info;' } })] }],
+		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/configuration-snippet': 'error_log /dev/stderr info;' } })] }],
 	['a site annotation that turns the live hub\'s access log back on', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/enable-access-log is set by the chart',
-		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { plainHttp: 'redirect', tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-access-log': 'true' } })] }],
+		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-access-log': 'true' } })] }],
 	['an Ingress that routes /hubs without tokenInQuery', 'values-k8s-dev.yaml', [], 'ingresses api-main: routes /hubs without tokenInQuery',
 		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { paths: ['/hubs'] })] }],
 	['an Ingress that routes the hub in capitals without tokenInQuery', 'values-k8s-prd.yaml', [PRD], 'ingresses web-hubs: routes /HUBS/live without tokenInQuery',
@@ -1783,7 +1797,7 @@ for (const [label, file, sets, message, annotation] of [
 	['a tokenInQuery Ingress that routes more than the hub', 'values-k8s-dev.yaml', [], "ingresses api-main: tokenInQuery is the live hub's (no access log, no audit log, critical errors only), so its paths are /hubs or under it, not /",
 		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { tokenInQuery: true })] }],
 	['a tokenInQuery that is not true or false', 'values-k8s-dev.yaml', [], 'ingresses web-hubs: tokenInQuery must be true or false',
-		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { plainHttp: 'redirect', tokenInQuery: 'false', paths: ['/hubs'] })] }],
+		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: 'false', paths: ['/hubs'] })] }],
 	// ARV-091, review round 2: no ModSecurity debug log, no rule that copies request values into its msg or logdata, no quoted
 	// directive name, and no OpenTelemetry on the live hub's Ingress.
 	['a modsecurity-snippet that writes a debug log to standard output', 'values-k8s-dev.yaml', [], 'a debug log (SecDebugLog...)', 'modsecurity-snippet: "SecDebugLog /dev/stdout"'],
@@ -1802,7 +1816,7 @@ for (const [label, file, sets, message, annotation] of [
 	['a server-snippet with a quoted error_log', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log or error_log directive', "server-snippet: \"client_header_timeout 30s; 'error_log' /dev/stderr debug;\""],
 	["a server-snippet with a quoted modsecurity directive", 'values-k8s-dev.yaml', [], 'server-snippet writes a modsecurity directive', "server-snippet: \"'modsecurity_rules_file' /etc/nginx/modsecurity/modsecurity.conf;\""],
 	['a site annotation that turns OpenTelemetry on for the live hub', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/enable-opentelemetry is set by the chart',
-		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { plainHttp: 'redirect', tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-opentelemetry': 'true' } })] }],
+		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-opentelemetry': 'true' } })] }],
 	['the Ingresses of one host with different server-snippets', 'values-k8s-dev.yaml', [], 'the Ingresses of host api-integration-test carry different server-snippet annotations',
 		{ ingresses: [ingressEntry('api-integration', 'api-integration-service', 'api-integration-test', { annotations: { 'nginx.ingress.kubernetes.io/server-snippet': 'client_header_timeout 30s;' } }),
 			ingressEntry('api-integration-feeds', 'api-integration-service', 'api-integration-test', { paths: ['/api/v1/integration/'] })] }],
@@ -2075,8 +2089,8 @@ for (const [label, file, sets, message, annotation] of [
 	const hosts = render('values-k8s-prd.yaml', [PRD], '', [valuesFile({ ingresses: [
 		ingressEntry('api-main', 'api-main-service', 'api-main-test'),
 		ingressEntry('web', 'web-service', 'web-test', { plainHttp: 'redirect' }),
-		ingressEntry('web-api', 'api-main-service', 'web-test', { plainHttp: 'redirect', paths: ['/api'] }),
-		ingressEntry('web-hubs', 'api-main-service', 'web-test', { plainHttp: 'redirect', tokenInQuery: true, paths: ['/hubs'] })
+		ingressEntry('web-api', 'api-main-service', 'web-test', { paths: ['/api'] }),
+		ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: true, paths: ['/hubs'] })
 	] })]);
 	if (hosts.status !== 0) findings.push(`the live hub's host and api-main's: template failed\n${hosts.stderr}`);
 	else {

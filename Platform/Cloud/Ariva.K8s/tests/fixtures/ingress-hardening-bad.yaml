@@ -9,7 +9,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-missing
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-hsts-missing
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -52,7 +52,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-add-header
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-hsts-add-header
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -96,7 +96,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-twice
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-hsts-twice
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -145,7 +145,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-short
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-hsts-short
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -193,7 +193,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-no-subdomains
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-hsts-no-subdomains
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -241,7 +241,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-preload
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-hsts-preload
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -289,7 +289,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-plain
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-hsts-plain
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -333,7 +333,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-after-421
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-hsts-after-421
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -381,7 +381,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-hsts-never-https
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-hsts-never-https
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -429,7 +429,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-nosniff-missing
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-nosniff-missing
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -476,7 +476,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-nosniff-add-header
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-nosniff-add-header
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -524,7 +524,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-server-missing
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-csp-server-missing
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -571,7 +571,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-server-no-always
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-csp-server-no-always
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -619,7 +619,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-server-no-frame
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-csp-server-no-frame
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -667,7 +667,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-server-replace
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-csp-server-replace
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -716,7 +716,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-location-missing
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-csp-location-missing
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -763,7 +763,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-csp-location-no-always
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-csp-location-no-always
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -810,7 +810,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-plain-mode-missing
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-plain-mode-missing
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -858,7 +858,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-refuse-ssl-redirect
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-refuse-ssl-redirect
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -906,7 +906,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-refuse-force-ssl-redirect
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-refuse-force-ssl-redirect
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -954,7 +954,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-refuse-no-answer
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-refuse-no-answer
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -999,7 +999,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-refuse-redirects
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-refuse-redirects
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1047,7 +1047,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-redirect-not-forced
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-redirect-not-forced
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1092,7 +1092,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-redirect-refuses
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-redirect-refuses
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1140,7 +1140,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-prd-machine-redirect
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-prd-machine-redirect
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1185,7 +1185,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-cookie-not-secure
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-cookie-not-secure
     nginx.ingress.kubernetes.io/session-cookie-secure: "false"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1233,7 +1233,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-cookie-lax
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-cookie-lax
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Lax
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1281,7 +1281,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-cookie-path
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-cookie-path
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /api
@@ -1322,6 +1322,151 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
+  name: cookie-no-prefix
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: ariva-cookie-no-prefix
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "cookie-no-prefix.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - cookie-no-prefix.example.test
+      secretName: ariva-tls
+  rules:
+    - host: cookie-no-prefix.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cookie-bad-chars
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva.cookie-bad-chars
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "cookie-bad-chars.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - cookie-bad-chars.example.test
+      secretName: ariva-tls
+  rules:
+    - host: cookie-bad-chars.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cookie-domain
+  annotations:
+    ariva.dalil.tech/plain-http: refuse
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-cookie-domain
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/session-cookie-domain: example.test
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "cookie-domain.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - cookie-domain.example.test
+      secretName: ariva-tls
+  rules:
+    - host: cookie-domain.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
   name: prefer-server-ciphers
   annotations:
     ariva.dalil.tech/plain-http: refuse
@@ -1329,7 +1474,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "true"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-prefer-server-ciphers
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-prefer-server-ciphers
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1377,7 +1522,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-www-redirect
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-www-redirect
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1426,7 +1571,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-custom-headers
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-custom-headers
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1475,7 +1620,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-clear-headers
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-clear-headers
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1524,7 +1669,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-header-elsewhere
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-header-elsewhere
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1573,7 +1718,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-location-hsts
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-location-hsts
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1622,7 +1767,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-host-modes-a
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-host-modes-a
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1652,7 +1797,7 @@ spec:
     - host: host-modes.example.test
       http:
         paths:
-          - path: /
+          - path: /api
             pathType: Prefix
             backend:
               service:
@@ -1670,7 +1815,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-host-modes-disagree
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-host-modes-disagree
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1697,7 +1842,7 @@ spec:
     - host: host-modes.example.test
       http:
         paths:
-          - path: /
+          - path: /api/
             pathType: Prefix
             backend:
               service:
@@ -1715,7 +1860,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-host-snippets-a
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-host-snippets-a
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1763,7 +1908,7 @@ metadata:
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
     nginx.ingress.kubernetes.io/affinity: cookie
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-host-snippets-differ
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-host-snippets-differ
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-path: /
@@ -1795,6 +1940,96 @@ spec:
       http:
         paths:
           - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-main-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prd-web-app
+  annotations:
+    ariva.dalil.tech/plain-http: redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-prd-web-app
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "prd-web.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - prd-web.example.test
+      secretName: ariva-tls
+  rules:
+    - host: prd-web.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prd-web-machine-redirect
+  annotations:
+    ariva.dalil.tech/plain-http: redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-prd-web-machine-redirect
+    nginx.ingress.kubernetes.io/session-cookie-secure: "true"
+    nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
+    nginx.ingress.kubernetes.io/session-cookie-path: /
+    nginx.ingress.kubernetes.io/server-snippet: |
+      set $ariva_hsts "";
+      if ($scheme = https) {
+        set $ariva_hsts "max-age=31536000; includeSubDomains";
+      }
+      more_set_headers "Strict-Transport-Security: $ariva_hsts";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($host != "prd-web.example.test") {
+        return 421;
+      }
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header Content-Security-Policy "frame-ancestors 'none'" always;
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - prd-web.example.test
+      secretName: ariva-tls
+  rules:
+    - host: prd-web.example.test
+      http:
+        paths:
+          - path: /api
             pathType: Prefix
             backend:
               service:

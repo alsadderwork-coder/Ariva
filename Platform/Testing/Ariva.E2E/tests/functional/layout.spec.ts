@@ -51,6 +51,12 @@ test.describe('application shell', () => {
 		await page.getByTestId('sidebar-toggle').click();
 		await expect(sidebar).toHaveAttribute('data-state', 'collapsed');
 		await expect.poll(async () => (await sidebar.boundingBox())?.width).toBeLessThanOrEqual(64);
+		// ASVS V3.3.1 (ARV-084, ARV-199): the state cookie is __Host- prefixed, Secure, Path=/, SameSite=Strict and host only
+		// (no Domain: Playwright gives a Domain cookie's domain a leading dot).
+		const stateCookie = (await page.context().cookies()).find((cookie) => cookie.name === '__Host-sidebar_state');
+		expect(stateCookie, 'the sidebar state cookie').toBeDefined();
+		expect(stateCookie).toMatchObject({ value: 'false', path: '/', secure: true, sameSite: 'Strict' });
+		expect(stateCookie?.domain.startsWith('.'), 'host only, no Domain attribute').toBe(false);
 
 		await page.reload();
 		await expect(page.getByRole('heading', { level: 1 })).toHaveText(homeHeading.en);

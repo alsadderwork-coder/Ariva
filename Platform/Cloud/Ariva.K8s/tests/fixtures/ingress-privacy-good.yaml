@@ -42,7 +42,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-main
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-main
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -107,7 +107,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-ingest
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-ingest
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -170,7 +170,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-cronz
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-cronz
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -235,7 +235,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-integration
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-integration
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -300,7 +300,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-api-integration-feeds
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-api-integration-feeds
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -360,7 +360,7 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-web
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-web
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
@@ -389,13 +389,16 @@ kind: Ingress
 metadata:
   name: web-api-ingress
   annotations:
-    ariva.dalil.tech/plain-http: redirect
+    ariva.dalil.tech/plain-http: refuse
     nginx.ingress.kubernetes.io/affinity: cookie
     nginx.ingress.kubernetes.io/backend-protocol: HTTPS
     nginx.ingress.kubernetes.io/configuration-snippet: |
       add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
     nginx.ingress.kubernetes.io/enable-modsecurity: "true"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/modsecurity-snippet: |
       SecRuleEngine On
       SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\'Dangerous file upload blocked\'"
@@ -422,12 +425,12 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-web-api
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-web-api
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   ingressClassName: nginx
   tls:
@@ -451,15 +454,18 @@ kind: Ingress
 metadata:
   name: web-hubs-ingress
   annotations:
-    ariva.dalil.tech/plain-http: redirect
+    ariva.dalil.tech/plain-http: refuse
     nginx.ingress.kubernetes.io/affinity: cookie
     nginx.ingress.kubernetes.io/backend-protocol: HTTPS
     nginx.ingress.kubernetes.io/configuration-snippet: |
       add_header Content-Security-Policy "frame-ancestors 'none'" always;
+      if ($scheme = http) {
+        return 403;
+      }
       error_log /dev/stderr crit;
     nginx.ingress.kubernetes.io/enable-access-log: "false"
     nginx.ingress.kubernetes.io/enable-modsecurity: "true"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/modsecurity-snippet: |
       SecRuleEngine On
       SecRule FILES "@rx \.(exe|dll|bat|cmd|com|msi|sh|ps1|php|jsp|asp|aspx)$" "id:100001,phase:2,deny,status:403,log,msg:\'Dangerous file upload blocked\'"
@@ -487,12 +493,12 @@ metadata:
       if ($uri ~* "^/healthz?(/|$)") {
         return 404;
       }
-    nginx.ingress.kubernetes.io/session-cookie-name: ariva-web-hubs
+    nginx.ingress.kubernetes.io/session-cookie-name: __Host-ariva-web-hubs
     nginx.ingress.kubernetes.io/session-cookie-path: /
     nginx.ingress.kubernetes.io/session-cookie-samesite: Strict
     nginx.ingress.kubernetes.io/session-cookie-secure: "true"
     nginx.ingress.kubernetes.io/ssl-prefer-server-ciphers: "false"
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   ingressClassName: nginx
   tls:
