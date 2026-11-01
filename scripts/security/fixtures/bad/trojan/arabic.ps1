@@ -1,0 +1,2 @@
+# مرحبا
+Write-Output 'x'

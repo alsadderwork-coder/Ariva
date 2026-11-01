@@ -36,7 +36,7 @@ public sealed class SqlScriptTests
     {
         var lf = SqlScript.From("0001_a.sql", "SELECT 1;\nSELECT 2;\n");
         var crlf = SqlScript.From("0001_a.sql", "SELECT 1;\r\nSELECT 2;\r\n");
-        var bom = SqlScript.From("0001_a.sql", "﻿SELECT 1;\nSELECT 2;\n");
+        var bom = SqlScript.From("0001_a.sql", "\uFEFFSELECT 1;\nSELECT 2;\n");
         var edited = SqlScript.From("0001_a.sql", "SELECT 1;\nSELECT 3;\n");
 
         crlf.Checksum.Should().Be(lf.Checksum, "a Windows checkout must not look like tampering");

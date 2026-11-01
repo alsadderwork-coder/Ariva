@@ -152,5 +152,25 @@
     "proposedBy": "Claude (ARV-157, 2026-10-20)",
     "approvedBy": "PENDING: Ahmad",
     "date": "2026-10-20"
+  },
+  {
+    "rule": "SEC-130",
+    "path": ".claude/hooks/lib.mjs",
+    "contains": "try { return JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\ufeff/, '')); } catch { return fallback; }",
+    "line": "try { return JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\ufeff/, '')); } catch { return fallback; }",
+    "reason": "Harness hook code, which agents do not change without the owner: readJson strips a leading byte order mark from a JSON file it reads, and the mark it strips is written raw inside the regular expression, so it is the guard, not hidden code. SEC-130 refuses U+FEFF after a file's first character since ARV-225. Proposed for the owner's decision (ARV-225a): write it as an escape (/^\\uFEFF/), which removes this entry, or approve it. Scoped to exactly this line (line, written here with a JSON escape): anything added to it fires again.",
+    "proposedBy": "Claude (ARV-225, 2026-11-01)",
+    "approvedBy": "PENDING: Ahmad Al-Sadder",
+    "date": "2026-11-01"
+  },
+  {
+    "rule": "SEC-130",
+    "path": "Platform/Cloud/Ariva.K8s/tests/node_modules/.bin/yaml",
+    "contains": "-> \"../yaml/bin.mjs\"",
+    "line": "-> \"../yaml/bin.mjs\"",
+    "reason": "npm's link to the yaml package's command, inside the chart tests' node_modules, which has been tracked since ARV-041 though the folder's own .gitignore ignores node_modules/ (235 files). CI reinstalls the tree with npm ci (ci.yml) and never reads the tracked copy; scripts/verify.mjs runs npm ci there only when node_modules is absent, which a checkout never is, so the local backend gate's chart-security.mjs runs on the tracked copy. The target (quoted) stays inside the package, which is tracked too. SEC-130 reports a tracked symbolic link since ARV-225. Proposed for the owner's decision: untrack the folder (git rm -r --cached Platform/Cloud/Ariva.K8s/tests/node_modules), which removes this entry and lets verify.mjs install the locked tree on a fresh checkout (a machine that already has the folder keeps its copy until the folder is deleted), or approve it. Scoped to exactly this quoted target (line): a link moved to another target, a trailing space or tab included, fires again.",
+    "proposedBy": "Claude (ARV-225, 2026-11-01)",
+    "approvedBy": "PENDING: Ahmad Al-Sadder",
+    "date": "2026-11-01"
   }
 ]

@@ -8,7 +8,8 @@
 //   node scripts/security/scan.mjs <files...>      scan only the given files (used by the Claude Code hooks)
 // Exceptions live in security/allowlist.json and need a reason, an approver and a date.
 // SEC-130 (hidden characters, ARV-157) reads every text file in the scope: in a full scan, every file git tracks or would
-// add, whatever its folder or type; the other rules read the mapped types outside SKIP_DIRS.
+// add, whatever its folder or type; the other rules read the mapped types outside SKIP_DIRS that git tracks or would add
+// (ARV-225: no ignored output). A tracked symbolic link and a listed name that is not valid UTF-8 fail SEC-130 too.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -184,10 +185,18 @@ const RULES = [
   // an editor); the Hangul fillers (letters that render as nothing, so valid in a JavaScript name); tag characters and
   // supplementary variation selectors (text hidden from a reader, agents included). Refused as a whole (scanFiles): a file
   // in UTF-16 or UTF-32, a file that is not valid UTF-8 (but a binary type whose bytes carry its signature), and a file that
-  // declares another encoding. Not refused yet: a byte order mark after a file's start and the rarer format characters
-  // (ARV-225).
+  // declares another encoding. ARV-225: a byte order mark anywhere but a file's first character (an invisible zero-width
+  // no-break space), the rarer format characters (the combining grapheme joiner, the Khmer inherent vowels, the Mongolian
+  // variation selectors, the shorthand format controls, the musical symbol format controls), the variation selectors (emoji
+  // text writes U+FE0F as an escape), the Egyptian hieroglyph format controls, and the noncharacters (U+FDD0 to U+FDEF, and
+  // the last two code points of every plane). Also refused (scanFiles): a tracked symbolic
+  // link, a listed name that is not valid UTF-8, a file git converts at checkout (a filter or a working-tree-encoding other
+  // than UTF-8, read by git from the index, and the same written in a .gitattributes file), and a PowerShell file that is
+  // neither ASCII nor marked, or a batch file that is not ASCII. Not read yet (ARV-225b): the further
+  // declared encodings (an .editorconfig charset, an Emacs coding line, SQL client_encoding, chcp), code pages set outside
+  // project and response files, and settings written with character references, escapes or evaluated names.
   { id: 'SEC-130', cwe: ['CWE-94'], anyText: true, severity: 'error', raw: true,
-    re: /[\x00-\x08\x0B-\x1F\x7F-\x9F\u00AD\u061C\u115F\u1160\u180E\u200B-\u200F\u2028-\u202E\u2060-\u206F\u3164\uFFA0\uFFF9-\uFFFB\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/u,
+    re: /[\x00-\x08\x0B-\x1F\x7F-\x9F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u2028-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFDD0-\uFDEF\uFFF9-\uFFFB\uFFFE\uFFFF\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{13430}-\u{1343F}\u{E0000}-\u{E007F}\u{1FFFE}\u{1FFFF}\u{2FFFE}\u{2FFFF}\u{3FFFE}\u{3FFFF}\u{4FFFE}\u{4FFFF}\u{5FFFE}\u{5FFFF}\u{6FFFE}\u{6FFFF}\u{7FFFE}\u{7FFFF}\u{8FFFE}\u{8FFFF}\u{9FFFE}\u{9FFFF}\u{AFFFE}\u{AFFFF}\u{BFFFE}\u{BFFFF}\u{CFFFE}\u{CFFFF}\u{DFFFE}\u{DFFFF}\u{EFFFE}\u{EFFFF}\u{FFFFE}\u{FFFFF}\u{10FFFE}\u{10FFFF}\u{E0100}-\u{E01EF}]/u,
     msg: 'Invisible, bidirectional, control or line-separating character (Trojan Source, hidden text): the file can read differently from how it runs or what a reader is shown. Write it as an escape: \\u202E in C#, JavaScript, JSON and YAML strings, `u{202E} in PowerShell, &#x202E; in HTML, XML, .resx, SVG and Markdown, \\202E in CSS, U&\'\\202E\' in SQL.' },
   // ARV-089 (ASVS V15.3.6): prototype pollution in the web app. A key that comes from data (a zone key, an id, a language)
   // written with obj[key] = value reaches the __proto__ setter when the key is "__proto__"; Map, Object.fromEntries,
@@ -364,30 +373,63 @@ function walkAll(dir, acc = []) {
  * The paths in `git status --porcelain -z` output: names unquoted whatever they hold, a rename or copy under its new path
  * (its old path follows as a record of its own).
  */
-export function porcelainPaths(out) {
-  const records = out.split('\0');
+export function porcelainPaths(out, invalid = []) {
+  // ARV-225: read as bytes, so a name that is not valid UTF-8 is reported (invalid), not dropped, and a rename's old path is
+  // still skipped after its new one whatever either name holds (the two status letters are ASCII).
+  const records = nulRecords(Buffer.isBuffer(out) ? out : Buffer.from(out, 'utf8'));
   const paths = [];
   for (let i = 0; i < records.length; i++) {
     if (records[i].length < 4) continue;
-    paths.push(records[i].slice(3));
-    if (/[RC]/.test(records[i].slice(0, 2))) i++;
+    const name = decodeName(records[i].subarray(3), invalid);
+    if (name !== null) paths.push(name);
+    if (/[RC]/.test(records[i].subarray(0, 2).toString('latin1'))) i++;
   }
   return paths;
 }
 
-function changedFiles(root = ROOT, env = process.env) {
+/** A path that exists as a file or a link (a link's target need not exist: fs.existsSync follows it). */
+const present = f => { try { fs.lstatSync(f); return true; } catch { return false; } };
+
+/** A name's bytes with each byte that is not printable ASCII (or a backslash) shown as \x{HH}, for a name that is not valid UTF-8. */
+export const escapedName = bytes => [...bytes].map(b => (b >= 0x20 && b < 0x7F && b !== 0x5C ? String.fromCharCode(b) : `\\x{${b.toString(16).toUpperCase().padStart(2, '0')}}`)).join('');
+
+/** git's -z output split into its records, as bytes. */
+const nulRecords = buf => {
+  const records = [];
+  let start = 0;
+  for (let i = 0; i <= buf.length; i++) {
+    if (i < buf.length && buf[i] !== 0) continue;
+    if (i > start) records.push(buf.subarray(start, i));
+    start = i + 1;
+  }
+  return records;
+};
+
+/**
+ * A name from git's -z output (ARV-225), decoded as UTF-8 with any byte order mark kept, or null when it is not valid UTF-8:
+ * then it is added to invalid, shown with escapes (git keeps a name's bytes, and a decoder with replacements would turn it
+ * into a path that does not exist, dropped without a word).
+ */
+const decodeName = (bytes, invalid) => {
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+  catch { invalid.push(escapedName(bytes)); return null; }
+};
+
+function changedFiles(root = ROOT, env = process.env, invalid = []) {
+  let out;
   try {
     // Every untracked file, not just its new folder (a folder entry is not a file and would be dropped). Any type: SEC-130
     // reads every text file (ARV-157).
-    const out = execFileSync('git', ['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: root, env, encoding: 'utf8' });
-    return porcelainPaths(out).map(f => path.join(root, f)).filter(f => fs.existsSync(f) && fs.lstatSync(f).isFile());
+    out = execFileSync('git', ['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: root, env, maxBuffer: 256 * 1024 * 1024 });
   } catch { return listFiles(root); }
+  return porcelainPaths(out, invalid).map(f => path.join(root, f))
+    .filter(f => present(f) && (fs.lstatSync(f).isFile() || fs.lstatSync(f).isSymbolicLink()));
 }
 
-/** Every file git tracks or would add (untracked and not ignored), as git lists it. */
-function gitFiles(root = ROOT, env = process.env) {
-  const out = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
-  return [...new Set(out.split('\0').filter(Boolean))].map(f => path.join(root, f)).filter(f => fs.existsSync(f));
+/** Every file git tracks or would add (untracked and not ignored), as git lists it; a name that is not valid UTF-8 goes to invalid. */
+function gitFiles(root = ROOT, env = process.env, invalid = []) {
+  const out = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, env, maxBuffer: 256 * 1024 * 1024 });
+  return [...new Set(nulRecords(out).map(r => decodeName(r, invalid)).filter(r => r !== null))].map(f => path.join(root, f)).filter(present);
 }
 
 /**
@@ -402,15 +444,20 @@ export function isolatedGitEnv(env, repo) {
 
 /**
  * The full scan (ARV-157): the mapped files outside SKIP_DIRS for every rule, and every other file git tracks or would add,
- * whatever its folder or type, for SEC-130 alone (textOnly). Not the security fixtures (bad on purpose), symbolic links
- * (git keeps their target path, not the file) or .private.
+ * whatever its folder or type, for SEC-130 alone (textOnly). Not the security fixtures (bad on purpose) or .private. ARV-225:
+ * only files git tracks or would add, so ignored output (a worktree, test results) is not read; a tracked symbolic link is
+ * listed, for SEC-130 to report (git keeps its target path, not a file); a name that is not valid UTF-8 is in invalid.
  */
-function fullScan() {
-  const files = listFiles(ROOT);
+function fullScan(root = ROOT, env = process.env) {
+  const invalid = [];
+  const tracked = gitFiles(root, env, invalid).filter(f => !f.startsWith(SECURITY_FIXTURES)
+    && !path.relative(root, f).split(path.sep).includes('.private') && (fs.lstatSync(f).isFile() || fs.lstatSync(f).isSymbolicLink()));
+  const known = new Set(tracked);
+  const files = listFiles(root).filter(f => known.has(f));
   const listed = new Set(files);
-  const textOnly = new Set(gitFiles().filter(f => !listed.has(f) && !f.startsWith(SECURITY_FIXTURES)
-    && !path.relative(ROOT, f).split(path.sep).includes('.private') && fs.lstatSync(f).isFile()));
-  return { files: [...files, ...textOnly], textOnly };
+  const textOnly = new Set(tracked.filter(f => !listed.has(f)));
+  const all = [...files, ...textOnly];
+  return { files: all, textOnly, invalid, converted: checkoutConversions(all, root, env) };
 }
 
 /**
@@ -541,6 +588,51 @@ const WIDE = 'Text file in UTF-16 or UTF-32 (a byte order mark at its start): gi
 const NOT_UTF8 = 'File that is not valid UTF-8 and not of a binary type: a tool that reads it in another encoding sees characters this scanner does not, and git may show it as binary. Save it as UTF-8.';
 const DECLARED = 'File that declares an encoding other than UTF-8 (a Python coding line, an XML prolog, a CSS @charset, an HTML meta charset, or a C# code page in a project or response file): its tool decodes the bytes into characters this scanner does not see (in UTF-7, +AAo- is a line feed). Declare UTF-8.';
 const IN_PATH = 'Invisible, bidirectional or control character in a file path (Trojan Source): a name can read as another file or type than it is. Rename it.';
+const NAME_NOT_UTF8 = 'File name that is not valid UTF-8 (shown with \\x{HH} escapes): a tool that reads names in another encoding sees another name than this scanner, and git keeps the bytes as they are. Rename it.';
+const LINK = 'Symbolic link git tracks or would add (its target follows, quoted): git keeps the target path, not a file, so what a tool reads through it is not what a reviewer sees here, and a link can point outside the repository. Replace it with the file, or allowlist the link with its exact quoted target as "line".';
+const GITATTRIBUTES = 'A .gitattributes filter, or a working-tree-encoding other than UTF-8: git converts the file at checkout, so the text built and run differs from the blob reviewed and scanned. Remove it.';
+const CONVERTED = 'File git converts at checkout (git check-attr from the index: a filter, or a working-tree-encoding other than UTF-8, follows): the text this scanner reads, built and run is the converted one, not the blob reviewed, and a working-tree-encoding of UTF-7 turns a hidden character into plain ASCII here. Remove the attribute.';
+const WINDOWS_SCRIPT = 'A PowerShell file with text beyond ASCII and no UTF-8 byte order mark, or a batch file with text beyond ASCII or a mark: Windows PowerShell 5.1 reads a file without a mark in the system code page, and cmd.exe reads every batch file in the console code page (a mark becomes part of its first command), so the text run differs from the text reviewed. Keep it ASCII (or, for PowerShell, save it with a byte order mark).';
+
+/** PowerShell types, which a UTF-8 byte order mark makes safe; batch types, which only ASCII does. */
+const POWERSHELL = new Set(['.ps1', '.psm1', '.psd1', '.pssc', '.psrc']);
+const BATCH = new Set(['.cmd', '.bat']);
+
+/**
+ * ARV-225: the lines of a .gitattributes file that set a filter (its smudge command changes the file at checkout) or a
+ * working-tree-encoding other than UTF-8 (git re-encodes the file at checkout), a macro definition included. An attribute
+ * unset (-filter) or unspecified (!filter) is allowed. Read as git reads it: a comment only after spaces, tabs or carriage
+ * returns; a pattern that opens with a quote ends at its closing quote no backslash escapes, and its attributes may follow
+ * it at once (an unclosed one is read whole, failing closed); tokens split on spaces, tabs and carriage returns; the name
+ * matched whatever its case. The full and --changed scans also ask git (checkoutConversions), which reads the index.
+ */
+export function gitAttributeLines(lines) {
+  const found = [];
+  lines.forEach((raw, i) => {
+    // Git skips one byte order mark at the file's start (review round 2), so a pattern glued to its attribute after it applies.
+    let rest = (i === 0 ? raw.replace(/^\u{FEFF}/u, '') : raw).replace(/^[ \t\r]+/, '');
+    if (!rest || rest.startsWith('#')) return;
+    if (rest.startsWith('"')) {
+      let j = 1;
+      while (j < rest.length && rest[j] !== '"') j += rest[j] === '\\' ? 2 : 1;
+      if (j < rest.length) rest = rest.slice(j + 1);
+    } else rest = rest.replace(/^[^ \t\r]+/, '');
+    for (const token of rest.split(/[ \t\r]+/)) {
+      const m = token.match(/^([-!]?)(filter|working-tree-encoding)(=(.*))?$/i);
+      if (!m || m[1]) continue;
+      if (m[2].toLowerCase() === 'working-tree-encoding' && /^utf-?8$/i.test(m[4] ?? '')) continue;
+      found.push(i + 1);
+      return;
+    }
+  });
+  return found;
+}
+
+/** The SEC-130 findings for names a git list held that are not valid UTF-8 (ARV-225); never allowlisted: rename the file. */
+function invalidNameFindings(invalid) {
+  const sec130 = RULES.find(r => r.id === 'SEC-130');
+  return invalid.map(name => ({ rule: sec130.id, cwe: sec130.cwe, severity: sec130.severity, file: name, line: 0, text: '', msg: NAME_NOT_UTF8 }));
+}
 
 function utf32(b, littleEndian) {
   const out = [];
@@ -563,7 +655,11 @@ export function scanFiles(files, { allow = [], root = ROOT, textOnly = new Set()
     const rel = path.relative(root, file);
     if (sec130.re.test(rel)) record(findings, allow, { ...sec130, msg: IN_PATH }, rel, 0, '');
     const lang = langOf(file);
-    if (!fs.lstatSync(file).isFile()) continue;
+    const kind = fs.lstatSync(file);
+    // ARV-225: a link is reported with its target, which an allowlist entry names as its exact line.
+    // Quoted, so the trimming an allowlist entry's line match does cannot make a target with a trailing space or tab match.
+    if (kind.isSymbolicLink()) { record(findings, allow, { ...sec130, msg: LINK }, rel, 0, `-> ${JSON.stringify(fs.readlinkSync(file))}`); continue; }
+    if (!kind.isFile()) continue;
     const bytes = fs.readFileSync(file);
     const decoded = decodeText(bytes, binaryFile(file, bytes));
     if (decoded === null) { stats.binary = (stats.binary ?? 0) + 1; continue; }
@@ -573,6 +669,14 @@ export function scanFiles(files, { allow = [], root = ROOT, textOnly = new Set()
     const { text } = decoded;
     if (declaredEncoding(text, file)) record(findings, allow, { ...sec130, msg: DECLARED }, rel, 1, '');
     const lines = text.split(/\r?\n/);
+    // ARV-225: a byte order mark is allowed as a file's first character only (SEC-130 refuses U+FEFF anywhere else).
+    const leadingMark = decoded.utf8 && text.startsWith('\uFEFF');
+    if (path.basename(file) === '.gitattributes') for (const ln of gitAttributeLines(lines)) record(findings, allow, { ...sec130, msg: GITATTRIBUTES }, rel, ln, lines[ln - 1]);
+    const ext = path.extname(file).toLowerCase();
+    if ((POWERSHELL.has(ext) && !leadingMark) || BATCH.has(ext)) {
+      const beyond = lines.findIndex((l, i) => /[^\x00-\x7F]/.test(i === 0 && leadingMark ? l.slice(1) : l) || (i === 0 && leadingMark && BATCH.has(ext)));
+      if (beyond >= 0) record(findings, allow, { ...sec130, msg: WINDOWS_SCRIPT }, rel, beyond + 1, lines[beyond]);
+    }
     for (const r of RULES) {
       if (!r.anyText && (!lang || textOnly.has(file) || !r.langs.includes(lang))) continue;
       if (r.paths && !r.paths.some(p => p.test(file))) continue;
@@ -583,12 +687,43 @@ export function scanFiles(files, { allow = [], root = ROOT, textOnly = new Set()
         continue;
       }
       lines.forEach((raw, i) => {
-        const l = r.raw ? raw : stripComment(raw, lang);
+        const l = r.raw ? (i === 0 && leadingMark && r === sec130 ? raw.slice(1) : raw) : stripComment(raw, lang);
         if (l && r.re.test(l)) record(findings, allow, r, rel, i + 1, raw);
       });
     }
   }
   return findings;
+}
+
+/**
+ * ARV-225 (review): the files git converts at checkout, as git's own parser reads the attributes from the index (git
+ * check-attr --cached): a filter set or valued, or a working-tree-encoding set to anything but UTF-8. Quoting, macros and a
+ * .gitattributes file that converts itself cannot hide one, and the working tree this scanner reads is the converted text
+ * (a UTF-7 checkout turns a hidden character into ASCII), so the attribute itself is refused. Throws when git cannot answer.
+ */
+export function checkoutConversions(files, root = ROOT, env = process.env) {
+  const rels = files.map(f => path.relative(root, f).split(path.sep).join('/'));
+  if (!rels.length) return [];
+  const out = execFileSync('git', ['check-attr', '--cached', '-z', '--stdin', 'filter', 'working-tree-encoding'],
+    { cwd: root, env, input: `${rels.join('\0')}\0`, maxBuffer: 256 * 1024 * 1024 }).toString('utf8').split('\0');
+  const found = [];
+  // Records of three (path, attribute, value), empty values kept: "filter=" is a value.
+  for (let i = 0; i + 2 < out.length; i += 3) {
+    const [rel, attribute, value] = out.slice(i, i + 3);
+    if (value === 'unspecified' || value === 'unset') continue;
+    if (attribute === 'working-tree-encoding' && /^utf-?8$/i.test(value)) continue;
+    found.push({ file: path.join(root, rel), text: `${attribute}: ${value}` });
+  }
+  return found;
+}
+
+/** Every finding of a scan's selection (ARV-225): the names that are not valid UTF-8, the files git converts, then the files. */
+export function scanSelection({ files, textOnly, invalid = [], converted = [] }, options = {}) {
+  const root = options.root ?? ROOT;
+  const sec130 = RULES.find(r => r.id === 'SEC-130');
+  const findings = invalidNameFindings(invalid);
+  for (const c of converted) record(findings, options.allow ?? [], { ...sec130, msg: CONVERTED }, path.relative(root, c.file), 0, c.text);
+  return [...findings, ...scanFiles(files, { ...options, textOnly })];
 }
 
 function checklist(findings) {
@@ -618,10 +753,15 @@ function writeReport(findings, scanned) {
 
 // ARV-157: the characters SEC-130 refuses, listed apart from its pattern so that a narrowed pattern fails the self-test;
 // and characters text uses (printable ASCII, Arabic letters and marks, punctuation) that it never refuses.
-const HIDDEN_CHARS = [[0x00, 0x08], [0x0B, 0x1F], [0x7F, 0x9F], [0x00AD], [0x061C], [0x115F, 0x1160], [0x180E], [0x200B, 0x200F],
-  [0x2028, 0x202E], [0x2060, 0x206F], [0x3164], [0xFFA0], [0xFFF9, 0xFFFB], [0xE0000, 0xE007F], [0xE0100, 0xE01EF]];
-const VISIBLE_CHARS = [[0x09], [0x20, 0x7E], [0x00A0, 0x00AC], [0x0600, 0x061B], [0x061D, 0x06FF], [0x2010, 0x2027], [0xFB50, 0xFDFF],
-  [0xFE70, 0xFEFC]];
+const HIDDEN_CHARS = [[0x00, 0x08], [0x0B, 0x1F], [0x7F, 0x9F], [0x00AD], [0x034F], [0x061C], [0x115F, 0x1160], [0x17B4, 0x17B5],
+  [0x180B, 0x180F], [0x200B, 0x200F], [0x2028, 0x202E], [0x2060, 0x206F], [0x3164], [0xFE00, 0xFE0F], [0xFEFF], [0xFFA0], [0xFFF9, 0xFFFB],
+  [0xFFFE, 0xFFFF], [0xFDD0, 0xFDEF], [0x1BCA0, 0x1BCA3], [0x1D173, 0x1D17A], [0x13430, 0x1343F], [0xE0000, 0xE007F], [0xE0100, 0xE01EF],
+  ...Array.from({ length: 16 }, (_, n) => [(n + 1) * 0x10000 + 0xFFFE, (n + 1) * 0x10000 + 0xFFFF])];
+// ARV-225: the neighbours of the newly refused characters stay visible (combining marks, Khmer vowel signs, Mongolian
+// punctuation and digits, vertical forms, the replacement character, Duployan and musical symbols).
+const VISIBLE_CHARS = [[0x09], [0x20, 0x7E], [0x00A0, 0x00AC], [0x034E], [0x0350], [0x0600, 0x061B], [0x061D, 0x06FF], [0x17B3], [0x17B6],
+  [0x180A], [0x1810, 0x1819], [0x2010, 0x2027], [0xFB50, 0xFDCF], [0xFDF0, 0xFDFF], [0xFE10, 0xFE19], [0xFE70, 0xFEFC], [0xFFFD], [0x1BC9F], [0x1D172], [0x1D17B],
+  [0x1342F], [0x13440], [0x1FFFD], [0x10FFFD]];
 
 // ARV-157: files the full scan must list (an oracle apart from gitFiles): types no rule but SEC-130 reads, and folders the
 // other rules skip.
@@ -655,8 +795,85 @@ function scratchGitLists(baseEnv) {
     const expectListed = ['.gitignore', 'folder/deep.txt', 'kept.md', 'new.md', 'مرحبا.md'].sort().join('|');
     if (rels(changedFiles(repo, env)) !== expectChanged) fail(`--changed lists ${rels(changedFiles(repo, env))}, not ${expectChanged}`);
     if (rels(gitFiles(repo, env)) !== expectListed) fail(`The full scan's git list is ${rels(gitFiles(repo, env))}, not ${expectListed}`);
+
+    // ARV-225: a tracked link, a name that is not valid UTF-8, a name that starts with a byte order mark (a decoder that drops
+    // it lists a file that does not exist), and ignored output outside the folders the other rules skip, holding a hidden
+    // character: the names listed or reported, the link reported, the output never read.
+    put('.gitignore', 'ignored.txt\nout/\n');
+    put('out/hidden.cs', 'x\u{202E}\n');
+    const marked = '\u{FEFF}bom.md';
+    put(marked, 'g\n');
+    let latin = false;
+    if (process.platform !== 'win32') {
+      fs.symlinkSync('kept.md', path.join(repo, 'link.md'));
+      fs.symlinkSync('missing.md', path.join(repo, 'dangling.md'));
+      try { fs.writeFileSync(Buffer.concat([Buffer.from(path.join(repo, 'caf')), Buffer.from([0xE9]), Buffer.from('.md')]), 'f\n'); latin = true; }
+      catch (e) { if (process.platform === 'linux') fail(`A file named with Latin-1 bytes could not be written: ${e.message}`); }
+    }
+    git('add', '-A');
+    const latinName = latin ? 'caf\\x{E9}.md' : '';
+    const has = (list, name) => list.map(f => path.relative(repo, f).split(path.sep).join('/')).includes(name);
+    const links = process.platform !== 'win32';
+    const listedInvalid = [];
+    const listedNow = gitFiles(repo, env, listedInvalid);
+    if (!has(listedNow, marked) || (links && !has(listedNow, 'link.md')) || has(listedNow, 'out/hidden.cs') || listedInvalid.join('|') !== latinName)
+      fail(`The full scan's git list does not hold the marked name and the link, leaves the output in, or drops a name that is not UTF-8 (${listedInvalid.join(', ')})`);
+    const changedInvalid = [];
+    const changedNow = changedFiles(repo, env, changedInvalid);
+    if (!has(changedNow, marked) || (links && !has(changedNow, 'link.md')) || changedInvalid.join('|') !== latinName)
+      fail(`--changed does not hold the marked name and the link, or drops a name that is not UTF-8 (${changedInvalid.join(', ')})`);
+    const full = fullScan(repo, env);
+    if (has(full.files, 'out/hidden.cs') || !has(full.files, marked) || (links && !has(full.files, 'link.md')) || full.invalid.join('|') !== latinName)
+      fail('The full scan reads ignored output, leaves out the marked name or the link, or drops a name that is not UTF-8.');
+    const found = scanSelection(full, { root: repo });
+    if ((links && !['link.md', 'dangling.md'].every(name => found.some(f => f.msg === LINK && f.file === name))) || (latin && !found.some(f => f.msg === NAME_NOT_UTF8 && f.file === latinName))
+      || !found.some(f => f.msg === IN_PATH && f.file === shown(marked)) || found.some(f => f.file.startsWith('out')))
+      fail('The full scan of a scratch repository does not report the links (one dangling), the name that is not UTF-8 and the marked name, or reads ignored output.');
   } catch (e) { fail(`The git lists could not be checked in a scratch repository: ${e.message}`); }
   finally { fs.rmSync(repo, { recursive: true, force: true }); }
+  return problems;
+}
+
+/**
+ * ARV-225 (review round 1): a .gitattributes file that gives itself and a PowerShell file a working-tree-encoding of UTF-7,
+ * in a fresh clone (as CI scans it): the script's blob holds U+202E, which the UTF-7 checkout turns into ASCII, and the
+ * attribute file's own = becomes +AD0-, so neither the characters nor the text check can see it; only git's reading of the
+ * attributes from the index refuses both files. Returns the problems found.
+ */
+function scratchCloneConversion(baseEnv) {
+  const problems = [];
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-sec130-clone-'));
+  const source = path.join(base, 'source');
+  const clone = path.join(base, 'clone');
+  try {
+    fs.mkdirSync(source);
+    const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.name=Self-test', '-c', 'user.email=self-test@example.invalid', '-c', 'commit.gpgsign=false', ...a],
+      { cwd, env: isolatedGitEnv(baseEnv, cwd), stdio: 'pipe' });
+    git(source, 'init', '-q');
+    const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: source, env: isolatedGitEnv(baseEnv, source), encoding: 'utf8' }).trim();
+    if (fs.realpathSync(gitDir) !== fs.realpathSync(path.join(source, '.git'))) throw new Error(`git would write to ${gitDir}, not the scratch repository`);
+    fs.writeFileSync(path.join(source, 'run.ps1'), "Write-Output 'a\u{202E}b'\n");
+    fs.writeFileSync(path.join(source, 'notes.txt'), 'plain\n');
+    fs.writeFileSync(path.join(source, 'app.cfg'), 'plain\n');
+    git(source, 'add', '.');
+    git(source, 'commit', '-q', '-m', 'script');
+    // A filter with an empty value too (git reports it as an empty field, which the records of three must keep), and one set
+    // without a value (git reports "set").
+    fs.writeFileSync(path.join(source, '.gitattributes'), '.gitattributes working-tree-encoding=UTF-7\n"*.ps1"working-tree-encoding=UTF-7\n*.txt filter=\n*.cfg filter\n');
+    // The attributes alone: the script's blob stays as committed (its UTF-8 text is not UTF-7, so git could not add it again).
+    git(source, 'add', '.gitattributes');
+    git(source, 'commit', '-q', '-m', 'attributes');
+    execFileSync('git', ['clone', '-q', source, clone], { cwd: base, env: isolatedGitEnv(baseEnv, clone), stdio: 'pipe' });
+    // The control: the checkout did convert, so the script holds no hidden character and the attribute file no plain =.
+    if (fs.readFileSync(path.join(clone, 'run.ps1'), 'utf8').includes('\u{202E}')) throw new Error('the clone was not converted to UTF-7, so the check proves nothing here');
+    const env = isolatedGitEnv(baseEnv, clone);
+    const found = scanSelection(fullScan(clone, env), { root: clone });
+    for (const [name, text] of [['run.ps1', 'working-tree-encoding: UTF-7'], ['.gitattributes', 'working-tree-encoding: UTF-7'], ['notes.txt', 'filter:'], ['app.cfg', 'filter: set']])
+      if (!found.some(f => f.msg === CONVERTED && f.file === name && f.severity === 'error' && f.text === text))
+        problems.push(`A file git converts at checkout is not refused in a fresh clone: ${name} (${text})`);
+    if (found.filter(f => f.msg === CONVERTED).length !== 4) problems.push('A file git does not convert is refused as converted in a fresh clone.');
+  } catch (e) { problems.push(`The checkout conversion check could not run in a scratch clone: ${e.message}`); }
+  finally { fs.rmSync(base, { recursive: true, force: true }); }
   return problems;
 }
 
@@ -722,6 +939,58 @@ function selfTest() {
     if (missed.length) fail(`Not refused as a whole for their own reason (${msg.slice(0, 40)}...): ${missed.join(', ')}`);
   }
 
+  // ARV-225: the Windows script rule fires for its own reason on fixtures that hold nothing else (Arabic text without a mark in
+  // PowerShell, a mark in a batch file); a second byte order mark at a file's start, one in a line and a variation selector are
+  // refused on their line, while a first mark is not (fixtures/good/trojan/bom-lead.cs, arabic-bom.ps1).
+  for (const [msg, names] of [[WINDOWS_SCRIPT, ['arabic.ps1', 'bom.cmd']], [RULES.find(r => r.id === 'SEC-130').msg, ['bom-twice.txt', 'bom-mid.ts', 'selector.md']]]) {
+    const missed = names.filter(name => !badFindings.some(x => x.rule === 'SEC-130' && x.msg === msg && x.line === 1 && path.join(fx, x.file) === path.join(trojanDir, name)));
+    if (missed.length) fail(`Not refused on line 1 for their own reason (${msg.slice(0, 40)}...): ${missed.join(', ')}`);
+  }
+
+  // ARV-225: a .gitattributes filter, or a working-tree-encoding other than UTF-8, is refused on its line, in any folder; an
+  // unset or unspecified one, a UTF-8 encoding and a comment are not. Read as git reads it (review round 1): a quoted pattern
+  // glued to its attribute, an escaped quote inside one, an unclosed one, and a line that opens with a no-break space before
+  // its #, which git reads as a pattern, not a comment.
+  const attributes = ['# filter=x in a comment', '*.sh text eol=lf', '*.cs filter=lfs', '*.cs -filter', '*.cs !filter',
+    '*.md working-tree-encoding=UTF-8', '*.txt working-tree-encoding=UTF-16LE-BOM', '[attr]evil filter=run', '"a b.txt" FILTER=y', '*.x filter',
+    '*.y Working-Tree-Encoding=utf8', '*.z working-tree-encoding', '"*.cs"filter=lfs', '"*.ps1"working-tree-encoding=UTF-16LE-BOM',
+    '"a\\"b"filter=x', '\u{A0}# filter=evil', ' \t# filter=x', '"unclosed filter=x', '"*.cs" -filter', '*.w filter='];
+  const attributeLines = [3, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 20];
+  if (gitAttributeLines(attributes).join(',') !== attributeLines.join(','))
+    fail(`.gitattributes lines refused: ${gitAttributeLines(attributes).join(',')}, not ${attributeLines.join(',')}`);
+  // A byte order mark at the file's start is skipped as git skips it: a quoted pattern glued to its attribute after it is
+  // refused, and a comment after it is not.
+  if (gitAttributeLines(['\u{FEFF}"*.cs"filter=lfs']).join(',') !== '1' || gitAttributeLines(['\u{FEFF}# filter=x']).length)
+    fail('A .gitattributes file that starts with a byte order mark is not read as git reads it.');
+  if (escapedName(Buffer.from([0x61, 0x5C, 0x0A, 0xE9])) !== 'a\\x{5C}\\x{0A}\\x{E9}') fail('A name that is not valid UTF-8 is not shown with its bytes escaped.');
+  const scratchLinks = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-sec130-links-'));
+  try {
+    fs.writeFileSync(path.join(scratchLinks, '.gitattributes'), `${attributes.join('\n')}\n`);
+    fs.mkdirSync(path.join(scratchLinks, 'nested'));
+    fs.writeFileSync(path.join(scratchLinks, 'nested', '.gitattributes'), '*.txt filter=x\n');
+    const found = scanFiles([path.join(scratchLinks, '.gitattributes'), path.join(scratchLinks, 'nested', '.gitattributes')], { root: scratchLinks });
+    const linesOf = file => found.filter(f => f.file === file && f.msg === GITATTRIBUTES).map(f => f.line).join(',');
+    if (linesOf('.gitattributes') !== attributeLines.join(',') || linesOf(path.join('nested', '.gitattributes')) !== '1')
+      fail('A .gitattributes filter or working-tree-encoding is not refused on its line in every folder.');
+    // A link, reported with its target; an approved entry names that exact target, so a link moved elsewhere fires again.
+    if (process.platform !== 'win32') {
+      fs.writeFileSync(path.join(scratchLinks, 'target.md'), 'plain\n');
+      const link = path.join(scratchLinks, 'link.md');
+      fs.symlinkSync('target.md', link);
+      if (!scanFiles([link], { root: scratchLinks }).some(f => f.file === 'link.md' && f.msg === LINK && f.line === 0 && f.text === '-> "target.md"'))
+        fail('A symbolic link is not reported with its quoted target.');
+      const approved = [{ rule: 'SEC-130', path: 'link.md', line: '-> "target.md"', contains: '-> "target.md"', reason: 'r', approvedBy: 'Owner', date: '2026-11-01' }];
+      if (scanFiles([link], { root: scratchLinks, allow: approved }).length) fail('An approved entry naming a link\'s exact target does not hide it.');
+      // Moved elsewhere, or to the same name with a trailing space or tab (another file, which trimming would match): fires again.
+      for (const moved of ['other.md', 'target.md ', 'target.md\t']) {
+        fs.rmSync(link);
+        fs.symlinkSync(moved, link);
+        if (!scanFiles([link], { root: scratchLinks, allow: approved }).some(f => f.msg === LINK)) fail(`A link moved to ${JSON.stringify(moved)} is hidden by the entry for its old target.`);
+      }
+    }
+  } catch (e) { fail(`The .gitattributes and link checks could not run: ${e.message}`); }
+  finally { fs.rmSync(scratchLinks, { recursive: true, force: true }); }
+
   // ARV-157: a hidden character in a path, in a file name or a folder name, fires SEC-130 (scratch files outside the repository).
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-sec130-'));
   try {
@@ -733,6 +1002,8 @@ function selfTest() {
     const pathFindings = scanFiles([named, bare, folder], { root: scratch }).filter(f => f.rule === 'SEC-130' && f.line === 0);
     if (pathFindings.length !== 3) fail('SEC-130 does not fire on a hidden character in a file name (mapped or not) or a folder name.');
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+
+  for (const problem of scratchCloneConversion(process.env)) fail(problem);
 
   // ARV-157: the git lists in a scratch repository, from this process's environment, then from one where a git hook's
   // GIT_DIR and GIT_INDEX_FILE name a decoy repository, which must be left as it was.
@@ -804,19 +1075,29 @@ function selfTest() {
   // scan leaves the security fixtures out and reads other fixtures with SEC-130 alone.
   const porcelain = porcelainPaths(' M a.md\0R  new.cs\0old.cs\0?? docs/\u0645\u0631\u062D\u0628\u0627.md\0?? .trojanrc\0');
   if (porcelain.join('|') !== 'a.md|new.cs|docs/\u0645\u0631\u062D\u0628\u0627.md|.trojanrc') fail(`git status -z paths read wrongly: ${porcelain.join(', ')}`);
+  // ARV-225: read as bytes, a name that is not valid UTF-8 is reported, and a rename's old path is skipped whatever it holds.
+  const porcelainInvalid = [];
+  const fromBytes = porcelainPaths(Buffer.concat([Buffer.from(' M caf'), Buffer.from([0xE9]), Buffer.from('.md\0R  new.cs\0old'), Buffer.from([0xFF]),
+    Buffer.from('.cs\0?? a.md\0')]), porcelainInvalid);
+  if (fromBytes.join('|') !== 'new.cs|a.md' || porcelainInvalid.join('|') !== 'caf\\x{E9}.md')
+    fail(`git status -z bytes read wrongly: ${fromBytes.join(', ')}; not UTF-8: ${porcelainInvalid.join(', ')}`);
   const partial = partialScan([path.join(SECURITY_FIXTURES, 'bad', 'BadCode.cs'), path.join(ROOT, MUST_LIST[3]), path.join(ROOT, 'scripts', 'verify.mjs')]);
   if (partial.files.length !== 2 || partial.textOnly.size !== 1 || !partial.textOnly.has(path.join(ROOT, MUST_LIST[3])))
     fail('An explicit or --changed scan does not leave out the security fixtures or read other fixtures with SEC-130 alone.');
 
   // ARV-157: the full scan lists every file git tracks or would add (SEC-130 reads each one that is text), whatever its
-  // folder or type, but for the security fixtures and symbolic links; checked against git's own list and named files.
+  // folder or type, but for the security fixtures; checked against git's own list and named files. ARV-225: symbolic links
+  // are listed (and reported), and nothing git ignores is (git check-ignore, which never reports a tracked file).
   try {
     const listed = new Set(fullScan().files.map(f => path.relative(ROOT, f).split(path.sep).join('/')));
     const git = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: ROOT, maxBuffer: 256 * 1024 * 1024 })
       .toString('utf8').split('\0').filter(Boolean);
-    const unlisted = git.filter(p => !listed.has(p) && !p.startsWith('scripts/security/fixtures/') && fs.existsSync(path.join(ROOT, p))
-      && !fs.lstatSync(path.join(ROOT, p)).isSymbolicLink());
+    const unlisted = git.filter(p => !listed.has(p) && !p.startsWith('scripts/security/fixtures/') && present(path.join(ROOT, p)));
     if (unlisted.length) fail(`The full scan leaves out files git tracks: ${unlisted.slice(0, 10).join(', ')}`);
+    let ignored = '';
+    try { ignored = execFileSync('git', ['check-ignore', '-z', '--stdin'], { cwd: ROOT, input: [...listed].join('\0'), maxBuffer: 256 * 1024 * 1024 }).toString('utf8'); }
+    catch (e) { if (e.status !== 1) throw e; }
+    if (ignored) fail(`The full scan reads files git ignores: ${ignored.split('\0').filter(Boolean).slice(0, 10).join(', ')}`);
     const absent = MUST_LIST.filter(p => !listed.has(p));
     if (absent.length) fail(`The full scan leaves out: ${absent.join(', ')}`);
   } catch (e) { fail(`The full scan's file list could not be checked (git ls-files): ${e.message}`); }
@@ -831,16 +1112,19 @@ function main() {
   const args = process.argv.slice(2);
   if (args.includes('--self-test')) process.exit(selfTest() ? 0 : 1);
   const explicit = args.filter(a => !a.startsWith('--')).map(a => path.resolve(a)).filter(f => fs.existsSync(f));
-  let files, textOnly;
+  let selection;
   if (explicit.length || args.includes('--changed')) {
-    ({ files, textOnly } = partialScan(explicit.length ? explicit : changedFiles()));
+    const invalid = [];
+    selection = { ...partialScan(explicit.length ? explicit : changedFiles(ROOT, process.env, invalid)), invalid };
+    // The files git converts at checkout, when git can answer (an edit-time scan outside a repository reads text only).
+    try { selection.converted = checkoutConversions(selection.files.filter(f => !path.relative(ROOT, f).startsWith('..'))); } catch { selection.converted = []; }
   } else {
     // Fails closed without git: SEC-130 must see every tracked file.
-    ({ files, textOnly } = fullScan());
+    selection = fullScan();
   }
   const allow = loadAllowlist();
   const stats = {};
-  const findings = scanFiles(files, { allow, textOnly, stats });
+  const findings = scanSelection(selection, { allow, stats });
   const report = writeReport(findings, stats.read);
   if (stats.binary) console.log(`${stats.binary} files of binary types with their signatures (${Object.keys(BINARY_SIGNATURES).join(' ')}) skipped as binary.`);
   const errors = findings.filter(f => f.severity === 'error');

@@ -32,7 +32,7 @@ public sealed partial record SqlScript(int Number, string Name, string Sql, stri
             !string.Equals(firstLine, NoTransactionMarker, StringComparison.Ordinal));
     }
 
-    public static string Normalize(string text) => text.TrimStart('﻿').Replace("\r\n", "\n", StringComparison.Ordinal);
+    public static string Normalize(string text) => text.TrimStart('\uFEFF').Replace("\r\n", "\n", StringComparison.Ordinal);
 
     public static string ComputeChecksum(string normalizedText) =>
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(normalizedText)));
