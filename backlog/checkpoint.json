@@ -1,22 +1,22 @@
 {
-  "commit": "b1f2fe14b95dd702c0873c9a7d8409a2a04f1610",
+  "commit": "a26228e6add7e96e69142435744379db225698af",
   "at": "2026-11-01",
   "stories": 5,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 132
+      "seconds": 129
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 8
+      "seconds": 9
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 451
+      "seconds": 558
     },
     {
       "name": "test count guard self-test",
@@ -50,7 +50,7 @@
     {
       "name": "E2E expect messages hold no answer body",
       "ok": true,
-      "seconds": 1
+      "seconds": 0
     },
     {
       "name": "E2E artifact secret check self-test",
@@ -75,7 +75,7 @@
     {
       "name": "ops tooling self-test (backup and restore wrapper)",
       "ok": true,
-      "seconds": 1
+      "seconds": 2
     },
     {
       "name": "ops database script syntax",
@@ -105,17 +105,17 @@
     {
       "name": "offline bundle builder self-test",
       "ok": true,
-      "seconds": 7
+      "seconds": 8
     },
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "seconds": 44
+      "seconds": 49
     },
     {
       "name": "nuget vulnerability audit (fails on high or critical)",
       "ok": true,
-      "seconds": 23
+      "seconds": 21
     },
     {
       "name": "npm audit (web)",
@@ -153,12 +153,12 @@
     {
       "name": "web build",
       "ok": true,
-      "seconds": 27
+      "seconds": 26
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 1229
+      "seconds": 1263
     },
     {
       "name": "integration test count guard (every listed case has its results)",
@@ -177,7 +177,7 @@
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 140
+      "seconds": 150
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
@@ -186,14 +186,14 @@
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 1211
+      "seconds": 1293
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
       "ok": true
     },
     {
-      "name": "mutation tests (no engine change since c71f1e9a57)",
+      "name": "mutation tests (no engine change since b1f2fe14b9)",
       "ok": true,
       "skipped": true
     }
