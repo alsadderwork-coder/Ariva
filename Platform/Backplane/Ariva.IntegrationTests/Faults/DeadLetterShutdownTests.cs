@@ -225,7 +225,15 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
     {
         var key = "P-" + Guid.NewGuid().ToString("N")[..8];
         PoisonProbeConsumer.PoisonKey = key;
-        PoisonProbeConsumer.BeforeFailing = () => faults.CutAsync(Proxy);
+        // The poison message is published through the same proxy the consumer cuts: the consumer can be handed the record
+        // before the broker's acknowledgement has crossed the proxy back to the producer, and a cut then makes the publish
+        // time out (a story gate saw "Local: Message timed out" here). The cut waits for the publish to be acknowledged.
+        var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        PoisonProbeConsumer.BeforeFailing = async () =>
+        {
+            await published.Task.WaitAsync(TimeSpan.FromSeconds(60));
+            await faults.CutAsync(Proxy);
+        };
         using var admin = new Confluent.Kafka.AdminClientBuilder(new Confluent.Kafka.AdminClientConfig { BootstrapServers = faults.KafkaDirectBootstrap }).Build();
         var host = await StartHostAsync();
         // ARV-125a: how the letter ended is counted (kept, or failed with the database away too).
@@ -237,7 +245,16 @@ public sealed class DeadLetterShutdownTests(FaultsFixture faults) : IAsyncLifeti
             // poison message, so the cut below cannot land in an offset commit (ARV-165).
             await host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(new OutageProbe { Key = key + "-first", Step = 0, CorrelationId = "corr" }, Ct);
             await WaitForAsync(() => CommittedAllAsync(admin), "the consumer caught up and committed");
-            await host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(new OutageProbe { Key = key, Step = 1, CorrelationId = "corr" }, Ct);
+            try
+            {
+                await host.Services.GetRequiredService<ISvcMessageBus>().PublishAsync(new OutageProbe { Key = key, Step = 1, CorrelationId = "corr" }, Ct);
+                published.TrySetResult();
+            }
+            finally
+            {
+                // A publish that throws ends the consumer's wait at once rather than after its bound.
+                published.TrySetCanceled();
+            }
 
             await WaitForAsync(() => Logged("failed after retries; sending it to the dead-letter topic") >= 1, "the poison message failed and its dead letter is being sent, the broker cut off");
             await Task.Delay(TimeSpan.FromSeconds(3), Ct);
