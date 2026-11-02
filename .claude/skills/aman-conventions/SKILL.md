@@ -40,6 +40,7 @@ Folder per entity, file `Controller.cs`, class `Controller`. Sub-features in sub
 
 ## Entities
 Rich methods only (`profile.Publish(publishedBy, now)`), never property assignment from outside. `IAuditable` fields set by listeners; `ISoftDeletable` where history matters (not for time series). UTC everywhere (`TimeProvider`).
+An entity or domain helper refuses a caller's value with the rule types in `Ariva.Core/Domain/Common` (`DomainRuleException`, `DomainArgumentException`, `DomainArgumentOutOfRangeException`, ARV-282), whose `Rule` text a service may answer; a service tells a rule apart by `e is IDomainRule`, never by the stack frame, `Exception.Source` or the message. A null argument or a value the server gives (a constant, its clock) stays a plain .NET guard, a programming error answered as a 500. `DomainRuleTests` reads the compiled code and holds the topology, zone profile and device services to this.
 
 ## View models and inputs
 `*CompactViewModel`, `*DetailsViewModel`, `*WithRelationsViewModel`; `Create*Request`, `Update*Request`; `Criteria*` for search.

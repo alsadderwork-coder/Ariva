@@ -1,5 +1,6 @@
 using System.Collections.Frozen;
 using System.Linq.Expressions;
+using Ariva.Core.Domain.Common;
 using Ariva.Core.Domain.Criteria;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
@@ -398,10 +399,11 @@ internal sealed class SvcTopology(
     /// the checks before their inserts and the second used to fail at the commit (500). Sent here, the second insert waits on
     /// the first one's index entry and, once the first commits, one of <see cref="UniqueIndexes"/> refuses it: that answers
     /// the index's own error (409), as the checks before the insert do, with the unit of work promised not to commit. Domain
-    /// rule violations (ARV-013), thrown by the entities, become 400 answers with the entity's message, except a code taken
-    /// (Duplicate) and a floor number taken (<see cref="TopologyErrors.FloorTaken"/>, the entity's own text), which are
-    /// conflicts (409); any other exception, a framework, driver or other index's one included, is not caught, so its text
-    /// never reaches an answer (CWE-209). A refused command keeps nothing: the unit of work is promised not to commit, so a
+    /// rule violations (ARV-013), thrown by the entities as <see cref="IDomainRule"/> exceptions, become 400 answers with the
+    /// rule's text, except a code taken (Duplicate) and a floor number taken (<see cref="TopologyErrors.FloorTaken"/>), told
+    /// apart by their kind and answered as conflicts (409). Refusals are matched by their type only (ARV-282), never by the
+    /// stack frame that threw them (inlining in a Release build can drop it) or by their text; any other exception, a
+    /// framework, driver or other index's one included, is not caught, so its text never reaches an answer (CWE-209). A refused command keeps nothing: the unit of work is promised not to commit, so a
     /// tracked record a rule refused halfway, or a site row lock taken before the refusal, is rolled back. The flush runs on
     /// the request's token: a client gone mid-flush cancels it, and the command keeps nothing rather than half of it.
     /// </summary>
@@ -416,7 +418,7 @@ internal sealed class SvcTopology(
                 await SendAsync(ct);
             return result;
         }
-        catch (InvalidOperationException e) when (FromDomain(e) && e.Message.Contains("already exists", StringComparison.Ordinal))
+        catch (InvalidOperationException e) when (e is IDomainRule { Kind: DomainRuleKind.CodeTaken })
         {
             UnitOfWork.PromiseNotToCommit();
             return Result.Error<T>(TopologyErrors.Duplicate);
@@ -427,15 +429,15 @@ internal sealed class SvcTopology(
             UnitOfWork.PromiseNotToCommit();
             return Result.Error<T>(taken);
         }
-        catch (ArgumentException e) when (FromDomain(e))
+        catch (ArgumentException e) when (e is IDomainRule rule)
         {
             UnitOfWork.PromiseNotToCommit();
-            return Result.Error<T>(e.Message.Split(" (Parameter", 2)[0]);
+            return Result.Error<T>(rule.Rule);
         }
-        catch (InvalidOperationException e) when (FromDomain(e))
+        catch (InvalidOperationException e) when (e is IDomainRule rule)
         {
             UnitOfWork.PromiseNotToCommit();
-            return Result.Error<T>(e.Message);
+            return Result.Error<T>(rule.Kind == DomainRuleKind.FloorTaken ? TopologyErrors.FloorTaken : rule.Rule);
         }
     }
 
@@ -455,9 +457,6 @@ internal sealed class SvcTopology(
             throw;
         }
     }
-
-    /// <summary>Whether an exception was thrown by the domain model (Ariva.Core), whose messages are written for the caller.</summary>
-    internal static bool FromDomain(Exception e) => e?.TargetSite?.DeclaringType?.Assembly == typeof(Airport).Assembly;
 
     /// <summary>The live entity (Get ignores the soft delete filter, so deleted rows are checked here).</summary>
     private async Task<T> LiveAsync<T>(Guid id, CancellationToken ct) where T : class, IDomain, ISoftDeletable

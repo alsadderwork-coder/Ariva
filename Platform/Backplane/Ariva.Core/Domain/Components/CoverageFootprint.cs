@@ -1,4 +1,5 @@
 using System.Globalization;
+using Ariva.Core.Domain.Common;
 using Ariva.Core.Domain.Enums;
 
 namespace Ariva.Core.Domain.Components;
@@ -34,7 +35,7 @@ public sealed record CoverageFootprint(double? LengthMetres, double? WidthMetres
     public static CoverageFootprint Assumed(DeviceFamily family, double mountingHeightMetres)
     {
         if (!double.IsFinite(mountingHeightMetres) || mountingHeightMetres <= 0)
-            throw new ArgumentOutOfRangeException(nameof(mountingHeightMetres), mountingHeightMetres, "The mounting height must be a positive number of metres.");
+            throw new DomainArgumentOutOfRangeException(nameof(mountingHeightMetres), mountingHeightMetres, "The mounting height must be a positive number of metres.");
         if (family == DeviceFamily.Lidar)
             return new(null, null, AssumedLidarRadiusMetres, FootprintSource.AssumedFromBoq, "Assumed radius; the BOQ has no LiDAR footprint");
 
@@ -73,7 +74,7 @@ public sealed record CoverageFootprint(double? LengthMetres, double? WidthMetres
     {
         var rectangle = lengthMetres is not null || widthMetres is not null;
         if (rectangle == radiusMetres is not null)
-            throw new ArgumentException("Give either the footprint's length and width or its radius.");
+            throw new DomainArgumentException("Give either the footprint's length and width or its radius.");
         if (rectangle)
         {
             Check(lengthMetres, nameof(lengthMetres));
@@ -108,7 +109,7 @@ public sealed record CoverageFootprint(double? LengthMetres, double? WidthMetres
     {
         // Checked as stored (to 0.1 m), so a side that rounds to nothing is refused here, not by the database.
         if (value is not { } v || !double.IsFinite(v) || Round(v) < MinMetres || v > MaxMetres)
-            throw new ArgumentOutOfRangeException(name, value, $"A footprint side or radius is from {MinMetres} to {MaxMetres} m.");
+            throw new DomainArgumentOutOfRangeException(name, value, $"A footprint side or radius is from {MinMetres} to {MaxMetres} m.");
     }
 
     private static double Round(double value) => Math.Round(value, 1, MidpointRounding.AwayFromZero);

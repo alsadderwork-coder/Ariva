@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Ariva.Core.Domain.Common;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.Events;
@@ -33,7 +34,7 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     {
         ArgumentNullException.ThrowIfNull(level);
         if (level.IsDeleted)
-            throw new InvalidOperationException("The level is deleted.");
+            throw new DomainRuleException("The level is deleted.");
         Id = NewId();
         Code = TopologyCodes.Require(code, nameof(code));
         Family = Defined(family, nameof(family));
@@ -90,12 +91,12 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
         if (dialect != DeviceDialect.Declarative)
         {
             if (!string.IsNullOrWhiteSpace(mappingName))
-                throw new ArgumentException("A mapping is named only for the declarative dialect.", nameof(mappingName));
+                throw new DomainArgumentException("A mapping is named only for the declarative dialect.", nameof(mappingName));
             return null;
         }
 
         if (mappingName is null || !MappingNamePattern().IsMatch(mappingName))
-            throw new ArgumentException("The declarative dialect needs a mapping name: lower case letters, digits and hyphens, at most 64.", nameof(mappingName));
+            throw new DomainArgumentException("The declarative dialect needs a mapping name: lower case letters, digits and hyphens, at most 64.", nameof(mappingName));
         return mappingName;
     }
 
@@ -138,16 +139,16 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
         {
             return given.Count == 0
                 ? []
-                : throw new ArgumentException("Lines are named only when the device counts the lines listed.", nameof(lines));
+                : throw new DomainArgumentException("Lines are named only when the device counts the lines listed.", nameof(lines));
         }
 
         if (given.Count is < 1 or > MaxCoveredLines)
-            throw new ArgumentException($"A device lists 1 to {MaxCoveredLines} lines.", nameof(lines));
+            throw new DomainArgumentException($"A device lists 1 to {MaxCoveredLines} lines.", nameof(lines));
         if (given.Any(string.IsNullOrWhiteSpace))
-            throw new ArgumentException("A line name is 1 to 200 characters.", nameof(lines));
+            throw new DomainArgumentException("A line name is 1 to 200 characters.", nameof(lines));
         var names = given.Select(name => TopologyCodes.RequireName(name, nameof(lines))).Order(StringComparer.Ordinal).ToList();
         if (names.Distinct(StringComparer.Ordinal).Count() != names.Count)
-            throw new ArgumentException("A line is listed once.", nameof(lines));
+            throw new DomainArgumentException("A line is listed once.", nameof(lines));
         return names;
     }
 
@@ -208,16 +209,16 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
         EnsureNotRetired();
         var blocks = (allowedSources ?? []).Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList();
         if (blocks.Count > MaxAllowedSources)
-            throw new ArgumentException($"At most {MaxAllowedSources} source networks.", nameof(allowedSources));
+            throw new DomainArgumentException($"At most {MaxAllowedSources} source networks.", nameof(allowedSources));
         var normalised = new List<string>();
         foreach (var block in blocks)
         {
             if (!System.Net.IPNetwork.TryParse(block, out var network) || !block.Contains('/', StringComparison.Ordinal))
-                throw new ArgumentException($"'{(block.Length > 50 ? block[..50] : block)}' is not a network in CIDR form, for example 10.20.0.0/24.", nameof(allowedSources));
+                throw new DomainArgumentException($"'{(block.Length > 50 ? block[..50] : block)}' is not a network in CIDR form, for example 10.20.0.0/24.", nameof(allowedSources));
             if (!System.Net.IPAddress.TryParse(block[..block.IndexOf('/', StringComparison.Ordinal)], out var given) || !given.Equals(network.BaseAddress))
-                throw new ArgumentException($"'{block}' has host bits set; the network is {network}.", nameof(allowedSources));
+                throw new DomainArgumentException($"'{block}' has host bits set; the network is {network}.", nameof(allowedSources));
             if (network.PrefixLength == 0)
-                throw new ArgumentException("A /0 network allows every address; leave the list empty instead.", nameof(allowedSources));
+                throw new DomainArgumentException("A /0 network allows every address; leave the list empty instead.", nameof(allowedSources));
             normalised.Add(network.ToString());
         }
 
@@ -226,7 +227,7 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
         {
             pin = clientCertificateSha256.Trim().Replace(":", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
             if (!Sha256Hex().IsMatch(pin))
-                throw new ArgumentException("A certificate fingerprint is its SHA-256: 64 hex characters, colons allowed.", nameof(clientCertificateSha256));
+                throw new DomainArgumentException("A certificate fingerprint is its SHA-256: 64 hex characters, colons allowed.", nameof(clientCertificateSha256));
         }
 
         var sources = normalised.Count == 0 ? null : string.Join(',', normalised.Distinct(StringComparer.Ordinal));
@@ -287,9 +288,9 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
         EnsureNotRetired();
         ArgumentNullException.ThrowIfNull(level);
         if (level.SiteCode != SiteCode)
-            throw new InvalidOperationException("A device stays in its site.");
+            throw new DomainRuleException("A device stays in its site.");
         if (level.IsDeleted)
-            throw new InvalidOperationException("The level is deleted.");
+            throw new DomainRuleException("The level is deleted.");
 
         var before = (Level?.Id, X, Y, MountingHeightMetres, OrientationDegrees, FootprintLengthMetres, FootprintWidthMetres, FootprintRadiusMetres, FootprintSource, QueueZoneName);
         Place(level, x, y, mountingHeightMetres, orientationDegrees, footprint, queueZoneName);
@@ -310,9 +311,9 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     {
         EnsureNotRetired();
         if (prefix is null || !CredentialPrefixPattern().IsMatch(prefix))
-            throw new ArgumentException("Not a device credential prefix.", nameof(prefix));
+            throw new DomainArgumentException("Not a device credential prefix.", nameof(prefix));
         if (hash is null || !Sha256Hex().IsMatch(hash))
-            throw new ArgumentException("A credential hash is 64 lower case hex characters.", nameof(hash));
+            throw new DomainArgumentException("A credential hash is 64 lower case hex characters.", nameof(hash));
         var rotated = CredentialHash is not null;
         CredentialPrefix = prefix;
         CredentialHash = hash;
@@ -332,7 +333,7 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
         EnsureNotRetired();
         var calibration = new DeviceCalibration(this, method, sampleSize, countingAccuracyPercent, waitTimeErrorMinutes, thresholdPercent, notes, utcNow);
         if (calibration.Passed && !zonePublished)
-            throw new InvalidOperationException(ZoneNotPublishedMessage);
+            throw new DomainRuleException(ZoneNotPublishedMessage);
         Calibrations.Add(calibration);
         State = calibration.Passed ? DeviceState.Online : DeviceState.Commissioning;
         Raise(calibration.Passed ? "CalibrationPassed" : "CalibrationFailed", utcNow);
@@ -343,9 +344,9 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     public virtual void SetHealth(DeviceState state, DateTime utcNow)
     {
         if (state is not (DeviceState.Online or DeviceState.Degraded or DeviceState.Offline))
-            throw new ArgumentOutOfRangeException(nameof(state), state, "Health sets Online, Degraded or Offline.");
+            throw new DomainArgumentOutOfRangeException(nameof(state), state, "Health sets Online, Degraded or Offline.");
         if (!IsCommissioned)
-            throw new InvalidOperationException("Only a commissioned device changes with its health; a passed calibration comes first.");
+            throw new DomainRuleException("Only a commissioned device changes with its health; a passed calibration comes first.");
         if (State == state)
             return;
         State = state;
@@ -357,7 +358,7 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     {
         EnsureNotRetired();
         if (State != DeviceState.Commissioning || Calibrations.Count > 0)
-            throw new InvalidOperationException("Only a device that was never calibrated can be removed; retire it instead.");
+            throw new DomainRuleException("Only a device that was never calibrated can be removed; retire it instead.");
         CredentialHash = null;
         SoftDelete(removedBy, Utc(utcNow));
         Raise("Removed", utcNow);
@@ -377,14 +378,14 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     {
         ArgumentNullException.ThrowIfNull(footprint);
         if (!double.IsFinite(x) || !double.IsFinite(y) || !level.Contains(x, y))
-            throw new ArgumentOutOfRangeException(nameof(x), "The device's position lies inside its level.");
+            throw new DomainArgumentOutOfRangeException(nameof(x), "The device's position lies inside its level.");
         if (!double.IsFinite(mountingHeightMetres) || mountingHeightMetres < MinMountingHeightMetres || mountingHeightMetres > MaxMountingHeightMetres)
-            throw new ArgumentOutOfRangeException(nameof(mountingHeightMetres), mountingHeightMetres,
+            throw new DomainArgumentOutOfRangeException(nameof(mountingHeightMetres), mountingHeightMetres,
                 $"The mounting height is from {MinMountingHeightMetres} to {MaxMountingHeightMetres} m.");
         if (!double.IsFinite(orientationDegrees) || orientationDegrees < 0 || orientationDegrees >= 360)
-            throw new ArgumentOutOfRangeException(nameof(orientationDegrees), orientationDegrees, "The orientation is from 0 up to 360 degrees.");
+            throw new DomainArgumentOutOfRangeException(nameof(orientationDegrees), orientationDegrees, "The orientation is from 0 up to 360 degrees.");
         if (footprint.IsCircle != (Family == DeviceFamily.Lidar))
-            throw new ArgumentException(Family == DeviceFamily.Lidar ? "A LiDAR footprint is a radius." : "This device's footprint is a length and a width.", nameof(footprint));
+            throw new DomainArgumentException(Family == DeviceFamily.Lidar ? "A LiDAR footprint is a radius." : "This device's footprint is a length and a width.", nameof(footprint));
         var source = Defined(footprint.Source, nameof(footprint));
         var zoneName = DisplayText.Require(queueZoneName, QueueZoneNameLength, nameof(queueZoneName));
 
@@ -415,16 +416,16 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     private void EnsureNotRetired()
     {
         if (State == DeviceState.Retired)
-            throw new InvalidOperationException("The device is retired; register a new one instead.");
+            throw new DomainRuleException("The device is retired; register a new one instead.");
         if (IsDeleted)
-            throw new InvalidOperationException("The device is deleted.");
+            throw new DomainRuleException("The device is deleted.");
     }
 
     private static TEnum Defined<TEnum>(TEnum value, string paramName) where TEnum : struct, Enum =>
-        Enum.IsDefined(value) ? value : throw new ArgumentOutOfRangeException(paramName, value, $"Unknown {typeof(TEnum).Name}.");
+        Enum.IsDefined(value) ? value : throw new DomainArgumentOutOfRangeException(paramName, value, $"Unknown {typeof(TEnum).Name}.");
 
     internal static DateTime Utc(DateTime value) =>
-        value.Kind == DateTimeKind.Utc ? value : throw new ArgumentException("Times are UTC.", nameof(value));
+        value.Kind == DateTimeKind.Utc ? value : throw new DomainArgumentException("Times are UTC.", nameof(value));
 
     [GeneratedRegex("^ardk_[A-Za-z0-9_-]{8}\\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]
     private static partial Regex CredentialPrefixPattern();
@@ -455,15 +456,15 @@ public class DeviceCalibration : BaseAuditableEntity<DeviceCalibration>, ISiteBo
         double thresholdPercent, string notes, DateTime utcNow)
     {
         if (!Enum.IsDefined(method))
-            throw new ArgumentOutOfRangeException(nameof(method), method, "Unknown calibration method.");
+            throw new DomainArgumentOutOfRangeException(nameof(method), method, "Unknown calibration method.");
         if (sampleSize is < MinSampleSize or > MaxSampleSize)
-            throw new ArgumentOutOfRangeException(nameof(sampleSize), sampleSize, $"The sample is {MinSampleSize} to {MaxSampleSize} passengers.");
+            throw new DomainArgumentOutOfRangeException(nameof(sampleSize), sampleSize, $"The sample is {MinSampleSize} to {MaxSampleSize} passengers.");
         if (!double.IsFinite(countingAccuracyPercent) || countingAccuracyPercent is < 0 or > 100)
-            throw new ArgumentOutOfRangeException(nameof(countingAccuracyPercent), countingAccuracyPercent, "Counting accuracy is from 0 to 100 percent.");
+            throw new DomainArgumentOutOfRangeException(nameof(countingAccuracyPercent), countingAccuracyPercent, "Counting accuracy is from 0 to 100 percent.");
         if (!double.IsFinite(waitTimeErrorMinutes) || waitTimeErrorMinutes is < 0 or > 30)
-            throw new ArgumentOutOfRangeException(nameof(waitTimeErrorMinutes), waitTimeErrorMinutes, "The wait-time error is from 0 to 30 minutes.");
+            throw new DomainArgumentOutOfRangeException(nameof(waitTimeErrorMinutes), waitTimeErrorMinutes, "The wait-time error is from 0 to 30 minutes.");
         if (!double.IsFinite(thresholdPercent) || thresholdPercent is < 50 or > 100)
-            throw new ArgumentOutOfRangeException(nameof(thresholdPercent), thresholdPercent, "The pass threshold is from 50 to 100 percent.");
+            throw new DomainArgumentOutOfRangeException(nameof(thresholdPercent), thresholdPercent, "The pass threshold is from 50 to 100 percent.");
 
         Id = NewId();
         Device = device;

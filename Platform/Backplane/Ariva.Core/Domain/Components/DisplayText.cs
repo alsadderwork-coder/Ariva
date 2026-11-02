@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Globalization;
 using System.Text;
+using Ariva.Core.Domain.Common;
 
 namespace Ariva.Core.Domain.Components;
 
@@ -13,6 +14,12 @@ namespace Ariva.Core.Domain.Components;
 /// </summary>
 public static class DisplayText
 {
+    /// <summary>The rule a blank text breaks.</summary>
+    public const string RequiredMessage = "A value is required.";
+
+    /// <summary>The rule a text with a control, invisible format or broken character breaks.</summary>
+    public const string UncleanMessage = "Control characters, invisible format characters and broken characters are not allowed.";
+
     /// <summary>
     /// The three RGI subdivision flags (ARV-169): the waving black flag U+1F3F4, the tags for gbeng, gbsct or gbwls, and the
     /// cancel tag U+E007F. Taken only as these exact sequences; any other use of a tag character is refused.
@@ -24,15 +31,20 @@ public static class DisplayText
         "\U0001F3F4\U000E0067\U000E0062\U000E0077\U000E006C\U000E0073\U000E007F"
     ];
 
-    /// <summary>The trimmed text, or an <see cref="ArgumentException"/> naming the rule it breaks.</summary>
+    /// <summary>
+    /// The trimmed text, or a <see cref="DomainArgumentException"/> naming the rule it breaks (ARV-282): a rule type, so a
+    /// service that answers the domain's rules answers it, as it does an entity's own (a device's model, notes and queue zone
+    /// name are checked here).
+    /// </summary>
     public static string Require(string text, int maxLength, string paramName, bool allowLineBreaks = false)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(text, paramName);
+        if (string.IsNullOrWhiteSpace(text))
+            throw new DomainArgumentException(RequiredMessage, paramName);
         var trimmed = text.Trim();
         if (trimmed.Length > maxLength)
-            throw new ArgumentException($"At most {maxLength} characters.", paramName);
+            throw new DomainArgumentException($"At most {maxLength} characters.", paramName);
         if (!IsClean(trimmed, allowLineBreaks))
-            throw new ArgumentException("Control characters, invisible format characters and broken characters are not allowed.", paramName);
+            throw new DomainArgumentException(UncleanMessage, paramName);
         return trimmed;
     }
 

@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Ariva.Core.Domain.Common;
 using Ariva.Core.Domain.Enums;
 
 namespace Ariva.Core.Domain.Entities;
@@ -24,7 +25,7 @@ public static partial class TopologyCodes
     internal static string Require(string code, string paramName)
     {
         if (!IsValid(code))
-            throw new ArgumentException("A code is 1 to 16 upper case letters or digits, with single hyphens inside.", paramName);
+            throw new DomainArgumentException("A code is 1 to 16 upper case letters or digits, with single hyphens inside.", paramName);
         return code;
     }
 
@@ -46,22 +47,22 @@ public static partial class TopologyCodes
 
     internal static string RequireName(string name, string paramName)
     {
-        // Thrown here rather than by ArgumentException.ThrowIfNullOrWhiteSpace, so the services read it as the domain's rule
-        // and answer its text (ARV-281: an exception thrown outside the domain model is never answered, CWE-209).
+        // Thrown here as a domain rule (ARV-282) rather than by a .NET throw helper, so the services answer its text (an
+        // exception that is not a domain rule is never answered, CWE-209).
         if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException("A name is required.", paramName);
+            throw new DomainArgumentException("A name is required.", paramName);
         var trimmed = name.Trim();
         if (trimmed.Length > MaxNameLength)
-            throw new ArgumentException("A name is at most 200 characters.", paramName);
+            throw new DomainArgumentException("A name is at most 200 characters.", paramName);
         if (!Components.DisplayText.IsClean(trimmed))
-            throw new ArgumentException(UnsafeNameMessage, paramName);
+            throw new DomainArgumentException(UnsafeNameMessage, paramName);
         return trimmed;
     }
 
     internal static void RequireUnique<T>(IEnumerable<T> live, Func<T, string> codeOf, string code, string what)
     {
         if (live.Any(item => string.Equals(codeOf(item), code, StringComparison.Ordinal)))
-            throw new InvalidOperationException($"{what} {code} already exists here.");
+            throw new DomainRuleException($"{what} {code} already exists here.", DomainRuleKind.CodeTaken);
     }
 
     /// <summary>
@@ -118,7 +119,7 @@ public class Airport : BaseSoftDeletableEntity<Airport>
     public Airport(string iataCode, string icaoCode, string name, string timeZoneId)
     {
         if (!TopologyCodes.IsIata(iataCode))
-            throw new ArgumentException("An IATA code is three upper case letters.", nameof(iataCode));
+            throw new DomainArgumentException("An IATA code is three upper case letters.", nameof(iataCode));
         IataCode = iataCode;
         Update(icaoCode, name, timeZoneId);
     }
@@ -135,9 +136,9 @@ public class Airport : BaseSoftDeletableEntity<Airport>
     public virtual void Update(string icaoCode, string name, string timeZoneId)
     {
         if (icaoCode is not null && !TopologyCodes.IsIcao(icaoCode))
-            throw new ArgumentException("An ICAO code is four upper case letters.", nameof(icaoCode));
+            throw new DomainArgumentException("An ICAO code is four upper case letters.", nameof(icaoCode));
         if (!SiteTimeZones.IsIana(timeZoneId))
-            throw new ArgumentException("Unknown time zone.", nameof(timeZoneId));
+            throw new DomainArgumentException("Unknown time zone.", nameof(timeZoneId));
         IcaoCode = icaoCode;
         Name = TopologyCodes.RequireName(name, nameof(name));
         TimeZoneId = timeZoneId;
@@ -147,7 +148,7 @@ public class Airport : BaseSoftDeletableEntity<Airport>
     public virtual Terminal AddTerminal(string code, string name, string siteCode)
     {
         if (IsDeleted)
-            throw new InvalidOperationException("The airport is deleted.");
+            throw new DomainRuleException("The airport is deleted.");
         TopologyCodes.Require(code, nameof(code));
         TopologyCodes.RequireUnique(Terminals.Where(t => !t.IsDeleted), t => t.Code, code, "Terminal");
         var terminal = new Terminal(this, code, name, siteCode);
@@ -166,7 +167,7 @@ public class Terminal : BaseSoftDeletableEntity<Terminal>, ISiteBound
     internal Terminal(Airport airport, string code, string name, string siteCode)
     {
         if (!Site.IsValidCode(siteCode))
-            throw new ArgumentException("Unknown site code shape.", nameof(siteCode));
+            throw new DomainArgumentException("Unknown site code shape.", nameof(siteCode));
         Airport = airport;
         Code = code;
         Name = TopologyCodes.RequireName(name, nameof(name));
@@ -191,12 +192,12 @@ public class Terminal : BaseSoftDeletableEntity<Terminal>, ISiteBound
     public virtual Level AddLevel(string code, string name, int floorNumber, double widthMetres, double depthMetres)
     {
         if (IsDeleted)
-            throw new InvalidOperationException("The terminal is deleted.");
+            throw new DomainRuleException("The terminal is deleted.");
         TopologyCodes.Require(code, nameof(code));
         var live = Levels.Where(l => !l.IsDeleted).ToList();
         TopologyCodes.RequireUnique(live, l => l.Code, code, "Level");
         if (live.Any(l => l.FloorNumber == floorNumber))
-            throw new InvalidOperationException(FloorTakenMessage);
+            throw new DomainRuleException(FloorTakenMessage, DomainRuleKind.FloorTaken);
         var level = new Level(this, code, name, floorNumber, widthMetres, depthMetres);
         Levels.Add(level);
         return level;
@@ -237,7 +238,7 @@ public class Level : BaseSoftDeletableEntity<Level>, ISiteBound
     public virtual void Update(string name, int floorNumber, double widthMetres, double depthMetres)
     {
         if (floorNumber is < LowestFloor or > HighestFloor)
-            throw new ArgumentOutOfRangeException(nameof(floorNumber), floorNumber, $"A floor number is between {LowestFloor} and {HighestFloor}.");
+            throw new DomainArgumentOutOfRangeException(nameof(floorNumber), floorNumber, $"A floor number is between {LowestFloor} and {HighestFloor}.");
         RequireExtent(widthMetres, nameof(widthMetres));
         RequireExtent(depthMetres, nameof(depthMetres));
         Name = TopologyCodes.RequireName(name, nameof(name));
@@ -252,7 +253,7 @@ public class Level : BaseSoftDeletableEntity<Level>, ISiteBound
     public virtual Checkpoint AddCheckpoint(string code, string name, CheckpointKind kind)
     {
         if (IsDeleted)
-            throw new InvalidOperationException("The level is deleted.");
+            throw new DomainRuleException("The level is deleted.");
         TopologyCodes.Require(code, nameof(code));
         TopologyCodes.RequireUnique(Checkpoints.Where(c => !c.IsDeleted), c => c.Code, code, "Checkpoint");
         var checkpoint = new Checkpoint(this, code, name, kind);
@@ -263,7 +264,7 @@ public class Level : BaseSoftDeletableEntity<Level>, ISiteBound
     private static void RequireExtent(double metres, string paramName)
     {
         if (double.IsNaN(metres) || metres <= 0 || metres > MaxExtentMetres)
-            throw new ArgumentOutOfRangeException(paramName, metres, $"An extent is more than 0 and at most {MaxExtentMetres} metres.");
+            throw new DomainArgumentOutOfRangeException(paramName, metres, $"An extent is more than 0 and at most {MaxExtentMetres} metres.");
     }
 }
 
@@ -277,7 +278,7 @@ public class Checkpoint : BaseSoftDeletableEntity<Checkpoint>, ISiteBound
     internal Checkpoint(Level level, string code, string name, CheckpointKind kind)
     {
         if (!Enum.IsDefined(kind))
-            throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown checkpoint kind.");
+            throw new DomainArgumentOutOfRangeException(nameof(kind), kind, "Unknown checkpoint kind.");
         Level = level;
         SiteCode = level.SiteCode;
         Code = code;
@@ -315,11 +316,11 @@ public class Checkpoint : BaseSoftDeletableEntity<Checkpoint>, ISiteBound
     public virtual IReadOnlyList<Desk> AddDeskRange(string prefix, int from, int to, int width, DeskKind kind, IEnumerable<string> laneCategories)
     {
         if (from < 0 || to < from)
-            throw new ArgumentOutOfRangeException(nameof(to), "A range runs from a number to a larger or equal one.");
+            throw new DomainArgumentOutOfRangeException(nameof(to), "A range runs from a number to a larger or equal one.");
         if (to - from + 1 > MaxRange)
-            throw new ArgumentOutOfRangeException(nameof(to), $"A range creates at most {MaxRange} desks.");
+            throw new DomainArgumentOutOfRangeException(nameof(to), $"A range creates at most {MaxRange} desks.");
         if (width is < 1 or > 4 || to >= (int)Math.Pow(10, width))
-            throw new ArgumentOutOfRangeException(nameof(width), "The width is 1 to 4 digits and fits the largest number.");
+            throw new DomainArgumentOutOfRangeException(nameof(width), "The width is 1 to 4 digits and fits the largest number.");
 
         var codes = Enumerable.Range(from, to - from + 1).Select(n => (prefix ?? string.Empty) + n.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(width, '0')).ToList();
         foreach (var code in codes)
@@ -327,7 +328,7 @@ public class Checkpoint : BaseSoftDeletableEntity<Checkpoint>, ISiteBound
         var categories = (laneCategories ?? []).ToList();
         var taken = codes.Where(code => Desks.Any(d => !d.IsDeleted && d.Code == code)).ToList();
         if (taken.Count > 0)
-            throw new InvalidOperationException($"Desk {taken[0]} already exists here.");
+            throw new DomainRuleException($"Desk {taken[0]} already exists here.", DomainRuleKind.CodeTaken);
 
         return codes.Select(code => AddDesk(code, null, kind, categories)).ToList();
     }
@@ -335,11 +336,11 @@ public class Checkpoint : BaseSoftDeletableEntity<Checkpoint>, ISiteBound
     public virtual Desk AddDesk(string code, string name, DeskKind kind, IEnumerable<string> laneCategories)
     {
         if (IsDeleted)
-            throw new InvalidOperationException("The checkpoint is deleted.");
+            throw new DomainRuleException("The checkpoint is deleted.");
         TopologyCodes.Require(code, nameof(code));
         TopologyCodes.RequireUnique(Desks.Where(d => !d.IsDeleted), d => d.Code, code, "Desk");
         if (!AllowedDeskKinds(Kind).Contains(kind))
-            throw new InvalidOperationException($"A {Kind} checkpoint cannot have a {kind}.");
+            throw new DomainRuleException($"A {Kind} checkpoint cannot have a {kind}.");
         var desk = new Desk(this, code, name, kind);
         desk.SetLaneCategories(laneCategories);
         Desks.Add(desk);
@@ -363,7 +364,7 @@ public class Desk : BaseSoftDeletableEntity<Desk>, ISiteBound
     internal Desk(Checkpoint checkpoint, string code, string name, DeskKind kind)
     {
         if (!Enum.IsDefined(kind))
-            throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown desk kind.");
+            throw new DomainArgumentOutOfRangeException(nameof(kind), kind, "Unknown desk kind.");
         Checkpoint = checkpoint;
         SiteCode = checkpoint.SiteCode;
         Code = code;
@@ -395,18 +396,18 @@ public class Desk : BaseSoftDeletableEntity<Desk>, ISiteBound
     {
         var codes = (laneCategories ?? []).Select(c => c?.Trim().ToUpperInvariant()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
         if (codes.Any(code => !LaneCategory.IsValid(code)))
-            throw new ArgumentException("A lane category is 2 to 4 upper case letters.", nameof(laneCategories));
+            throw new DomainArgumentException("A lane category is 2 to 4 upper case letters.", nameof(laneCategories));
         if (codes.Count > MaxLaneCategories)
-            throw new ArgumentException($"A desk serves at most {MaxLaneCategories} lane categories.", nameof(laneCategories));
+            throw new DomainArgumentException($"A desk serves at most {MaxLaneCategories} lane categories.", nameof(laneCategories));
 
         switch (Kind)
         {
             case DeskKind.Counter or DeskKind.SecurityLane when codes.Count > 0:
-                throw new InvalidOperationException($"A {Kind} has no lane categories.");
+                throw new DomainRuleException($"A {Kind} has no lane categories.");
             case DeskKind.Desk when codes.Count == 0:
-                throw new InvalidOperationException("A border desk serves at least one lane category.");
+                throw new DomainRuleException("A border desk serves at least one lane category.");
             case DeskKind.EGate when !codes.Contains(LaneCategory.EGateEligible):
-                throw new InvalidOperationException("An e-gate serves e-gate eligible travellers (EG).");
+                throw new DomainRuleException("An e-gate serves e-gate eligible travellers (EG).");
         }
 
         LaneCategoryCodes = codes.Count == 0 ? null : string.Join(',', codes);

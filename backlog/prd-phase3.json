@@ -2243,8 +2243,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 302,
-      "passes": false,
-      "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-281 security review (advisory A1). No sign-in code.",
+      "passes": true,
+      "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-281 security review (advisory A1). No sign-in code. Done 2026-11-02: three sealed rule types (IDomainRule), entities and DisplayText throw them, the services match by type and kind; DomainRuleTests reads the compiled IL of every host assembly (IlReader, IlFlow) in Debug and Release; review rounds 1 to 3 FAIL on test gaps, round 4 PASS; ARV-286 and ARV-287 filed.",
       "dependsOn": [
         "ARV-281"
       ]
@@ -2305,6 +2305,49 @@
       "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-212 security review (advisory 12). The TickerQ dashboard part touches the Cronz dashboard, which is under the sign-in freeze; the dead letter and outbox parts are not.",
       "dependsOn": [
         "ARV-212"
+      ]
+    },
+    {
+      "id": "ARV-286",
+      "title": "[E15] Desk code mappings and floor plans answer domain rules by type, and the device CIDR refusal no longer echoes the caller's text",
+      "description": "Found by the ARV-282 security review (advisories A2 and A4, 2026-11-02). SvcDeskCodeMappings.CreateAsync and UpdateAsync answer any InvalidOperationException's message, and their try blocks also cover SaveAsync and RecordAsync, so a driver or session InvalidOperationException's text could be answered as a 400; SvcFloorPlans.UploadAsync and CalibrateAsync do the same for any ArgumentException. Move DeskCodeMapping.cs and FloorPlan.cs rules onto the ARV-282 rule types (IDomainRule), catch by type only as SvcTopology, SvcZoneProfiles and SvcDevices do, and take both services off DomainRuleTests' MessageReaders list. Device.cs's CIDR refusal repeats up to 50 characters of the caller's value, which can hold control or bidirectional characters: escape it (DisplayText.Escape) or drop the echo. CWEs to review: CWE-209, CWE-20, CWE-79.",
+      "acceptanceCriteria": [
+        "DeskCodeMapping and FloorPlan refuse a caller's value with the rule types only (null and server-supplied value guards excepted), and SvcDeskCodeMappings and SvcFloorPlans answer a refusal by its type: an InvalidOperationException or ArgumentException from outside the domain passes through to the generic 500, with unit tests for both services",
+        "DomainRuleTests' MessageReaders no longer lists SvcDeskCodeMappings or SvcFloorPlans, and its rule walk covers both services",
+        "The device CIDR refusal names no unescaped text of the caller's (a control or bidirectional character in the value is escaped or not echoed), with a unit test",
+        "Existing API answers keep their texts and status codes: the desk code mapping, floor plan and device E2E specs pass unchanged (or the refusal text changes are listed in the story's progress entry)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 303,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-11-02 from the ARV-282 security review (advisories A2 and A4). Predates ARV-282; no sign-in code.",
+      "dependsOn": [
+        "ARV-282"
+      ]
+    },
+    {
+      "id": "ARV-287",
+      "title": "[E15] DomainRuleTests text analysis hardening: comparisons by any call, values through arrays and closures, finally blocks, every answer path",
+      "description": "Found by the ARV-282 security review (round 4 follow-up list, 2026-11-02). DomainRuleTests reads the compiled IL of every host assembly and follows an exception, a rule's text and an exception's text through each method (IlFlow), but: comparisons are recognised by a listed set of calls (StringComparer.Equals or Compare, object.ReferenceEquals, a dictionary indexer, GetValueOrDefault or List.IndexOf on a rule's text are not); a value stored into an array, a params array or a span (string.Format with four or more arguments, string.Join, FormattableStringFactory.Create) loses its flag; text captured by a lambda is not followed into it (field flags are per method, a followed lambda starts without flags); finally and fault blocks are never interpreted; answer code outside the Svc* services and the controllers (hubs, IExceptionHandler implementations, endpoint classes such as the ingest and integration body readers) is checked only inside catches; a receiver loaded by address carries no flag; KafkaException.Error.ToString() is not counted; the field iteration's convergence is not asserted; handler entries start with locals cleared; a constructor callee's seeded flags are shifted by one. None leaks today (the review checked BatchBody.cs and SensingIngest.cs). CWEs to review: CWE-209, CWE-20.",
+      "acceptanceCriteria": [
+        "In answer code a rule's text may only be answered (Result.Error), formatted or logged: any other call that takes it is a finding, so comparisons need no list; fixtures for StringComparer, ReferenceEquals, an indexer, GetValueOrDefault and IndexOf on a rule's text must be found",
+        "A flagged value stored into an array, params array or span flags that array or span, and a lambda followed from a method starts with the flags of the closure fields it reads; fixtures for string.Format with four arguments, string.Join with the exception, FormattableStringFactory.Create and a captured rule text compared in a lambda must be found",
+        "Finally and fault blocks are interpreted, handler entries merge the try block's locals, a receiver loaded by address carries its value's flags, a constructor callee's flags are aligned, KafkaException.Error.ToString() counts as an exception's text, and the field iteration asserts it converged",
+        "AnswersCallers covers hubs, IExceptionHandler implementations and the classes that write an HTTP answer (the ingest and integration body readers), with listed reasons for any that read an exception's text",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate), in Debug and with the unit tests built in Release",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 304,
+      "passes": false,
+      "notes": "Size M. Phase 3. Filed 2026-11-02 from the ARV-282 security review round 4 (follow-up list items 1 to 7). Test tooling only; no sign-in code.",
+      "dependsOn": [
+        "ARV-282"
       ]
     }
   ]

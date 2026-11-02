@@ -1,4 +1,5 @@
 using System.Globalization;
+using Ariva.Core.Domain.Common;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Criteria;
 using Ariva.Core.Domain.Enums;
@@ -404,15 +405,16 @@ internal sealed class SvcDevices(
         {
             result = await work();
         }
-        catch (ArgumentException e) when (e.Source == typeof(Device).Assembly.GetName().Name)
+        catch (ArgumentException e) when (e is IDomainRule rule)
         {
-            // The domain's rules only: a framework or driver exception's text is never answered (ARV-281, CWE-209). This
-            // service's own Parse is reached only after Kinds has passed, so it never throws here; if it did, it fails closed.
-            result = Result.Error<T>(e.Message.Split(" (Parameter", 2)[0]);
+            // The domain's rules only, matched by their type (ARV-282): a framework or driver exception's text is never
+            // answered (ARV-281, CWE-209). This service's own Parse is reached only after Kinds has passed, so it never
+            // throws here; if it did, its plain ArgumentException fails closed.
+            result = Result.Error<T>(rule.Rule);
         }
-        catch (InvalidOperationException e) when (e.Source == typeof(Device).Assembly.GetName().Name)
+        catch (InvalidOperationException e) when (e is IDomainRule rule)
         {
-            result = Result.Error<T>(e.Message);
+            result = Result.Error<T>(rule.Rule);
         }
 
         if (result.HasErrors)

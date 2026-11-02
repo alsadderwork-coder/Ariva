@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using Ariva.Core.Domain.Common;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Messaging;
@@ -31,7 +32,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
     public ZoneProfile(string siteCode, string name)
     {
         if (!Site.IsValidCode(siteCode))
-            throw new ArgumentException("Unknown site code shape.", nameof(siteCode));
+            throw new DomainArgumentException("Unknown site code shape.", nameof(siteCode));
         SiteCode = siteCode;
         Name = TopologyCodes.RequireName(name, nameof(name));
         Status = ZoneProfileStatus.Draft;
@@ -65,7 +66,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
     public virtual ZoneProfile CreateDraft(string name)
     {
         if (Status == ZoneProfileStatus.Draft)
-            throw new InvalidOperationException("Copy a published or retired version, not a draft.");
+            throw new DomainRuleException("Copy a published or retired version, not a draft.");
         var draft = new ZoneProfile(SiteCode, name ?? Name) { BasedOnVersion = Version };
         var map = new Dictionary<Zone, Zone>();
         foreach (var zone in Zones.Where(z => z.QueueZone is null).Concat(Zones.Where(z => z.QueueZone is not null)))
@@ -99,20 +100,20 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         EnsureDraft();
         ArgumentNullException.ThrowIfNull(level);
         if (!Enum.IsDefined(kind))
-            throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown zone kind.");
+            throw new DomainArgumentOutOfRangeException(nameof(kind), kind, "Unknown zone kind.");
         if (level.SiteCode != SiteCode)
-            throw new InvalidOperationException("The level belongs to another site.");
+            throw new DomainRuleException("The level belongs to another site.");
         if (level.Id is null || level.IsDeleted)
-            throw new InvalidOperationException("The level must exist.");
+            throw new DomainRuleException("The level must exist.");
         if (Zones.Count >= MaxZones)
-            throw new InvalidOperationException($"A profile holds at most {MaxZones} zones.");
+            throw new DomainRuleException($"A profile holds at most {MaxZones} zones.");
         var trimmed = TopologyCodes.RequireName(name, nameof(name));
         if (Zones.Any(z => string.Equals(z.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
-            throw new InvalidOperationException($"Zone {trimmed} already exists here.");
+            throw new DomainRuleException($"Zone {trimmed} already exists here.");
         RequireKeyable(kind, trimmed, nameof(name));
         CheckLink(kind, queueZone, level.Id.GetValueOrDefault());
         if (deskId is not null && kind is not (ZoneKind.Service or ZoneKind.Staff))
-            throw new InvalidOperationException("Only service and staff zones name a desk.");
+            throw new DomainRuleException("Only service and staff zones name a desk.");
 
         var zone = new Zone(this, trimmed, kind, level.Id.GetValueOrDefault(), Zone.RequirePolygon(polygon, level), queueZone, deskId);
         Zones.Add(zone);
@@ -125,11 +126,11 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         EnsureDraft();
         var own = Own(zone);
         if (level is null || level.Id != own.LevelId)
-            throw new InvalidOperationException("A zone stays on its level.");
+            throw new DomainRuleException("A zone stays on its level.");
         var points = Zone.RequirePolygon(polygon, level);
         var stranded = Lines.Where(l => l.Zone == own && l.Role != LineRole.Count && Geometry.EdgeContaining(points, l.Start, l.End) < 0).ToList();
         if (stranded.Count > 0)
-            throw new InvalidOperationException($"Line {Label(stranded[0].Name)} would no longer lie on the zone's edge; move or remove it first.");
+            throw new DomainRuleException($"Line {Label(stranded[0].Name)} would no longer lie on the zone's edge; move or remove it first.");
         own.SetPoints(points);
     }
 
@@ -139,7 +140,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         var own = Own(zone);
         var trimmed = TopologyCodes.RequireName(name, nameof(name));
         if (Zones.Any(z => z != own && string.Equals(z.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
-            throw new InvalidOperationException($"Zone {trimmed} already exists here.");
+            throw new DomainRuleException($"Zone {trimmed} already exists here.");
         RequireKeyable(own.Kind, trimmed, nameof(name));
         own.Rename(trimmed);
     }
@@ -160,9 +161,9 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         }
 
         if (own.Kind != ZoneKind.Queue)
-            throw new InvalidOperationException("Only a queue zone is the queue of a lane.");
+            throw new DomainRuleException("Only a queue zone is the queue of a lane.");
         if (!LaneCategory.IsValid(laneCategory))
-            throw new ArgumentException("A lane category is 2 to 4 capital letters, such as CIT.", nameof(laneCategory));
+            throw new DomainArgumentException("A lane category is 2 to 4 capital letters, such as CIT.", nameof(laneCategory));
         own.LaneCategory = laneCategory;
     }
 
@@ -182,9 +183,9 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         }
 
         if (own.Kind is not (ZoneKind.Queue or ZoneKind.Overflow))
-            throw new InvalidOperationException("Only a queue zone or an overflow band has a physical capacity.");
+            throw new DomainRuleException("Only a queue zone or an overflow band has a physical capacity.");
         if (capacity is < 1 or > Zone.MaxPhysicalCapacity)
-            throw new ArgumentOutOfRangeException(nameof(capacity), capacity, "A physical capacity is 1 to 5,000 people.");
+            throw new DomainArgumentOutOfRangeException(nameof(capacity), capacity, "A physical capacity is 1 to 5,000 people.");
         own.PhysicalCapacity = capacity;
     }
 
@@ -194,7 +195,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         EnsureDraft();
         var own = Own(zone);
         if (Zones.Any(z => z.QueueZone == own))
-            throw new InvalidOperationException($"Zones hang off {Label(own.Name)}; remove them first.");
+            throw new DomainRuleException($"Zones hang off {Label(own.Name)}; remove them first.");
         var lines = Lines.Where(l => l.Zone == own).ToList();
         foreach (var line in lines)
             Lines.Remove(line);
@@ -211,39 +212,39 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         EnsureDraft();
         ArgumentNullException.ThrowIfNull(level);
         if (!Enum.IsDefined(role))
-            throw new ArgumentOutOfRangeException(nameof(role), role, "Unknown line role.");
+            throw new DomainArgumentOutOfRangeException(nameof(role), role, "Unknown line role.");
         if (level.SiteCode != SiteCode)
-            throw new InvalidOperationException("The level belongs to another site.");
+            throw new DomainRuleException("The level belongs to another site.");
         if (level.Id is null || level.IsDeleted)
-            throw new InvalidOperationException("The level must exist.");
+            throw new DomainRuleException("The level must exist.");
         if (Lines.Count >= MaxLines)
-            throw new InvalidOperationException($"A profile holds at most {MaxLines} lines.");
+            throw new DomainRuleException($"A profile holds at most {MaxLines} lines.");
         var trimmed = TopologyCodes.RequireName(name, nameof(name));
         if (Lines.Any(l => string.Equals(l.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
-            throw new InvalidOperationException($"Line {trimmed} already exists here.");
+            throw new DomainRuleException($"Line {trimmed} already exists here.");
 
         var a = start.Rounded();
         var b = end.Rounded();
         if (!a.IsFinite || !b.IsFinite || !level.Contains(a.X, a.Y) || !level.Contains(b.X, b.Y))
-            throw new ArgumentException("A line lies inside its level.", nameof(start));
+            throw new DomainArgumentException("A line lies inside its level.", nameof(start));
         if (Geometry.Length(a, b) < Geometry.Tolerance)
-            throw new ArgumentException("A line has length.", nameof(end));
+            throw new DomainArgumentException("A line has length.", nameof(end));
 
         var own = zone is null ? null : Own(zone);
         switch (role)
         {
             case LineRole.Entry or LineRole.Exit when own?.Kind != ZoneKind.Queue:
-                throw new InvalidOperationException("Entry and exit lines belong to a queue zone.");
+                throw new DomainRuleException("Entry and exit lines belong to a queue zone.");
             case LineRole.OverflowEntry when own?.Kind != ZoneKind.Overflow:
-                throw new InvalidOperationException("An overflow entry line belongs to an overflow zone.");
+                throw new DomainRuleException("An overflow entry line belongs to an overflow zone.");
             case LineRole.Exit when Lines.Any(l => l.Zone == own && l.Role == LineRole.Exit):
-                throw new InvalidOperationException($"Zone {Label(own.Name)} already has its exit line.");
+                throw new DomainRuleException($"Zone {Label(own.Name)} already has its exit line.");
         }
 
         if (own is not null && own.LevelId != level.Id)
-            throw new InvalidOperationException("A line lies on its zone's level.");
+            throw new DomainRuleException("A line lies on its zone's level.");
         if (role != LineRole.Count && Geometry.EdgeContaining(own.Points, a, b) < 0)
-            throw new InvalidOperationException($"Line {trimmed} must lie on an edge of zone {Label(own.Name)}.");
+            throw new DomainRuleException($"Line {trimmed} must lie on an edge of zone {Label(own.Name)}.");
 
         var line = new Line(this, trimmed, role, own, level.Id.GetValueOrDefault(), a, b);
         Lines.Add(line);
@@ -254,7 +255,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
     {
         EnsureDraft();
         if (line is null || !Lines.Remove(line))
-            throw new InvalidOperationException("The line is not in this profile.");
+            throw new DomainRuleException("The line is not in this profile.");
     }
 
     #endregion
@@ -372,7 +373,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
     {
         EnsureUtc(utcNow);
         if (Status != ZoneProfileStatus.Published)
-            throw new InvalidOperationException("Only a published version is retired.");
+            throw new DomainRuleException("Only a published version is retired.");
         Status = ZoneProfileStatus.Retired;
         RetiredOn = utcNow;
     }
@@ -444,7 +445,7 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
     private void EnsureDraft()
     {
         if (Status != ZoneProfileStatus.Draft)
-            throw new InvalidOperationException("A published or retired zone profile never changes; create a draft from it.");
+            throw new DomainRuleException("A published or retired zone profile never changes; create a draft from it.");
     }
 
     /// <summary>The problem of a stored name the name rule refuses (ARV-162); the sentence ends with what to do.</summary>
@@ -477,28 +478,28 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
     private void RequireKeyable(ZoneKind kind, string name, string paramName)
     {
         if (kind == ZoneKind.Queue && !ZoneKeys.Fits(SiteCode, name))
-            throw new ArgumentException(QueueZoneNameTooLong(SiteCode), paramName);
+            throw new DomainArgumentException(QueueZoneNameTooLong(SiteCode), paramName);
     }
 
     private Zone Own(Zone zone) =>
-        zone is not null && Zones.Contains(zone) ? zone : throw new InvalidOperationException("The zone is not in this profile.");
+        zone is not null && Zones.Contains(zone) ? zone : throw new DomainRuleException("The zone is not in this profile.");
 
     private void CheckLink(ZoneKind kind, Zone queueZone, Guid levelId)
     {
         if (kind == ZoneKind.Queue)
         {
             if (queueZone is not null)
-                throw new InvalidOperationException("A queue zone does not hang off another zone.");
+                throw new DomainRuleException("A queue zone does not hang off another zone.");
             return;
         }
 
         if (queueZone is null)
-            throw new InvalidOperationException($"A {kind} zone hangs off a queue zone.");
+            throw new DomainRuleException($"A {kind} zone hangs off a queue zone.");
         var owner = Own(queueZone);
         if (owner.Kind != ZoneKind.Queue)
-            throw new InvalidOperationException("Zones hang off a queue zone only.");
+            throw new DomainRuleException("Zones hang off a queue zone only.");
         if (owner.LevelId != levelId)
-            throw new InvalidOperationException("A zone hangs off a queue zone on the same level.");
+            throw new DomainRuleException("A zone hangs off a queue zone on the same level.");
     }
 }
 
@@ -560,14 +561,14 @@ public class Zone : EntityBase<Zone>
     internal static IReadOnlyList<FloorPoint> RequirePolygon(IReadOnlyList<FloorPoint> polygon, Level level)
     {
         if (polygon is null || polygon.Count < 3)
-            throw new ArgumentException("A zone has at least three points.", nameof(polygon));
+            throw new DomainArgumentException("A zone has at least three points.", nameof(polygon));
         if (polygon.Count > MaxVertices)
-            throw new ArgumentException($"A zone has at most {MaxVertices} points.", nameof(polygon));
+            throw new DomainArgumentException($"A zone has at most {MaxVertices} points.", nameof(polygon));
         var points = polygon.Select(p => p.Rounded()).ToList();
         if (points.Any(p => !p.IsFinite || !level.Contains(p.X, p.Y)))
-            throw new ArgumentException($"Every point lies inside level {level.Code} (0 to {level.WidthMetres} by 0 to {level.DepthMetres} m).", nameof(polygon));
+            throw new DomainArgumentException($"Every point lies inside level {level.Code} (0 to {level.WidthMetres} by 0 to {level.DepthMetres} m).", nameof(polygon));
         if (!Geometry.IsSimplePolygon(points))
-            throw new ArgumentException("A zone is a simple polygon at least 1 cm wide: no repeated points, no crossing or touching edges, and every vertex at least 1 cm from each edge it is not part of.", nameof(polygon));
+            throw new DomainArgumentException("A zone is a simple polygon at least 1 cm wide: no repeated points, no crossing or touching edges, and every vertex at least 1 cm from each edge it is not part of.", nameof(polygon));
         return points;
     }
 }

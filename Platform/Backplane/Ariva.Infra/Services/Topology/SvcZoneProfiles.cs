@@ -1,3 +1,4 @@
+using Ariva.Core.Domain.Common;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Enums;
 using Ariva.Core.Domain.InputModels;
@@ -342,23 +343,20 @@ internal sealed class SvcZoneProfiles(
                 UnitOfWork.PromiseNotToCommit();
             return result;
         }
-        // Only the domain's rule messages are shown (CWE-209): an exception thrown by the framework or the driver keeps its
-        // text to the logs and becomes a 500 without details.
-        catch (ArgumentException e) when (FromDomain(e))
+        // Only the domain's rule texts are shown (CWE-209), matched by their type (ARV-282), never by the frame that threw them
+        // or by their text: an exception thrown by the framework or the driver keeps its text to the logs and becomes a 500
+        // without details.
+        catch (ArgumentException e) when (e is IDomainRule rule)
         {
             UnitOfWork.PromiseNotToCommit();
-            return Result.Error<T>(e.Message.Split(" (Parameter", 2)[0]);
+            return Result.Error<T>(rule.Rule);
         }
-        catch (InvalidOperationException e) when (FromDomain(e))
+        catch (InvalidOperationException e) when (e is IDomainRule rule)
         {
             UnitOfWork.PromiseNotToCommit();
-            return Result.Error<T>(e.Message == ZoneProfileErrors.NotADraft ? ZoneProfileErrors.NotADraft : e.Message);
+            return Result.Error<T>(rule.Rule);
         }
     }
-
-    private static bool FromDomain(Exception e) =>
-        e.TargetSite?.DeclaringType?.Assembly == typeof(ZoneProfile).Assembly ||
-        e.TargetSite?.DeclaringType?.Assembly == typeof(Geometry).Assembly;
 
     /// <summary>Locks the profile row for this transaction and returns its site, or null when there is no such profile.</summary>
     private async Task<string> LockProfileAsync(Guid id, CancellationToken ct)
