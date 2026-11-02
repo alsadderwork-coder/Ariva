@@ -1434,10 +1434,24 @@ export const INGRESS_LOG_FORMAT = {
 	/** error-log-level values that write no request headers (info and debug do; ingress-nginx's nginx is built with debug). */
 	errorLevels: ['notice', 'warn', 'error', 'crit', 'alert', 'emerg'],
 	/** The controller's own snippets, in which no log or ModSecurity directive may appear (they would get around the guards). */
-	snippets: ['main-snippet', 'http-snippet', 'server-snippet', 'location-snippet'],
-	/** A log or ModSecurity directive at the start of a statement, its name quoted or not (nginx accepts both). */
-	directive: /(^|[;{}'])\s*["']?(access_log|log_format|error_log|modsecurity(_[a-z_]+)?)["']?\s/im
+	snippets: ['main-snippet', 'http-snippet', 'server-snippet', 'location-snippet', 'global-auth-snippet'],
+	/** A log or ModSecurity directive, read as nginx's tokenizer reads a statement (nginxDirective). */
+	directive: nginxDirective('access_log|log_format|error_log|rewrite_log|modsecurity(_[a-z_]+)?')
 };
+
+/**
+ * ARV-284: an nginx directive whose name is one of the alternation given, read as nginx's tokenizer reads a statement: at the
+ * start of the text or a line, or after ";", "{", "}" or "'", then spaces, then the name bare (followed by a space, ";", "{" or
+ * the end of the text) or quoted with " or ' (followed by a space, ";", "{", ")" or the end: nginx takes a quoted name followed
+ * directly by ")" as the name and the start of the next argument). Case is ignored. validate.yaml's ariva-platform.directive
+ * (Helm/Charts/platform/templates/_helpers.tpl) is the same pattern for the Ingresses' annotation values.
+ */
+export function nginxDirective(names) {
+	return new RegExp(`(^|[;{}'])\\s*(?:"(${names})"(?:[\\s;{)]|$)|'(${names})'(?:[\\s;{)]|$)|(${names})(?:[\\s;{]|$))`, 'im');
+}
+
+/** The directive name an nginxDirective match found: the first group after the statement's start that matched. */
+export const directiveName = (match) => match.slice(2).find(Boolean);
 
 /**
  * ARV-206: the name of an nginx directive that keeps a copy of an answer (a cache zone, a cache, or the answer stored as a file),
@@ -1449,8 +1463,19 @@ export const INGRESS_LOG_FORMAT = {
  */
 export const INGRESS_CACHE_DIRECTIVE = /\b((proxy|fastcgi|uwsgi|scgi)_(cache|cache_path|store))\b/i;
 
-/** ARV-206: the controller's snippets the cache name is looked for in: the four of INGRESS_LOG_FORMAT and the global auth location's. */
+/** ARV-206: the controller's snippets the cache name is looked for in; since ARV-284 the same five as INGRESS_LOG_FORMAT's (main, http, server, location and the global auth location's). */
 const CACHE_SNIPPETS = ['main-snippet', 'http-snippet', 'server-snippet', 'location-snippet', 'global-auth-snippet'];
+
+/**
+ * ARV-284: what none of the controller's snippets (CACHE_SNIPPETS) writes, each with why: an include (read as nginx reads a
+ * statement), client_body_in_file_only and a *_by_lua directive (anywhere in the text), and a rewrite (as nginx reads it).
+ */
+export const CONTROLLER_REFUSED_DIRECTIVES = [
+	['include', nginxDirective('include'), 'it reads a file on the controller\'s disk into the configuration, which gets around every directive guard'],
+	['client_body_in_file_only', /client_body_in_file_only/i, 'it keeps every request body (sign-in passwords, TOTP codes, uploads) as a file on the controller'],
+	['a *_by_lua directive', /_by_lua/i, 'a Lua block can copy request bodies and headers into the controller\'s shared dictionaries or files'],
+	['rewrite', nginxDirective('rewrite'), 'it changes the path after the chart\'s health probe check, so another path could reach /health on a pod']
+];
 
 /** A ConfigMap boolean as ingress-nginx reads it (mapstructure, weakly typed: strconv.ParseBool). */
 const configTrue = (value) => /^(1|t|true)$/i.test(String(value ?? ''));
@@ -1467,7 +1492,9 @@ const configTrue = (value) => /^(1|t|true)$/i.test(String(value ?? ''));
  * the controller's main, http, server or location snippet. ARV-206: nor the name of a directive that keeps a copy of an answer
  * (INGRESS_CACHE_DIRECTIVE: proxy_cache_path in the http-snippet, proxy_cache, proxy_store, and the FastCGI, uwsgi and SCGI ones)
  * in those snippets or the global auth snippet, and no global-auth-cache-key (ingress-nginx would cache the global external
- * authentication answers in its auth_cache zone).
+ * authentication answers in its auth_cache zone). ARV-284: the log and ModSecurity names are read as nginx's tokenizer reads a
+ * statement (nginxDirective), and no snippet writes an include, client_body_in_file_only, a *_by_lua directive or a rewrite
+ * (CONTROLLER_REFUSED_DIRECTIVES).
  */
 export function controllerValuesFindings(values) {
 	const findings = [];
@@ -1510,13 +1537,18 @@ export function controllerValuesFindings(values) {
 	}
 	for (const key of INGRESS_LOG_FORMAT.snippets) {
 		const match = INGRESS_LOG_FORMAT.directive.exec(String(config[key] ?? ''));
-		if (match) findings.push(`controller.config ${key} writes ${match[2]}: the controller's snippets write no access_log, log_format, error_log or modsecurity directive, which would get around the access log format and the Ingresses' audit log and logging guards`);
+		if (match) findings.push(`controller.config ${key} writes ${directiveName(match)}: the controller's snippets write no access_log, log_format, error_log, rewrite_log or modsecurity directive, which would get around the access log format and the Ingresses' audit log and logging guards`);
 	}
 	for (const key of CACHE_SNIPPETS) {
 		const cache = INGRESS_CACHE_DIRECTIVE.exec(String(config[key] ?? ''));
 		if (cache) {
 			findings.push(`controller.config ${key} writes ${cache[1]}: the controller keeps no copy of an answer (no cache zone, cache or stored answer), as Ariva's answers carry credentials, ` +
 				'border data and personal data that no cache outside Ariva may hold (ARV-206)');
+		}
+	}
+	for (const key of CACHE_SNIPPETS) {
+		for (const [name, pattern, why] of CONTROLLER_REFUSED_DIRECTIVES) {
+			if (pattern.test(String(config[key] ?? ''))) findings.push(`controller.config ${key} writes ${name}: ${why} (ARV-284)`);
 		}
 	}
 	// Any value but empty, spaces included: ingress-nginx tests the string as it is, so " " would cache with one key per location.
@@ -1859,7 +1891,7 @@ export function ingressPrivacyFindings(docs, { environment }) {
 			if (annotations[`${NGINX}${key}`] !== undefined) findings.push(`${id}: sets ${key}; the probes' 404 is judged on the request's own path, so no Ariva Ingress rewrites one`);
 		}
 		for (const [key, value] of Object.entries(annotations)) {
-			if (/(^|[;{}])\s*rewrite\s/im.test(String(value))) findings.push(`${id}: ${key} writes a rewrite directive, which changes the path after the probes' check`);
+			if (nginxDirective('rewrite').test(String(value))) findings.push(`${id}: ${key} writes a rewrite directive, which changes the path after the probes' check`);
 		}
 		if (annotations[`${NGINX}whitelist-source-range`] !== undefined) findings.push(`${id}: sets whitelist-source-range, the alias; the chart writes allowlist-source-range, the name ingress-nginx reads first`);
 		const allow = annotations[`${NGINX}allowlist-source-range`];

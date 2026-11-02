@@ -2282,8 +2282,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 302,
-      "passes": false,
-      "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-206 security review (advisories 1 to 3). Chart and chart test only. No sign-in code.",
+      "passes": true,
+      "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-206 security review (advisories 1 to 3). Chart and chart test only. No sign-in code. Done 2026-11-02: one nginx directive pattern (ariva-platform.directive in _helpers.tpl, nginxDirective in tests/checks.mjs) for the log, ModSecurity, rewrite and include guards; include, client_body_in_file_only and *_by_lua refused in every environment; rewrite_log among the log directives; the global auth snippet held to the log directives. Security review round 1 FAIL (R1 to R4) fixed, round 2 PASS. ARV-288 filed for the rest.",
       "dependsOn": [
         "ARV-206"
       ]
@@ -2348,6 +2348,28 @@
       "notes": "Size M. Phase 3. Filed 2026-11-02 from the ARV-282 security review round 4 (follow-up list items 1 to 7). Test tooling only; no sign-in code.",
       "dependsOn": [
         "ARV-282"
+      ]
+    },
+    {
+      "id": "ARV-288",
+      "title": "[E17] Ingress code and copy paths beyond ARV-284: ModSecurity Lua and file actions, the stream snippet, modules, njs and perl, proxy_pass and mirror outside pod TLS",
+      "description": "Found by the ARV-284 security review (round 1 advisories A1 to A4, A6, A7, 2026-11-02). ARV-284 refuses include, client_body_in_file_only and *_by_lua in every environment and reads the log, ModSecurity and rewrite directives as nginx's tokenizer does, but: a site's modsecurity-snippet can run Lua through SecRuleScript or the exec: action, popen a file through @inspectFile (CWE-78 if the build allows it), or keep uploads on disk (SecUploadKeepFiles, SecTmpSaveUploadedFiles); the controller's stream-snippet is not checked (include, preread_by_lua_block); load_module and ssl_engine in the main snippet, the ConfigMap plugins key and lua_package_path or lua_package_cpath in the http snippet are not refused; njs (js_import, js_content, js_set) and perl (perl, perl_require, perl_modules) load code from disk if the controller's nginx carries those modules; outside pod TLS a site snippet's proxy_pass can change the upstream path (the effect the rewrite guard refuses) and mirror copies whole requests, sign-in bodies included; the enable-rewrite-log annotation is not refused (location level only, no leak today); the rendered Ingresses are checked for rewrite only (include, client_body_in_file_only, Lua and rewrite_log there would be a second line and prove the chart's own snippets never trip them); and validate.yaml has no near-miss render that pins the RE2 pattern's boundaries. CWEs to review: CWE-94, CWE-78, CWE-532, CWE-501. Also recorded by the ARV-284 review round 2 (advisory 3): a deny-list cannot stop a deliberate snippet author. For example a site server-snippet holding `if ($x) { } set $x 1;` makes nginx log \"using uninitialized variable\" at warn, in the server's rewrite phase, on every request (uninitialized_variable_warn is on by default), and that line carries the request line, the live hub's access token included. That is the trust model the controller values state (whoever writes a snippet writes nginx configuration); name it as a residual, or set uninitialized_variable_warn off where Ariva's server blocks are written.",
+      "acceptanceCriteria": [
+        "validate.yaml refuses in a modsecurity-snippet SecRuleScript, the exec: action, @inspectFile, SecUploadKeepFiles and SecTmpSaveUploadedFiles (after checking which the ingress-nginx 1.15 image's libmodsecurity supports), each with a case",
+        "controllerValuesFindings checks the stream-snippet like the others and refuses load_module and ssl_engine in the main snippet, the plugins key, lua_package_path and lua_package_cpath, and js_import, js_content, js_set, perl, perl_require and perl_modules in any snippet, each with a case",
+        "validate.yaml refuses js_* and perl* directives and, in every environment, proxy_pass, mirror and the enable-rewrite-log annotation in site annotations (or records why one stays allowed), each with a case",
+        "ingressPrivacyFindings refuses include, client_body_in_file_only, *_by_lua and rewrite_log in the rendered Ingresses, with fixture cases, and the good fixture and the chart's own renders stay clean",
+        "An accepted site render with near-miss names (a header whose text holds includeSubDomains after a semicolon, error_page, log_subrequest) pins the RE2 pattern's boundaries",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 305,
+      "passes": false,
+      "notes": "Size M. Phase 3. Filed 2026-11-02 from the ARV-284 security review round 1 (advisories A1 to A4, A6, A7). Chart and chart tests only; no sign-in code.",
+      "dependsOn": [
+        "ARV-284"
       ]
     }
   ]

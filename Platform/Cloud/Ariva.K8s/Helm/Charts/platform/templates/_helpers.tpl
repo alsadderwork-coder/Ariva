@@ -1134,3 +1134,17 @@ Usage: {{- include "ariva-platform.uploadScanContainers" . | nindent 8 }}, insid
     {{- toYaml $freshclamResources | nindent 4 }}
 {{- end }}
 {{- end }}
+
+{{/*
+ARV-284: a regular expression for an nginx directive whose name is one of the alternation given, read as nginx's tokenizer reads
+a statement, and a superset of where nginx starts one (nginx starts a statement only at the start of the text and after ";",
+"{" or "}"; a line start and "'" are taken as well, so more is refused, never less): at the start of the text or a line, or
+after ";", "{", "}" or "'", then spaces, then the name bare (followed by a
+space, ";", "{" or the end of the text) or quoted with " or ' (followed by a space, ";", "{", ")" or the end: nginx takes a
+quoted name followed directly by ")" as the name and the start of the next argument). Case is ignored (nginx's names are lower
+case; any other case is refused by nginx itself). tests/checks.mjs holds the same pattern (nginxDirective) for the controller's
+snippets and the rendered Ingresses. Usage: regexMatch (include "ariva-platform.directive" "access_log|error_log") $text
+*/}}
+{{- define "ariva-platform.directive" -}}
+(?im)(^|[;{}'])\s*(?:"({{ . }})"(?:[\s;{)]|$)|'({{ . }})'(?:[\s;{)]|$)|({{ . }})(?:[\s;{]|$))
+{{- end }}

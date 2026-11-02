@@ -40,7 +40,9 @@
 // live hub's Ingress answers /hubs 404 in any case at its server level, and the hub's host every other spelling of it
 // (hubRefusalFindings); the controller values keep ModSecurity off for the whole controller and write the access log without
 // the query string (ingress-nginx 1.15's default format otherwise); the release guards refuse a site annotation that turns the
-// audit log back on, writes a modsecurity, access_log or error_log directive, or routes /hubs without tokenInQuery.
+// audit log back on, writes a modsecurity, access_log, error_log, log_format or rewrite_log directive (read as nginx reads it,
+// ARV-284), or routes /hubs without tokenInQuery; and, in every environment, an include, client_body_in_file_only or a *_by_lua
+// directive (ARV-284).
 // ARV-091a (ASVS 5.0 V16.4.2, V16.4.3, CWE-532): with logging.pseudonymKeySecret (prd, required there by the chart and by both
 // Helmfiles through the state value logShipping) the five API hosts, and only they, get Logging__PseudonymKey from that Secret
 // (secretKeyRef, not optional, never a literal or a ConfigMap), and from logging.lokiCredentialsSecret Loki__Username and
@@ -335,6 +337,23 @@ const CONTROLLER_CASES = [
 	['an http-snippet with a quoted cache zone name before a parenthesis', (v) => { v.controller.config['http-snippet'] = '"proxy_cache_path")c keys_zone=)z:10m;'; }, 'http-snippet writes proxy_cache_path:'],
 	['a location-snippet with an SCGI store', (v) => { v.controller.config['location-snippet'] = 'scgi_store on;'; }, 'location-snippet writes scgi_store:'],
 	['a global auth snippet that caches', (v) => { v.controller.config['global-auth-snippet'] = 'proxy_cache auth_cache;'; }, 'global-auth-snippet writes proxy_cache:'],
+	// ARV-284: each log or ModSecurity directive and a rewrite read as nginx's tokenizer reads them (a quoted name followed by
+	// ")" is the name and the start of the next argument), and no include, client_body_in_file_only or Lua in any snippet.
+	['a server-snippet with a quoted access_log before a parenthesis', (v) => { v.controller.config['server-snippet'] = '"access_log")off;'; }, 'server-snippet writes access_log:'],
+	['a location-snippet with a single-quoted error_log before a parenthesis', (v) => { v.controller.config['location-snippet'] = "'error_log')/dev/stderr debug;"; }, 'location-snippet writes error_log:'],
+	['an http-snippet with a log format', (v) => { v.controller.config['http-snippet'] = "log_format full '$request $http_cookie';"; }, 'http-snippet writes log_format:'],
+	['a main-snippet with a quoted modsecurity directive before a parenthesis', (v) => { v.controller.config['main-snippet'] = '"modsecurity_rules_file")/etc/nginx/modsecurity/modsecurity.conf;'; },
+		'main-snippet writes modsecurity_rules_file:'],
+	['a server-snippet with a quoted rewrite', (v) => { v.controller.config['server-snippet'] = '"rewrite" ^ /healthz break;'; }, 'server-snippet writes rewrite:'],
+	['an http-snippet that includes files', (v) => { v.controller.config['http-snippet'] = 'include /etc/nginx/extra/*.conf;'; }, 'http-snippet writes include:'],
+	['a location-snippet with a quoted include before a parenthesis', (v) => { v.controller.config['location-snippet'] = "'include')/tmp/site.conf;"; }, 'location-snippet writes include:'],
+	['a server-snippet that keeps every request body', (v) => { v.controller.config['server-snippet'] = 'client_body_in_file_only clean;'; }, 'server-snippet writes client_body_in_file_only:'],
+	['a location-snippet with a Lua block', (v) => { v.controller.config['location-snippet'] = 'access_by_lua_block { ngx.req.read_body() }'; }, 'location-snippet writes a *_by_lua directive:'],
+	['a global auth snippet with a Lua file', (v) => { v.controller.config['global-auth-snippet'] = 'content_by_lua_file /tmp/site.lua;'; }, 'global-auth-snippet writes a *_by_lua directive:'],
+	// ARV-284, review round 1: rewrite_log would write the chart's server-level checks with the request line at notice; the
+	// global auth snippet is held to the log directives too.
+	['a server-snippet that logs its rewrites', (v) => { v.controller.config['server-snippet'] = 'rewrite_log on;'; }, 'server-snippet writes rewrite_log:'],
+	['a global auth snippet with an access log', (v) => { v.controller.config['global-auth-snippet'] = 'access_log /dev/stdout combined;'; }, 'global-auth-snippet writes access_log:'],
 	['a global auth cache key', (v) => { v.controller.config['global-auth-cache-key'] = '$remote_user$http_authorization'; }, 'global-auth-cache-key is set'],
 	['a global auth cache key of one space', (v) => { v.controller.config['global-auth-cache-key'] = ' '; }, 'global-auth-cache-key is set']
 ];
@@ -347,7 +366,9 @@ const CONTROLLER_ACCEPTED = [
 	(v) => { v.controller.config['http-snippet'] = 'client_body_buffer_size 16k;'; }, (v) => { v.controller.config['server-snippet'] = 'more_set_headers "X-Site: 1";'; },
 	// ARV-206: directives that keep answers out of a cache, and a cache setting that does nothing without one.
 	(v) => { v.controller.config['location-snippet'] = 'proxy_no_cache 1;\nproxy_cache_bypass 1;\nproxy_cache_valid 200 1m;'; },
-	(v) => { v.controller.config['global-auth-cache-key'] = ''; }
+	(v) => { v.controller.config['global-auth-cache-key'] = ''; },
+	// ARV-284: names that only begin like a refused one, and include inside a header's text, not a directive.
+	(v) => { v.controller.config['server-snippet'] = 'error_page 404 /404.html;\nlog_subrequest off;\nmore_set_headers "X-Policy: includeSubDomains";'; }
 ];
 
 function controllerValuesSelfTest() {
@@ -473,7 +494,7 @@ const INGRESS_PRIVACY_CASES = [
 	['allowlist-everyone', '0.0.0.0/0 is wider than /8'], ['allowlist-ipv6-everyone', '::/0 is wider than /16'],
 	['cronz-open', 'the Cronz dashboard has no allowlist-source-range'],
 	['rewrite-target-site', 'sets rewrite-target; the probes\' 404 is judged on the request\'s own path'], ['use-regex-site', 'sets use-regex; the probes\' 404 is judged'],
-	['snippet-rewrite', 'configuration-snippet writes a rewrite directive']
+	['snippet-rewrite', 'configuration-snippet writes a rewrite directive'], ['snippet-quoted-rewrite', 'configuration-snippet writes a rewrite directive']
 	];
 const PRODUCTION_ONLY_PRIVACY = ['allowlist-everyone', 'allowlist-ipv6-everyone', 'cronz-open'];
 
@@ -1802,9 +1823,9 @@ for (const [label, file, sets, message, annotation] of [
 	["a configuration-snippet that loads the controller's modsecurity.conf", 'values-k8s-dev.yaml', [], 'configuration-snippet writes a modsecurity directive', 'configuration-snippet: "modsecurity_rules_file /etc/nginx/modsecurity/modsecurity.conf;"'],
 	['a server-snippet that turns the audit engine on', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes a modsecurity directive', "server-snippet: \"modsecurity_rules 'SecAuditEngine On';\""],
 	['a configuration-snippet that turns ModSecurity off', 'values-k8s-dev.yaml', [], 'configuration-snippet writes a modsecurity directive', 'configuration-snippet: "add_header X-Site 1;\\nmodsecurity off;"'],
-	["a configuration-snippet that logs the request line with nginx's combined format", 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log or error_log directive', 'configuration-snippet: "access_log /var/log/nginx/access.log combined;"'],
-	['a server-snippet that logs requests to a file of its own', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log or error_log directive', 'server-snippet: "client_header_timeout 30s; access_log /tmp/requests.log;"'],
-	['a configuration-snippet that logs the live hub below critical', 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log or error_log directive',
+	["a configuration-snippet that logs the request line with nginx's combined format", 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log, error_log, log_format or rewrite_log directive', 'configuration-snippet: "access_log /var/log/nginx/access.log combined;"'],
+	['a server-snippet that logs requests to a file of its own', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log, error_log, log_format or rewrite_log directive', 'server-snippet: "client_header_timeout 30s; access_log /tmp/requests.log;"'],
+	['a configuration-snippet that logs the live hub below critical', 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log, error_log, log_format or rewrite_log directive',
 		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/configuration-snippet': 'error_log /dev/stderr info;' } })] }],
 	['a site annotation that turns the live hub\'s access log back on', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/enable-access-log is set by the chart',
 		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-access-log': 'true' } })] }],
@@ -1830,8 +1851,8 @@ for (const [label, file, sets, message, annotation] of [
 		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecRule ARGS_GET:access_token "@rx ." "id:100105,phase:1,pass,log,msg:\\\'%{QUERY_STRING}\\\'"' } })] }],
 	['a site rule that saves an argument for a later message', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet expands a macro of the request\'s values',
 		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecAction "id:100106,phase:2,pass,nolog,setvar:tx.saved=%{ARGS.password}"' } })] }],
-	['a configuration-snippet with a quoted access_log', 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log or error_log directive', 'configuration-snippet: "\\"access_log\\" /dev/stdout combined;"'],
-	['a server-snippet with a quoted error_log', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log or error_log directive', "server-snippet: \"client_header_timeout 30s; 'error_log' /dev/stderr debug;\""],
+	['a configuration-snippet with a quoted access_log', 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log, error_log, log_format or rewrite_log directive', 'configuration-snippet: "\\"access_log\\" /dev/stdout combined;"'],
+	['a server-snippet with a quoted error_log', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log, error_log, log_format or rewrite_log directive', "server-snippet: \"client_header_timeout 30s; 'error_log' /dev/stderr debug;\""],
 	["a server-snippet with a quoted modsecurity directive", 'values-k8s-dev.yaml', [], 'server-snippet writes a modsecurity directive', "server-snippet: \"'modsecurity_rules_file' /etc/nginx/modsecurity/modsecurity.conf;\""],
 	// ARV-206: no site annotation makes the ingress keep a copy of an answer (a cache, or the answer stored as a file).
 	['a configuration-snippet that caches answers', 'values-k8s-dev.yaml', [], 'configuration-snippet names proxy_cache, proxy_cache_path or proxy_store',
@@ -1857,6 +1878,25 @@ for (const [label, file, sets, message, annotation] of [
 		'auth-cache-key: "$remote_user$http_authorization"'],
 	['an auth cache duration in production', 'values-k8s-prd.yaml', [PRD], 'nginx.ingress.kubernetes.io/auth-cache-duration makes ingress-nginx cache the external authentication answers',
 		'auth-cache-duration: "200 202 401 5m"'],
+	// ARV-284: the log, ModSecurity and rewrite guards read a name as nginx's tokenizer does (a quoted name followed by ")" is
+	// the name and the start of the next argument), log_format is refused with access_log and error_log, and no annotation
+	// writes include, client_body_in_file_only or a Lua block, in any environment.
+	['a configuration-snippet with a quoted access_log before a parenthesis', 'values-k8s-dev.yaml', [], 'configuration-snippet writes an access_log, error_log, log_format or rewrite_log directive',
+		'configuration-snippet: "\\"access_log\\")off;"'],
+	['a server-snippet with a single-quoted error_log before a parenthesis in production', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log, error_log, log_format or rewrite_log directive',
+		"server-snippet: \"'error_log')/dev/stderr debug;\""],
+	['a server-snippet with a log format', 'values-k8s-dev.yaml', [], 'server-snippet writes an access_log, error_log, log_format or rewrite_log directive', "server-snippet: \"log_format full '$request';\""],
+	['a configuration-snippet with a quoted modsecurity directive before a parenthesis', 'values-k8s-dev.yaml', [], 'configuration-snippet writes a modsecurity directive',
+		'configuration-snippet: "\\"modsecurity\\")off;"'],
+	['a configuration-snippet with a quoted rewrite', 'values-k8s-dev.yaml', [], 'configuration-snippet writes a rewrite directive', 'configuration-snippet: "\\"rewrite\\" ^ /healthz break;"'],
+	['a server-snippet that includes files', 'values-k8s-dev.yaml', [], 'server-snippet writes an include directive', 'server-snippet: "include /etc/nginx/extra/*.conf;"'],
+	['a configuration-snippet with a quoted include before a parenthesis in production', 'values-k8s-prd.yaml', [PRD], 'configuration-snippet writes an include directive',
+		"configuration-snippet: \"'include')/tmp/site.conf;\""],
+	['a configuration-snippet that keeps every request body', 'values-k8s-dev.yaml', [], 'configuration-snippet writes client_body_in_file_only', 'configuration-snippet: "client_body_in_file_only on;"'],
+	['a server-snippet with a Lua block outside production', 'values-k8s-dev.yaml', [], 'server-snippet writes a *_by_lua directive', 'server-snippet: "access_by_lua_block { ngx.req.read_body() }"'],
+	['a configuration-snippet with a Lua file in the demo', 'values-k8s-demo.yaml', [], 'configuration-snippet writes a *_by_lua directive', 'configuration-snippet: "log_by_lua_file /tmp/site.lua;"'],
+	['a server-snippet that logs the server\'s rewrites in production', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log, error_log, log_format or rewrite_log directive',
+		'server-snippet: "client_header_timeout 30s; rewrite_log on;"'],
 	['a site annotation that turns OpenTelemetry on for the live hub', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/enable-opentelemetry is set by the chart',
 		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-opentelemetry': 'true' } })] }],
 	['the Ingresses of one host with different server-snippets', 'values-k8s-dev.yaml', [], 'the Ingresses of host api-integration-test carry different server-snippet annotations',

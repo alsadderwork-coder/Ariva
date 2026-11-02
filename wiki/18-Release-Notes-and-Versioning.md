@@ -146,6 +146,11 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-284: the ingress snippet guards read names as nginx does, and refuse include, client_body_in_file_only and Lua everywhere (2026-11-02)
+
+- Behaviour: the chart refuses to render a site's Ingress annotation that writes an nginx `include`, `client_body_in_file_only` or a `*_by_lua` directive in any environment (Lua was refused only with pod TLS before), and the `access_log`, `error_log`, `log_format`, `rewrite_log`, `modsecurity` and `rewrite` guards now read a directive's name as nginx's tokenizer does, so a quoted name followed by `)` (which nginx takes as the name and the start of the next argument) is refused too; `log_format` and `rewrite_log` join `access_log` and `error_log` (`rewrite_log` would write the chart's server-level checks, with the request line and its query string, at notice). The controller values check (`tests/checks.mjs`) refuses the same in the controller's main, http, server, location and global auth snippets.
+- Before the upgrade: a site values file whose annotations write one of those directives must drop it; the controller values Ariva ships write none.
+
 ### ARV-280: every TLS client a host opens takes TLS 1.2 and 1.3 and the pods' cipher suites only (2026-11-01)
 
 - Behaviour: the connections to PostgreSQL, Redis, the SMTP relay, Loki and the OTLP collector, and Kafka (Ariva's own producer, admin and stream consumer, and the MassTransit consumers) now offer TLS 1.2 and 1.3 only and, on Linux, the suites the pods' listeners offer (TLS 1.3's three; for TLS 1.2 ECDHE with AES-GCM or ChaCha20-Poly1305), as outbound integration calls have since ARV-205. Kafka's TLS 1.3 suites stay OpenSSL's default three, the same ones. Before, each library's defaults applied. A Redis connection string's `sslProtocols` now only narrows the two versions.

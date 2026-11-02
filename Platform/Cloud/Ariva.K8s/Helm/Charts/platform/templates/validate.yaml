@@ -68,7 +68,8 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   - ingresses: sourceRanges is a list of CIDRs, required on every Ingress to api-cronz-service in k8s-prd and there no wider
         than /8 (IPv4) or /16 (IPv6); no annotation sets allowlist-source-range or whitelist-source-range (sourceRanges does); no
         path routes /health, /healthz or anything under them (the probes stay on the pods' ports; the chart's server-snippet
-        answers them 404); no annotation sets rewrite-target or use-regex, and no annotation value writes a rewrite directive:
+        answers them 404); no annotation sets rewrite-target or use-regex, and no annotation value writes a rewrite directive
+        (read as nginx's tokenizer reads a statement, a quoted name followed by ")" included: ARV-284):
         the 404 is judged on the request's own path, before any rewrite, which could otherwise take another path to /health on
         the pod.
 - Credentials out of the ingress's logs (ARV-091, ASVS 5.0 V16.2.5, CWE-532):
@@ -79,9 +80,11 @@ Release guards. Renders nothing; fails the render when a rule is broken.
     request's values (%{REQUEST_HEADERS...}, REQUEST_COOKIES, REQUEST_LINE, REQUEST_URI, REQUEST_BODY, FULL_REQUEST,
     QUERY_STRING, ARGS, XML, MATCHED_VAR or a TX capture), which a rule's msg or logdata would copy into the error log;
   - no annotation value writes a modsecurity directive (modsecurity, modsecurity_rules, modsecurity_rules_file ..., its name
-    quoted or not), which could load the controller's modsecurity.conf or turn the audit log back on, or an access_log or
-    error_log directive, which could write the request line with its query string (nginx's combined format) or log the live
-    hub below critical;
+    quoted or not), which could load the controller's modsecurity.conf or turn the audit log back on, or an access_log,
+    error_log, log_format or rewrite_log directive, which could write the request line with its query string (nginx's
+    combined format; rewrite_log at notice for the chart's server-level checks, which run on every request) or log the live
+    hub below critical; each name is read as nginx's tokenizer reads a statement (ariva-platform.directive: bare,
+    or quoted and followed by a space, ";", "{" or ")", which nginx takes as the start of the next argument; ARV-284);
   - tokenInQuery is true or false; an Ingress with tokenInQuery routes /hubs or paths under it only, and an Ingress that
     routes /hubs (in any case) or a path under it has tokenInQuery: the live hub's URL carries the access token, and the
     chart's server-snippet answers /hubs 404 on every host without such an Ingress. On that Ingress enable-access-log and
@@ -94,8 +97,15 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   authentication). So no site annotation makes the controller keep a copy of an answer (a credentialed one, L3 border data,
   an L4 credential handed to its holder) outside Ariva, where no retention, sign-out or revocation reaches it. The controller
   values Ariva ships keep none either (tests/checks.mjs controllerValuesFindings); the chart's snippets are not values and write
-  none. Not covered here (ARV-284): a *_by_lua block is refused only with podTls (required in k8s-prd), and an include of a
-  file on the controller's disk is not refused.
+  none.
+- No include, kept body or Lua block from a site's snippets (ARV-284, CWE-94, CWE-532, CWE-501): no annotation value, in any environment,
+  writes an include directive (read as nginx's tokenizer reads a statement: it would read a file on the controller's disk into
+  the configuration and get around every guard here), client_body_in_file_only anywhere in its text (it keeps every request
+  body, sign-in passwords and TOTP codes included, as a file on the controller) or a *_by_lua directive anywhere in its text
+  (a Lua block can copy bodies and headers into the controller's shared dictionaries or files). The controller values Ariva
+  ships write none of them, nor a rewrite, in their snippets (tests/checks.mjs controllerValuesFindings). Not covered here
+  (ARV-288): ModSecurity's own Lua and file actions in a modsecurity-snippet, the controller's stream-snippet, load_module,
+  njs and perl, and a proxy_pass or mirror outside pod TLS.
 - Log shipping and the log pseudonym key (ARV-091a, ASVS 5.0 V16.4.2, V16.4.3, CWE-532; values logging):
   - logging is a map of collector, pseudonymKeySecret (name and key), lokiCredentialsSecret (name, usernameKey and passwordKey)
     and required, nothing else, so neither the key nor Loki's credentials can ever be a value; collector is otlp, loki or empty;
@@ -321,14 +331,23 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if and (eq $key "nginx.ingress.kubernetes.io/modsecurity-snippet") (regexMatch "(?i)%\\{\\s*(REQUEST_(HEADERS|COOKIES|LINE|URI|BODY)|FULL_REQUEST|QUERY_STRING|ARGS|MATCHED_VARS?\\b|XML|TX[.:][0-9])" (toString $value)) }}
 {{- fail (printf "ingresses %s: the modsecurity-snippet expands a macro of the request's values (REQUEST_HEADERS, REQUEST_COOKIES, REQUEST_LINE, REQUEST_URI, REQUEST_BODY, FULL_REQUEST, QUERY_STRING, ARGS, XML, MATCHED_VAR or a TX capture) in a rule; ModSecurity writes a rule's msg and logdata to the controller's error log, so those macros would copy bearer tokens, cookies or the live hub's access_token there (ARV-091)" $name) }}
 {{- end }}
-{{- if regexMatch "(?im)(^|[;{}'])\\s*[\"']?modsecurity(_[a-z_]+)?[\"']?\\s" (toString $value) }}
+{{- if mustRegexMatch (include "ariva-platform.directive" "modsecurity(_[a-z_]+)?") (toString $value) }}
 {{- fail (printf "ingresses %s: %s writes a modsecurity directive; the chart configures ModSecurity with enable-modsecurity and its modsecurity-snippet only, so no snippet loads the controller's modsecurity.conf (its audit log records bearer tokens and cookies), turns ModSecurity off or re-enables the audit log (ARV-091)" $name $key) }}
 {{- end }}
-{{- if regexMatch "(?im)(^|[;{}'])\\s*[\"']?(access_log|error_log)[\"']?\\s" (toString $value) }}
-{{- fail (printf "ingresses %s: %s writes an access_log or error_log directive; the controller's values and the chart decide what is logged, so no Ingress writes a request line with its query string (on /hubs, the access token) or logs the live hub below critical; to drop an Ingress's access log set enable-access-log \"false\" (ARV-091)" $name $key) }}
+{{- if mustRegexMatch (include "ariva-platform.directive" "access_log|error_log|log_format|rewrite_log") (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes an access_log, error_log, log_format or rewrite_log directive; the controller's values and the chart decide what is logged (rewrite_log would write the chart's server-level checks, with the request line and its query string, at notice), so no Ingress writes a request line with its query string (on /hubs, the access token) or logs the live hub below critical; to drop an Ingress's access log set enable-access-log \"false\" (ARV-091, ARV-284)" $name $key) }}
 {{- end }}
 {{- if regexMatch "(?i)\\b(proxy|fastcgi|uwsgi|scgi)_(cache|cache_path|store)\\b" (toString $value) }}
 {{- fail (printf "ingresses %s: %s names proxy_cache, proxy_cache_path or proxy_store (or the fastcgi_, uwsgi_ or scgi_ one); the ingress keeps no copy of an answer, as Ariva's answers carry credentials, border data and personal data that no cache outside Ariva may hold, so no annotation names one, quoted, commented or turned off (ARV-206)" $name $key) }}
+{{- end }}
+{{- if mustRegexMatch (include "ariva-platform.directive" "include") (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes an include directive: it reads a file on the controller's disk into the configuration, which gets around every directive guard of this chart (ARV-284)" $name $key) }}
+{{- end }}
+{{- if regexMatch "(?i)client_body_in_file_only" (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes client_body_in_file_only: it keeps every request body (sign-in passwords, TOTP codes, uploads) as a file on the controller (ARV-284)" $name $key) }}
+{{- end }}
+{{- if regexMatch "(?i)_by_lua" (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes a *_by_lua directive: a Lua block can copy request bodies and headers into the controller's shared dictionaries or files, so none is written in any environment (ARV-284)" $name $key) }}
 {{- end }}
 {{- if has $key (list "nginx.ingress.kubernetes.io/auth-cache-key" "nginx.ingress.kubernetes.io/auth-cache-duration") }}
 {{- fail (printf "ingresses %s: %s makes ingress-nginx cache the external authentication answers (proxy_cache auth_cache) on the controller's disk; Ariva uses no external authentication and the ingress keeps no copy of an answer (ARV-206)" $name $key) }}
@@ -590,7 +609,7 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if has $key (list "nginx.ingress.kubernetes.io/rewrite-target" "nginx.ingress.kubernetes.io/use-regex") }}
 {{- fail (printf "ingresses %s: %s is refused: the chart answers the health probes 404 on the request's own path, before any rewrite, so a rewrite could take another path to /health on the pod; no Ariva Ingress rewrites or matches by regex (ARV-085)" $name $key) }}
 {{- end }}
-{{- if regexMatch "(?im)(^|[;{}])\\s*rewrite\\s" (toString $value) }}
+{{- if mustRegexMatch (include "ariva-platform.directive" "rewrite") (toString $value) }}
 {{- fail (printf "ingresses %s: %s writes a rewrite directive: it would change the path after the chart's health probe check, so another path could reach /health on the pod (ARV-085)" $name $key) }}
 {{- end }}
 {{- end }}
