@@ -1,32 +1,32 @@
 {
-  "commit": "a26228e6add7e96e69142435744379db225698af",
-  "at": "2026-11-01",
+  "commit": "9580d0b30db9a68b8ed7491664f3dd1e0d81d627",
+  "at": "2026-11-02",
   "stories": 5,
   "results": [
     {
       "name": "dotnet build",
       "ok": true,
-      "seconds": 129
+      "seconds": 246
     },
     {
       "name": "reference scenario golden up to date",
       "ok": true,
-      "seconds": 9
+      "seconds": 17
     },
     {
       "name": "unit tests",
       "ok": true,
-      "seconds": 558
+      "seconds": 1067
     },
     {
       "name": "test count guard self-test",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "unit test count guard (every listed case has its results)",
       "ok": true,
-      "seconds": 3
+      "seconds": 6
     },
     {
       "name": "unit test results hold no secret (ARV-252)",
@@ -35,12 +35,12 @@
     {
       "name": "security scanner self-test",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "security scan",
       "ok": true,
-      "seconds": 1
+      "seconds": 2
     },
     {
       "name": "E2E expect message check self-test",
@@ -50,7 +50,7 @@
     {
       "name": "E2E expect messages hold no answer body",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "E2E artifact secret check self-test",
@@ -65,7 +65,7 @@
     {
       "name": "C# tests assert no secret by value",
       "ok": true,
-      "seconds": 1
+      "seconds": 2
     },
     {
       "name": "E2E raw HTTP client self-test",
@@ -85,12 +85,12 @@
     {
       "name": "TLS check self-test (release gate)",
       "ok": true,
-      "seconds": 1
+      "seconds": 2
     },
     {
       "name": "base images pinned",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "published runtime check self-test",
@@ -100,37 +100,37 @@
     {
       "name": "offline bundle verifier self-test",
       "ok": true,
-      "seconds": 7
+      "seconds": 11
     },
     {
       "name": "offline bundle builder self-test",
       "ok": true,
-      "seconds": 8
+      "seconds": 11
     },
     {
       "name": "chart security (pod security context, read-only root, TLS, release guards)",
       "ok": true,
-      "seconds": 49
+      "seconds": 77
     },
     {
       "name": "nuget vulnerability audit (fails on high or critical)",
       "ok": true,
-      "seconds": 21
+      "seconds": 31
     },
     {
       "name": "npm audit (web)",
       "ok": true,
-      "seconds": 1
+      "seconds": 2
     },
     {
       "name": "npm audit (e2e)",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "npm audit (chart tests)",
       "ok": true,
-      "seconds": 0
+      "seconds": 1
     },
     {
       "name": "docs text rules",
@@ -143,22 +143,22 @@
     {
       "name": "web svelte-check",
       "ok": true,
-      "seconds": 12
+      "seconds": 25
     },
     {
       "name": "web lint",
       "ok": true,
-      "seconds": 8
+      "seconds": 16
     },
     {
       "name": "web build",
       "ok": true,
-      "seconds": 26
+      "seconds": 48
     },
     {
       "name": "integration tests",
       "ok": true,
-      "seconds": 1263
+      "seconds": 2291
     },
     {
       "name": "integration test count guard (every listed case has its results)",
@@ -177,7 +177,7 @@
     {
       "name": "visual regression (pinned image)",
       "ok": true,
-      "seconds": 150
+      "seconds": 314
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
@@ -186,14 +186,14 @@
     {
       "name": "e2e tests (API and functional)",
       "ok": true,
-      "seconds": 1293
+      "seconds": 1757
     },
     {
       "name": "no secret in the test artifacts (report, output, traces)",
       "ok": true
     },
     {
-      "name": "mutation tests (no engine change since b1f2fe14b9)",
+      "name": "mutation tests (no engine change since a26228e6ad)",
       "ok": true,
       "skipped": true
     }
