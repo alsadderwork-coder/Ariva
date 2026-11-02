@@ -30,7 +30,7 @@ public sealed class AvailabilityJobs(AvailabilityLedger ledger, AvailabilitySett
         ArgumentNullException.ThrowIfNull(context);
         if (!settings.Enabled)
             return;
-        var run = await RunBound.RunAsync(Ledger, RunTimeout, timeProvider ?? TimeProvider.System, ledger.RunAsync, ct);
+        var run = await JobRun.RunAsync(Ledger, RunTimeout, timeProvider ?? TimeProvider.System, ledger.RunAsync, ct);
         if (run.SitesFailed > 0)
             logger.LogWarning("Availability ledger ({Type}): {Sites} sites, {Failed} failed, {Minutes} minutes recorded", context.Type, run.Sites, run.SitesFailed, run.Minutes);
         else

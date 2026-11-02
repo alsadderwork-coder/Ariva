@@ -38,7 +38,7 @@ public sealed class RetentionJobs(RetentionRound round, RetentionJobSettings set
         RetentionRun run;
         try
         {
-            run = await RunBound.RunAsync(Purge, RunTimeout, timeProvider ?? TimeProvider.System, round.RunAsync, ct);
+            run = await JobRun.RunAsync(Purge, RunTimeout, timeProvider ?? TimeProvider.System, round.RunAsync, ct);
         }
         catch (Exception) when (!ct.IsCancellationRequested)
         {

@@ -146,6 +146,11 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-285: exception text kept outside the logs is protected as log text is (2026-11-02)
+
+- Behaviour: a dead letter's error message, `outbox_message.last_error` and the exception TickerQ keeps of a failed job run (shown on the Cronz dashboard) now mask credentials by shape and name, and email addresses, with the logs' rules (`SecretText` in `Ariva.Infra/Security`, which `RedactionEnricher` and `ProtectedExceptionSink` now use), before any cut. `last_error` is also made printable for PostgreSQL, so a NUL or a lone surrogate in a client's message no longer fails the row's update.
+- After the upgrade: nothing to do. A `last_error`, a dead letter or a failed run on the dashboard may read `[REDACTED]` (an integration client secret `ics_[REDACTED]`) where a client's message held a credential; the cause is still named. A failed run whose text held one shows the type `ProtectedException`, its message starting with the original type's name.
+
 ### ARV-284: the ingress snippet guards read names as nginx does, and refuse include, client_body_in_file_only and Lua everywhere (2026-11-02)
 
 - Behaviour: the chart refuses to render a site's Ingress annotation that writes an nginx `include`, `client_body_in_file_only` or a `*_by_lua` directive in any environment (Lua was refused only with pod TLS before), and the `access_log`, `error_log`, `log_format`, `rewrite_log`, `modsecurity` and `rewrite` guards now read a directive's name as nginx's tokenizer does, so a quoted name followed by `)` (which nginx takes as the name and the start of the next argument) is refused too; `log_format` and `rewrite_log` join `access_log` and `error_log` (`rewrite_log` would write the chart's server-level checks, with the request line and its query string, at notice). The controller values check (`tests/checks.mjs`) refuses the same in the controller's main, http, server, location and global auth snippets.

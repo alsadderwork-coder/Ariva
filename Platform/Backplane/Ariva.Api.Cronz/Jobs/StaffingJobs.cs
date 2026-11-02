@@ -45,7 +45,7 @@ public sealed class StaffingJobs(StaffingRecommendations recommendations, Staffi
         ArgumentNullException.ThrowIfNull(context);
         if (!settings.Enabled)
             return;
-        var run = await RunBound.RunAsync(Recommendations, RunTimeout, timeProvider ?? TimeProvider.System, recommendations.RunAsync, ct);
+        var run = await JobRun.RunAsync(Recommendations, RunTimeout, timeProvider ?? TimeProvider.System, recommendations.RunAsync, ct);
         var milliseconds = (long)run.Elapsed.TotalMilliseconds;
         if (LevelOf(run) != LogLevel.Warning)
         {

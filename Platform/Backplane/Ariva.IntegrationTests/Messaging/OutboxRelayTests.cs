@@ -1349,6 +1349,61 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
         (await relay.RunOnceAsync(Ct)).Should().Be(RelayPass.WaitingForBrokers);
     }
 
+    /// <summary>
+    /// ARV-285 (CWE-532): <c>last_error</c> keeps a failure's text protected as log text is, whether the row failed (attempts
+    /// counted) or the broker was away (none counted): an integration client secret, a TOTP seed and an email address in the
+    /// client's message are masked before the row is written, so a reader of the table (wiki 10 section 4.5a) sees none of them.
+    /// Each is drawn in the test; no row names one (ARV-252).
+    /// </summary>
+    [Theory]
+    [InlineData("row failed")]
+    [InlineData("broker away")]
+    public async Task Relay_Should_KeepTheLastErrorProtected_When_TheFailureHoldsACredentialOrAnAddress(string failure)
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("P", 1));
+        var secret = Ariva.Infra.Integration.IntegrationCredentials.NewSecret();
+        var seed = Ariva.Infra.Security.Base32.Encode(System.Security.Cryptography.RandomNumberGenerator.GetBytes(20));
+        var text = $"refused client_secret {secret} with seed {seed} for anna.salem@example.com";
+        var transport = new RecordingTransport
+        {
+            FailFor = KafkaTopics.AlertStateChanged,
+            Failure = failure == "row failed"
+                ? () => new InvalidOperationException(text)
+                : () => new Confluent.Kafka.KafkaException(new Confluent.Kafka.Error(Confluent.Kafka.ErrorCode.Local_Transport, text))
+        };
+
+        (await Relay(transport).RunOnceAsync(Ct)).Failed.Should().Be(1);
+
+        var lastError = await _host.ReadAsync<string>("SELECT last_error FROM outbox_message WHERE message_key = 'P'");
+        lastError.Contains(secret[Ariva.Infra.Integration.IntegrationCredentials.SecretMarker.Length..], StringComparison.Ordinal).Should().BeFalse("the client secret is masked");
+        lastError.Contains(seed, StringComparison.Ordinal).Should().BeFalse("the TOTP seed is masked");
+        lastError.Contains("anna.salem@", StringComparison.Ordinal).Should().BeFalse("the address is masked");
+        lastError.Should().StartWith(failure == "row failed" ? "InvalidOperationException: refused" : "KafkaException: refused")
+            .And.Contain("ics_" + Ariva.Infra.Security.SecretText.Redacted).And.Contain("a***@example.com");
+        (await _host.ReadAsync<int>("SELECT attempts FROM outbox_message WHERE message_key = 'P'")).Should().Be(failure == "row failed" ? 1 : 0,
+            "each path writes its own last_error (MarkFailedAsync, MarkBrokerUnavailableAsync)");
+    }
+
+    /// <summary>
+    /// ARV-285: the third <c>last_error</c> write, an event type this build does not know (MarkUnreadableAsync), keeps the
+    /// type's name protected too: a credential in it (drawn in the test) is masked, and the row still names the type.
+    /// </summary>
+    [Fact]
+    public async Task Relay_Should_KeepTheLastErrorProtected_When_AnUnknownTypeNameHoldsACredential()
+    {
+        await ResetAsync();
+        await WriteAsync(true, Probe("U", 1));
+        var secret = Ariva.Infra.Integration.IntegrationCredentials.NewSecret();
+        await _host.ReadAsync<object>("UPDATE outbox_message SET message_type = @secret WHERE message_key = 'U'", secret: "Renamed " + secret);
+
+        (await Relay(new RecordingTransport { Catalog = _catalog }).RunOnceAsync(Ct)).HeldBack.Should().Be(1);
+
+        var lastError = await _host.ReadAsync<string>("SELECT last_error FROM outbox_message WHERE message_key = 'U'");
+        lastError.Contains(secret[Ariva.Infra.Integration.IntegrationCredentials.SecretMarker.Length..], StringComparison.Ordinal).Should().BeFalse("the secret is masked");
+        lastError.Should().Contain("Unknown event type 'Renamed ics_" + Ariva.Infra.Security.SecretText.Redacted);
+    }
+
     /// <summary>The relay's log by level (ARV-245).</summary>
     private sealed class RelayLog : ILogger<OutboxRelay>
     {

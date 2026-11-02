@@ -300,7 +300,7 @@ Since ARV-159 site and topology names (sites, airports, terminals, levels, check
 
 ### 4.5a Outbox backlog and dead letters (ARV-020)
 
-The gauges `ariva.outbox.unsent` and `ariva.outbox.oldest_unsent_age` show the backlog without a query (section 2a). Outbox backlog, oldest unsent event and the last error (read only, safe on production):
+The gauges `ariva.outbox.unsent` and `ariva.outbox.oldest_unsent_age` show the backlog without a query (section 2a). Outbox backlog, oldest unsent event and the last error (read only, safe on production). Since ARV-285 `last_error`, like a dead letter's error, holds the client's message protected as the logs protect it: a credential reads `[REDACTED]` (an integration client secret `ics_[REDACTED]`) and an email address keeps its first character and its domain; the cause is still named.
 
 ```sql
 SELECT count(*) AS unsent, min(created_on) AS oldest, max(attempts) AS most_attempts

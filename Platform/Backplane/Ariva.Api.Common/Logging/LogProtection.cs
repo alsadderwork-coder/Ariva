@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Ariva.Infra.Security;
 using Microsoft.Extensions.Configuration;
 
 namespace Ariva.Api.Common.Logging;
@@ -62,7 +63,7 @@ public sealed partial class LogProtection
     public const string HashMarker = "#";
 
     /// <summary>What a masked value keeps after its first character.</summary>
-    public const string MaskText = "***";
+    public const string MaskText = SecretText.MaskText;
 
     /// <summary>Put before the date whose key is derived, so the day keys serve nothing else.</summary>
     private const string DayKeyLabel = "ariva-log-pseudonym:";
@@ -162,9 +163,8 @@ public sealed partial class LogProtection
         if (string.IsNullOrEmpty(name))
             return LogProtectionLevel.None;
 
-        var normalized = name.Replace("-", string.Empty, StringComparison.Ordinal).Replace("_", string.Empty, StringComparison.Ordinal)
-            .Replace(":", string.Empty, StringComparison.Ordinal);
-        if (RedactionEnricher.SensitiveNames.Contains(normalized) || EndsWithAny(normalized, RedactionEnricher.SensitiveSuffixes))
+        var normalized = SecretText.Normalize(name);
+        if (SecretText.IsSensitiveName(normalized))
             return LogProtectionLevel.Omit;
         if (HashedNames.Contains(normalized) || EndsWithAny(normalized, HashedSuffixes))
             return LogProtectionLevel.Hash;
@@ -187,34 +187,17 @@ public sealed partial class LogProtection
     }
 
     /// <summary>
-    /// Masks one value: an email address keeps the first character of its local part and its domain
-    /// (<c>a***@example.com</c>); any other text keeps its first character only.
+    /// Masks one value (<see cref="SecretText.Mask"/>): an email address keeps the first character of its local part and its
+    /// domain (<c>a***@example.com</c>); any other text keeps its first character only.
     /// </summary>
     /// <param name="value">The value.</param>
     /// <returns>The masked value; null and empty stay as they are.</returns>
-    public static string Mask(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-            return value;
+    public static string Mask(string value) => SecretText.Mask(value);
 
-        var trimmed = value.Trim();
-        var at = trimmed.LastIndexOf('@');
-        if (at > 0 && at < trimmed.Length - 1)
-            return string.Concat(trimmed.AsSpan(0, 1), MaskText, trimmed.AsSpan(at));
-        return string.Concat(trimmed.AsSpan(0, Math.Min(1, trimmed.Length)), MaskText);
-    }
-
-    /// <summary>Masks every email address inside free text. Returns the same instance when nothing changed.</summary>
+    /// <summary>Masks every email address inside free text (<see cref="SecretText.MaskAddressesIn"/>). Returns the same instance when nothing changed.</summary>
     /// <param name="text">The text.</param>
     /// <returns>The text with each address masked as <see cref="Mask"/> does.</returns>
-    public static string MaskAddressesIn(string text)
-    {
-        if (string.IsNullOrEmpty(text) || !text.Contains('@', StringComparison.Ordinal))
-            return text;
-
-        var result = EmailAddress().Replace(text, m => Mask(m.Value));
-        return string.Equals(result, text, StringComparison.Ordinal) ? text : result;
-    }
+    public static string MaskAddressesIn(string text) => SecretText.MaskAddressesIn(text);
 
     private static bool EndsWithAny(string name, IReadOnlyList<string> suffixes)
     {
@@ -247,14 +230,8 @@ public sealed partial class LogProtection
     /// <returns>True when a configuration file gives the value.</returns>
     internal static bool ComesFromAFile(IConfiguration configuration, string key) => Ariva.ServiceDefaults.ConfigurationOrigin.IsFromAFile(configuration, key);
 
-    /// <summary>
-    /// An email address in free text (CWE-1333): a run of local part characters, the literal <c>@</c>, then dot-separated
-    /// labels. It runs on <see cref="RegexOptions.NonBacktracking"/>, linear in the text's length, without a timeout: a timeout
-    /// would throw inside the enricher, and Serilog emits an event whose enricher threw as it is, unmasked. The leftmost match
-    /// starts where a run of address characters starts, so no lookbehind is needed.
-    /// </summary>
-    [GeneratedRegex(@"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
-    public static partial Regex EmailAddress();
+    /// <summary>An email address in free text (CWE-1333, <see cref="SecretText.EmailAddress"/>), linear in the text's length.</summary>
+    public static Regex EmailAddress() => SecretText.EmailAddress();
 
     #endregion
 

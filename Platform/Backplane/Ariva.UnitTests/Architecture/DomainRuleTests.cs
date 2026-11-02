@@ -57,6 +57,7 @@ public sealed class DomainRuleTests
     /// </summary>
     private static readonly Dictionary<string, string> TextReaders = new(StringComparer.Ordinal)
     {
+        ["Ariva.Api.Cronz.Jobs.JobRun"] = "ARV-285: reads a job's failure text only to protect it (ProtectedExceptionSink.Protect, RedactionEnricher.ProtectText) and throws it on protected to TickerQ, whose dashboard shows that protected text (the original before ARV-285); tells no rule apart by it and answers no API caller",
         ["Ariva.Di.TopicProvisioning"] = "ARV-177: the topic provisioning command logs why it refused (through the log redaction) and answers no caller",
         ["Ariva.Infra.Border.AmanPoller"] = "records an OutboundUnavailableException's text, Ariva's own (an open circuit, a token already asked for), on the endpoint's status",
         ["Ariva.Infra.Flights.Acris.AcrisPoller"] = "records an OutboundUnavailableException's text, Ariva's own (an open circuit, a token already asked for), on the endpoint's status",

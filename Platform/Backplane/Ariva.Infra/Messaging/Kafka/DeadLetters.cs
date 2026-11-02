@@ -1,4 +1,5 @@
 using Ariva.Core.Messaging;
+using Ariva.Infra.Security;
 using MassTransit;
 
 namespace Ariva.Infra.Messaging.Kafka;
@@ -6,7 +7,8 @@ namespace Ariva.Infra.Messaging.Kafka;
 /// <summary>
 /// A message that could not be processed, as produced to <c>&lt;topic&gt;.dlq.v1</c> (ADR-0018): everything needed to
 /// inspect it and to replay it to its source topic with the same key. The error carries the exception type and
-/// message only, no stack trace. The body is cut at <see cref="DeadLetters.MaxBodyBytes"/> (flagged, with the full
+/// message only, no stack trace, and the message is protected as log text is (ARV-285, <see cref="SecretText.Protect"/>:
+/// credentials by shape and name, email addresses masked) before it is cut. The body is cut at <see cref="DeadLetters.MaxBodyBytes"/> (flagged, with the full
 /// length), and further if the whole letter would pass <see cref="DeadLetters.MaxLetterBytes"/> (ARV-171), so the letter
 /// always fits Kafka's 1 MB limit; a cut body cannot be replayed from the letter and is read from the source topic by
 /// partition and offset while its retention lasts. Likewise a letter flagged in <see cref="DeadLetters.TextReplacedHeader"/>
@@ -126,7 +128,7 @@ public static class DeadLetters
     /// fits <see cref="MaxLetterBytes"/> (ARV-171). The JSON encoder writes a character outside ASCII as six bytes, so long
     /// headers could otherwise take a letter past Kafka's limit, where every send of it fails for good. The body gives way
     /// first (flagged as cut, with its full length), then the headers (left out, their number in
-    /// <see cref="HeadersDroppedHeader"/>), and last the key and the error message. Every text part is then made printable
+    /// <see cref="HeadersDroppedHeader"/>), and last the key and the error message (protected first, ARV-285). Every text part is then made printable
     /// for PostgreSQL (ARV-175, <see cref="Printable"/>, flagged in <see cref="TextReplacedHeader"/>), after it is cut, since a
     /// cut can split a surrogate pair. A record's header named like a flag is kept under <see cref="RecordHeaderPrefix"/>.
     /// The topic, partition, offset and consumer are kept exactly.
@@ -152,8 +154,8 @@ public static class DeadLetters
             kept[keptName] = keptValue;
         }
 
-        var message = error.Message ?? string.Empty;
-        message = Printable(message.Length <= MaxErrorLength ? message : message[..MaxErrorLength], out var messageReplaced);
+        // ARV-285: protected as log text is before the cut, so a credential the cut would split goes whole.
+        var message = Printable(SecretText.ProtectAndCut(error.Message, MaxErrorLength), out var messageReplaced);
         if (messageReplaced)
             replaced.Add("error");
         key = Printable(key ?? string.Empty, out var keyReplaced);

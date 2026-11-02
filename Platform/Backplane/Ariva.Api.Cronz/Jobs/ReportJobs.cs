@@ -23,7 +23,7 @@ public sealed class ReportJobs(ReportDeliveryRound round, ILogger<ReportJobs> lo
     public async Task DeliverAsync(TickerFunctionContext context, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
-        var run = await RunBound.RunAsync(Deliveries, RunTimeout, timeProvider ?? TimeProvider.System, round.RunAsync, ct);
+        var run = await JobRun.RunAsync(Deliveries, RunTimeout, timeProvider ?? TimeProvider.System, round.RunAsync, ct);
         if (run.Due > 0)
             logger.LogInformation("Report deliveries ({Type}): {Due} due, {Sent} sent, {Skipped} skipped, {Failed} failed", context.Type, run.Due, run.Sent, run.Skipped, run.Failed);
     }

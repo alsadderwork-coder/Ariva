@@ -1,6 +1,8 @@
 using System.Data;
 using System.Text.Json;
 using Ariva.Core.Messaging;
+using Ariva.Infra.Messaging.Kafka;
+using Ariva.Infra.Security;
 using Ariva.Infra.Settings;
 using Microsoft.Extensions.Hosting;
 using Npgsql;
@@ -220,7 +222,8 @@ public sealed class OutboxRelay(
     /// </summary>
     public static readonly TimeSpan EventTopicHold = TimeSpan.FromMinutes(1);
 
-    private const int MaxErrorLength = 2000;
+    /// <summary>The longest <c>last_error</c> kept, in characters.</summary>
+    internal const int MaxErrorLength = 2000;
     private static readonly TimeSpan HousekeepingEvery = TimeSpan.FromHours(1);
     private DateTimeOffset _lastHousekeeping = DateTimeOffset.MinValue;
     private readonly OutboxBrokerStreaks _streaks = new(TimeSpan.FromMinutes(kafka.Outbox.BrokerStreakMinutes));
@@ -755,6 +758,19 @@ public sealed class OutboxRelay(
         return rows;
     }
 
+    /// <summary>
+    /// ARV-285 (CWE-532): what <c>last_error</c> keeps of a failure, its type's name (when <paramref name="withType"/>) and its
+    /// message, protected as log text is before the cut at <see cref="MaxErrorLength"/> (<see cref="SecretText.ProtectAndCut"/>:
+    /// credentials by shape and name, email addresses masked), then made printable for PostgreSQL (<see cref="DeadLetters.Printable"/>:
+    /// a NUL or a lone surrogate, which a cut can leave, would fail the row's update).
+    /// </summary>
+    internal static string LastError(Exception error, bool withType)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        var text = withType ? $"{error.GetType().Name}: {error.Message}" : error.Message;
+        return DeadLetters.Printable(SecretText.ProtectAndCut(text, MaxErrorLength), out _);
+    }
+
     private static async Task MarkFailedAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, long seq, DateTime now, Exception error, CancellationToken ct)
     {
         await using var command = new NpgsqlCommand(
@@ -767,9 +783,8 @@ public sealed class OutboxRelay(
             """,
             connection,
             transaction);
-        var message = $"{error.GetType().Name}: {error.Message}";
         command.Parameters.AddWithValue("now", now);
-        command.Parameters.AddWithValue("error", message.Length <= MaxErrorLength ? message : message[..MaxErrorLength]);
+        command.Parameters.AddWithValue("error", LastError(error, withType: true));
         command.Parameters.AddWithValue("seq", seq);
         await command.ExecuteNonQueryAsync(ct);
     }
@@ -780,9 +795,8 @@ public sealed class OutboxRelay(
     {
         await using var command = new NpgsqlCommand(
             "UPDATE outbox_message SET next_attempt_on = @next, last_error = @error WHERE seq = @seq", connection, transaction);
-        var message = $"{error.GetType().Name}: {error.Message}";
         command.Parameters.AddWithValue("next", now + retry);
-        command.Parameters.AddWithValue("error", message.Length <= MaxErrorLength ? message : message[..MaxErrorLength]);
+        command.Parameters.AddWithValue("error", LastError(error, withType: true));
         command.Parameters.AddWithValue("seq", seq);
         await command.ExecuteNonQueryAsync(ct);
     }
@@ -790,7 +804,7 @@ public sealed class OutboxRelay(
     private static async Task MarkUnreadableAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, long seq, Exception error, CancellationToken ct)
     {
         await using var command = new NpgsqlCommand("UPDATE outbox_message SET last_error = @error WHERE seq = @seq", connection, transaction);
-        command.Parameters.AddWithValue("error", error.Message.Length <= MaxErrorLength ? error.Message : error.Message[..MaxErrorLength]);
+        command.Parameters.AddWithValue("error", LastError(error, withType: false));
         command.Parameters.AddWithValue("seq", seq);
         await command.ExecuteNonQueryAsync(ct);
     }

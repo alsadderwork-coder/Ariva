@@ -23,7 +23,7 @@ public sealed class SecretJobs(SecretReprotectionRound round, ILogger<SecretJobs
     public async Task ReprotectAsync(TickerFunctionContext context, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
-        var run = await RunBound.RunAsync(Reprotect, RunTimeout, timeProvider ?? TimeProvider.System, round.RunAsync, ct);
+        var run = await JobRun.RunAsync(Reprotect, RunTimeout, timeProvider ?? TimeProvider.System, round.RunAsync, ct);
         if (run.Reprotected > 0 || run.Failed > 0)
             logger.LogInformation("Secret re-protection ({Type}): {Checked} checked, {Reprotected} re-protected, {Failed} unreadable", context.Type, run.Checked, run.Reprotected, run.Failed);
     }

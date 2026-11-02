@@ -26,7 +26,7 @@ public sealed class TimescaleJobs(TimescalePolicyJobs policyJobs, RetentionMetri
     public async Task CheckAsync(TickerFunctionContext context, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
-        var kinds = await RunBound.RunAsync(PolicyJobs, RunTimeout, timeProvider ?? TimeProvider.System, policyJobs.FailedAsync, ct);
+        var kinds = await JobRun.RunAsync(PolicyJobs, RunTimeout, timeProvider ?? TimeProvider.System, policyJobs.FailedAsync, ct);
         metrics.PolicyJobs(kinds, ReportFreshFor);
         var failed = kinds.Where(k => k.Failed > 0).ToList();
         if (failed.Count > 0)

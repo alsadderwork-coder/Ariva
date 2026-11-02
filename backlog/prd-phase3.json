@@ -2301,8 +2301,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 302,
-      "passes": false,
-      "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-212 security review (advisory 12). The TickerQ dashboard part touches the Cronz dashboard, which is under the sign-in freeze; the dead letter and outbox parts are not.",
+      "passes": true,
+      "notes": "Size S. Phase 3. Filed 2026-11-01 from the ARV-212 security review (advisory 12). The TickerQ dashboard part touches the Cronz dashboard, which is under the sign-in freeze; the dead letter and outbox parts are not. Done 2026-11-02: the text rules moved to Ariva.Infra/Security/SecretText.cs (RedactionEnricher and LogProtection name them); DeadLetters.Create and OutboxRelay.LastError protect before the 2,000 character cut; every TickerQ function runs its work through JobRun, which throws a protected chain (the TickerQ part protected, its limit, TickerQ's own failures around a function, recorded in the log inventory). Review round 1 FAIL (docs) fixed, round 2 and follow-up PASS; ARV-289 filed.",
       "dependsOn": [
         "ARV-212"
       ]
@@ -2370,6 +2370,27 @@
       "notes": "Size M. Phase 3. Filed 2026-11-02 from the ARV-284 security review round 1 (advisories A1 to A4, A6, A7). Chart and chart tests only; no sign-in code.",
       "dependsOn": [
         "ARV-284"
+      ]
+    },
+    {
+      "id": "ARV-289",
+      "title": "[E17] The four log text rules without NonBacktracking moved onto the linear engine, Jwt first",
+      "description": "Found by the ARV-285 security review (round 2, advisory 1, 2026-11-02). SecretText's AuthorizationScheme, TokenQueryParameter, DeviceKey and Jwt run on the backtracking engine without a timeout (they must not time out: a timed out match would let a log event out unprotected, and since ARV-285 would throw in DeadLetters.Create, fail the outbox relay's pass or turn a job's failure into Unprotectable). Each match attempt is linear, but Jwt (\\beyJ[A-Za-z0-9_-]{5,}\\.) can start at every eyJ of a long run that holds - (no word character, so a word boundary before each eyJ) and reads to the run's end each time, so a crafted exception text costs time quadratic in its length (measured by the reviewer with a backtracking engine: 20,000 characters 0.18 s, 80,000 characters 3.7 s). The same text reaches the rule through ProtectedExceptionSink since ARV-212, so ARV-285 added passes, not exposure. Move the four rules onto RegexOptions.NonBacktracking with an infinite timeout, as ARV-163 did for the others, each proven to accept and replace exactly as before. CWEs to review: CWE-1333, CWE-532.",
+      "acceptanceCriteria": [
+        "SecretText.Jwt, AuthorizationScheme, TokenQueryParameter and DeviceKey run on RegexOptions.NonBacktracking with an infinite timeout (LinearRuleTests lists them), or a rule that cannot is rewritten so that no match start reads past a bounded distance, with the reason recorded",
+        "Each moved rule replaces exactly what the backtracking rule replaced, shown by a property test on random strings over its own characters and near misses (as ARV-163's SameAs), the masks kept (Bearer and Basic schemes, the token query parameter's name, ardk_ and ardp_ prefixes)",
+        "RedactText over 100,000 characters of eyJ- repeated (and of each other rule's own fragments) finishes within the bound SecretFormatRedactionTests uses for the other rules",
+        "docs/security/cwe-controls.md CWE-1333 row no longer lists these rules among those without NonBacktracking",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 318,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-11-02 from the ARV-285 security review round 2 (advisory 1). Predates ARV-285 (the rule is ARV-007's, applied to exception text since ARV-212). No sign-in code.",
+      "dependsOn": [
+        "ARV-285"
       ]
     }
   ]
