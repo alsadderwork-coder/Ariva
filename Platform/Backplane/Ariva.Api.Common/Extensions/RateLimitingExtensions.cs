@@ -65,7 +65,9 @@ public static class RateLimitingExtensions
     /// <summary>
     /// Named policy for the Integration API's batch endpoints (ARV-043): a concurrency limit per host process, applied
     /// before authentication and before any body is buffered, so a burst of 1 MB batches cannot exhaust memory or the
-    /// temporary volume (CWE-400). The rest get 429; integrators retry with the same Idempotency-Key.
+    /// temporary volume (CWE-400). The rest get 429; integrators retry with the same Idempotency-Key. Since ARV-229a a request that
+    /// sends no credentials takes no slot (<see cref="SessionConcurrency"/>): the call audit reads a body only once its call is
+    /// authenticated, so such a request ends 401 without one.
     /// </summary>
     public const string IntegrationBatchPolicy = "integration-batch";
 
@@ -101,7 +103,8 @@ public static class RateLimitingExtensions
     /// <summary>
     /// ARV-096b: the partition of a request to a user's concurrency policy (<see cref="BacktestPolicy"/>,
     /// <see cref="ValidationResultsPolicy"/>, <see cref="ReportsPolicy"/>; since ARV-265 <see cref="UploadPolicy"/>'s places are
-    /// taken after authorization) that sends no credentials at all: no limit. The policies run
+    /// taken after authorization), or since ARV-229a to an Integration one (<see cref="IntegrationBatchPolicy"/>,
+    /// <see cref="IntegrationAidxPolicy"/>), that sends no credentials at all: no limit. The policies run
     /// before authentication, and such a request ends 401 there at once, so it must neither take a slot nor wait for one.
     /// </summary>
     public const string WithoutCredentialsPartition = "without-credentials";
@@ -161,20 +164,12 @@ public static class RateLimitingExtensions
                         _ => ToLimiterOptions(limits.DisplayPlays))));
                 // ARV-265: nothing before authentication; UploadLimitAttribute takes the upload places once the caller is known.
                 options.AddPolicy(UploadPolicy, _ => RateLimitPartition.GetNoLimiter(UploadPolicy));
-                options.AddPolicy(IntegrationBatchPolicy, Logged(IntegrationBatchPolicy, HostKind, _ =>
-                    RateLimitPartition.GetConcurrencyLimiter(IntegrationBatchPolicy, _ => new ConcurrencyLimiterOptions
-                    {
-                        PermitLimit = limits.IntegrationBatch.PermitLimit,
-                        QueueLimit = limits.IntegrationBatch.QueueLimit,
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    })));
-                options.AddPolicy(IntegrationAidxPolicy, Logged(IntegrationAidxPolicy, HostKind, _ =>
-                    RateLimitPartition.GetConcurrencyLimiter(IntegrationAidxPolicy, _ => new ConcurrencyLimiterOptions
-                    {
-                        PermitLimit = limits.IntegrationAidx.PermitLimit,
-                        QueueLimit = limits.IntegrationAidx.QueueLimit,
-                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst
-                    })));
+                // ARV-229a: as the user policies, a batch or AIDX message that sends no credentials takes no slot (authentication
+                // refuses it 401 before its body is read); one that sends any shares the host's slots.
+                options.AddPolicy(IntegrationBatchPolicy, Logged(IntegrationBatchPolicy, HostKind, context =>
+                    SessionConcurrency(context, IntegrationBatchPolicy, limits.IntegrationBatch.PermitLimit, limits.IntegrationBatch.QueueLimit)));
+                options.AddPolicy(IntegrationAidxPolicy, Logged(IntegrationAidxPolicy, HostKind, context =>
+                    SessionConcurrency(context, IntegrationAidxPolicy, limits.IntegrationAidx.PermitLimit, limits.IntegrationAidx.QueueLimit)));
                 options.AddPolicy(ValidationResultsPolicy, Logged(ValidationResultsPolicy, HostKind, context => SessionConcurrency(context, ValidationResultsPolicy, limits.ValidationResults.PermitLimit, limits.ValidationResults.QueueLimit)));
                 options.AddPolicy(ReportsPolicy, Logged(ReportsPolicy, HostKind, context => SessionConcurrency(context, ReportsPolicy, limits.Reports.PermitLimit, limits.Reports.QueueLimit)));
                 options.AddPolicy(BacktestPolicy, Logged(BacktestPolicy, HostKind, context => SessionConcurrency(context, BacktestPolicy, 2, 2)));
@@ -228,8 +223,9 @@ public static class RateLimitingExtensions
     /// joined (<c>Headers.Authorization.ToString()</c>, which drops empty ones). Only a request whose joined value is empty or white
     /// space goes uncounted, and authentication refuses it 401 at once; any other (a user's token, a forged one, a device key, Basic)
     /// is counted, for the moment its authentication takes at least. A bearer token is the only way an API call proves a user's session
-    /// (the refresh cookie goes to <c>/api/auth</c> only; the live hub's query token is not on these endpoints). Security review of
-    /// ARV-096b, H1: counting exactly one value let a signed-in caller add an empty second one and go uncounted.
+    /// (the refresh cookie goes to <c>/api/auth</c> only; the live hub's query token is not on these endpoints), and an Integration
+    /// client's (ARV-229a): its token is read from the Authorization header only, beside its TOTP header, which alone proves nothing.
+    /// Security review of ARV-096b, H1: counting exactly one value let a signed-in caller add an empty second one and go uncounted.
     /// </summary>
     public static bool PresentsCredentials(HttpContext context)
     {
@@ -238,8 +234,8 @@ public static class RateLimitingExtensions
     }
 
     /// <summary>
-    /// ARV-096b: a user's concurrency policy, one partition per host process for the requests that send credentials
-    /// (<see cref="PresentsCredentials"/>), and none for the others (<see cref="WithoutCredentialsPartition"/>).
+    /// ARV-096b: a user's concurrency policy (and since ARV-229a an Integration client's), one partition per host process for the requests
+    /// that send credentials (<see cref="PresentsCredentials"/>), and none for the others (<see cref="WithoutCredentialsPartition"/>).
     /// </summary>
     public static RateLimitPartition<string> SessionConcurrency(HttpContext context, string policy, int permits, int queue) =>
         PresentsCredentials(context)

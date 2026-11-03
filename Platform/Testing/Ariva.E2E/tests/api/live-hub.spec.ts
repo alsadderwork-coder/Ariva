@@ -18,8 +18,8 @@ const instance = process.env.ARIVA_E2E_REDIS_INSTANCE || 'ariva:';
 function connection(token?: string, negotiate = false): HubConnection {
 	return new HubConnectionBuilder()
 		.withUrl(hubUrl, {
-			// As the web app connects: WebSockets only and no negotiate request, so any Main replica can take the
-			// connection without sticky sessions (the token travels as access_token on the WebSocket request).
+			// WebSockets only, and by default no negotiate request, so the hub's own checks at the handshake are what a test meets
+			// (the token travels as access_token on the WebSocket request); the web app negotiates first, as `negotiate` does here.
 			transport: HttpTransportType.WebSockets,
 			skipNegotiation: !negotiate,
 			...(token ? { accessTokenFactory: () => token } : {})

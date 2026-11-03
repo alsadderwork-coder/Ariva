@@ -114,6 +114,91 @@ public sealed class HostRequestPathTests
 
     #endregion
 
+    #region Concurrency slots
+
+    [Theory]
+    [InlineData("/api/v1/integration/sites/DMO/flights/batch", "IntegrationBatch")]
+    [InlineData("/api/v1/integration/sites/DMO/aodb/aidx", "IntegrationAidx")]
+    public async Task IntegrationPolicies_Should_GiveNoSlotToACallWithoutCredentials_When_TheirPermitIsHeld(string path, string limits)
+    {
+        // ARV-229a (the ARV-096b review, I4): one permit, none waiting, held by a signed-in call whose body stalls. A call that sends
+        // no credentials is refused 401 at authentication at once, never 429 for a slot it would not use; anything that sends any (a
+        // forged token too) is still counted, so the policy keeps bounding the bodies the call audit reads.
+        await using var app = ArivaHosts.Create(ArivaHosts.Integration, configure: builder =>
+        {
+            builder.UseSetting($"Security:RateLimiting:{limits}:PermitLimit", "1");
+            builder.UseSetting($"Security:RateLimiting:{limits}:QueueLimit", "0");
+            builder.UseSetting("Security:RateLimiting:IntegrationClient:PermitLimit", "10000");
+            builder.ConfigureTestServices(services => services.Replace(ServiceDescriptor.Scoped<ISvcIntegrationAuth, OneIntegrationClient>()));
+        });
+        using var client = app.CreateClient();
+        var (token, _) = app.Services.GetRequiredService<IntegrationTokenIssuer>().Issue(IntegrationClientId, SessionId, 1, ["flights:write"], ["DMO"]);
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        HttpRequestMessage stalled = null;
+        Task<HttpResponseMessage> holding = null;
+
+        // The stalled call holds the permit once a signed-in call beside it is refused 429. A probe that reaches the limiter first takes
+        // the permit for a moment, and the stalled call is the one refused: it has ended then, and another is sent.
+        var probe = HttpStatusCode.OK;
+        for (var attempt = 0; attempt < 200 && probe != HttpStatusCode.TooManyRequests; attempt++)
+        {
+            if (holding is null || holding.IsCompleted)
+            {
+                if (holding is not null)
+                    (await holding).Dispose();
+                stalled?.Dispose();
+                stalled = Post(path, $"Bearer {token}", new StalledContent());
+                holding = client.SendAsync(stalled, stop.Token);
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(25), Ct);
+            using var signedIn = Post(path, $"Bearer {token}", new StringContent("{", Encoding.UTF8, "application/json"));
+            using var answer = await client.SendAsync(signedIn, Ct);
+            probe = answer.StatusCode;
+        }
+
+        using var noHeader = Post(path, null, new StringContent("[]", Encoding.UTF8, "application/json"));
+        using var withoutCredentials = await client.SendAsync(noHeader, Ct).WaitAsync(TimeSpan.FromSeconds(10), Ct);
+        using var blankHeader = Post(path, "   ", new StringContent("[]", Encoding.UTF8, "application/json"));
+        using var blank = await client.SendAsync(blankHeader, Ct).WaitAsync(TimeSpan.FromSeconds(10), Ct);
+        using var forgedHeader = Post(path, "Bearer forged", new StringContent("[]", Encoding.UTF8, "application/json"));
+        using var forged = await client.SendAsync(forgedHeader, Ct);
+        using var stillHeldRequest = Post(path, $"Bearer {token}", new StringContent("[]", Encoding.UTF8, "application/json"));
+        using var stillHeld = await client.SendAsync(stillHeldRequest, Ct);
+        var heldThroughout = !holding.IsCompleted;
+        await stop.CancelAsync();
+        try
+        {
+            using var _ = await holding;
+        }
+        catch (OperationCanceledException)
+        {
+            // The stalled call is ended by the test.
+        }
+        finally
+        {
+            stalled.Dispose();
+        }
+
+        probe.Should().Be(HttpStatusCode.TooManyRequests, $"{path}: the stalled call holds the policy's one permit");
+        heldThroughout.Should().BeTrue($"{path}: the stalled call was still waiting for its body");
+        withoutCredentials.StatusCode.Should().Be(HttpStatusCode.Unauthorized, $"{path}: a call without credentials takes no slot");
+        blank.StatusCode.Should().Be(HttpStatusCode.Unauthorized, $"{path}: a blank Authorization header is no credential");
+        forged.StatusCode.Should().Be(HttpStatusCode.TooManyRequests, $"{path}: a forged token is counted, for the moment its authentication takes at least");
+        forged.Headers.RetryAfter.Should().NotBeNull();
+        stillHeld.StatusCode.Should().Be(HttpStatusCode.TooManyRequests, $"{path}: the permit was held throughout");
+    }
+
+    private static HttpRequestMessage Post(string path, string authorization, HttpContent content)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, path) { Content = content };
+        if (authorization is not null)
+            request.Headers.TryAddWithoutValidation("Authorization", authorization);
+        return request;
+    }
+
+    #endregion
+
     #region Body rates
 
     [Theory]

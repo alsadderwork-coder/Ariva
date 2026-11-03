@@ -379,8 +379,10 @@ public sealed class LiveHubTests
         return app;
     }
 
-    private static string Token(IServiceProvider services) => services.GetRequiredService<AccessTokenIssuer>()
-        .Issue(Guid.CreateVersion7(), "officer.one", Guid.CreateVersion7(), Guid.CreateVersion7(), DateTime.UtcNow, ["pwd"], false);
+    private static string Token(IServiceProvider services) => Token(services, Guid.CreateVersion7());
+
+    private static string Token(IServiceProvider services, Guid userId) => services.GetRequiredService<AccessTokenIssuer>()
+        .Issue(userId, "officer.one", Guid.CreateVersion7(), Guid.CreateVersion7(), DateTime.UtcNow, ["pwd"], false);
 
     [Fact]
     public async Task Hub_Should_AdmitOnlyHoldersOfLiveQueueView_When_TheyNegotiateOrOpenTheWebSocket()
@@ -457,14 +459,82 @@ public sealed class LiveHubTests
         start.Should().Throw<OptionsValidationException>().WithMessage("*Security:Hubs:MaxConnections is 10 to 20,000*");
     }
 
-    /// <summary>An open hub connection the test holds in the registry.</summary>
-    private sealed class HeldConnection : HubCallerContext
+    [Fact]
+    public async Task Negotiate_Should_Answer429WithRetryAfter_When_TheCallersAccountHoldsItsMostConnections()
+    {
+        // ARV-229a: one account's connections (Security:Hubs:MaxConnectionsPerAccount, here the least, 8), every sign-in of its subject
+        // together; another account negotiates while the replica has room, and a closed connection of the account frees a place.
+        var ct = TestContext.Current.CancellationToken;
+        await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder =>
+        {
+            builder.UseSetting("Security:Hubs:MaxConnectionsPerAccount", "8");
+            builder.ConfigureTestServices(services =>
+            {
+                services.Replace(ServiceDescriptor.Singleton<ISessionValidator>(new FakeSessionValidator()));
+                services.Replace(ServiceDescriptor.Scoped<IPermissionResolver>(_ => new Grants(Live)));
+            });
+        });
+        using var client = app.CreateClient();
+        var account = Guid.CreateVersion7();
+        var token = Token(app.Services, account);
+        var otherToken = Token(app.Services, Guid.CreateVersion7());
+        var registry = app.Services.GetRequiredService<HubSessionRegistry>();
+        var held = Enumerable.Range(0, 8).Select(_ => new HeldConnection(account.ToString())).ToList();
+        held.ForEach(connection => registry.Admit(Guid.CreateVersion7(), connection).Should().Be(HubAdmission.Admitted));
+
+        using var refused = await client.SendAsync(Negotiate(token), ct);
+        using var other = await client.SendAsync(Negotiate(otherToken), ct);
+        registry.Remove(held[0].ConnectionId);
+        using var admitted = await client.SendAsync(Negotiate(token), ct);
+
+        registry.MaxConnectionsPerAccount.Should().Be(8, "the setting reaches the registry");
+        registry.MaxConnections.Should().Be(Ariva.Api.Common.Settings.HubSettings.DefaultMaxConnections);
+        ((int)refused.StatusCode).Should().Be(429, "a new sign-in of the account has no allowance past the account's");
+        refused.Headers.RetryAfter.Should().NotBeNull();
+        ((int)other.StatusCode).Should().Be(200, "another account has its own allowance");
+        ((int)admitted.StatusCode).Should().Be(200, "a closed connection of the account frees its place");
+    }
+
+    [Theory]
+    [InlineData("7")]
+    [InlineData("20001")]
+    public async Task Main_Should_RefuseToStart_When_TheAccountsMostIsOutOfBounds(string perAccount)
+    {
+        await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder => builder.UseSetting("Security:Hubs:MaxConnectionsPerAccount", perAccount));
+
+        var start = () => app.CreateClient();
+
+        start.Should().Throw<OptionsValidationException>().WithMessage("*Security:Hubs:MaxConnectionsPerAccount 8 to 20,000*");
+    }
+
+    [Fact]
+    public async Task Main_Should_HoldTheDefaults_When_TheHubsSettingsAreNotSet()
+    {
+        await using var app = Main(granted: true);
+        app.CreateClient().Dispose();
+
+        var registry = app.Services.GetRequiredService<HubSessionRegistry>();
+
+        (registry.MaxConnections, registry.MaxConnectionsPerAccount).Should().Be((1000, 200), "appsettings.base.json and the code agree");
+    }
+
+    private static HttpRequestMessage Negotiate(string token)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, $"{LiveHub.Path}/negotiate?negotiateVersion=1");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        return request;
+    }
+
+    /// <summary>An open hub connection the test holds in the registry, of no account or of <paramref name="subject"/>'s.</summary>
+    private sealed class HeldConnection(string subject = null) : HubCallerContext
     {
         public override string ConnectionId { get; } = Guid.NewGuid().ToString("N");
 
         public override string UserIdentifier => null;
 
-        public override ClaimsPrincipal User { get; } = new(new ClaimsIdentity());
+        public override ClaimsPrincipal User { get; } = subject is null
+            ? new(new ClaimsIdentity())
+            : new(new ClaimsIdentity([new Claim(ArivaClaims.Subject, subject)], "Bearer"));
 
         public override IDictionary<object, object> Items { get; } = new Dictionary<object, object>();
 

@@ -305,6 +305,67 @@ public sealed class SecurityEventLogTests : IDisposable
 
     #endregion
 
+    #region Live hub negotiates on Ariva.Api.Main
+
+    /// <summary>
+    /// ARV-229a: a live hub negotiate refused writes one 9116 with the <c>hub-connections</c> policy and the kind of partition only:
+    /// <c>user</c> while the caller's account holds its most (<c>Security:Hubs:MaxConnectionsPerAccount</c>), <c>host</c> once the
+    /// replica holds its total, which is named first; the event names its caller (user and session), which is how an operator finds
+    /// the account, and no 9129 is written beside it.
+    /// </summary>
+    [Fact]
+    public async Task HubNegotiateRefusals_Should_NameThePolicyAndTheKindOfPartition_When_TheAccountOrTheReplicaIsFull()
+    {
+        var log = Path.Combine(_folder, "hub.log");
+        await using (var app = MainHost(log, 0, ("Security:Hubs:MaxConnections", "10"), ("Security:Hubs:MaxConnectionsPerAccount", "8")))
+        {
+            using var client = app.CreateClient();
+            var token = Token(app, "admin", secondFactor: true);
+            var registry = app.Services.GetRequiredService<Ariva.Api.Common.Hubs.HubSessionRegistry>();
+            for (var k = 0; k < 8; k++)
+                registry.Admit(Guid.CreateVersion7(), new HeldHubConnection(AdminId.ToString())).Should().Be(Ariva.Api.Common.Hubs.HubAdmission.Admitted);
+
+            using var accountFull = await client.SendAsync(Request(HttpMethod.Post, "/hubs/live/negotiate?negotiateVersion=1", token), Ct);
+            registry.Admit(null, new HeldHubConnection(null)).Should().Be(Ariva.Api.Common.Hubs.HubAdmission.Admitted);
+            registry.Admit(null, new HeldHubConnection(null)).Should().Be(Ariva.Api.Common.Hubs.HubAdmission.Admitted);
+            using var replicaFull = await client.SendAsync(Request(HttpMethod.Post, "/hubs/live/negotiate?negotiateVersion=1", token), Ct);
+
+            (accountFull.StatusCode, replicaFull.StatusCode).Should().Be((HttpStatusCode.TooManyRequests, HttpStatusCode.TooManyRequests));
+        }
+
+        var limited = Events(log, SecurityEvents.RateLimitRejectedId).Select(e => e.GetProperty("Properties")).ToList();
+        limited.Select(p => (p.GetProperty("Policy").GetString(), p.GetProperty("Partition").GetString())).Should()
+            .Equal(("hub-connections", SecurityEvents.UserPartition), ("hub-connections", SecurityEvents.HostPartition));
+        // The runbook (wiki 10, 4.8a) finds the account by the event's caller: the signed-in user and session, not anonymous.
+        limited[0].GetProperty(RequestLogContext.CallerUserIdProperty).GetString().Should().Be(AdminId.ToString());
+        limited[0].GetProperty(RequestLogContext.CallerSessionIdProperty).GetString().Should().Be(SessionId.ToString());
+        Events(log, SecurityEvents.RequestRefusedId).Should().BeEmpty("the refusal's own event, not a second one");
+    }
+
+    /// <summary>An open hub connection the test holds in the registry, of <paramref name="subject"/>'s account or of none.</summary>
+    private sealed class HeldHubConnection(string subject) : Microsoft.AspNetCore.SignalR.HubCallerContext
+    {
+        public override string ConnectionId { get; } = Guid.NewGuid().ToString("N");
+
+        public override string UserIdentifier => null;
+
+        public override ClaimsPrincipal User { get; } = subject is null
+            ? new(new ClaimsIdentity())
+            : new(new ClaimsIdentity([new Claim(ArivaClaims.Subject, subject)], "Bearer"));
+
+        public override IDictionary<object, object> Items { get; } = new Dictionary<object, object>();
+
+        public override Microsoft.AspNetCore.Http.Features.IFeatureCollection Features { get; } = new Microsoft.AspNetCore.Http.Features.FeatureCollection();
+
+        public override CancellationToken ConnectionAborted => CancellationToken.None;
+
+        public override void Abort()
+        {
+        }
+    }
+
+    #endregion
+
     #region Uploads on Ariva.Api.Main
 
     /// <summary>
@@ -514,12 +575,14 @@ public sealed class SecurityEventLogTests : IDisposable
         .UseSetting("Security:ForwardedHeaders:KnownProxies:0", Proxy)
         .ConfigureTestServices(services => services.AddSingleton<IStartupFilter, ProxyConnection>());
 
-    private static IArivaHost MainHost(string log, int globalLimit = 0) =>
+    private static IArivaHost MainHost(string log, int globalLimit = 0, params (string Key, string Value)[] settings) =>
         ArivaHosts.Create(ArivaHosts.Main, configure: builder =>
         {
             Logged(builder, log);
             if (globalLimit > 0)
                 builder.UseSetting("Security:RateLimiting:Global:PermitLimit", globalLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            foreach (var (key, value) in settings)
+                builder.UseSetting(key, value);
             builder.ConfigureTestServices(services =>
             {
                 var sessions = new FakeSessionValidator { [RevokedSessionId] = SessionState.Revoked };

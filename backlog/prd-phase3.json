@@ -1107,13 +1107,30 @@
       "notes": "Size M. Split from ARV-228 on 2026-11-03. The live evaluation runs the same fold (AlertRuleTick), so the change must give exactly the same transitions: AlertEvaluatorTests and the property tests are the reference. Measurements and query plans: backlog/progress.md, ARV-096b entry; docs/security/costly-operations.md section 15 item 14. From the ARV-228a review (advisory 6): AlertInputs.OutagesSql has no row cap (it predates ARV-228a); a flapping device's outages over a backtest range are bounded only by the range and the 1,000 devices. Add LIMIT :limit with the too-large refusal, as StaffingSql has, when the reads move to the typed reader. Done 2026-11-03: the typed reader `IStorageProvider.ReadSqlAsync` (rows by position, the session's transaction, the connection handed back outside one), the fold in place with `AlertMinute` a struct, a sensor rule's minutes computed when taken, the outage read capped at 100,000 rows (advisory 6). A backtest at its bound allocates 4.1 to 69.7 MB (was 146.5 to 397.5); BacktestBoundTests holds each metric under 100 MB. Review rounds 1 and 2 FAIL fixed, round 3 PASS. Owner: Platform/Backplane/CLAUDE.md line 28 should name ReadSqlAsync beside ExecuteSqlAsync."
     },
     {
-      "id": "ARV-229",
-      "title": "[E17] Follow-ups of the ARV-096b review: cut-off Integration calls recorded, a per-account live hub limit, Integration slots for signed-in clients only",
-      "description": "Found in the ARV-096b security review (2026-10-21), Low or Info under the owner rule. L1: the Integration call audit (UseIntegrationCallAudit, Ariva.Api.Common/Security/IntegrationAuthentication.cs) catches only a 413 from its body read, so a call cut off while the body arrives (the default request timeout, 503; the minimum rate, 408; a client abort) is never recorded in integration_call, against the host comment that every call is recorded; the runbook (wiki 10 section 4.8e) sends operators to the ingress access log meanwhile. The file holds the integration authentication: check the change against the login freeze. L2: the live hub total (Security:Hubs:MaxConnections) has only the 8 per session below it, no limit per account, so one account with LiveQueue.View can fill a replica in about 13 minutes of sign-ins from one address. I4: the integration-batch and integration-aidx concurrency policies still count requests without credentials, as the user policies did before ARV-096b.",
+      "id": "ARV-229a",
+      "title": "[E17] Follow-ups of the ARV-096b review: a per-account live hub limit, Integration slots for requests with credentials only",
+      "description": "Split from ARV-229 (2026-11-03): its two changes outside the login freeze. Found in the ARV-096b security review (2026-10-21), Low or Info under the owner rule. L2: the live hub total (Security:Hubs:MaxConnections) has only the 8 per session below it, no limit per account, so one account with LiveQueue.View can fill a replica in about 13 minutes of sign-ins from one address. I4: the integration-batch and integration-aidx concurrency policies still count requests without credentials, as the user policies did before ARV-096b.",
       "acceptanceCriteria": [
-        "The call audit records a call cut off while its body is read (cancellation of RequestAborted, a BadHttpRequestException) with its outcome status and no payload hash, then lets the request timeout answer 503; HostRequestPathTests.Batch_Should_Answer503AndFreeItsPermit_When_ItsBodyStopsArrivingPastTheDefault asserts the record (after the login freeze lifts, or with the owner agreement that the audit is not login code)",
         "The live hub holds at most a configured number of connections per account (subject) beside the 8 per session, refused like hub_full, with tests; wiki 10 says what to do when one account fills a replica",
         "The integration-batch and integration-aidx policies give a request that sends no credentials no slot (RateLimitingExtensions.SessionConcurrency), with a test",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 304,
+      "passes": true,
+      "dependsOn": [
+        "ARV-096b"
+      ],
+      "notes": "Size S. Split from ARV-229 on 2026-11-03 (backlog/progress.md): criteria 2 and 3 of ARV-229, word for word; criterion 1 (the call audit, in the integration authentication file) is ARV-229b, held for the login freeze. ARV-096b review findings L2 and I4; backlog/progress.md, ARV-096b entry. Done 2026-11-03: Security:Hubs:MaxConnectionsPerAccount (200 Proposed, 8 to 20,000; account_full, a negotiate 429 logged as 9116 with partition user), the registry's session and account counts under one lock; integration-batch and integration-aidx through SessionConcurrency. Review round 1 PASS (one Low, nine Info, taken but two), round 2 PASS."
+    },
+    {
+      "id": "ARV-229b",
+      "title": "[E17] Follow-up of the ARV-096b review: Integration calls cut off while their body arrives recorded in the call audit",
+      "description": "Split from ARV-229 (2026-11-03): its change inside the integration authentication file, held for the login freeze. Found in the ARV-096b security review (2026-10-21), Low under the owner rule. L1: the Integration call audit (UseIntegrationCallAudit, Ariva.Api.Common/Security/IntegrationAuthentication.cs) catches only a 413 from its body read, so a call cut off while the body arrives (the default request timeout, 503; the minimum rate, 408; a client abort) is never recorded in integration_call, against the host comment that every call is recorded; the runbook (wiki 10 section 4.8e) sends operators to the ingress access log meanwhile. The file holds the integration authentication: check the change against the login freeze.",
+      "acceptanceCriteria": [
+        "The call audit records a call cut off while its body is read (cancellation of RequestAborted, a BadHttpRequestException) with its outcome status and no payload hash, then lets the request timeout answer 503; HostRequestPathTests.Batch_Should_Answer503AndFreeItsPermit_When_ItsBodyStopsArrivingPastTheDefault asserts the record (after the login freeze lifts, or with the owner agreement that the audit is not login code)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
         "security-reviewer verdict PASS recorded in backlog/progress.md",
@@ -1124,7 +1141,7 @@
       "dependsOn": [
         "ARV-096b"
       ],
-      "notes": "ARV-096b review findings L1, L2 and I4; backlog/progress.md, ARV-096b entry."
+      "notes": "Size S. Split from ARV-229 on 2026-11-03 (backlog/progress.md): criterion 1 of ARV-229, word for word. Held: Ariva.Api.Common/Security/IntegrationAuthentication.cs holds the integration authentication, under the login freeze; build it after the freeze lifts, or once the owner agrees the call audit is not login code. ARV-096b review finding L1; backlog/progress.md, ARV-096b entry."
     },
     {
       "id": "ARV-233",

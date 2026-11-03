@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-229a: one account's live hub connections bounded, and Integration calls without credentials take no slot (2026-11-03)
+
+- Behaviour: one account holds at most `Security:Hubs:MaxConnectionsPerAccount` live hub connections on an Ariva.Api.Main replica (200 by default, Proposed), every sign-in of the account together, beside the 8 of each sign-in and the replica's total. A negotiate beyond is answered 429 with Retry-After (security event 9116, policy `hub-connections`, partition `user`) and a connection past it is closed with `account_full`; the screen shows its live feed as disconnected, as for `hub_full`. A setting outside 8 to 20,000 stops Main at start.
+- Behaviour: a batch or AIDX message that sends no Authorization value no longer waits for, or is refused 429 by, the `integration-batch` and `integration-aidx` policies: it is answered 401 at once, as before when a slot was free. Every call that sends credentials is counted as before.
+- After the upgrade: nothing to do where screens sign in under their own accounts or a wall of screens under one account stays at 200 or fewer per replica. A site that signs more than 200 screens in under one account on one replica raises `Security:Hubs:MaxConnectionsPerAccount` (wiki 04 section 5) or signs part of the wall in under a second account before upgrading. The limit is per replica: size it for the fewest replicas left when one is lost or replaced.
+
 ### ARV-228b: an alert rule backtest at its bound takes a fifth of the memory, and a sensor rule's outage read is bounded (2026-11-03)
 
 - Behaviour: a backtest of a rule on 64 zones over a day, or of a sensor rule on 1,000 devices, allocates 4 to 70 MB where it allocated 146 to 398 MB, and answers in about the same time; the live evaluation and the backtest raise and clear exactly as before. The rows the alert inputs read are mapped by position instead of by reflection, and a sensor rule's minutes are computed when judged instead of stored.
