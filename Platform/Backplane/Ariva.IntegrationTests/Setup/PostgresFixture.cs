@@ -36,6 +36,9 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public int Port => _external?.Port ?? _container.GetMappedPublicPort(PostgreSqlBuilder.PostgreSqlPort);
 
+    /// <summary>Another persistence host on the sample schema with more settings (ARV-228b); the caller disposes it.</summary>
+    public PersistenceHost PersistenceHostWith(IReadOnlyDictionary<string, string> settings) => new(Hostname, Port, Database, AdminUsername, AdminPassword, settings);
+
     /// <summary>The server's superuser, which plays the migration login in the script runner tests.</summary>
     public string AdminUsername => _external?.Username ?? Username;
 
@@ -115,6 +118,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.AlertLifecycle => "CREATE DATABASE it_alert_lifecycle",
             TestDatabase.AlertEmails => "CREATE DATABASE it_alert_emails",
             TestDatabase.AlertStaffing => "CREATE DATABASE it_alert_staffing",
+            TestDatabase.AlertSensor => "CREATE DATABASE it_alert_sensor",
             TestDatabase.Flights => "CREATE DATABASE it_flights",
             TestDatabase.IntegrationClients => "CREATE DATABASE it_integration_clients",
             TestDatabase.IntegrationBatches => "CREATE DATABASE it_integration_batches",
@@ -286,6 +290,7 @@ public enum TestDatabase
     AlertLifecycle,
     AlertEmails,
     AlertStaffing,
+    AlertSensor,
     Flights,
     IntegrationClients,
     IntegrationBatches,

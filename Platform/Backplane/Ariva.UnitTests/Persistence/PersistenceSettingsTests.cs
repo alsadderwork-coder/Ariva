@@ -322,14 +322,23 @@ public sealed class PersistenceSettingsTests
     }
 
     [Fact]
-    public void ExecuteSqlAsync_Should_RequireConstantSql_When_DeclaredOnStorageProvider()
+    public void SqlEntryPoints_Should_RequireConstantSql_When_DeclaredOnStorageProvider()
     {
-        var methods = typeof(IStorageProvider).GetMethods().Where(m => m.Name == nameof(IStorageProvider.ExecuteSqlAsync)).ToList();
+        // ARV-228b: the typed reader is the second SQL entry point; each takes its text as a constant, and none a FormattableString.
+        var methods = typeof(IStorageProvider).GetMethods()
+            .Where(m => m.GetParameters().Any(p => p.Name == "sql" || p.ParameterType == typeof(FormattableString)))
+            .ToList();
 
-        methods.Should().ContainSingle("there is one SQL entry point and no FormattableString overload");
-        var sql = methods[0].GetParameters()[0];
-        sql.ParameterType.Should().Be<string>();
-        sql.GetCustomAttribute<ConstantExpectedAttribute>().Should().NotBeNull("CA1857 then rejects interpolated SQL at compile time");
+        methods.Select(m => m.Name).Should().BeEquivalentTo([nameof(IStorageProvider.ExecuteSqlAsync), nameof(IStorageProvider.ReadSqlAsync)],
+            "the SQL entry points are ExecuteSqlAsync and ReadSqlAsync, one overload each");
+        foreach (var method in methods)
+        {
+            method.GetParameters().Should().NotContain(p => p.ParameterType == typeof(FormattableString), $"{method.Name} takes no FormattableString");
+            var sql = method.GetParameters()[0];
+            sql.Name.Should().Be("sql");
+            sql.ParameterType.Should().Be<string>();
+            sql.GetCustomAttribute<ConstantExpectedAttribute>().Should().NotBeNull($"CA1857 then rejects interpolated SQL given to {method.Name} at compile time");
+        }
     }
 
     /// <summary>The base file, then the environment file on top, as the hosts layer them.</summary>

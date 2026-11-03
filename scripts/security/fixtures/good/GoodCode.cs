@@ -7,6 +7,7 @@ public class GoodCode(IHttpClientFactory httpClientFactory, IStorageProvider sto
         var http = httpClientFactory.CreateClient("aodb");
         var response = await http.GetAsync($"flights/{id}");
         var rows = await storage.ExecuteSqlAsync<Row>("select * from flight where id = @id", new Dictionary<string, object> { ["id"] = id });
+        var codes = await storage.ReadSqlAsync("select code from flight where id = :id", new Dictionary<string, object> { ["id"] = id }, r => r.GetString(0));
         var same = CryptographicOperations.FixedTimeEquals(presentedHash, storedHash);
         if (totp.VerifyTotp(code, out var step, VerificationWindow.RfcSpecifiedNetworkDelay) && await replayGuard.TryConsumeTimeStep(clientId, step)) { }
         if (secret == null) return;

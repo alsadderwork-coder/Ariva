@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Data.Common;
 using Ariva.Core.Alerting;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
@@ -56,6 +58,11 @@ public sealed record AlertTargetSeries(AlertTarget Target, IReadOnlyList<AlertMi
 /// Minutes are those after <c>fromUtc</c> up to and including <c>toUtc</c>. A rule's targets are its zones that are queue or
 /// overflow zones of the site's published profile (queue zones only for a health-check rule and for open desks below
 /// recommendation, <see cref="AlertRuleValues.WatchesQueueZonesOnly"/>; or the commissioned devices of those zones).
+/// <para>
+/// Every read maps its rows by column position with the reader's typed getters (<see cref="IStorageProvider.ReadSqlAsync{T}"/>,
+/// ARV-228b), never by reflection, and a zone's rows are taken where the read put them, never copied per zone: a backtest at its
+/// bound reads 92,160 zone minutes, and the memory it takes follows the minutes, not the rows' mapping.
+/// </para>
 /// </summary>
 public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arrivals)
 {
@@ -76,10 +83,10 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
             return [];
         // Only zones of the site's published profile (queue and overflow zones, as a rule is checked when it is saved):
         // a zone that left the profile leaves the rule's targets, and its open alert is resolved.
-        var published = (await Storage.ExecuteSqlAsync<ZoneRow>("""
+        var published = (await Storage.ReadSqlAsync("""
             SELECT z.name AS "Name", z.kind AS "Kind" FROM zone z JOIN zone_profile p ON p.id = z.profile_id
-            WHERE p.site_code = :site AND p.status = 'Published' AND z.kind IN ('Queue', 'Overflow') AND z.name IN (:zones)
-            """, new Dictionary<string, object> { ["site"] = siteCode, ["zones"] = zones }, ct))
+            WHERE p.site_code = :site AND p.status = 'Published' AND z.kind IN ('Queue', 'Overflow') AND z.name = ANY(:zones)
+            """, new Dictionary<string, object> { ["site"] = siteCode, ["zones"] = zones }, r => new ZoneRow(r.GetString(0), r.GetString(1), null), ct))
             // ARV-114b: health checks are stored per queue zone, so a health-check rule watches queue zones only; ARV-181b2: so
             // is the staffing recommendation (per lane, a queue zone).
             .Where(z => !AlertRuleValues.WatchesQueueZonesOnly(rule.Metric) || z.Kind == nameof(ZoneKind.Queue))
@@ -89,12 +96,11 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
             return [];
         if (rule.Metric != AlertMetric.SensorOffline)
             return [.. zones.Select(z => new AlertTarget(z, null))];
-        var devices = await Storage.ExecuteSqlAsync<DeviceRow>("""
+        return await Storage.ReadSqlAsync("""
             SELECT queue_zone_name AS "ZoneName", code AS "Code" FROM device
-            WHERE site_code = :site AND deleted_on IS NULL AND state IN ('Online', 'Degraded', 'Offline') AND queue_zone_name IN (:zones)
+            WHERE site_code = :site AND deleted_on IS NULL AND state IN ('Online', 'Degraded', 'Offline') AND queue_zone_name = ANY(:zones)
             ORDER BY queue_zone_name, code LIMIT 1000
-            """, new Dictionary<string, object> { ["site"] = siteCode, ["zones"] = zones }, ct);
-        return [.. devices.Select(d => new AlertTarget(d.ZoneName, d.Code))];
+            """, new Dictionary<string, object> { ["site"] = siteCode, ["zones"] = zones }, r => new AlertTarget(r.GetString(0), r.GetString(1)), ct);
     }
 
     /// <summary>
@@ -108,10 +114,10 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         if (zones.Count == 0)
             return new Dictionary<string, DateTime>();
         var keys = zones.Select(z => ZoneKeys.For(siteCode, z)).ToList();
-        var rows = await Storage.ExecuteSqlAsync<LatestRow>("""
+        var rows = await Storage.ReadSqlAsync("""
             SELECT zone_key AS "ZoneKey", max(minute_utc) AS "MinuteUtc" FROM queue_minute
-            WHERE zone_key IN (:keys) AND minute_utc <= :notAfter AND queue_length IS NOT NULL GROUP BY zone_key
-            """, new Dictionary<string, object> { ["keys"] = keys, ["notAfter"] = notAfterUtc }, ct);
+            WHERE zone_key = ANY(:keys) AND minute_utc <= :notAfter AND queue_length IS NOT NULL GROUP BY zone_key
+            """, new Dictionary<string, object> { ["keys"] = keys, ["notAfter"] = notAfterUtc }, LatestOf, ct);
         var prefix = siteCode + "/";
         return rows.Where(r => r.MinuteUtc is not null)
             .ToDictionary(r => r.ZoneKey[prefix.Length..], r => Utc(r.MinuteUtc.Value), StringComparer.Ordinal);
@@ -119,8 +125,8 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
 
     /// <summary>
     /// Each target's minutes after <paramref name="fromUtc"/> up to <paramref name="toUtc"/>; null when a health-check range
-    /// holds more stored bins than <see cref="MaxHealthRows"/>, or a staffing range more rows than <see cref="MaxStaffingRows"/>
-    /// (refused, never cut short; CWE-120).
+    /// holds more stored bins than <see cref="MaxHealthRows"/>, a staffing range more rows than <see cref="MaxStaffingRows"/>, or a
+    /// sensor rule's range more outages than <see cref="MaxOutageRows"/> (refused, never cut short; CWE-120).
     /// </summary>
     public async Task<IReadOnlyList<AlertTargetSeries>> ReadAsync(string siteCode, AlertRuleValues rule, IReadOnlyList<AlertTarget> targets, DateTime fromUtc,
         DateTime toUtc, CancellationToken ct)
@@ -169,10 +175,10 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         var keys = zones.Where(z => ZoneKeys.Fits(siteCode, z)).Select(z => ZoneKeys.For(siteCode, z)).Distinct(StringComparer.Ordinal).ToList();
         if (keys.Count == 0)
             return new Dictionary<string, DateTime>();
-        var rows = await Storage.ExecuteSqlAsync<LatestRow>("""
+        var rows = await Storage.ReadSqlAsync("""
             SELECT zone_key AS "ZoneKey", max(minute_utc) AS "MinuteUtc" FROM lane_staffing
-            WHERE zone_key IN (:keys) AND interval_index = 0 AND minute_utc <= :notAfter AND minute_utc > :floor GROUP BY zone_key
-            """, new Dictionary<string, object> { ["keys"] = keys, ["notAfter"] = notAfterUtc, ["floor"] = notAfterUtc - StaffingHistory }, ct);
+            WHERE zone_key = ANY(:keys) AND interval_index = 0 AND minute_utc <= :notAfter AND minute_utc > :floor GROUP BY zone_key
+            """, new Dictionary<string, object> { ["keys"] = keys, ["notAfter"] = notAfterUtc, ["floor"] = notAfterUtc - StaffingHistory }, LatestOf, ct);
         var prefix = siteCode + "/";
         return rows.Where(r => r.MinuteUtc is not null && r.ZoneKey.StartsWith(prefix, StringComparison.Ordinal))
             .ToDictionary(r => r.ZoneKey[prefix.Length..], r => Utc(r.MinuteUtc.Value), StringComparer.Ordinal);
@@ -181,6 +187,7 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
     /// <summary>
     /// Interval 0 of each computed minute of the zones in a range, at most <c>:limit</c> rows. A range of the partial index of interval
     /// 0 (script 0068, ARV-228a), so the read touches no row of intervals 1 to 12 (OutageReadPlanTests explains it as written here).
+    /// The columns in the order <see cref="StaffingOf"/> reads them.
     /// </summary>
     internal const string StaffingSql = """
         SELECT zone_key AS "ZoneKey", minute_utc AS "MinuteUtc", CAST(interval_index AS integer) AS "IntervalIndex", lane AS "Lane",
@@ -190,7 +197,7 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
                open_now_degraded AS "OpenNowDegraded", CAST(desks AS integer) AS "Desks", target_minutes AS "TargetMinutes", busy_cap AS "BusyCap",
                throughput_per_desk AS "ThroughputPerDesk", throughput_source AS "ThroughputSource"
           FROM lane_staffing
-         WHERE zone_key IN (:keys) AND interval_index = 0 AND minute_utc > :from AND minute_utc <= :to
+         WHERE zone_key = ANY(:keys) AND interval_index = 0 AND minute_utc > :from AND minute_utc <= :to
          ORDER BY zone_key, minute_utc
          LIMIT :limit
         """;
@@ -205,18 +212,30 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         CancellationToken ct)
     {
         var keys = targets.Where(t => ZoneKeys.Fits(siteCode, t.ZoneName)).Select(t => ZoneKeys.For(siteCode, t.ZoneName)).Distinct(StringComparer.Ordinal).ToList();
-        var rows = keys.Count == 0 ? [] : await Storage.ExecuteSqlAsync<StaffingRow>(StaffingSql,
-            new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc, ["limit"] = MaxStaffingRows + 1 }, ct);
+        // Each row judged as it is read: the minute is kept, the row is not.
+        var rows = keys.Count == 0 ? [] : await Storage.ReadSqlAsync(StaffingSql,
+            new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc, ["limit"] = MaxStaffingRows + 1 },
+            r => (ZoneKey: r.GetString(0), Minute: StaffingMinute(StaffingOf(r))), ct);
         if (rows.Count > MaxStaffingRows)
             return null;
-        var byZone = rows.GroupBy(r => r.ZoneKey, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+        var byZone = new ZoneRuns<(string ZoneKey, AlertMinute Minute)>(rows, r => r.ZoneKey);
         return
         [
             .. targets.Select(t => new AlertTargetSeries(t, ZoneKeys.Fits(siteCode, t.ZoneName)
-                ? [.. (byZone.GetValueOrDefault(ZoneKeys.For(siteCode, t.ZoneName)) ?? []).Select(StaffingMinute)]
+                ? byZone.Select(ZoneKeys.For(siteCode, t.ZoneName), r => r.Minute)
                 : []))
         ];
     }
+
+    /// <summary>One row of <see cref="StaffingSql"/>, by position, as the staffing API's read-back check takes it.</summary>
+    internal static StaffingRow StaffingOf(DbDataReader r) => new()
+    {
+        ZoneKey = r.GetString(0), MinuteUtc = Utc(r.GetDateTime(1)), IntervalIndex = r.GetInt32(2), Lane = r.GetString(3), StartUtc = Utc(r.GetDateTime(4)),
+        Minutes = r.GetInt32(5), Arrivals = DoubleAt(r, 6), Recommended = IntAt(r, 7), Bound = r.GetString(8), AtLimit = r.GetBoolean(9), Shortfall = IntAt(r, 10),
+        WaitRecommended = DoubleAt(r, 11), WaitOpen = DoubleAt(r, 12), NoServiceOpen = r.GetBoolean(13), Gap = r.GetString(14), LaneGap = r.GetString(15),
+        QueueNow = DoubleAt(r, 16), OpenNow = IntAt(r, 17), OpenNowDegraded = r.GetBoolean(18), Desks = r.GetInt32(19), TargetMinutes = r.GetDouble(20),
+        BusyCap = r.GetDouble(21), ThroughputPerDesk = DoubleAt(r, 22), ThroughputSource = TextAt(r, 23)
+    };
 
     /// <summary>
     /// One stored row as the alert judges it (F16, CWE-501): its minute, with open desks below recommendation only when the
@@ -284,12 +303,12 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
     {
         if (keys.Count == 0 || endUpToUtc <= governFromUtc - LongestBin - LongestBin)
             return new Dictionary<string, List<HealthBinReading>>(StringComparer.Ordinal);
-        var rows = await Storage.ExecuteSqlAsync<HealthRow>("""
+        var rows = await Storage.ReadSqlAsync("""
             SELECT DISTINCT ON (zone_key, start_utc) zone_key AS "ZoneKey", start_utc AS "StartUtc", length_minutes AS "LengthMinutes", status AS "Status",
                    conservation_residual AS "ConservationResidual", occupancy_end AS "OccupancyEnd", tracks_entered AS "TracksEntered",
                    tracks_exited AS "TracksExited", capacity_minutes AS "CapacityMinutes", minutes_outside_capacity AS "MinutesOutsideCapacity"
             FROM zone_health_bin
-            WHERE zone_key IN (:keys) AND start_utc > :scanFrom AND start_utc < :endUpTo
+            WHERE zone_key = ANY(:keys) AND start_utc > :scanFrom AND start_utc < :endUpTo
               AND start_utc + length_minutes * interval '1 minute' <= :endUpTo
               AND start_utc + 2 * length_minutes * interval '1 minute' > :governFrom
             ORDER BY zone_key, start_utc, revision DESC
@@ -298,12 +317,20 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         {
             ["keys"] = keys.ToList(), ["scanFrom"] = governFromUtc - LongestBin - LongestBin, ["endUpTo"] = endUpToUtc, ["governFrom"] = governFromUtc,
             ["limit"] = limit + 1
-        }, ct);
+        }, r => (ZoneKey: r.GetString(0), Reading: new HealthBinReading(Utc(r.GetDateTime(1)), r.GetInt32(2),
+            r.GetString(3) == nameof(BinStatus.Final) ? BinStatus.Final : BinStatus.Provisional,
+            LongAt(r, 4), IntAt(r, 5), r.GetInt64(6), r.GetInt64(7), r.GetInt32(8), r.GetInt32(9))), ct);
         if (rows.Count > limit)
             return null;
-        return rows.GroupBy(r => r.ZoneKey, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Select(r => new HealthBinReading(Utc(r.StartUtc), r.LengthMinutes,
-            r.Status == nameof(BinStatus.Final) ? BinStatus.Final : BinStatus.Provisional,
-            r.ConservationResidual, r.OccupancyEnd, r.TracksEntered, r.TracksExited, r.CapacityMinutes, r.MinutesOutsideCapacity)).ToList(), StringComparer.Ordinal);
+        var byZone = new Dictionary<string, List<HealthBinReading>>(StringComparer.Ordinal);
+        foreach (var (key, reading) in rows)
+        {
+            if (!byZone.TryGetValue(key, out var list))
+                byZone[key] = list = [];
+            list.Add(reading);
+        }
+
+        return byZone;
     }
 
     /// <summary>The health-check minutes of the targets; null when the range holds more rows than <see cref="MaxHealthRows"/>.</summary>
@@ -321,8 +348,7 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
             .. targets.Select(t =>
             {
                 var key = ZoneKeys.For(siteCode, t.ZoneName);
-                var zone = minutes.GetValueOrDefault(key) ?? [];
-                return new AlertTargetSeries(t, HealthAlertSeries.Minutes(rule.Metric, zone.Select(r => (Utc(r.MinuteUtc), r.QueueLength)), health.GetValueOrDefault(key) ?? []));
+                return new AlertTargetSeries(t, HealthAlertSeries.Minutes(rule.Metric, minutes.Of(key).Select(r => (r.MinuteUtc, r.QueueLength)), health.GetValueOrDefault(key) ?? []));
             })
         ];
     }
@@ -360,16 +386,18 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
             l => HealthAlertSeries.SettledThrough(metric, l.Value, health.GetValueOrDefault(ZoneKeys.For(siteCode, l.Key)) ?? []), StringComparer.Ordinal);
     }
 
-    private async Task<Dictionary<string, List<MinuteRow>>> MinuteRowsAsync(string siteCode, IReadOnlyList<AlertTarget> targets, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
+    /// <summary>The queue minutes of the targets' zones in a range, each zone's in time order.</summary>
+    private async Task<ZoneRuns<MinuteRow>> MinuteRowsAsync(string siteCode, IReadOnlyList<AlertTarget> targets, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
     {
         var keys = targets.Select(t => ZoneKeys.For(siteCode, t.ZoneName)).Distinct(StringComparer.Ordinal).ToList();
-        var rows = await Storage.ExecuteSqlAsync<MinuteRow>("""
+        var rows = await Storage.ReadSqlAsync("""
             SELECT zone_key AS "ZoneKey", minute_utc AS "MinuteUtc", queue_length AS "QueueLength", nowcast_minutes AS "Nowcast",
                    length_degraded AS "LengthDegraded", throughput_per_minute AS "Throughput"
-            FROM queue_minute WHERE zone_key IN (:keys) AND minute_utc > :from AND minute_utc <= :to
+            FROM queue_minute WHERE zone_key = ANY(:keys) AND minute_utc > :from AND minute_utc <= :to
             ORDER BY zone_key, minute_utc
-            """, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc }, ct);
-        return rows.GroupBy(r => r.ZoneKey, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+            """, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc },
+            r => new MinuteRow(r.GetString(0), Utc(r.GetDateTime(1)), IntAt(r, 2), DoubleAt(r, 3), BoolAt(r, 4), DoubleAt(r, 5)), ct);
+        return new ZoneRuns<MinuteRow>(rows, r => r.ZoneKey);
     }
 
     private async Task<IReadOnlyList<AlertTargetSeries>> QueueMinutesAsync(string siteCode, AlertRuleValues rule, IReadOnlyList<AlertTarget> targets, DateTime fromUtc,
@@ -378,11 +406,9 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         var rows = await MinuteRowsAsync(siteCode, targets, fromUtc, toUtc, ct);
         return
         [
-            .. targets.Select(t => new AlertTargetSeries(t, rows.TryGetValue(ZoneKeys.For(siteCode, t.ZoneName), out var zone)
-                ? [.. zone.Select(r => new AlertMinute(Utc(r.MinuteUtc), rule.Metric == AlertMetric.Nowcast
-                    ? r.LengthDegraded == true ? null : r.Nowcast
-                    : r.QueueLength, r.QueueLength))]
-                : []))
+            .. targets.Select(t => new AlertTargetSeries(t, rows.Select(ZoneKeys.For(siteCode, t.ZoneName), r => new AlertMinute(r.MinuteUtc, rule.Metric == AlertMetric.Nowcast
+                ? r.LengthDegraded == true ? null : r.Nowcast
+                : r.QueueLength, r.QueueLength))))
         ];
     }
 
@@ -400,30 +426,30 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         var keys = targets.Select(t => ZoneKeys.For(siteCode, t.ZoneName)).Distinct(StringComparer.Ordinal).ToList();
         // The bins that end after the earliest minute's look-back and by the last minute's end (a bin a minute can use), read from
         // at most one bin before that look-back (BinReadFrom), so the read follows the range rather than a day before it.
-        var bins = await Storage.ExecuteSqlAsync<BinRow>("""
+        var bins = await Storage.ReadSqlAsync("""
             SELECT DISTINCT ON (zone_key, start_utc) zone_key AS "ZoneKey", start_utc AS "StartUtc", length_minutes AS "LengthMinutes", p90_wait_minutes AS "P90"
-            FROM queue_bin WHERE zone_key IN (:keys) AND start_utc > :from AND start_utc <= :to
+            FROM queue_bin WHERE zone_key = ANY(:keys) AND start_utc > :from AND start_utc <= :to
               AND start_utc + length_minutes * interval '1 minute' > :lookFrom AND start_utc + length_minutes * interval '1 minute' <= :end
             ORDER BY zone_key, start_utc, revision DESC
             """, new Dictionary<string, object>
         {
             ["keys"] = keys, ["from"] = BinReadFrom(fromUtc), ["to"] = toUtc, ["lookFrom"] = fromUtc - BinLookBack, ["end"] = toUtc.AddMinutes(1)
-        }, ct);
-        var byZone = bins.GroupBy(b => b.ZoneKey, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+        }, r => new BinRow(r.GetString(0), Utc(r.GetDateTime(1)), r.GetInt32(2), DoubleAt(r, 3)), ct);
+        var byZone = new ZoneRuns<BinRow>(bins, b => b.ZoneKey);
         var series = new List<AlertTargetSeries>();
         foreach (var target in targets)
         {
             var key = ZoneKeys.For(siteCode, target.ZoneName);
             // The zone's bins with a P90, by end; each minute looks only at those that ended within its look-back.
-            var zoneBins = (byZone.GetValueOrDefault(key) ?? [])
+            var zoneBins = byZone.Of(key)
                 .Where(b => b.P90 is { } p && double.IsFinite(p))
-                .Select(b => (Start: Utc(b.StartUtc), End: Utc(b.StartUtc).AddMinutes(b.LengthMinutes), P90: b.P90!.Value))
+                .Select(b => (Start: b.StartUtc, End: b.StartUtc.AddMinutes(b.LengthMinutes), P90: b.P90!.Value))
                 .OrderBy(b => b.End).ToArray();
             var ends = zoneBins.Select(b => b.End).ToArray();
-            var list = new List<AlertMinute>();
-            foreach (var minute in minutes.GetValueOrDefault(key) ?? [])
+            var list = new List<AlertMinute>(minutes.CountOf(key));
+            foreach (var minute in minutes.Of(key))
             {
-                var at = Utc(minute.MinuteUtc);
+                var at = minute.MinuteUtc;
                 // Bins that ended by the end of this minute and within the look-back; the largest P90, the earliest bin on a tie.
                 var lo = UpperBound(ends, at - BinLookBack);
                 var hi = UpperBound(ends, at.AddMinutes(1));
@@ -441,37 +467,67 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
     }
 
     /// <summary>
-    /// The zones' device outages overlapping a range: a range of zone_outage's end index within the chunks that start by the
-    /// range's end (script 0068, ARV-228a), whatever the table's history (OutageReadPlanTests explains it as written here).
+    /// The most <c>zone_outage</c> rows one read takes (CWE-120, CWE-400, ARV-228b): a sensor rule watches up to
+    /// <see cref="MaxDevices"/> devices, and a flapping device's outages over a range are bounded only by the range. A backtest's
+    /// day at the bound with four outages a device holds 4,000. Beyond it the read is refused (null), never cut short.
+    /// </summary>
+    public const int DefaultMaxOutageRows = 100_000;
+
+    /// <summary>The bound of <see cref="DefaultMaxOutageRows"/> for this instance (tests set a smaller one).</summary>
+    public int MaxOutageRows { get; init; } = DefaultMaxOutageRows;
+
+    /// <summary>
+    /// The zones' device outages overlapping a range, at most <c>:limit</c> rows: a range of zone_outage's end index within the
+    /// chunks that start by the range's end (script 0068, ARV-228a), whatever the table's history (OutageReadPlanTests explains it
+    /// as written here).
     /// </summary>
     internal const string OutagesSql = """
         SELECT zone_key AS "ZoneKey", device_code AS "DeviceCode", from_utc AS "FromUtc", to_utc AS "ToUtc" FROM zone_outage
-        WHERE zone_key IN (:keys) AND from_utc <= :to AND to_utc > :from
+        WHERE zone_key = ANY(:keys) AND from_utc <= :to AND to_utc > :from
+        LIMIT :limit
         """;
 
+    /// <summary>
+    /// The sensor rule's minutes of each device target: 1 inside one of its outages, 0 otherwise, for every minute of the range.
+    /// The minutes are computed when the fold takes them (<see cref="OutageMinutes"/>), never stored: a day of 1,000 devices is
+    /// 1.44 million of them. Null when the range holds more outages than <see cref="MaxOutageRows"/>.
+    /// </summary>
     private async Task<IReadOnlyList<AlertTargetSeries>> OutagesAsync(string siteCode, IReadOnlyList<AlertTarget> targets, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
     {
         var keys = targets.Select(t => ZoneKeys.For(siteCode, t.ZoneName)).Distinct(StringComparer.Ordinal).ToList();
-        var outages = await Storage.ExecuteSqlAsync<OutageRow>(OutagesSql, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc }, ct);
+        var outages = await Storage.ReadSqlAsync(OutagesSql, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc, ["limit"] = MaxOutageRows + 1 },
+            r => (ZoneKey: r.GetString(0), DeviceCode: r.GetString(1), From: Minute(Utc(r.GetDateTime(2))), To: Utc(r.GetDateTime(3))), ct);
+        if (outages.Count > MaxOutageRows)
+            return null;
         // An outage the stream has not closed yet: the registry has the device offline since it was last heard.
-        var open = await Storage.ExecuteSqlAsync<OpenRow>("""
+        var open = await Storage.ReadSqlAsync("""
             SELECT d.queue_zone_name AS "ZoneName", d.code AS "DeviceCode", h.last_seen_on AS "LastSeenOn" FROM device d
             LEFT JOIN device_heartbeat h ON h.device_id = d.id
             WHERE d.site_code = :site AND d.deleted_on IS NULL AND d.state = 'Offline'
-            """, new Dictionary<string, object> { ["site"] = siteCode }, ct);
-        var series = new List<AlertTargetSeries>();
+            """, new Dictionary<string, object> { ["site"] = siteCode }, r => (ZoneName: TextAt(r, 0), DeviceCode: r.GetString(1), LastSeenOn: TimeAt(r, 2)), ct);
+
+        var spans = new Dictionary<(string ZoneKey, string DeviceCode), List<(DateTime From, DateTime To)>>();
+        foreach (var o in outages)
+        {
+            if (!spans.TryGetValue((o.ZoneKey, o.DeviceCode), out var list))
+                spans[(o.ZoneKey, o.DeviceCode)] = list = [];
+            list.Add((o.From, o.To));
+        }
+
+        // The first offline row of a device, as the targets took it before.
+        var offline = new Dictionary<(string ZoneName, string DeviceCode), DateTime?>();
+        foreach (var o in open)
+            offline.TryAdd((o.ZoneName, o.DeviceCode), o.LastSeenOn);
+
         var start = Minute(fromUtc).AddMinutes(1);
+        var count = toUtc < start ? 0 : (int)((toUtc - start).Ticks / TimeSpan.TicksPerMinute) + 1;
+        var series = new List<AlertTargetSeries>(targets.Count);
         foreach (var target in targets)
         {
-            var key = ZoneKeys.For(siteCode, target.ZoneName);
-            var spans = outages.Where(o => o.ZoneKey == key && o.DeviceCode == target.DeviceCode).Select(o => (From: Minute(Utc(o.FromUtc)), To: Utc(o.ToUtc))).ToList();
-            var still = open.FirstOrDefault(o => o.ZoneName == target.ZoneName && o.DeviceCode == target.DeviceCode);
-            if (still is not null)
-                spans.Add((Minute(still.LastSeenOn is { } seen ? Utc(seen) : fromUtc), DateTime.MaxValue));
-            var list = new List<AlertMinute>();
-            for (var m = start; m <= toUtc; m = m.AddMinutes(1))
-                list.Add(new AlertMinute(m, spans.Any(s => s.From <= m && m < s.To) ? 1 : 0));
-            series.Add(new AlertTargetSeries(target, list));
+            var mine = spans.GetValueOrDefault((ZoneKeys.For(siteCode, target.ZoneName), target.DeviceCode)) ?? [];
+            if (offline.TryGetValue((target.ZoneName, target.DeviceCode), out var seen))
+                mine = [.. mine, (Minute(seen ?? fromUtc), DateTime.MaxValue)];
+            series.Add(new AlertTargetSeries(target, new OutageMinutes(start, count, mine)));
         }
 
         return series;
@@ -483,18 +539,21 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         var lead = rule.LeadMinutes ?? AlertRule.MinLeadMinutes;
         var rows = await MinuteRowsAsync(siteCode, targets, fromUtc, toUtc, ct);
         var series = new List<AlertTargetSeries>();
+        // The lead's arrivals of one minute, refilled for each (ARV-228b): a minute missing from the wave is NaN, so it has no peak.
+        var ahead = new double[Math.Max(1, lead)];
         foreach (var target in targets)
         {
-            var zone = rows.GetValueOrDefault(ZoneKeys.For(siteCode, target.ZoneName)) ?? [];
-            var wave = zone.Count == 0 ? null : await arrivals.ArrivalsAsync(siteCode, target.ZoneName, fromUtc, toUtc.AddMinutes(lead), ct);
-            var list = new List<AlertMinute>();
-            foreach (var r in zone)
+            var key = ZoneKeys.For(siteCode, target.ZoneName);
+            var wave = rows.CountOf(key) == 0 ? null : await arrivals.ArrivalsAsync(siteCode, target.ZoneName, fromUtc, toUtc.AddMinutes(lead), ct);
+            var list = new List<AlertMinute>(rows.CountOf(key));
+            foreach (var r in rows.Of(key))
             {
-                var at = Utc(r.MinuteUtc);
+                var at = r.MinuteUtc;
                 PredictedPeak peak = null;
                 if (wave is not null && r.QueueLength is { } q && r.LengthDegraded != true)
                 {
-                    var ahead = Enumerable.Range(1, lead).Select(i => wave.TryGetValue(at.AddMinutes(i), out var a) ? a : double.NaN).ToList();
+                    for (var i = 1; i <= lead; i++)
+                        ahead[i - 1] = wave.TryGetValue(at.AddMinutes(i), out var a) ? a : double.NaN;
                     peak = PredictedWait.Peak(q, r.Throughput, ahead, lead);
                 }
 
@@ -516,12 +575,13 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         var watched = new Dictionary<string, (string Key, string Band)>(StringComparer.Ordinal);
         if (zoneNames.Count == 0)
             return watched;
-        var zones = await Storage.ExecuteSqlAsync<ZoneRow>("""
+        var zones = await Storage.ReadSqlAsync("""
             SELECT z.name AS "Name", z.kind AS "Kind", q.name AS "QueueZone" FROM zone z
             JOIN zone_profile p ON p.id = z.profile_id
             LEFT JOIN zone q ON q.id = z.queue_zone_id AND q.profile_id = z.profile_id
-            WHERE p.site_code = :site AND p.status = 'Published' AND z.kind IN ('Queue', 'Overflow') AND z.name IN (:zones)
-            """, new Dictionary<string, object> { ["site"] = siteCode, ["zones"] = zoneNames.Distinct(StringComparer.Ordinal).ToList() }, ct);
+            WHERE p.site_code = :site AND p.status = 'Published' AND z.kind IN ('Queue', 'Overflow') AND z.name = ANY(:zones)
+            """, new Dictionary<string, object> { ["site"] = siteCode, ["zones"] = zoneNames.Distinct(StringComparer.Ordinal).ToList() },
+            r => new ZoneRow(r.GetString(0), r.GetString(1), TextAt(r, 2)), ct);
         foreach (var z in zones)
         {
             if (z.Kind == nameof(ZoneKind.Queue))
@@ -545,14 +605,14 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         var keys = watched.Values.Select(w => w.Key).Distinct(StringComparer.Ordinal).ToList();
         if (keys.Count == 0)
             return new Dictionary<string, DateTime>();
-        var rows = await Storage.ExecuteSqlAsync<OverflowRow>("""
+        var rows = await Storage.ReadSqlAsync("""
             SELECT zone_key AS "ZoneKey", band_name AS "BandName", max(minute_utc) AS "MinuteUtc", 0 AS "MaxOccupancy" FROM overflow_minute
-            WHERE zone_key IN (:keys) AND minute_utc <= :notAfter GROUP BY zone_key, band_name
-            """, new Dictionary<string, object> { ["keys"] = keys, ["notAfter"] = notAfterUtc }, ct);
+            WHERE zone_key = ANY(:keys) AND minute_utc <= :notAfter GROUP BY zone_key, band_name
+            """, new Dictionary<string, object> { ["keys"] = keys, ["notAfter"] = notAfterUtc }, OverflowOf, ct);
         var latest = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         foreach (var (zone, (key, band)) in watched)
         {
-            var mine = rows.Where(r => r.ZoneKey == key && (band is null || r.BandName == band)).Select(r => Utc(r.MinuteUtc)).ToList();
+            var mine = rows.Where(r => r.ZoneKey == key && (band is null || r.BandName == band)).Select(r => r.MinuteUtc).ToList();
             if (mine.Count > 0)
                 latest[zone] = mine.Max();
         }
@@ -565,24 +625,24 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
     {
         var watched = await WatchedBandsAsync(siteCode, [.. targets.Select(t => t.ZoneName)], ct);
         var keys = watched.Values.Select(w => w.Key).Distinct(StringComparer.Ordinal).ToList();
-        var rows = keys.Count == 0 ? [] : await Storage.ExecuteSqlAsync<OverflowRow>("""
+        var rows = keys.Count == 0 ? [] : await Storage.ReadSqlAsync("""
             SELECT zone_key AS "ZoneKey", band_name AS "BandName", minute_utc AS "MinuteUtc", max_occupancy AS "MaxOccupancy" FROM overflow_minute
-            WHERE zone_key IN (:keys) AND minute_utc > :from AND minute_utc <= :to
+            WHERE zone_key = ANY(:keys) AND minute_utc > :from AND minute_utc <= :to
             ORDER BY zone_key, minute_utc, band_name
-            """, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc }, ct);
-        var byZone = rows.GroupBy(r => r.ZoneKey, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+            """, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc }, OverflowOf, ct);
+        var byZone = new ZoneRuns<OverflowRow>(rows, r => r.ZoneKey);
         var series = new List<AlertTargetSeries>();
         foreach (var target in targets)
         {
-            if (!watched.TryGetValue(target.ZoneName, out var w) || !byZone.TryGetValue(w.Key, out var zoneRows))
+            if (!watched.TryGetValue(target.ZoneName, out var w) || byZone.CountOf(w.Key) == 0)
             {
                 series.Add(new AlertTargetSeries(target, []));
                 continue;
             }
 
             // One value per minute with a reading of a watched band: 1 when any of them held anyone in it, else 0.
-            var minutes = zoneRows.Where(r => w.Band is null || string.Equals(r.BandName, w.Band, StringComparison.Ordinal))
-                .GroupBy(r => Utc(r.MinuteUtc))
+            var minutes = byZone.Of(w.Key).Where(r => w.Band is null || string.Equals(r.BandName, w.Band, StringComparison.Ordinal))
+                .GroupBy(r => r.MinuteUtc)
                 .OrderBy(g => g.Key)
                 .Select(g => new AlertMinute(g.Key, g.Any(r => r.MaxOccupancy > 0) ? 1 : 0))
                 .ToList();
@@ -612,77 +672,156 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
 
     public static DateTime Minute(DateTime value) => new(value.Ticks - (value.Ticks % TimeSpan.TicksPerMinute), DateTimeKind.Utc);
 
-    private sealed class DeviceRow
+    #region Typed reads (ARV-228b)
+
+    // A column by position, null for SQL NULL, with the reader's typed getters (no boxed value per column).
+    private static string TextAt(DbDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
+
+    private static int? IntAt(DbDataReader r, int i) => r.IsDBNull(i) ? null : r.GetInt32(i);
+
+    private static long? LongAt(DbDataReader r, int i) => r.IsDBNull(i) ? null : r.GetInt64(i);
+
+    private static double? DoubleAt(DbDataReader r, int i) => r.IsDBNull(i) ? null : r.GetDouble(i);
+
+    private static bool? BoolAt(DbDataReader r, int i) => r.IsDBNull(i) ? null : r.GetBoolean(i);
+
+    private static DateTime? TimeAt(DbDataReader r, int i) => r.IsDBNull(i) ? null : Utc(r.GetDateTime(i));
+
+    private static (string ZoneKey, DateTime? MinuteUtc) LatestOf(DbDataReader r) => (r.GetString(0), TimeAt(r, 1));
+
+    private static OverflowRow OverflowOf(DbDataReader r) => new(r.GetString(0), r.GetString(1), Utc(r.GetDateTime(2)), r.GetInt32(3));
+
+    private readonly record struct MinuteRow(string ZoneKey, DateTime MinuteUtc, int? QueueLength, double? Nowcast, bool? LengthDegraded, double? Throughput);
+
+    private readonly record struct BinRow(string ZoneKey, DateTime StartUtc, int LengthMinutes, double? P90);
+
+    private readonly record struct ZoneRow(string Name, string Kind, string QueueZone);
+
+    private readonly record struct OverflowRow(string ZoneKey, string BandName, DateTime MinuteUtc, int MaxOccupancy);
+
+    /// <summary>
+    /// Rows a read gave in zone key order, each zone's rows one run of the read's own list, taken in place (ARV-228b): never
+    /// grouped into a copy per zone. Every read that builds one orders by the zone key first, so a key has one run; a second run
+    /// of a key would be rows out of order, and is refused rather than merged.
+    /// </summary>
+    private sealed class ZoneRuns<T>
     {
-        public string ZoneName { get; set; }
-        public string Code { get; set; }
+        private readonly List<T> _rows;
+        private readonly Dictionary<string, (int Start, int Count)> _runs = new(StringComparer.Ordinal);
+
+        public ZoneRuns(List<T> rows, Func<T, string> key)
+        {
+            _rows = rows;
+            for (var i = 0; i < rows.Count;)
+            {
+                var start = i;
+                var zone = key(rows[i]);
+                while (i < rows.Count && string.Equals(key(rows[i]), zone, StringComparison.Ordinal))
+                    i++;
+                if (!_runs.TryAdd(zone, (start, i - start)))
+                    throw new InvalidOperationException("A read's rows are not in zone key order.");
+            }
+        }
+
+        /// <summary>How many rows the zone has.</summary>
+        public int CountOf(string key) => _runs.TryGetValue(key, out var run) ? run.Count : 0;
+
+        /// <summary>The zone's rows, in the read's order.</summary>
+        public IEnumerable<T> Of(string key)
+        {
+            if (!_runs.TryGetValue(key, out var run))
+                yield break;
+            for (var i = run.Start; i < run.Start + run.Count; i++)
+                yield return _rows[i];
+        }
+
+        /// <summary>The zone's rows mapped, in the read's order, into a list of exactly their number.</summary>
+        public List<TResult> Select<TResult>(string key, Func<T, TResult> map)
+        {
+            var list = new List<TResult>(CountOf(key));
+            if (_runs.TryGetValue(key, out var run))
+            {
+                for (var i = run.Start; i < run.Start + run.Count; i++)
+                    list.Add(map(_rows[i]));
+            }
+
+            return list;
+        }
     }
 
-    private sealed class LatestRow
+    /// <summary>
+    /// A device's minutes for a sensor rule, computed when taken (ARV-228b): the minute <paramref name="first"/> and the
+    /// <paramref name="count"/> after it in order, each 1 when it lies inside one of the device's outages (an outage covers the
+    /// minutes from its start up to, not including, its end) and 0 otherwise. The outages are merged into spans that do not
+    /// overlap, in time order, so a minute is found by a binary search: no minute is stored and none allocates.
+    /// </summary>
+    internal sealed class OutageMinutes : IReadOnlyList<AlertMinute>
     {
-        public string ZoneKey { get; set; }
-        public DateTime? MinuteUtc { get; set; }
+        private readonly DateTime _first;
+        private readonly (DateTime From, DateTime To)[] _spans;
+
+        public OutageMinutes(DateTime first, int count, IEnumerable<(DateTime From, DateTime To)> outages)
+        {
+            ArgumentNullException.ThrowIfNull(outages);
+            ArgumentOutOfRangeException.ThrowIfNegative(count);
+            _first = first;
+            Count = count;
+            _spans = Merged(outages);
+        }
+
+        public int Count { get; }
+
+        public AlertMinute this[int index]
+        {
+            get
+            {
+                ArgumentOutOfRangeException.ThrowIfNegative(index);
+                ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Count);
+                var minute = _first.AddMinutes(index);
+                return new AlertMinute(minute, Inside(minute) ? 1 : 0);
+            }
+        }
+
+        public IEnumerator<AlertMinute> GetEnumerator()
+        {
+            for (var i = 0; i < Count; i++)
+                yield return this[i];
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        // Inside a span: the last span that starts by the minute ends after it (the spans do not overlap).
+        private bool Inside(DateTime minute)
+        {
+            int lo = 0, hi = _spans.Length;
+            while (lo < hi)
+            {
+                var mid = (lo + hi) / 2;
+                if (_spans[mid].From <= minute)
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+
+            return lo > 0 && minute < _spans[lo - 1].To;
+        }
+
+        // The outages as their union: in order of start, each overlapping or touching the one before joined to it; an empty one
+        // (its end not after its start) covers no minute and is left out.
+        private static (DateTime From, DateTime To)[] Merged(IEnumerable<(DateTime From, DateTime To)> outages)
+        {
+            var merged = new List<(DateTime From, DateTime To)>();
+            foreach (var span in outages.Where(o => o.From < o.To).OrderBy(o => o.From))
+            {
+                if (merged.Count > 0 && span.From <= merged[^1].To)
+                    merged[^1] = (merged[^1].From, span.To > merged[^1].To ? span.To : merged[^1].To);
+                else
+                    merged.Add(span);
+            }
+
+            return [.. merged];
+        }
     }
 
-    private sealed class MinuteRow
-    {
-        public string ZoneKey { get; set; }
-        public DateTime MinuteUtc { get; set; }
-        public int? QueueLength { get; set; }
-        public double? Nowcast { get; set; }
-        public bool? LengthDegraded { get; set; }
-        public double? Throughput { get; set; }
-    }
-
-    private sealed class BinRow
-    {
-        public string ZoneKey { get; set; }
-        public DateTime StartUtc { get; set; }
-        public int LengthMinutes { get; set; }
-        public double? P90 { get; set; }
-    }
-
-    private sealed class ZoneRow
-    {
-        public string Name { get; set; }
-        public string Kind { get; set; }
-        public string QueueZone { get; set; }
-    }
-
-    private sealed class OverflowRow
-    {
-        public string ZoneKey { get; set; }
-        public string BandName { get; set; }
-        public DateTime MinuteUtc { get; set; }
-        public int MaxOccupancy { get; set; }
-    }
-
-    private sealed class HealthRow
-    {
-        public string ZoneKey { get; set; }
-        public DateTime StartUtc { get; set; }
-        public int LengthMinutes { get; set; }
-        public string Status { get; set; }
-        public long? ConservationResidual { get; set; }
-        public int? OccupancyEnd { get; set; }
-        public long TracksEntered { get; set; }
-        public long TracksExited { get; set; }
-        public int CapacityMinutes { get; set; }
-        public int MinutesOutsideCapacity { get; set; }
-    }
-
-    private sealed class OutageRow
-    {
-        public string ZoneKey { get; set; }
-        public string DeviceCode { get; set; }
-        public DateTime FromUtc { get; set; }
-        public DateTime ToUtc { get; set; }
-    }
-
-    private sealed class OpenRow
-    {
-        public string ZoneName { get; set; }
-        public string DeviceCode { get; set; }
-        public DateTime? LastSeenOn { get; set; }
-    }
+    #endregion
 }

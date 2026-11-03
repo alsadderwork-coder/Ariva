@@ -1,4 +1,5 @@
 using System.Data;
+using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 
 namespace Ariva.Core.Services;
@@ -41,6 +42,20 @@ public interface IStorageProvider
     /// collection of strings binds as a parameter list, for <c>IN (:name)</c>; it must not be empty.
     /// </summary>
     Task<List<T>> ExecuteSqlAsync<T>([ConstantExpected] string sql, IReadOnlyDictionary<string, object> parameters = null, CancellationToken ct = default) where T : class, new();
+
+    /// <summary>
+    /// Runs a parameterised SQL query on the session's connection and transaction and maps each row with <paramref name="map"/>,
+    /// which reads the columns by position with the reader's typed getters (ARV-228b): no reflection and no boxed value per
+    /// column, for reads of tens of thousands of rows (the alert rule backtest). The SQL must be a constant, as for
+    /// <see cref="ExecuteSqlAsync{T}(string, IReadOnlyDictionary{string, object}, CancellationToken)"/> (CA1857, CWE-89); values
+    /// bind by name (<c>:name</c>, the database driver's own placeholder). Unlike that method, a collection of strings binds as
+    /// one array, for <c>= ANY(:name)</c> (never <c>IN (:name)</c>), and may be empty; null binds as NULL; a
+    /// <see cref="DateTime"/> that is not UTC is refused, so a time is never read in the server's zone. A text that does not start with
+    /// SELECT or WITH is refused: a guard against a write by mistake, not a proof that the statement only reads (a data-modifying CTE or
+    /// a second statement would pass it; the constant text under review is the control). Every value is checked before a connection is
+    /// taken, and outside a transaction the connection is handed back to the pool after the read, whatever its outcome.
+    /// </summary>
+    Task<List<T>> ReadSqlAsync<T>([ConstantExpected] string sql, IReadOnlyDictionary<string, object> parameters, Func<DbDataReader, T> map, CancellationToken ct = default);
 
     Task<List<T>> ListAsync<T>(CancellationToken ct = default) where T : class, IDomain;
     Task<T> GetAsync<T>(Guid id, CancellationToken ct = default) where T : class, IDomain;

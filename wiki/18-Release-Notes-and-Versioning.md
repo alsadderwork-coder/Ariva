@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-228b: an alert rule backtest at its bound takes a fifth of the memory, and a sensor rule's outage read is bounded (2026-11-03)
+
+- Behaviour: a backtest of a rule on 64 zones over a day, or of a sensor rule on 1,000 devices, allocates 4 to 70 MB where it allocated 146 to 398 MB, and answers in about the same time; the live evaluation and the backtest raise and clear exactly as before. The rows the alert inputs read are mapped by position instead of by reflection, and a sensor rule's minutes are computed when judged instead of stored.
+- Behaviour: a sensor rule reads at most 100,000 device outages over a range (`AlertInputs.DefaultMaxOutageRows`, as the staffing and health reads are bounded): beyond that a backtest answers "The range holds more stored bins than one backtest reads: choose a shorter range or fewer zones." and the live evaluation skips the rule for that tick with the warning it already writes for the other reads ("its stored inputs exceed the rows one read takes"). A backtest of a day on the 1,000 devices a rule may watch reaches it only with more than 100 outages a device.
+- After the upgrade: nothing to do. No answer changes below the bound.
+
 ### ARV-228a: device outages kept for the raw sensing period, and the outage and staffing reads bounded (2026-11-03)
 
 - Behaviour: script 0068 makes `zone_outage` (the device outages the stream records) a TimescaleDB hypertable kept for the raw sensing period, `Database:Retention:RawSensingDays` (90 days by default, as `device_health_event`); before, it was kept indefinitely. It adds an index on an outage's end, one on the outages still open, and a covering index of interval 0 of `lane_staffing`, so the sensor rule, the reports and the validation results read a range without reading the table's history, and the open desks alert reads interval 0 alone. A P90 rule reads one 15-minute bin beyond its 150-minute look-back instead of a day.

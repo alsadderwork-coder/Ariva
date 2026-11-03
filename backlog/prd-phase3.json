@@ -1100,11 +1100,11 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 303,
-      "passes": false,
+      "passes": true,
       "dependsOn": [
         "ARV-228a"
       ],
-      "notes": "Size M. Split from ARV-228 on 2026-11-03. The live evaluation runs the same fold (AlertRuleTick), so the change must give exactly the same transitions: AlertEvaluatorTests and the property tests are the reference. Measurements and query plans: backlog/progress.md, ARV-096b entry; docs/security/costly-operations.md section 15 item 14. From the ARV-228a review (advisory 6): AlertInputs.OutagesSql has no row cap (it predates ARV-228a); a flapping device's outages over a backtest range are bounded only by the range and the 1,000 devices. Add LIMIT :limit with the too-large refusal, as StaffingSql has, when the reads move to the typed reader."
+      "notes": "Size M. Split from ARV-228 on 2026-11-03. The live evaluation runs the same fold (AlertRuleTick), so the change must give exactly the same transitions: AlertEvaluatorTests and the property tests are the reference. Measurements and query plans: backlog/progress.md, ARV-096b entry; docs/security/costly-operations.md section 15 item 14. From the ARV-228a review (advisory 6): AlertInputs.OutagesSql has no row cap (it predates ARV-228a); a flapping device's outages over a backtest range are bounded only by the range and the 1,000 devices. Add LIMIT :limit with the too-large refusal, as StaffingSql has, when the reads move to the typed reader. Done 2026-11-03: the typed reader `IStorageProvider.ReadSqlAsync` (rows by position, the session's transaction, the connection handed back outside one), the fold in place with `AlertMinute` a struct, a sensor rule's minutes computed when taken, the outage read capped at 100,000 rows (advisory 6). A backtest at its bound allocates 4.1 to 69.7 MB (was 146.5 to 397.5); BacktestBoundTests holds each metric under 100 MB. Review rounds 1 and 2 FAIL fixed, round 3 PASS. Owner: Platform/Backplane/CLAUDE.md line 28 should name ReadSqlAsync beside ExecuteSqlAsync."
     },
     {
       "id": "ARV-229",

@@ -47,7 +47,9 @@ namespace Ariva.IntegrationTests.Alerting;
 /// Each metric that reads the most is backtested over 2026-09-29 once to warm up and once measured: the wall time of
 /// <see cref="ISvcAlertRules.BacktestAsync"/> alone and the managed bytes allocated meanwhile (<see cref="GC.GetTotalAllocatedBytes"/>,
 /// the whole process: the only other work is the test host's own), printed in a fixed format and held well under the default
-/// timeout (half of it); a run that comes near it is the reason to give the backtest its own timeout policy. The predicted
+/// timeout (half of it); a run that comes near it is the reason to give the backtest its own timeout policy. ARV-228b holds the
+/// memory too: the lesser of the two runs' allocations is under <see cref="AllocationBound"/> (the lesser, since another test
+/// collection may run meanwhile and its allocations count in the process's). The predicted
 /// nowcast reads its arrival wave from a test double that gives every zone a wave on every minute: the production projection
 /// starts at the present, so for a past day it has none, and the double is the most work a prediction can take.
 /// </para>
@@ -90,6 +92,13 @@ public sealed class BacktestBoundTests(PostgresFixture fixture) : IAsyncDisposab
 
     /// <summary>Well within the default timeout: half of it.</summary>
     private static readonly TimeSpan WellWithin = DefaultTimeout / 2;
+
+    /// <summary>
+    /// ARV-228b: the managed bytes one backtest at its bound may allocate. Measured before the story on 2026-11-03: 146 to 398 MB a
+    /// metric (NHibernate's mapping by reflection per row, a state record per minute in the fold, a minute object for each of a
+    /// sensor rule's 1.44 million device minutes).
+    /// </summary>
+    private const long AllocationBound = 100L * 1024 * 1024;
 
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static Guid? _admin;
@@ -145,6 +154,9 @@ public sealed class BacktestBoundTests(PostgresFixture fixture) : IAsyncDisposab
             run.Elapsed.Should().BeLessThan(WellWithin, string.Create(CultureInfo.InvariantCulture,
                 $"ARV-096b: a backtest of {metric} at its bound (64 zones, 24 hours) answers well within the default request timeout of {DefaultTimeout.TotalSeconds:0} s (under {WellWithin.TotalSeconds:0} s), or it needs a timeout policy of its own"));
         }
+
+        Math.Min(warmUp.Allocated, measured.Allocated).Should().BeLessThan(AllocationBound, string.Create(CultureInfo.InvariantCulture,
+            $"ARV-228b: a backtest of {metric} at its bound allocates under {AllocationBound / 1048576} MB (rows read by position, the fold in place, a sensor rule's minutes computed when taken)"));
     }
 
     private sealed record Run(Fluentx.Result<AlertBacktestViewModel> Result, TimeSpan Elapsed, long Allocated);

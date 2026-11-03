@@ -13,6 +13,7 @@ public class BadCode
         var http = new HttpClient();
         var url = $"https://{host}/flights";
         var rows = await storage.ExecuteSqlAsync<Row>($"select * from flight where id = '{id}'");
+        var read = await storage.ReadSqlAsync($"select code from flight where id = '{id}'", null, r => r.GetString(0));
         command.CommandText = $"delete from zone where id = {id}";
         options.TokenValidationParameters = new() { ValidateLifetime = false };
         if (client.ClientSecret != clientSecret) return;

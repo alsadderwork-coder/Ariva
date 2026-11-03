@@ -87,7 +87,7 @@ public sealed partial class OutageReadPlanTests(PostgresFixture fixture) : IAsyn
     {
         await SeededAsync();
         var day = DayOf(which);
-        var parameters = new Dictionary<string, object> { ["keys"] = AllZoneKeys, ["from"] = day, ["to"] = day.AddDays(1) };
+        var parameters = new Dictionary<string, object> { ["keys"] = AllZoneKeys, ["from"] = day, ["to"] = day.AddDays(1), ["limit"] = AlertInputs.DefaultMaxOutageRows + 1 };
 
         var plan = await ExplainAsync(AlertInputs.OutagesSql, parameters, "zone_outage");
         var control = await ExplainAsync(AlertInputs.OutagesSql, parameters, "zone_outage", dropIndex: "ix_zone_outage_to");
@@ -536,7 +536,10 @@ public sealed partial class OutageReadPlanTests(PostgresFixture fixture) : IAsyn
         return names;
     }
 
-    /// <summary>A reader's SQL as Npgsql binds it: a parameter list as an array, each named parameter with an at sign.</summary>
+    /// <summary>
+    /// A reader's SQL as Npgsql binds it: an NHibernate parameter list (<c>IN (:keys)</c>) as an array, each named parameter with an at
+    /// sign. The alert inputs' constants already bind the array (<c>= ANY(:keys)</c>, the typed reader, ARV-228b).
+    /// </summary>
     private static string Npgsql(string sql) => NamedParameter().Replace(sql.Replace("IN (:keys)", "= ANY(:keys)", StringComparison.Ordinal), "@$1");
 
     [GeneratedRegex(@"(?<![:\w]):([A-Za-z_]\w*)", RegexOptions.CultureInvariant)]

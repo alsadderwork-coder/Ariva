@@ -1,4 +1,5 @@
 using System.Data;
+using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using Ariva.Core.Domain.Contracts;
 using Ariva.Core.Services;
@@ -52,6 +53,7 @@ internal sealed class FakeStorageProvider : IStorageProvider
 
     public IQueryable<T> Query<T>() where T : class, IDomain => throw new NotSupportedException();
     public Task<List<T>> ExecuteSqlAsync<T>([ConstantExpected] string sql, IReadOnlyDictionary<string, object> parameters = null, CancellationToken ct = default) where T : class, new() => throw new NotSupportedException();
+    public Task<List<T>> ReadSqlAsync<T>([ConstantExpected] string sql, IReadOnlyDictionary<string, object> parameters, Func<DbDataReader, T> map, CancellationToken ct = default) => throw new NotSupportedException();
     public Task<List<T>> ListAsync<T>(CancellationToken ct = default) where T : class, IDomain => throw new NotSupportedException();
     public Task<T> GetAsync<T>(Guid id, CancellationToken ct = default) where T : class, IDomain => throw new NotSupportedException();
     public Task<T> LoadAsync<T>(Guid id, CancellationToken ct = default) where T : class, IDomain => throw new NotSupportedException();

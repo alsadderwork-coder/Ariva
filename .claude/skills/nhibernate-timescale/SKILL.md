@@ -8,7 +8,7 @@ description: How Ariva persists data: NHibernate through IStorageProvider for co
 - Port AMAN's `IStorageProvider`, `IUnitOfWork`, `NHibernateStorageProvider`, convention mapper and rules (../Aman/Platform/Backplane/Aman.Infra/NHibernate, read-only). NHibernate only; Ariva does not carry AMAN's EF Core switch.
 - Mapping by code conventions; explicit rules for value objects (polygons stored as JSON), enums as strings, `Guid` comb ids.
 - Queries: LINQ through `Query<T>()` / `QueryAsNoTracking<T>()`; batch count and page with `ToFutureValue` and `ToFuture`; never `CreateQuery` or `CreateSQLQuery` with interpolated strings.
-- Raw SQL through `ExecuteSqlAsync(sql, parameters)` only.
+- Raw SQL through `ExecuteSqlAsync(sql, parameters)` only, or, for a read of thousands of rows, the typed reader `ReadSqlAsync(sql, parameters, map)` (ARV-228b): the same constant text, the columns mapped by position with the reader's typed getters (no reflection per row); a list binds as one array, so write `= ANY(:keys)`, never `IN (:keys)`; times must be UTC.
 - `SchemaUpdate`: only when `Database:AllowSchemaUpdate` is true (vm-local). Production uses scripts.
 
 ## Scripts (production schema and TimescaleDB)

@@ -16,19 +16,21 @@ public sealed class PersistenceHost : IAsyncDisposable
 {
     private readonly ServiceProvider _provider;
 
-    public PersistenceHost(string host, int port, string database, string username, string password)
+    /// <param name="settings">More settings on top (ARV-228b: a small pool and a short connection wait), or none.</param>
+    public PersistenceHost(string host, int port, string database, string username, string password, IReadOnlyDictionary<string, string> settings = null)
     {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string>
-            {
-                ["Database:Host"] = host,
-                ["Database:Port"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["Database:Name"] = database,
-                ["Database:Username"] = username,
-                ["Database:Password"] = password,
-                ["Database:AllowSchemaUpdate"] = "true"
-            })
-            .Build();
+        var values = new Dictionary<string, string>
+        {
+            ["Database:Host"] = host,
+            ["Database:Port"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Database:Name"] = database,
+            ["Database:Username"] = username,
+            ["Database:Password"] = password,
+            ["Database:AllowSchemaUpdate"] = "true"
+        };
+        foreach (var (key, value) in settings ?? new Dictionary<string, string>())
+            values[key] = value;
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
 
         var services = new ServiceCollection();
         services.AddLogging();
@@ -44,6 +46,9 @@ public sealed class PersistenceHost : IAsyncDisposable
     }
 
     public RecordingOutbox Outbox { get; } = new();
+
+    /// <summary>The connection string the host's sessions use, so a test can take connections from the same pool.</summary>
+    public string ConnectionString => _provider.GetRequiredService<DatabaseSettings>().BuildConnectionString();
 
     public string UpdateSchema() => _provider.GetRequiredService<NHibernateSessionFactoryProvider>().UpdateSchema();
 

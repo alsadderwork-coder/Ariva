@@ -98,8 +98,8 @@ const RULES = [
     msg: 'Front end fetching a caller-controlled URL. Use the Api wrapper with relative API paths.' },
 
   { id: 'SEC-030', cwe: ['CWE-89'], langs: ['cs'], severity: 'error',
-    re: /\b(ExecuteSqlAsync|ExecuteSql|CreateSQLQuery|CreateSqlQuery|CreateQuery|FromSqlRaw|ExecuteSqlRaw|ExecuteSqlRawAsync|SqlQueryRaw)\s*(<[^>]*>)?\s*\(\s*(\$@?"|@\$"|[^,()"]*"\s*\+|\w+\s*\+)/,
-    msg: 'SQL or HQL built by interpolation or concatenation. Use parameters (ExecuteSqlAsync(sql, parameters) or LINQ).' },
+    re: /\b(ExecuteSqlAsync|ExecuteSql|ReadSqlAsync|CreateSQLQuery|CreateSqlQuery|CreateQuery|FromSqlRaw|ExecuteSqlRaw|ExecuteSqlRawAsync|SqlQueryRaw)\s*(<[^>]*>)?\s*\(\s*(\$@?"|@\$"|[^,()"]*"\s*\+|\w+\s*\+)/,
+    msg: 'SQL or HQL built by interpolation or concatenation. Use parameters (ExecuteSqlAsync(sql, parameters), ReadSqlAsync(sql, parameters, map) or LINQ).' },
   { id: 'SEC-031', cwe: ['CWE-89'], langs: ['cs'], severity: 'error',
     re: /CommandText\s*=\s*(\$|@\$|[^;]*"\s*\+\s*\w)|new\s+(Npgsql|Sql)Command\s*\(\s*(\$|@\$|[^,)]*"\s*\+)|string\.Format\s*\(\s*@?"\s*(SELECT|INSERT|UPDATE|DELETE|WITH|COPY)\b/i,
     msg: 'ADO.NET command text built from strings. Use NpgsqlParameter or binary COPY with typed writers.' },
@@ -896,6 +896,16 @@ function selfTest() {
   const fail = message => { ok = false; console.error(message); };
   if (missing.length) fail(`Rules that did not fire on fixtures/bad: ${missing.join(', ')}`);
   if (goodFindings.length) { fail('False positives on fixtures/good:'); goodFindings.forEach(f => console.error(`  ${f.rule} ${f.file}:${f.line} ${f.text}`)); }
+
+  // ARV-228b: SEC-030 fires at the bad fixture's line of each storage provider SQL entry point, not merely somewhere, so a name
+  // dropped from its pattern fails here.
+  const badCode = path.join(fx, 'bad', 'BadCode.cs');
+  const badLines = fs.readFileSync(badCode, 'utf8').split('\n');
+  for (const entry of ['ExecuteSqlAsync', 'ReadSqlAsync']) {
+    const line = badLines.findIndex(l => l.includes(`storage.${entry}`)) + 1;
+    if (line === 0) fail(`fixtures/bad/BadCode.cs has no ${entry} line for SEC-030`);
+    else if (!badFindings.some(f => f.rule === 'SEC-030' && f.line === line && path.join(fx, f.file) === badCode)) fail(`SEC-030 does not fire on ${entry} (fixtures/bad/BadCode.cs line ${line})`);
+  }
 
   // ARV-157: SEC-130 fires on every bad/trojan fixture by itself (so no other file stands in for it), and they cover every
   // mapped type and Dockerfile; the rest are an unmapped type, a dotfile and a file without extension, NUL bytes in a
