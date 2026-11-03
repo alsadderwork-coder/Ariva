@@ -77,17 +77,25 @@ internal sealed class SvcDeskCodeMappings(
         if (await Query<DeskCodeMapping>().AnyAsync(m => m.System == system && ((m.SiteCode == desk.SiteCode && m.ExternalCode == code) || m.Desk.Id == desk.Id), ct))
             return Result.Error<DeskCodeMappingViewModel>(TopologyErrors.Duplicate);
 
+        // ARV-286: only the entity's rule refusals are answered, by their type (IDomainRule); the save and the audit entry are
+        // outside the guard, so a driver's or a session's exception keeps its text to the logs and answers a 500 without it.
+        DeskCodeMapping mapping;
         try
         {
-            var mapping = new DeskCodeMapping(system, code, desk);
-            await SaveAsync(mapping, ct);
-            await RecordAsync("Created", mapping, null, ct);
-            return new Result<DeskCodeMappingViewModel>(View(mapping));
+            mapping = new DeskCodeMapping(system, code, desk);
         }
-        catch (InvalidOperationException e)
+        catch (ArgumentException e) when (e is IDomainRule rule)
         {
-            return Result.Error<DeskCodeMappingViewModel>(e.Message);
+            return Result.Error<DeskCodeMappingViewModel>(rule.Rule);
         }
+        catch (InvalidOperationException e) when (e is IDomainRule rule)
+        {
+            return Result.Error<DeskCodeMappingViewModel>(rule.Rule);
+        }
+
+        await SaveAsync(mapping, ct);
+        await RecordAsync("Created", mapping, null, ct);
+        return new Result<DeskCodeMappingViewModel>(View(mapping));
     }
 
     public async Task<Result<DeskCodeMappingViewModel>> UpdateAsync(Guid id, UpdateDeskCodeMappingRequest request, CancellationToken ct = default)
@@ -104,9 +112,13 @@ internal sealed class SvcDeskCodeMappings(
         {
             mapping.Assign(desk);
         }
-        catch (InvalidOperationException e)
+        catch (ArgumentException e) when (e is IDomainRule rule)
         {
-            return Result.Error<DeskCodeMappingViewModel>(e.Message);
+            return Result.Error<DeskCodeMappingViewModel>(rule.Rule);
+        }
+        catch (InvalidOperationException e) when (e is IDomainRule rule)
+        {
+            return Result.Error<DeskCodeMappingViewModel>(rule.Rule);
         }
 
         await UpdateAsync(mapping, ct);

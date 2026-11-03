@@ -87,9 +87,9 @@ internal sealed class SvcFloorPlans(
                 Convert.ToHexStringLower(SHA256.HashData(file.Bytes)), fileName, file.WidthPixels, file.HeightPixels,
                 upload.MetresPerPixel, upload.OriginX, upload.OriginY);
         }
-        catch (ArgumentException e)
+        catch (ArgumentException e) when (e is IDomainRule rule)
         {
-            return Result.Error<FloorPlanViewModel>(e.Message.Split(" (Parameter", 2)[0]);
+            return Result.Error<FloorPlanViewModel>(rule.Rule);
         }
 
         // ARV-154: the site's row first (a site configuration import holds it while it checks that the site is empty), then
@@ -132,9 +132,9 @@ internal sealed class SvcFloorPlans(
         {
             plan.Calibrate(request?.MetresPerPixel ?? 0, request?.OriginX ?? 0, request?.OriginY ?? 0);
         }
-        catch (ArgumentException e)
+        catch (ArgumentException e) when (e is IDomainRule rule)
         {
-            return Result.Error<FloorPlanViewModel>(e.Message.Split(" (Parameter", 2)[0]);
+            return Result.Error<FloorPlanViewModel>(rule.Rule);
         }
 
         await UpdateAsync(plan, ct);

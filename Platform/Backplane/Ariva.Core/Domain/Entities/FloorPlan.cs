@@ -1,9 +1,13 @@
+using Ariva.Core.Domain.Common;
+
 namespace Ariva.Core.Domain.Entities;
 
 /// <summary>
 /// The plan image of a level (ARV-018): a PNG, JPEG or sanitised SVG kept in file storage under a generated key, with
 /// its scale (metres per pixel) and the pixel where the level's floor origin lies, so zones and sensors in metres can
-/// be drawn on it. One live plan per level; a new upload replaces the previous one.
+/// be drawn on it. One live plan per level; a new upload replaces the previous one. A caller's value (the size, the file name,
+/// the scale and origin) is refused with the domain's rule types (ARV-286, <see cref="IDomainRule"/>); the level, the
+/// generated storage key and the content type the file's bytes give are the server's, so their guards are programming guards.
 /// </summary>
 public class FloorPlan : BaseSoftDeletableEntity<FloorPlan>, ISiteBound
 {
@@ -53,10 +57,10 @@ public class FloorPlan : BaseSoftDeletableEntity<FloorPlan>, ISiteBound
         ArgumentException.ThrowIfNullOrWhiteSpace(storageKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(contentType);
         if (sizeBytes is <= 0 or > MaxBytes)
-            throw new ArgumentOutOfRangeException(nameof(sizeBytes), sizeBytes, "A floor plan is at most 20 MB.");
+            throw new DomainArgumentOutOfRangeException(nameof(sizeBytes), sizeBytes, "A floor plan is at most 20 MB.");
         // The last line before the column: a name that does not fit is refused here, never at the insert (ARV-153).
         if (!FileNameFits(originalFileName))
-            throw new ArgumentException(FileNameTooLongMessage, nameof(originalFileName));
+            throw new DomainArgumentException(FileNameTooLongMessage, nameof(originalFileName));
         Level = level;
         SiteCode = level.SiteCode;
         StorageKey = storageKey;
@@ -97,9 +101,9 @@ public class FloorPlan : BaseSoftDeletableEntity<FloorPlan>, ISiteBound
     public virtual void Calibrate(double metresPerPixel, double originX, double originY)
     {
         if (!double.IsFinite(metresPerPixel) || metresPerPixel <= 0 || metresPerPixel > 10)
-            throw new ArgumentOutOfRangeException(nameof(metresPerPixel), metresPerPixel, "The scale is more than 0 and at most 10 metres per pixel.");
+            throw new DomainArgumentOutOfRangeException(nameof(metresPerPixel), metresPerPixel, "The scale is more than 0 and at most 10 metres per pixel.");
         if (!double.IsFinite(originX) || !double.IsFinite(originY) || Math.Abs(originX) > 1_000_000 || Math.Abs(originY) > 1_000_000)
-            throw new ArgumentOutOfRangeException(nameof(originX), "The origin is a pixel within one million of the image.");
+            throw new DomainArgumentOutOfRangeException(nameof(originX), "The origin is a pixel within one million of the image.");
         MetresPerPixel = metresPerPixel;
         OriginX = originX;
         OriginY = originY;

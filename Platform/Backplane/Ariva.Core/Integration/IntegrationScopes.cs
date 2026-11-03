@@ -1,4 +1,5 @@
 using System.Net;
+using Ariva.Core.Domain.Components;
 
 namespace Ariva.Core.Integration;
 
@@ -22,7 +23,8 @@ public static class IntegrationScopes
 
 /// <summary>
 /// Source networks in CIDR form (ARV-022, ARV-042): at most 16 blocks, each with its prefix, no host bits set below the
-/// prefix (10.0.0.1/24 is a likely typo) and no /0 (leave the list empty to allow every address).
+/// prefix (10.0.0.1/24 is a likely typo) and no /0 (leave the list empty to allow every address). A refusal names the
+/// caller's block cut to 50 characters and escaped (<see cref="DisplayText.Escape"/>, ARV-286), as a device's does.
 /// </summary>
 public static class SourceNetworks
 {
@@ -37,7 +39,7 @@ public static class SourceNetworks
         var normalised = new List<string>();
         foreach (var block in given)
         {
-            var shown = block.Length > 50 ? block[..50] : block;
+            var shown = DisplayText.Escape(block.Length > 50 ? block[..50] : block);
             if (!IPNetwork.TryParse(block, out var network) || !block.Contains('/', StringComparison.Ordinal))
                 return ([], $"'{shown}' is not a network in CIDR form, for example 10.20.0.0/24.");
             if (!IPAddress.TryParse(block[..block.IndexOf('/', StringComparison.Ordinal)], out var address) || !address.Equals(network.BaseAddress))

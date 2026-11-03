@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-286: desk code mappings and floor plans answer only the domain's own refusals, and network refusals are escaped (2026-11-03)
+
+- Behaviour: the desk code mapping and floor plan endpoints answer a 400 only with a rule the domain states (those texts are unchanged); any other exception where the entity runs, or in a mapping's save and audit entry, is now a 500 without its text, as on the topology, zone profile and device endpoints since ARV-282. In a desk code mapping CSV import, such a failure ends the import with a 500 (the import's Failed audit entry is written) where before it refused the row.
+- Behaviour: the refusals that name a caller's source network (a device's access, an integration client's networks, an outbound endpoint's `allowedNetworks`: not in CIDR form, host bits set, IPv4-mapped) write the block cut to 50 characters and escaped: every character outside printable ASCII is written as its code (`\u202E`, `\U0001F600`, also a letter or digit of another script) and a backslash is doubled, so the answer cannot reorder or hide its own text. Before, a device's host-bits refusal echoed the whole block as sent, and the other refusals echoed it unescaped.
+- After the upgrade: nothing to do. A network refusal for a block of printable ASCII without a backslash reads as before (a device's host-bits refusal only up to 50 characters, the others were already cut there); one for a block holding a backslash or any character outside printable ASCII reads in the escaped form, and a device's host-bits refusal for a longer block reads cut, so a client that matched such a text sees it changed. Only a failure that was never the caller's (a driver or session error) changes from a 400 to a 500.
+
 ### ARV-285: exception text kept outside the logs is protected as log text is (2026-11-02)
 
 - Behaviour: a dead letter's error message, `outbox_message.last_error` and the exception TickerQ keeps of a failed job run (shown on the Cronz dashboard) now mask credentials by shape and name, and email addresses, with the logs' rules (`SecretText` in `Ariva.Infra/Security`, which `RedactionEnricher` and `ProtectedExceptionSink` now use), before any cut. `last_error` is also made printable for PostgreSQL, so a NUL or a lone surrogate in a client's message no longer fails the row's update.

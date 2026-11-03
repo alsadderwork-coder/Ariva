@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Ariva.Core.Domain.Common;
 using Ariva.Core.Domain.Enums;
 
 namespace Ariva.Core.Domain.Entities;
@@ -7,7 +8,8 @@ namespace Ariva.Core.Domain.Entities;
 /// Maps another system's code for a service point to an Ariva desk (glossary Desk code mapping, ARV-015). Unique per
 /// system and site among live mappings, and one live mapping per desk and system. AMAN codes map only to border desks
 /// and e-gates; AODB codes only to check-in counters. Feed consumers resolve codes through it and park what they cannot
-/// resolve; they never guess.
+/// resolve; they never guess. A caller's value or a desk it does not fit is refused with the domain's rule types (ARV-286,
+/// <see cref="IDomainRule"/>), so the service answers the rule's text and nothing else; a null desk is a programming guard.
 /// </summary>
 public partial class DeskCodeMapping : BaseSoftDeletableEntity<DeskCodeMapping>, ISiteBound
 {
@@ -18,10 +20,10 @@ public partial class DeskCodeMapping : BaseSoftDeletableEntity<DeskCodeMapping>,
     public DeskCodeMapping(ExternalSystem system, string externalCode, Desk desk)
     {
         if (!Enum.IsDefined(system))
-            throw new ArgumentOutOfRangeException(nameof(system), system, "Unknown external system.");
+            throw new DomainArgumentOutOfRangeException(nameof(system), system, "Unknown external system.");
         ArgumentNullException.ThrowIfNull(desk);
         System = system;
-        ExternalCode = NormalizeCode(externalCode) ?? throw new ArgumentException("An external code is 1 to 32 letters, digits or . _ / - characters.", nameof(externalCode));
+        ExternalCode = NormalizeCode(externalCode) ?? throw new DomainArgumentException("An external code is 1 to 32 letters, digits or . _ / - characters.", nameof(externalCode));
         Assign(desk);
     }
 
@@ -35,9 +37,9 @@ public partial class DeskCodeMapping : BaseSoftDeletableEntity<DeskCodeMapping>,
     {
         ArgumentNullException.ThrowIfNull(desk);
         if (desk.IsDeleted)
-            throw new InvalidOperationException("The desk is deleted.");
+            throw new DomainRuleException("The desk is deleted.");
         if (SiteCode is not null && desk.SiteCode != SiteCode)
-            throw new InvalidOperationException("A mapping stays in its site.");
+            throw new DomainRuleException("A mapping stays in its site.");
         var allowed = System switch
         {
             ExternalSystem.Aman => desk.Kind is DeskKind.Desk or DeskKind.EGate,
@@ -45,7 +47,7 @@ public partial class DeskCodeMapping : BaseSoftDeletableEntity<DeskCodeMapping>,
             _ => false
         };
         if (!allowed)
-            throw new InvalidOperationException($"A {System} code cannot map to a {desk.Kind}.");
+            throw new DomainRuleException($"A {System} code cannot map to a {desk.Kind}.");
         Desk = desk;
         SiteCode = desk.SiteCode;
     }

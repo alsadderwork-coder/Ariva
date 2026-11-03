@@ -1,3 +1,4 @@
+using Ariva.Core.Domain.Common;
 using Ariva.Core.Domain.Components;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
@@ -253,6 +254,52 @@ public sealed class DeviceTests
         device.SetAccess([], null, Now);
         device.AllowedSources.Should().BeNull();
         device.ClientCertificateSha256.Should().BeNull();
+    }
+
+    /// <summary>
+    /// ARV-286 (CWE-79, CWE-20): a refused block is named escaped, so a control, bidirectional or invisible character in it is
+    /// written as its code: the answer shows what was sent and cannot reorder or hide the text around it.
+    /// </summary>
+    [Fact]
+    public void SetAccess_Should_NameTheRefusedBlockEscaped_When_ItHoldsAnInvisibleOrBidirectionalCharacter()
+    {
+        var device = NewDevice();
+        var override_ = ((char)0x202E).ToString();
+        var backslash = "\\";
+
+        var bidi = () => device.SetAccess(["10.0.0.0/24" + override_ + "x"], null, Now);
+        var plain = () => device.SetAccess(["not-a-network"], null, Now);
+
+        var refused = bidi.Should().Throw<DomainArgumentException>().Which.Rule;
+        refused.Contains(override_, StringComparison.Ordinal).Should().BeFalse("the override itself never reaches the answer");
+        refused.Should().StartWith("'10.0.0.0/24" + backslash + "u202Ex' is not a network in CIDR form");
+        plain.Should().Throw<DomainArgumentException>().Which.Rule.Should().Be("'not-a-network' is not a network in CIDR form, for example 10.20.0.0/24.",
+            "a printable value reads as it was sent");
+    }
+
+    /// <summary>
+    /// The host-bits refusal names the block too, and an IPv6 zone after <c>%</c> is any text the address parser takes, so
+    /// it can carry an override: the refusal writes it escaped and cut to 50 characters, as the not-CIDR one does (ARV-286).
+    /// </summary>
+    [Fact]
+    public void SetAccess_Should_NameTheBlockEscapedAndCut_When_ItsHostBitsAreSetBehindAZone()
+    {
+        var device = NewDevice();
+        var override_ = ((char)0x202E).ToString();
+        var backslash = "\\";
+        var longZone = "fe80::1%" + new string('z', 60) + "/64";
+
+        var bidi = () => device.SetAccess(["fe80::1%" + override_ + "/64"], null, Now);
+        var cut = () => device.SetAccess([longZone], null, Now);
+        var plain = () => device.SetAccess(["10.20.0.1/24"], null, Now);
+
+        var refused = bidi.Should().Throw<DomainArgumentException>().Which.Rule;
+        refused.Contains(override_, StringComparison.Ordinal).Should().BeFalse("the override itself never reaches the answer");
+        refused.Should().StartWith("'fe80::1%" + backslash + "u202E/64' has host bits set; the network is fe80::/64");
+        cut.Should().Throw<DomainArgumentException>().Which.Rule.Should().StartWith("'" + longZone[..50] + "' has host bits set",
+            "the echo is cut to 50 characters before it is escaped");
+        plain.Should().Throw<DomainArgumentException>().Which.Rule.Should().Be("'10.20.0.1/24' has host bits set; the network is 10.20.0.0/24.");
+        device.AllowedSources.Should().BeNull();
     }
 
     [Theory]

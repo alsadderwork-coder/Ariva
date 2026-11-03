@@ -2323,8 +2323,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 303,
-      "passes": false,
-      "notes": "Size S. Phase 3. Filed 2026-11-02 from the ARV-282 security review (advisories A2 and A4). Predates ARV-282; no sign-in code.",
+      "passes": true,
+      "notes": "Size S. Phase 3. Filed 2026-11-02 from the ARV-282 security review (advisories A2 and A4). Predates ARV-282; no sign-in code. Done 2026-11-03: DeskCodeMapping and FloorPlan refuse with the rule types, SvcDeskCodeMappings and SvcFloorPlans catch by type (Create's guard covers the construction only); the device and SourceNetworks refusals name the block cut to 50 characters and escaped (the integration client and outbound endpoint ones folded in from review A2). Review round 1 FAIL fixed, round 2 PASS; A7 noted on ARV-287.",
       "dependsOn": [
         "ARV-282"
       ]
@@ -2345,7 +2345,7 @@
       ],
       "priority": 304,
       "passes": false,
-      "notes": "Size M. Phase 3. Filed 2026-11-02 from the ARV-282 security review round 4 (follow-up list items 1 to 7). Test tooling only; no sign-in code.",
+      "notes": "Size M. Phase 3. Filed 2026-11-02 from the ARV-282 security review round 4 (follow-up list items 1 to 7). Test tooling only; no sign-in code. Also from the ARV-286 review (A7): SvcDeskCodeMappingImports.Refusal tells the cannot-map rule apart by its text (\" code cannot map to a \"), read back through Result.ErrorMessages, which the text analysis does not follow; not a leak (it maps to fixed CSV texts), but a DomainRuleKind on that rule would remove the coupling.",
       "dependsOn": [
         "ARV-282"
       ]

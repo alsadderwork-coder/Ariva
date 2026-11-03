@@ -202,7 +202,11 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
 
     /// <summary>
     /// Sets where the device may push from and the client certificate it must present (ARV-022). Every block is
-    /// checked before anything changes; a host bit set below the prefix (10.0.0.1/24) is refused as a likely typo.
+    /// checked before anything changes; a host bit set below the prefix (10.0.0.1/24) is refused as a likely typo. A refusal
+    /// names the caller's block cut to 50 characters and escaped (<see cref="DisplayText.Escape"/>, ARV-286): every character
+    /// outside printable ASCII (a control, bidirectional or invisible one, but also a letter or digit of another script) is
+    /// written as its code and a backslash is doubled, so the answer shows what was sent and cannot reorder or hide the text
+    /// around it. The host-bits refusal can carry such a character: an IPv6 zone after <c>%</c> is any text.
     /// </summary>
     public virtual void SetAccess(IReadOnlyList<string> allowedSources, string clientCertificateSha256, DateTime utcNow)
     {
@@ -213,10 +217,11 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
         var normalised = new List<string>();
         foreach (var block in blocks)
         {
+            var shown = DisplayText.Escape(block.Length > 50 ? block[..50] : block);
             if (!System.Net.IPNetwork.TryParse(block, out var network) || !block.Contains('/', StringComparison.Ordinal))
-                throw new DomainArgumentException($"'{(block.Length > 50 ? block[..50] : block)}' is not a network in CIDR form, for example 10.20.0.0/24.", nameof(allowedSources));
+                throw new DomainArgumentException($"'{shown}' is not a network in CIDR form, for example 10.20.0.0/24.", nameof(allowedSources));
             if (!System.Net.IPAddress.TryParse(block[..block.IndexOf('/', StringComparison.Ordinal)], out var given) || !given.Equals(network.BaseAddress))
-                throw new DomainArgumentException($"'{block}' has host bits set; the network is {network}.", nameof(allowedSources));
+                throw new DomainArgumentException($"'{shown}' has host bits set; the network is {network}.", nameof(allowedSources));
             if (network.PrefixLength == 0)
                 throw new DomainArgumentException("A /0 network allows every address; leave the list empty instead.", nameof(allowedSources));
             normalised.Add(network.ToString());

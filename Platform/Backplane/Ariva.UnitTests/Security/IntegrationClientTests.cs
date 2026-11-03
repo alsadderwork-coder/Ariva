@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Security.Claims;
 using System.Text.Json;
@@ -71,6 +72,36 @@ public sealed class IntegrationClientTests
 
         access.Should().BeNull();
         errors.Should().Contain(e => e.Contains(why, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A refused block is named cut to 50 characters and escaped (ARV-286), as a device's is: an override or invisible
+    /// character in it is written as its code, in each of the three refusals that name it.
+    /// </summary>
+    [Theory]
+    [InlineData("10.0.0.0/24{0}x", "'10.0.0.0/24{1}u202Ex' is not a network in CIDR form")]
+    [InlineData("fe80::1%{0}/64", "'fe80::1%{1}u202E/64' has host bits set")]
+    [InlineData("::ffff:10.0.0.0%{0}/104", "'::ffff:10.0.0.0%{1}u202E/104' is an IPv4-mapped IPv6 network")]
+    public void SourceNetworks_Should_NameTheBlockEscaped_When_ItHoldsAnOverride(string block, string expected)
+    {
+        var override_ = ((char)0x202E).ToString();
+        var backslash = "\\";
+
+        var (blocks, error) = SourceNetworks.Normalize([string.Format(CultureInfo.InvariantCulture, block, override_)]);
+
+        blocks.Should().BeEmpty();
+        error.Contains(override_, StringComparison.Ordinal).Should().BeFalse("the override itself never reaches the answer");
+        error.Should().StartWith(string.Format(CultureInfo.InvariantCulture, expected, override_, backslash));
+    }
+
+    [Fact]
+    public void SourceNetworks_Should_NameTheBlockCut_When_ItIsLong()
+    {
+        var block = "10.0.0.0/24" + new string('x', 60);
+
+        var (_, error) = SourceNetworks.Normalize([block]);
+
+        error.Should().Be("'" + block[..50] + "' is not a network in CIDR form, for example 10.20.0.0/24.");
     }
 
     [Fact]
