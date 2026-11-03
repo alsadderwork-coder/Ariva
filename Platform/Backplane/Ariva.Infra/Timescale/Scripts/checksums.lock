@@ -67,6 +67,7 @@
     "0064_database_environment.sql": "dd5bb77768498e7c4ff01fcdd791425a4b4bf6198ab2597e2df3731e63de1292",
     "0065_desk_feed_heartbeat.sql": "9f18676a2c0d370a94cfcfd1cdf22da4671ee395a33e1234480d1728187b535f",
     "0066_device_line_coverage.sql": "1b4a3755150c8cf1570df086cab5dd6503e0ee6eaf053d36cdef2ffac688c75b",
-    "0067_device_health_covered_lines.sql": "5a99d23fce1ea51d8174b2e5eaabec73e6e18295c08320ed7312a33c0bf4d0bb"
+    "0067_device_health_covered_lines.sql": "5a99d23fce1ea51d8174b2e5eaabec73e6e18295c08320ed7312a33c0bf4d0bb",
+    "0068_outage_and_staffing_reads.sql": "aed44758844a20f0e4baa9c251f2cd7bb5a8016c10fe4f19b8e8148f70de1ff9"
   }
 }

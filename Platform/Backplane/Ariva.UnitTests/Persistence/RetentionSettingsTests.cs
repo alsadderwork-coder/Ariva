@@ -58,7 +58,8 @@ public sealed partial class RetentionSettingsTests
         var settings = new RetentionSettings { RawSensingDays = 45 };
 
         settings.Hypertables().Where(h => h.Days == 45).Select(h => h.Table)
-            .Should().BeEquivalentTo(["sensing_event", "sensing_batch", "device_health_event"], "a replay needs the events and the devices' health of the same period");
+            .Should().BeEquivalentTo(["sensing_event", "sensing_batch", "device_health_event", "zone_outage"],
+                "a replay needs the events, the devices' health and the outages drawn from it of the same period (zone_outage since ARV-228a)");
     }
 
     [Fact]

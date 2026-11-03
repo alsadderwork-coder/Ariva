@@ -18,6 +18,16 @@ namespace Ariva.Infra.Services.Reports;
 /// </summary>
 internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
 {
+    /// <summary>
+    /// The site's device outages overlapping the day, and those still open (ARV-228a: a range of zone_outage's end and open
+    /// indexes, script 0068, whatever the table's history; OutageReadPlanTests explains it as written here).
+    /// </summary>
+    internal const string OutagesSql = """
+        SELECT device_code AS "DeviceCode", from_utc AS "FromUtc", to_utc AS "ToUtc", closed AS "Closed"
+        FROM zone_outage WHERE zone_key LIKE :prefix AND from_utc < :to AND (to_utc > :from OR NOT closed)
+        ORDER BY device_code, from_utc LIMIT :cap
+        """;
+
     /// <summary>The bounds of the reads; tests lower them.</summary>
     public DailyReportLimits Limits { get; init; } = DailyReportLimits.Default;
 
@@ -99,11 +109,7 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
             ["alertView"] = ReportAlerts.Receives(roles)
         }, ct);
 
-        var outages = await ExecuteSqlAsync<OutageRow>("""
-            SELECT device_code AS "DeviceCode", from_utc AS "FromUtc", to_utc AS "ToUtc", closed AS "Closed"
-            FROM zone_outage WHERE zone_key LIKE :prefix AND from_utc < :to AND (to_utc > :from OR NOT closed)
-            ORDER BY device_code, from_utc LIMIT :cap
-            """, new Dictionary<string, object> { ["prefix"] = siteCode + "/%", ["from"] = from, ["to"] = to, ["cap"] = Limits.MaxOutages + 1 }, ct);
+        var outages = await ExecuteSqlAsync<OutageRow>(OutagesSql, new Dictionary<string, object> { ["prefix"] = siteCode + "/%", ["from"] = from, ["to"] = to, ["cap"] = Limits.MaxOutages + 1 }, ct);
         if (outages.Count > Limits.MaxOutages)
             return TooLarge();
         var devices = await ExecuteSqlAsync<DeviceRow>("""

@@ -111,7 +111,7 @@ Every table, hypertable, continuous aggregate and view, with its personal data, 
 |---|---|---|
 | Track ids | Rotated at zone exit; never persist past the operating day | D4 |
 | track_samples, zone_events (the raw archive `sensing_event`, `sensing_batch`) | Contract dispute window, default 90 days (`Database:Retention:RawSensingDays`, TC-62); compressed after one day | D5 |
-| device_health (`device_health_event`) | Dispute window (evidence for sensor-outage exclusions): the same parameter as the raw archive, so a replay finds both | Proposed |
+| device_health (`device_health_event`) and the device outages drawn from it (`zone_outage`, since ARV-228a) | Dispute window (evidence for sensor-outage exclusions): the same parameter as the raw archive, so a replay finds the events, the devices' health and the outages together | Proposed |
 | `aman.feed` Kafka topics | Medium class; AMAN owns the topic configuration | D5; values To confirm |
 | Ariva Kafka topics | Short, medium, long or compacted classes (see the overview) | D5; values Proposed |
 | Desk staff and service zone readings (`desk_zone_reading`: desk key, zone role, time, count, flag; no identities). Desk-level border data: stays in the border deployment and no API reads it; only the desk feed turns it into desk states (ARV-116) | 7 days, dropped by TimescaleDB retention (`Database:Retention:DeskZoneReadingDays`) | Proposed, To confirm |

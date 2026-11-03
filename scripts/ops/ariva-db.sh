@@ -153,7 +153,7 @@ zone_profile_immutable:c3c11583ac7dd5add9f4bafea3c4ba323d27a97cd9adeebd77b06ef9f
 # reflects), so a restore that lost a revoke, or gained a grant, is reported. OpsScriptTests refuses a later script that
 # grants to or revokes from ariva_runtime, or creates a view, until this list (or ARIVA_VIEWS) and its script move with it;
 # BackupRestoreTests holds the list equal to a migrated database.
-readonly ARIVA_RUNTIME_PRIVILEGES_AT="0064_database_environment.sql"
+readonly ARIVA_RUNTIME_PRIVILEGES_AT="0068_outage_and_staffing_reads.sql"
 readonly ARIVA_RUNTIME_PRIVILEGES="advertising_media=SELECT,INSERT,UPDATE;\
 advertising_play=SELECT,INSERT;\
 advertising_playlist=SELECT,INSERT,UPDATE;\
@@ -236,7 +236,7 @@ validation_campaign_line=SELECT,INSERT;\
 validation_campaign_zone=SELECT,INSERT;\
 validation_result_revision=SELECT,INSERT;\
 zone_health_bin=SELECT,INSERT,UPDATE;\
-zone_outage=SELECT,INSERT,UPDATE"
+zone_outage=SELECT,INSERT,UPDATE(closed recorded_on to_utc)"
 
 # ARV-189 review: the views of public as the scripts create them, as <view>=<what it reads> entries separated by ";": a
 # continuous aggregate its hypertable, a plain view the relations it names (separated by spaces). check compares them, as
@@ -250,7 +250,7 @@ readonly ARIVA_VIEWS="line_minute_15m=line_minute;overflow_bin_15m=overflow_minu
 # ARIVA_SCHEMA_AT, the latest script (any script may change them), so a trigger, constraint, grant or function a forged dump
 # left out, changed or added is reported even where no other line looks. OpsScriptTests holds ARIVA_SCHEMA_AT at the
 # latest script; BackupRestoreTests holds the list equal to a database the release's migration job migrated (and prints it).
-readonly ARIVA_SCHEMA_AT="0067_device_health_covered_lines.sql"
+readonly ARIVA_SCHEMA_AT="0068_outage_and_staffing_reads.sql"
 readonly ARIVA_SCHEMA="advertising_media=2cb17c8c169d81de441d4192fdc21b0c;\
 advertising_media_guard()=0c14e39356e12f186a82b88895cc130a;\
 advertising_play=d5f1179d8cfaccdcc0d9c7d9c3634258;\
@@ -310,7 +310,7 @@ integration_call=e46b0d368a4916cb0834ecee757ad780;\
 integration_client=5900cfdb0d5ca73d3abce7cebf968b94;\
 integration_idempotency=7391a46cbb12dc523a9f98ef518d8c77;\
 integration_idempotency_keep()=b3b527e2df0c9358c30ac3e1d26d786f;\
-lane_staffing=85bfa55d161bfc2a81a3f6efac2592b2;\
+lane_staffing=8cf2ed16d6b64a3ca97dd63cbe84a654;\
 level=ef72305459eb8b4ba8140489c8612fcf;\
 line=b17d4462e2e004ba9db787d69655149d;\
 line_minute=949005495d9badc823b8f406bf0508a4;\
@@ -383,7 +383,7 @@ zone=144daa8f192dce93a13e75a77ec54228;\
 zone_health=567ae9a2661ee7a7f18dfb79c3b216c6;\
 zone_health_bin=83f6d4fc5a024c2bbae3392fd68df243;\
 zone_health_bin_final_is_immutable()=f6f65edacdd24324741915722bdcfa7b;\
-zone_outage=9d0dcb545d87fe20fa26779af5ddd1a4;\
+zone_outage=b39c8f0af1b5c8e9de9f36c5b07835c0;\
 zone_profile=ecb5cd2096d36deaa1d51fd176bb2727;\
 zone_profile_geometry_immutable()=6328ab8391d54f21a060ba94d04bd158;\
 zone_profile_immutable()=ffc3bff3f5370bf70f8ae9d8c0702f41"

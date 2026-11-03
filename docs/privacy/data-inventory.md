@@ -17,7 +17,7 @@ These periods are migration-job parameters (`Database:Retention`; in the cluster
 
 | Parameter | Objects | Default | Allowed | Decision |
 |---|---|---|---|---|
-| `RawSensingDays` | `sensing_event`, `sensing_batch`, `device_health_event` | 90 days | 7 to 3,650 | The contract's dispute window, TC-62 (90 days until answered) |
+| `RawSensingDays` | `sensing_event`, `sensing_batch`, `device_health_event`, `zone_outage` (since ARV-228a) | 90 days | 7 to 3,650 | The contract's dispute window, TC-62 (90 days until answered) |
 | `DeskZoneReadingDays` | `desk_zone_reading` | 7 days | 2 to 90 | Proposed, ARV-116 |
 | `LaneStaffingDays` | `lane_staffing` | 90 days | 90 to 3,650 | Decision of 2026-10-15 (the alert backtest's history) |
 | `AlertEmailDays` | `email_message` (never a Pending email) | 180 days | 30 to 3,650 | Proposed, TC-67 |
@@ -85,7 +85,7 @@ These periods are migration-job parameters (`Database:Retention`; in the cluster
 | `sensing_batch` | Hypertable | Raw sensing | None: each archived batch once (zone, device, kind, event count) | `Database:Retention:RawSensingDays`, default 90 days (TC-62) | `Database:Retention` (migration job, TimescaleDB retention policy); script 0017 created it with 90 days | Sensing (Ariva.Api.Stream) |
 | `sensing_day_key` | Table | Key material | None directly: the key of each UTC day's track pseudonyms; destroying it makes that day's pseudonyms unlinkable | 3 days, then deleted | Code: `SensingArchive.Window` | Sensing (Ariva.Api.Stream) |
 | `device_health_event` | Hypertable | Raw sensing | None: every device health report as received (device, zone, online, clock state, the lines the device declared it counts since script 0067) | `Database:Retention:RawSensingDays`, default 90 days (TC-62): kept as long as the raw events, so a replay reproduces the outages | `Database:Retention` (migration job, TimescaleDB retention policy); script 0019 created it with 90 days | Sensing (Ariva.Api.Stream) |
-| `zone_outage` | Table | Evidence | None: device outages per queue zone | Indefinite (dispute evidence) | Script 0019 (no deletion) | Queue State (Ariva.Api.Stream) |
+| `zone_outage` | Hypertable | Evidence | None: device outages per queue zone | `Database:Retention:RawSensingDays`, default 90 days (TC-62): kept as long as the device health archive it is drawn from, so a replay of a period finds both; a 7-day chunk is dropped once every outage in it started more than the period ago (Proposed, ARV-228a; indefinite before) | `Database:Retention` (migration job, TimescaleDB retention policy); script 0019 created it, script 0068 made it a hypertable with 90 days and narrowed the runtime role's UPDATE to the columns the stream's upsert sets, so it cannot age an outage into a dropped chunk | Queue State (Ariva.Api.Stream) |
 | `replay_run` | Table | Evidence | Yes, references: the operator's name and the database login of each replay command; hash chained | Indefinite, append-only | Script 0019 | Replay (the `--replay` command of Ariva.Api.Stream) |
 | `queue_minute` | Hypertable | Queue measurement | None, aggregates only: per queue zone and minute, entries, exits, waits, queue length, nowcast | Indefinite (no retention policy; the pilot's evidence) | D5; script 0018 (no policy) | Queue State (Ariva.Api.Stream) |
 | `queue_minute_15m` | Continuous aggregate | Queue measurement | None, aggregates only | As `queue_minute` (a refresh policy only) | Script 0018 | Queue State (Ariva.Api.Stream) |

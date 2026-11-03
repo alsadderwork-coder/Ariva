@@ -13,7 +13,7 @@ public sealed record RetentionChange(string Name, int Days, bool Changed, string
 /// <item>each hypertable of <see cref="RetentionSettings.Hypertables"/> gets a TimescaleDB retention policy of exactly its period.
 /// A policy that already drops after that period is left alone (a second run changes nothing, and the policy's job keeps its
 /// id and schedule); any other policy is removed and added again with the period, in the same transaction, so there is never
-/// a moment without one. The scripts that created the tables (0017, 0019, 0040, 0053) set the same defaults and stay unchanged:
+/// a moment without one. The scripts that created the tables (0017, 0019, 0040, 0053, 0062, 0068) set the same defaults and stay unchanged:
 /// they are immutable, and this step runs after them on every release, so the configured value always wins;</item>
 /// <item>each relational period of <see cref="RetentionSettings.DataSets"/> is written to <c>retention_period</c> (script 0054),
 /// which the Cronz retention job's database function reads; the runtime role can read that table but never write it.</item>

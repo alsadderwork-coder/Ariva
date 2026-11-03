@@ -32,6 +32,16 @@ namespace Ariva.Infra.Services.Reports;
 /// </summary>
 internal sealed class WeeklySummaryReader(IUnitOfWork unitOfWork, AvailabilityLedgerReader ledger) : SvcDb(unitOfWork)
 {
+    /// <summary>
+    /// The site's device outages overlapping the week, and those still open (ARV-228a: a range of zone_outage's end and open
+    /// indexes, script 0068, whatever the table's history; OutageReadPlanTests explains it as written here).
+    /// </summary>
+    internal const string OutagesSql = """
+        SELECT device_code AS "DeviceCode", from_utc AS "FromUtc", to_utc AS "ToUtc", closed AS "Closed"
+        FROM zone_outage WHERE zone_key LIKE :prefix AND from_utc < :to AND (to_utc > :from OR NOT closed)
+        ORDER BY device_code, from_utc LIMIT :cap
+        """;
+
     /// <summary>The bounds of the reads; the defaults unless a test lowers them.</summary>
     public WeeklySummaryLimits Limits { get; init; } = WeeklySummaryLimits.Default;
 
@@ -253,11 +263,7 @@ internal sealed class WeeklySummaryReader(IUnitOfWork unitOfWork, AvailabilityLe
             """, new Dictionary<string, object> { ["site"] = siteCode, ["cap"] = Limits.MaxDevices + 1 }, ct);
         if (devices.Count > Limits.MaxDevices)
             return TooLarge();
-        var outages = await ExecuteSqlAsync<OutageRow>("""
-            SELECT device_code AS "DeviceCode", from_utc AS "FromUtc", to_utc AS "ToUtc", closed AS "Closed"
-            FROM zone_outage WHERE zone_key LIKE :prefix AND from_utc < :to AND (to_utc > :from OR NOT closed)
-            ORDER BY device_code, from_utc LIMIT :cap
-            """, new Dictionary<string, object> { ["prefix"] = prefix, ["from"] = calendar.FromUtc, ["to"] = calendar.ToUtc, ["cap"] = Limits.MaxOutages + 1 }, ct);
+        var outages = await ExecuteSqlAsync<OutageRow>(OutagesSql, new Dictionary<string, object> { ["prefix"] = prefix, ["from"] = calendar.FromUtc, ["to"] = calendar.ToUtc, ["cap"] = Limits.MaxOutages + 1 }, ct);
         if (outages.Count > Limits.MaxOutages)
             return TooLarge();
         var outagesByDevice = outages.ToLookup(o => o.DeviceCode, StringComparer.Ordinal);

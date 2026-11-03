@@ -70,8 +70,9 @@ internal sealed partial class SvcValidationResults
          LIMIT :limit
         """;
 
-    // An outage still open ends where the read ends (the engine's rule for zone_outage).
-    private const string OutagesSql = """
+    // An outage still open ends where the read ends (the engine's rule for zone_outage). Internal for OutageReadPlanTests
+    // (ARV-228a), which explains it as written here.
+    internal const string OutagesSql = """
         SELECT zone_key AS "ZoneKey", from_utc AS "FromUtc", CASE WHEN closed THEN to_utc ELSE CAST(:to AS timestamptz) END AS "ToUtc"
           FROM zone_outage
          WHERE zone_key IN (:keys) AND from_utc < :to AND (to_utc > :from OR NOT closed)

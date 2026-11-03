@@ -43,7 +43,7 @@ The [data inventory](../docs/privacy/data-inventory.md) lists every table with i
 |---|---|---|
 | Track ids | Rotated at zone exit; never persist past the operating day. The raw archive keeps only a pseudonym per UTC day (HMAC-SHA256 with a random daily key destroyed after three days), so archived tracks cannot be linked across days (ARV-026) | D4 |
 | Raw sensing events (track samples, vendor crossings, occupancy and interval counts, table `sensing_event`) | Contract dispute window, default 90 days, dropped by TimescaleDB's retention policy; compressed after one day (ARV-026; `Database:Retention:RawSensingDays` per environment since ARV-111a; the value is the answer to TC-62) | D5 |
-| Device health (`device_health_event`) | Dispute window (evidence for sensor-outage exclusions): the raw archive's parameter, so a replay finds both | Proposed |
+| Device health (`device_health_event`) and device outages (`zone_outage`, since ARV-228a) | Dispute window (evidence for sensor-outage exclusions): the raw archive's parameter, so a replay finds the events, the devices' health and the outages together | Proposed |
 | `aman.feed` Kafka topics | Medium class; AMAN owns the configuration | D5; values To confirm |
 | Ariva Kafka topics | Short, medium, long or compacted classes (3, 14, 30 days) | D5; values Proposed |
 | Desk staff and service zone readings (`desk_zone_reading`: desk key, zone role, time, count, flag; no identities). Desk-level border data: stays in the border deployment and no API reads it; only the desk feed turns it into desk states (ARV-116) | 7 days, dropped by TimescaleDB retention (`Database:Retention:DeskZoneReadingDays`) | Proposed, To confirm |

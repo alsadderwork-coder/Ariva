@@ -26,7 +26,9 @@ public sealed record AlertTargetSeries(AlertTarget Target, IReadOnlyList<AlertMi
 /// stale reading, as the prototype skips a degraded zone); with the queue length for the minimum-queue gate. A nowcast flagged
 /// only because its throughput comes from the exit rate (no desk state before ARV-049) is judged;</item>
 /// <item><c>QueueLength</c>: the queue minute's queue length;</item>
-/// <item><c>BinP90</c>: the largest P90 among the zone's bins that ended within the last 150 minutes (latest revision), with that bin;</item>
+/// <item><c>BinP90</c>: the largest P90 among the zone's bins that ended within the last 150 minutes (latest revision), with that bin.
+/// The read reaches back that look-back and one bin (<see cref="BinReadFrom"/>, ARV-228a), since the stream writes bins of
+/// <see cref="LongestBin"/> only; before, it reached back a day more, for bin lengths no writer produces;</item>
 /// <item><c>SensorOffline</c>: per commissioned device of the zones, 1 for a minute inside one of its outages (<c>zone_outage</c>, and an
 /// outage still open while the registry has it offline), otherwise 0;</item>
 /// <item><c>PredictedNowcast</c>: <see cref="PredictedWait"/> from the queue minute's length and throughput and the arrival wave over the
@@ -59,9 +61,6 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
 {
     /// <summary>How far back a P90 rule looks for bins, as in the prototype.</summary>
     public static readonly TimeSpan BinLookBack = TimeSpan.FromMinutes(150);
-
-    /// <summary>The longest bin the look-back reaches back for (queue_bin allows up to a day).</summary>
-    private const int AlertBinMaxLength = 1440;
 
     /// <summary>The most devices one sensor rule watches.</summary>
     public const int MaxDevices = 1000;
@@ -180,6 +179,23 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
     }
 
     /// <summary>
+    /// Interval 0 of each computed minute of the zones in a range, at most <c>:limit</c> rows. A range of the partial index of interval
+    /// 0 (script 0068, ARV-228a), so the read touches no row of intervals 1 to 12 (OutageReadPlanTests explains it as written here).
+    /// </summary>
+    internal const string StaffingSql = """
+        SELECT zone_key AS "ZoneKey", minute_utc AS "MinuteUtc", CAST(interval_index AS integer) AS "IntervalIndex", lane AS "Lane",
+               start_utc AS "StartUtc", CAST(minutes AS integer) AS "Minutes", arrivals AS "Arrivals", CAST(recommended AS integer) AS "Recommended",
+               bound AS "Bound", at_limit AS "AtLimit", shortfall AS "Shortfall", wait_recommended AS "WaitRecommended", wait_open AS "WaitOpen",
+               no_service_open AS "NoServiceOpen", gap AS "Gap", lane_gap AS "LaneGap", queue_now AS "QueueNow", CAST(open_now AS integer) AS "OpenNow",
+               open_now_degraded AS "OpenNowDegraded", CAST(desks AS integer) AS "Desks", target_minutes AS "TargetMinutes", busy_cap AS "BusyCap",
+               throughput_per_desk AS "ThroughputPerDesk", throughput_source AS "ThroughputSource"
+          FROM lane_staffing
+         WHERE zone_key IN (:keys) AND interval_index = 0 AND minute_utc > :from AND minute_utc <= :to
+         ORDER BY zone_key, minute_utc
+         LIMIT :limit
+        """;
+
+    /// <summary>
     /// The open desks below recommendation minutes of the targets: interval 0 of each computed minute after
     /// <paramref name="fromUtc"/> up to <paramref name="toUtc"/>, in one constant query for every target (each by its site's
     /// key, so another site's lanes of the same name are never read); null when the range holds more rows than
@@ -189,18 +205,8 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         CancellationToken ct)
     {
         var keys = targets.Where(t => ZoneKeys.Fits(siteCode, t.ZoneName)).Select(t => ZoneKeys.For(siteCode, t.ZoneName)).Distinct(StringComparer.Ordinal).ToList();
-        var rows = keys.Count == 0 ? [] : await Storage.ExecuteSqlAsync<StaffingRow>("""
-            SELECT zone_key AS "ZoneKey", minute_utc AS "MinuteUtc", CAST(interval_index AS integer) AS "IntervalIndex", lane AS "Lane",
-                   start_utc AS "StartUtc", CAST(minutes AS integer) AS "Minutes", arrivals AS "Arrivals", CAST(recommended AS integer) AS "Recommended",
-                   bound AS "Bound", at_limit AS "AtLimit", shortfall AS "Shortfall", wait_recommended AS "WaitRecommended", wait_open AS "WaitOpen",
-                   no_service_open AS "NoServiceOpen", gap AS "Gap", lane_gap AS "LaneGap", queue_now AS "QueueNow", CAST(open_now AS integer) AS "OpenNow",
-                   open_now_degraded AS "OpenNowDegraded", CAST(desks AS integer) AS "Desks", target_minutes AS "TargetMinutes", busy_cap AS "BusyCap",
-                   throughput_per_desk AS "ThroughputPerDesk", throughput_source AS "ThroughputSource"
-              FROM lane_staffing
-             WHERE zone_key IN (:keys) AND interval_index = 0 AND minute_utc > :from AND minute_utc <= :to
-             ORDER BY zone_key, minute_utc
-             LIMIT :limit
-            """, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc, ["limit"] = MaxStaffingRows + 1 }, ct);
+        var rows = keys.Count == 0 ? [] : await Storage.ExecuteSqlAsync<StaffingRow>(StaffingSql,
+            new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc, ["limit"] = MaxStaffingRows + 1 }, ct);
         if (rows.Count > MaxStaffingRows)
             return null;
         var byZone = rows.GroupBy(r => r.ZoneKey, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
@@ -380,15 +386,29 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         ];
     }
 
+    /// <summary>
+    /// The earliest start a bin may have and still be read for a P90 rule's minutes after <paramref name="fromUtc"/> (ARV-228a): a
+    /// minute looks at the bins that ended within <see cref="BinLookBack"/> before it, so the read takes every bin that ends after
+    /// <paramref name="fromUtc"/> less the look-back and is at most <see cref="LongestBin"/> long. One bin of slack at the most;
+    /// no reach for longer bins (queue_bin's CHECK allows up to a day, but the stream writes <see cref="LongestBin"/> only).
+    /// </summary>
+    internal static DateTime BinReadFrom(DateTime fromUtc) => fromUtc - BinLookBack - LongestBin;
+
     private async Task<IReadOnlyList<AlertTargetSeries>> BinsAsync(string siteCode, IReadOnlyList<AlertTarget> targets, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
     {
         var minutes = await MinuteRowsAsync(siteCode, targets, fromUtc, toUtc, ct);
         var keys = targets.Select(t => ZoneKeys.For(siteCode, t.ZoneName)).Distinct(StringComparer.Ordinal).ToList();
+        // The bins that end after the earliest minute's look-back and by the last minute's end (a bin a minute can use), read from
+        // at most one bin before that look-back (BinReadFrom), so the read follows the range rather than a day before it.
         var bins = await Storage.ExecuteSqlAsync<BinRow>("""
             SELECT DISTINCT ON (zone_key, start_utc) zone_key AS "ZoneKey", start_utc AS "StartUtc", length_minutes AS "LengthMinutes", p90_wait_minutes AS "P90"
             FROM queue_bin WHERE zone_key IN (:keys) AND start_utc > :from AND start_utc <= :to
+              AND start_utc + length_minutes * interval '1 minute' > :lookFrom AND start_utc + length_minutes * interval '1 minute' <= :end
             ORDER BY zone_key, start_utc, revision DESC
-            """, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc - BinLookBack - TimeSpan.FromMinutes(AlertBinMaxLength), ["to"] = toUtc }, ct);
+            """, new Dictionary<string, object>
+        {
+            ["keys"] = keys, ["from"] = BinReadFrom(fromUtc), ["to"] = toUtc, ["lookFrom"] = fromUtc - BinLookBack, ["end"] = toUtc.AddMinutes(1)
+        }, ct);
         var byZone = bins.GroupBy(b => b.ZoneKey, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
         var series = new List<AlertTargetSeries>();
         foreach (var target in targets)
@@ -420,13 +440,19 @@ public sealed class AlertInputs(IUnitOfWork unitOfWork, IArrivalWaveSource arriv
         return series;
     }
 
+    /// <summary>
+    /// The zones' device outages overlapping a range: a range of zone_outage's end index within the chunks that start by the
+    /// range's end (script 0068, ARV-228a), whatever the table's history (OutageReadPlanTests explains it as written here).
+    /// </summary>
+    internal const string OutagesSql = """
+        SELECT zone_key AS "ZoneKey", device_code AS "DeviceCode", from_utc AS "FromUtc", to_utc AS "ToUtc" FROM zone_outage
+        WHERE zone_key IN (:keys) AND from_utc <= :to AND to_utc > :from
+        """;
+
     private async Task<IReadOnlyList<AlertTargetSeries>> OutagesAsync(string siteCode, IReadOnlyList<AlertTarget> targets, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
     {
         var keys = targets.Select(t => ZoneKeys.For(siteCode, t.ZoneName)).Distinct(StringComparer.Ordinal).ToList();
-        var outages = await Storage.ExecuteSqlAsync<OutageRow>("""
-            SELECT zone_key AS "ZoneKey", device_code AS "DeviceCode", from_utc AS "FromUtc", to_utc AS "ToUtc" FROM zone_outage
-            WHERE zone_key IN (:keys) AND from_utc <= :to AND to_utc > :from
-            """, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc }, ct);
+        var outages = await Storage.ExecuteSqlAsync<OutageRow>(OutagesSql, new Dictionary<string, object> { ["keys"] = keys, ["from"] = fromUtc, ["to"] = toUtc }, ct);
         // An outage the stream has not closed yet: the registry has the device offline since it was last heard.
         var open = await Storage.ExecuteSqlAsync<OpenRow>("""
             SELECT d.queue_zone_name AS "ZoneName", d.code AS "DeviceCode", h.last_seen_on AS "LastSeenOn" FROM device d

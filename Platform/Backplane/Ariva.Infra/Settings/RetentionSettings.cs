@@ -15,7 +15,7 @@ public sealed record RelationalRetentionPeriod(string DataSet, int Days);
 /// login after the versioned scripts and
 /// <list type="bullet">
 /// <item>sets the TimescaleDB retention policy of each hypertable in <see cref="Hypertables()"/> to it, replacing the value the
-/// script that created the table gave (scripts 0017, 0019, 0040, 0053 and 0062 are immutable; their values are the defaults here),
+/// script that created the table gave (scripts 0017, 0019, 0040, 0053, 0062 and 0068 are immutable; their values are the defaults here),
 /// only when it differs, so a second run changes nothing;</item>
 /// <item>writes each relational period in <see cref="DataSets()"/> to <c>retention_period</c> (script 0054), a table the runtime
 /// role may read but never write, which the Cronz retention job's database function reads: the runtime login can delete
@@ -66,7 +66,10 @@ public sealed class RetentionSettings
 
     #region Properties
 
-    /// <summary><c>sensing_event</c>, <c>sensing_batch</c> and <c>device_health_event</c>: one value, so a replay of a period finds its events and the devices' health together (TC-62).</summary>
+    /// <summary>
+    /// <c>sensing_event</c>, <c>sensing_batch</c>, <c>device_health_event</c> and, since ARV-228a (script 0068), <c>zone_outage</c>: one
+    /// value, so a replay of a period finds its events, the devices' health and the outages drawn from it together (TC-62).
+    /// </summary>
     public int RawSensingDays { get; init; } = 90;
 
     /// <summary><c>desk_zone_reading</c> (script 0040's 7 days).</summary>
@@ -100,6 +103,7 @@ public sealed class RetentionSettings
         new("sensing_event", RawSensingDays),
         new("sensing_batch", RawSensingDays),
         new("device_health_event", RawSensingDays),
+        new("zone_outage", RawSensingDays),
         new("desk_zone_reading", DeskZoneReadingDays),
         new("lane_staffing", LaneStaffingDays),
         new("advertising_play", AdvertisingPlayDays)

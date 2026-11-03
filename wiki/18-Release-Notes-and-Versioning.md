@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-228a: device outages kept for the raw sensing period, and the outage and staffing reads bounded (2026-11-03)
+
+- Behaviour: script 0068 makes `zone_outage` (the device outages the stream records) a TimescaleDB hypertable kept for the raw sensing period, `Database:Retention:RawSensingDays` (90 days by default, as `device_health_event`); before, it was kept indefinitely. It adds an index on an outage's end, one on the outages still open, and a covering index of interval 0 of `lane_staffing`, so the sensor rule, the reports and the validation results read a range without reading the table's history, and the open desks alert reads interval 0 alone. A P90 rule reads one 15-minute bin beyond its 150-minute look-back instead of a day.
+- Before the upgrade: TimescaleDB drops the outages that started more than the period ago at its first daily run after the migration. Export them first if they are still wanted, or raise `Database:Retention:RawSensingDays` (which keeps the raw sensing archive as long). The migration moves the existing rows into chunks and builds the interval 0 index of `lane_staffing` (90 days of it) in its transaction, holding writes to both tables meanwhile (the stream's outages, the staffing job's minutes), all within the migration job's deadline (`activeDeadlineSeconds` 900): on a site with a large `lane_staffing`, run the migration in a quiet hour.
+- After the upgrade: nothing to do. No answer changes.
+
 ### ARV-286: desk code mappings and floor plans answer only the domain's own refusals, and network refusals are escaped (2026-11-03)
 
 - Behaviour: the desk code mapping and floor plan endpoints answer a 400 only with a rule the domain states (those texts are unchanged); any other exception where the entity runs, or in a mapping's save and audit entry, is now a 500 without its text, as on the topology, zone profile and device endpoints since ARV-282. In a desk code mapping CSV import, such a failure ends the import with a 500 (the import's Failed audit entry is written) where before it refused the row.
