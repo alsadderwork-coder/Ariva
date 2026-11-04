@@ -72,7 +72,7 @@ public class LinearRuleTests
                 ["Bearer", "Basic", "bearer", "BASIC", "Beare", "xBearer", " ", "\t", "\n", "abc", "Z9", "-", ".", "_", "~", "+", "/", "=", "==", ":", ",", "\u00e9", "\u200d", "\u017f", "\u212a", "\u00a0"]),
             ["TokenQueryParameter"] = (@"(?<key>[?&#](access_token|refresh_token|id_token|token|code|totp|otp|password|key)=)[^&#\s""']+",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, SecretText.TokenQueryParameter, m => m.Groups["key"].Value + SecretText.Redacted,
-                ["?", "&", "#", "=", "access_token", "refresh_token", "id_token", "token", "TOKEN", "code", "totp", "otp", "password", "key", "keys", "tok", "abc",
+                ["?token=", "&access_token=", "#code=", "?", "&", "#", "=", "access_token", "refresh_token", "id_token", "token", "TOKEN", "code", "totp", "otp", "password", "key", "keys", "tok", "abc",
                  " ", "\"", "'", "/", "%20", "\n", "\u017f", "\u212a", "\u200d"]),
             ["DeviceKey"] = (@"ard[kp]_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant, SecretText.DeviceKey, m => m.Value[..5] + SecretText.Redacted,
                 ["ardk_", "ardp_", "ardx_", "ARDK_", "ard", "k_", "abcdefghij", "0123456789", "-", "_", ".", " ", "\u00e9", "\u200d", "\u212a"]),
