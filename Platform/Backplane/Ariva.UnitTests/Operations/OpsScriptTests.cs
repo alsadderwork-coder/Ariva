@@ -314,7 +314,7 @@ public sealed partial class OpsScriptTests
     [Fact]
     public void Superuser_Should_RunOnlyTimescaleDbsFixedStatements_When_TheScriptIsRead()
     {
-        // ARV-126 and ARV-236 (CWE-269): the database superuser runs TimescaleDB's restore mode steps and the extensions' update,
+        // ARV-126, ARV-236 and ARV-290 (CWE-269): the database superuser runs TimescaleDB's restore mode steps, the extensions' update and one grant,
         // each a constant statement in a quoted heredoc with no psql variable, option or command string that could carry a value,
         // and pg_restore of a dump whose origin the signed manifest decides. Nothing else runs as the superuser.
         var text = Script.Value;
@@ -323,6 +323,8 @@ public sealed partial class OpsScriptTests
         calls.Select(call => call.Groups["sql"].Value.Trim()).Should().BeEquivalentTo(
             ["SELECT public.timescaledb_pre_restore();", "SELECT public.timescaledb_post_restore();", "ALTER EXTENSION timescaledb UPDATE;",
              "ALTER EXTENSION timescaledb_toolkit UPDATE;",
+             // ARV-290: SET on the temporary file cap for ariva_migration, the group role the migration login holds (grant-settings).
+             "GRANT SET ON PARAMETER temp_file_limit TO ariva_migration;",
              // ARV-183: check reads the settings files, views only the superuser may read; its review: with nothing named through
              // the search path (each operator and function qualified), and the restore mode functions with their schema. ARV-262:
              // every file but the server's postgresql.conf, what the files say and what the server applied from them.

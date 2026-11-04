@@ -15,6 +15,7 @@
 //   node scripts/ops/ariva-ops.mjs schema --namespace <ns> [--full]   (what check compares; ARV-262)
 //   node scripts/ops/ariva-ops.mjs after-kafka-loss --namespace <ns> --confirm-stream-stopped [--dry-run]
 //   node scripts/ops/ariva-ops.mjs update-extensions --namespace <ns>   (after the database pod restarted on a newer image)
+//   node scripts/ops/ariva-ops.mjs grant-settings --namespace <ns>   (ARV-290: once, on a server first started before it)
 //   node scripts/ops/ariva-ops.mjs --self-test
 // Options for every command: --context <kube context>, --pod <database pod> (timescaledb-0), --container <name>
 // (timescaledb), --plan (print the commands without running them; for a restore from a signed manifest it also verifies the
@@ -265,8 +266,11 @@ export function plan(o, now = new Date()) {
     case 'update-extensions':
       // ARV-236: TimescaleDB's extensions to the versions the image ships, as the superuser over the pod's socket (ariva-db.sh).
       return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['update-extensions']) }] };
+    case 'grant-settings':
+      // ARV-290: SET on temp_file_limit for the migration login, as the superuser over the pod's socket (ariva-db.sh).
+      return { steps: [{ kind: 'run', ...copyScript(o) }, { kind: 'run', cmd: inPod(o, false, ['grant-settings']) }] };
     default:
-      throw new UsageError('unknown command; use backup, restore, files-restore, keyring, check, schema, after-kafka-loss, update-extensions or --self-test');
+      throw new UsageError('unknown command; use backup, restore, files-restore, keyring, check, schema, after-kafka-loss, update-extensions, grant-settings or --self-test');
   }
 }
 
@@ -735,6 +739,7 @@ async function selfTest() {
     assert.deepEqual(keyring.steps[1].cmd[1].slice(-3), ['keyring', '--certificate-sha256', thumbprint]); checks++;
     const update = plan(parse(['update-extensions', '--namespace', 'ariva']));
     assert.deepEqual(update.steps[1].cmd[1].slice(-2), ['/tmp/ariva-db.sh', 'update-extensions']); checks++;
+    assert.deepEqual(plan(parse(['grant-settings', '--namespace', 'ariva'])).steps[1].cmd[1].slice(-2), ['/tmp/ariva-db.sh', 'grant-settings']); checks++;
     // ARV-262: schema prints what check compares; --full only there.
     assert.deepEqual(plan(parse(['schema', '--namespace', 'ariva', '--full'])).steps[1].cmd[1].slice(-3), ['/tmp/ariva-db.sh', 'schema', '--full']); checks++;
     assert.deepEqual(plan(parse(['schema', '--namespace', 'ariva'])).steps[1].cmd[1].slice(-2), ['/tmp/ariva-db.sh', 'schema']); checks++;

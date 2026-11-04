@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-290: a temporary file cap on the runtime login (2026-11-04)
+
+- Behaviour: the migration job caps the temporary files each session of the runtime login may hold (`Database:TempFileLimitMegabytes`, 1,024 MB, Proposed); a statement past it is ended with SQLSTATE 53400 instead of filling the database's disk (wiki 10 section 4.19). The migration job stops, with the grant to run, when its login may not set this superuser setting.
+- Before the upgrade, on every server first started before this release: run `node scripts/ops/ariva-ops.mjs grant-settings --namespace <ns>` once (wiki 04 section 6.10), or the migration job stops and the upgrade waits; a server the chart starts afterwards needs nothing. With your own PostgreSQL, the administrator runs `GRANT SET ON PARAMETER temp_file_limit TO ariva;` once.
+- After the upgrade: `ariva-db.sh check` passes "temp file cap" and lists the cap among the runtime login's settings.
+
 ### ARV-291: a scheduled report delivery whose read fails in the database counts its attempt (2026-11-04)
 
 - Behaviour: a scheduled delivery whose report read fails in the database (a statement timeout, a lost connection) is marked Failed with the reason "The report could not be read from the database." and its attempt counted, so after 5 failed attempts it is not tried again, as a failed send. Before, it stayed as it was and every round tried it again without end (wiki 10 section 4.19).

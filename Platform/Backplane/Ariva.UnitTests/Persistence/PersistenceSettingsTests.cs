@@ -282,6 +282,35 @@ public sealed class PersistenceSettingsTests
         new NpgsqlConnectionStringBuilder(new DatabaseSettings().BuildMigrationConnectionString()).Pooling.Should().BeFalse("without a migration login too");
     }
 
+    [Theory]
+    [InlineData(63, false)]
+    [InlineData(64, true)]
+    [InlineData(1_024, true)]
+    [InlineData(102_400, true)]
+    [InlineData(102_401, false)]
+    [InlineData(0, false)]
+    public void TempFileLimit_Should_BeRefusedOutsideItsBounds_When_Configured(int megabytes, bool valid)
+    {
+        // ARV-290: the runtime login's cap on temporary files, set on the login by the migration job; 1,024 MB by default.
+        var check = new DatabaseSettings { TempFileLimitMegabytes = megabytes }.EnsureValidLimits;
+
+        if (valid)
+            check.Should().NotThrow();
+        else
+            check.Should().Throw<InvalidOperationException>().WithMessage("Database:TempFileLimitMegabytes is a whole number of megabytes from 64 to 102,400 (ARV-290).");
+        new DatabaseSettings().TempFileLimitMegabytes.Should().Be(1_024);
+    }
+
+    [Fact]
+    public void AddArivaPersistence_Should_RefuseToStart_When_TheTempFileLimitIsOutOfRange()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string> { ["Database:TempFileLimitMegabytes"] = "32" }).Build();
+
+        var add = () => new ServiceCollection().AddArivaPersistence(configuration);
+
+        add.Should().Throw<InvalidOperationException>().WithMessage("*Database:TempFileLimitMegabytes is a whole number of megabytes from 64*");
+    }
+
     [Fact]
     public void StatementTimeout_Should_StayAboveEveryClientTimeoutOfTheRuntimeLogin_When_Bounded()
     {

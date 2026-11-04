@@ -561,7 +561,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         allowed.Stdout.Should().Contain("ok    extensions|plpgsql, timescaledb and timescaledb_toolkit, and allowed: pg_stat_statements")
             .And.Contain("ok    settings|no setting from a file but the server's postgresql.conf (postgresql.auto.conf, a file an include names) but the allowed: maintenance_work_mem (")
             .And.Contain("/ariva-planted.conf), work_mem (")
-            .And.Contain("ok    role settings|none but the runtime login's statement timeout, and allowed: work_mem, maintenance_work_mem");
+            .And.Contain("ok    role settings|none but the runtime login's statement timeout and temporary file cap, and allowed: work_mem, maintenance_work_mem");
         Line(allowed, "FAIL  logins|").Should().NotContain("it_repl").And.Contain("it_bypass (bypassrls)");
         foreach (var (option, value) in new[] { ("--allow-extension", "pg-stat"), ("--allow-login", "It_Repl"), ("--allow-setting", "work-mem") })
         {

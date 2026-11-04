@@ -85,6 +85,24 @@ internal sealed class DatabaseMigrator(
         await timeout.ExecuteNonQueryAsync(ct);
         _logger.LogInformation("Runtime login {Login} is a member of ariva_runtime, its statements limited to {Seconds} s on the server",
             settings.Username, settings.StatementTimeoutSeconds);
+
+        // ARV-290: temp_file_limit is a superuser setting, so the migration login (never a superuser) sets it on the runtime login only
+        // once a superuser has granted it SET on the parameter; without that the job stops here, before any host starts unbounded.
+        await using (var may = new NpgsqlCommand("SELECT has_parameter_privilege('temp_file_limit', 'SET') AS may, current_user::text AS login", connection))
+        await using (var reader = await may.ExecuteReaderAsync(ct))
+        {
+            await reader.ReadAsync(ct);
+            if (!reader.GetBoolean(0))
+                throw new InvalidOperationException(
+                    $"The migration login {reader.GetString(1)} may not set temp_file_limit, the runtime login's cap on temporary files (ARV-290): as the database's superuser run "
+                    + "GRANT SET ON PARAMETER temp_file_limit TO the migration login (ariva-db.sh grant-settings in the database pod, wiki 04), then run the migration again.");
+        }
+
+        await using var tempFiles = new NpgsqlCommand("SELECT ariva_set_runtime_temp_file_limit(@name, @megabytes)", connection);
+        tempFiles.Parameters.AddWithValue("name", settings.Username);
+        tempFiles.Parameters.AddWithValue("megabytes", settings.TempFileLimitMegabytes);
+        await tempFiles.ExecuteNonQueryAsync(ct);
+        _logger.LogInformation("Runtime login {Login}: each session holds at most {Megabytes} MB of temporary files on the server", settings.Username, settings.TempFileLimitMegabytes);
     }
 
     /// <summary>
