@@ -187,8 +187,9 @@ public sealed record ZoneProcessorState
     /// (ARV-116); an earlier snapshot restores with none, so each desk zone's next reading passes. 8 adds the queue
     /// engine's pending empty-queue check (<see cref="QueueEngineState.PendingAnchorUtc"/>, ARV-114d); an earlier snapshot
     /// carries none (the engine that wrote it ran the check when a step filled) and is refused if it says otherwise. 9 adds
-    /// the queue engine's event clock (<see cref="QueueEngineState.ClockUtc"/>, ARV-148); a snapshot without one restores
-    /// with the clock at the latest of its watermark and its held events, and the clock then catches up with the events.
+    /// the queue engine's event clock (<see cref="QueueEngineState.ClockUtc"/>, ARV-148), which the engine always writes from then
+    /// on, so a snapshot of version 9 or later without one is refused (ARV-238); an earlier one restores with the clock at the
+    /// latest of its watermark and its held events, its events ahead bounded a lateness past that, and the clock then catches up.
     /// 10 adds the batches the zone remembers to apply a resent batch once (<see cref="RecentBatches"/>, ARV-168); an
     /// earlier snapshot carries none (its zone did not remember batches) and is refused if it says otherwise, and restores
     /// remembering none, so a batch applied before the upgrade and resent just after it is applied again. 11 adds the queue
@@ -212,6 +213,9 @@ public sealed record ZoneProcessorState
 
     /// <summary>The first version that may carry the queue engine's pending empty-queue check (ARV-114d).</summary>
     public const int PendingAnchorSinceVersion = 8;
+
+    /// <summary>The first version that carries the queue engine's clock, always (ARV-148; refused without it since ARV-238).</summary>
+    public const int ClockSinceVersion = 9;
 
     /// <summary>The first version that may carry remembered batches (ARV-168).</summary>
     public const int RecentBatchesSinceVersion = 10;

@@ -68,6 +68,9 @@ public static class SnapshotChecks
         Times(e.EarliestLateUtc);
         if (e.WatermarkUtc > state.ReferenceUtc && state.ReferenceUtc != DateTime.MinValue)
             bad++;
+        // ARV-238: the engine writes its clock in every snapshot from version 9 on; one without it could keep events up to a day ahead.
+        if (state.Version >= ZoneProcessorState.ClockSinceVersion && e.ClockUtc is null)
+            yield return $"A snapshot of version {ZoneProcessorState.ClockSinceVersion} or later carries the queue engine's clock.";
         // The pending empty-queue check (ARV-114d): only a snapshot of version 8 or later carries one, only for a zone that
         // has stepped, and at an event it processed (never after its clock). The engine's Restore checks that it is where a
         // full step stops.

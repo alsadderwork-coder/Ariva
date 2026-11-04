@@ -260,10 +260,6 @@ public sealed partial class QueueStateEngine
             engine._occupancy[zone] = (count, QueueInputState.Utc(at), degraded);
         }
 
-        foreach (var (key, seen, deadline) in state.Handovers ?? [])
-            if (key is not null)
-                engine._handovers.Enqueue((key, QueueInputState.Utc(seen)), QueueInputState.Utc(deadline));
-
         engine._sequence = state.Sequence;
         engine._order = state.Order;
         engine._watermark = QueueInputState.Utc(state.WatermarkUtc);
@@ -293,8 +289,13 @@ public sealed partial class QueueStateEngine
         if (held > engine._clock)
             throw new InvalidDataException("The queue engine snapshot holds an event after its clock.");
         // ARV-239: an event ahead of the clock was at most MaxAhead after the reference it arrived with, which the clock reached
-        // and never moves back from (a snapshot without a clock, written before ARV-148, has nothing to check this against).
-        if (state.ClockUtc.HasValue && latestAhead > Plus(engine._clock, engine._settings.MaxAhead))
+        // and never moves back from. ARV-238: a snapshot without a clock (written before ARV-148; from zone snapshot version 9 on
+        // one is refused, ZoneProcessorState.ClockSinceVersion) starts at the latest of its watermark and held events, at most a
+        // lateness behind the clock it was written with, so its events ahead are bounded a lateness further.
+        var aheadBound = Plus(engine._clock, engine._settings.MaxAhead);
+        if (!state.ClockUtc.HasValue)
+            aheadBound = Plus(aheadBound, engine._settings.Lateness);
+        if (latestAhead > aheadBound)
             throw new InvalidDataException("The queue engine snapshot holds an event further ahead of its clock than MaxAhead.");
         // The watermark moves only once an event has set the clock, so a moved watermark with an unset clock is not a state
         // the engine writes (CWE-501).
@@ -302,6 +303,7 @@ public sealed partial class QueueStateEngine
             throw new InvalidDataException("The queue engine snapshot has a watermark but no clock.");
 
         RestoreRuns(engine, state);
+        RestoreHandovers(engine, state);
         // At most a tenth of the buffer holds events ahead of the clock, buffered or pending (ARV-239).
         if (engine._aheadHeld > engine.AheadBound)
             throw new InvalidDataException("The queue engine snapshot holds more events ahead of its clock than a tenth of its buffer.");
@@ -370,6 +372,36 @@ public sealed partial class QueueStateEngine
         engine._beyondHorizon = state.BeyondHorizon;
         engine._more = state.More;
         return engine;
+    }
+
+    /// <summary>
+    /// ARV-238 (CWE-501): each hand-over deadline as the engine sets one, its sighting plus the hand-over window, at a sighting the
+    /// engine applied (at or behind its watermark, or at the instant a step stopped in) and at most MaxAhead after its clock (a quiet
+    /// zone's watermark follows the receive clock, so a sample ahead of the clock may be applied, ARV-239), never after the last
+    /// sighting of a held entrant of its track (a deadline before it is one the engine superseded and drops when it comes due). A
+    /// snapshot otherwise could fragment an entrant at a time it chooses.
+    /// </summary>
+    private static void RestoreHandovers(QueueStateEngine engine, QueueEngineState state)
+    {
+        var window = engine._settings.HandoverWindow;
+        var aheadUntil = Plus(engine._clock, engine._settings.MaxAhead);
+        DateTime? splitInstant = engine._watermark < DateTime.MaxValue && engine._buffer.TryPeek(out _, out var first) && first.Time == engine._watermark.AddTicks(1)
+            ? first.Time
+            : null;
+        foreach (var h in state.Handovers ?? [])
+        {
+            if (h?.Key is null)
+                continue;
+            var seen = QueueInputState.Utc(h.Seen);
+            var deadline = QueueInputState.Utc(h.Deadline);
+            if (deadline != Plus(seen, window))
+                throw new InvalidDataException("The queue engine snapshot has a hand-over deadline that is not its sighting plus the hand-over window.");
+            if (seen > aheadUntil || (seen > engine._watermark && seen != splitInstant))
+                throw new InvalidDataException("The queue engine snapshot has a hand-over sighting further after its clock than MaxAhead, or one it had not applied.");
+            if (engine._byTrack.TryGetValue(h.Key, out var entrant) && entrant.LastSeenUtc is { } last && seen > last)
+                throw new InvalidDataException("The queue engine snapshot has a hand-over sighting after its entrant's last sighting.");
+            engine._handovers.Enqueue((h.Key, seen), deadline);
+        }
     }
 
     /// <summary>
