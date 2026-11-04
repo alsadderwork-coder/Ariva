@@ -59,8 +59,25 @@ internal sealed class NHibernateStorageProvider(
     public Task CommitTransactionAsync(CancellationToken ct = default) =>
         Session.GetCurrentTransaction()?.CommitAsync(ct) ?? Task.CompletedTask;
 
-    public Task RollbackTransactionAsync(CancellationToken ct = default) =>
-        _session?.GetCurrentTransaction()?.RollbackAsync(ct) ?? Task.CompletedTask;
+    /// <summary>
+    /// ARV-291: a transaction whose connection the database ended (a lost connection, a terminated session) cannot be rolled back:
+    /// Npgsql disposed it when the connection broke and says why in the inner exception. The server ended the transaction with the
+    /// connection, so nothing is left to roll back: the session is closed with it (a later use in the scope opens another), and the
+    /// unit of work ends as rolled back instead of throwing from its rollback and again from its disposal.
+    /// </summary>
+    public async Task RollbackTransactionAsync(CancellationToken ct = default)
+    {
+        if (_session?.GetCurrentTransaction() is not { } transaction)
+            return;
+        try
+        {
+            await transaction.RollbackAsync(ct);
+        }
+        catch (ObjectDisposedException e) when (e.InnerException is DbException)
+        {
+            Dispose();
+        }
+    }
 
     public Task FlushAsync(CancellationToken ct = default) => Session.FlushAsync(ct);
 

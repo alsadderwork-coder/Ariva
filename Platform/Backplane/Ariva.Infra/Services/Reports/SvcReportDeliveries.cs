@@ -23,7 +23,10 @@ namespace Ariva.Infra.Services.Reports;
 /// report twice (at least once, never lost). ARV-234: a delivery reads its report in the last of the report database slots only
 /// (<see cref="ReportReader.ReadFor.Delivery"/>), held to its commit, so rounds that overlap (TickerQ starts one while another
 /// runs) hold one slot between them and reports on demand always have the first; a delivery that finds it in use is left as it
-/// was (nothing written, its claim rolled back, no attempt counted) for a later round, and logged.
+/// was (nothing written, its claim rolled back, no attempt counted) for a later round, and logged. ARV-291: a read that fails in the
+/// database (a statement timeout, a lost connection) leaves the delivery's transaction able only to roll back, so it throws
+/// <see cref="ReportReadFailedException"/> and the round counts the attempt in a transaction of its own
+/// (<see cref="CountFailedReadAsync"/>): the attempt limit ends a read that fails every time.
 /// </summary>
 internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider timeProvider, ReportReader reader, IEmailTransport transport,
     EmailSettings settings, Ariva.Infra.Settings.AuthSettings auth, ILogger<SvcReportDeliveries> logger) : SvcDb(unitOfWork), ISvcReportDeliveries
@@ -142,6 +145,12 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
 
             email = Email(row.Id, row.Email.Trim(), new ScheduleRow { Id = row.ScheduleId, SiteCode = row.SiteCode, Name = row.ScheduleName }, report.Data);
         }
+        catch (Exception e) when (!ct.IsCancellationRequested && FailedInDatabase(e))
+        {
+            // ARV-291: the database ended the read (and with it this transaction), so nothing more can be written here: the round rolls
+            // back and counts the attempt in a transaction of its own.
+            throw new ReportReadFailedException(row.Id, e);
+        }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             // This delivery only: it is retried by later rounds up to the limit, and the round goes on with the others.
@@ -171,6 +180,45 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
         await MarkAsync(row.Id, "Sent", row.Attempts + 1, null, now, CancellationToken.None);
         UnitOfWork.PromiseToCommit();
         return ReportDeliveryOutcome.Sent;
+    }
+
+    public async Task<bool> CountFailedReadAsync(Guid deliveryId, CancellationToken ct = default)
+    {
+        await BeginAsync(ct);
+        // The same rule as the claim: a delivery still due and held by no one else. A round that claimed it meanwhile counts its own.
+        var counted = await ExecuteCommandAsync<IdRow>("""
+            WITH due AS (
+                SELECT id FROM report_delivery
+                WHERE id = :id AND (status = 'Pending' OR (status = 'Failed' AND attempts < :max))
+                FOR UPDATE SKIP LOCKED)
+            UPDATE report_delivery d SET status = 'Failed', attempts = d.attempts + 1, reason = :reason
+            FROM due WHERE d.id = due.id
+            RETURNING d.id AS "Id"
+            """, new Dictionary<string, object>
+        {
+            ["id"] = deliveryId,
+            ["max"] = ISvcReportDeliveries.MaxAttempts,
+            ["reason"] = ISvcReportDeliveries.ReadFailedReason
+        }, ct);
+        UnitOfWork.PromiseToCommit();
+        return counted.Count == 1;
+    }
+
+    /// <summary>
+    /// ARV-291: whether a failure came from the database (a <see cref="System.Data.Common.DbException"/>, Npgsql's and PostgreSQL's,
+    /// in the exception or under it, as NHibernate wraps them), and not from a cancelled round (no attempt counted then, ARV-096e).
+    /// </summary>
+    internal static bool FailedInDatabase(Exception e)
+    {
+        var database = false;
+        for (var x = e; x is not null; x = x.InnerException)
+        {
+            if (x is OperationCanceledException)
+                return false;
+            database |= x is System.Data.Common.DbException;
+        }
+
+        return database;
     }
 
     private async Task BeginAsync(CancellationToken ct)
@@ -273,7 +321,9 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
 
 /// <summary>
 /// One delivery round (ARV-060): the due deliveries are prepared in one short transaction, then each runs in a scope and
-/// transaction of its own, so a failure costs that delivery alone and a sent report is committed as sent at once.
+/// transaction of its own, so a failure costs that delivery alone and a sent report is committed as sent at once. ARV-291: a
+/// delivery whose report read failed in the database is rolled back, then its attempt is counted in a scope and transaction of its
+/// own.
 /// </summary>
 public sealed class ReportDeliveryRound(IServiceScopeFactory scopes, ILogger<ReportDeliveryRound> logger)
 {
@@ -310,6 +360,14 @@ public sealed class ReportDeliveryRound(IServiceScopeFactory scopes, ILogger<Rep
                 skipped += outcome == ReportDeliveryOutcome.Skipped ? 1 : 0;
                 failed += outcome == ReportDeliveryOutcome.Failed ? 1 : 0;
             }
+            catch (ReportReadFailedException e)
+            {
+                // A lost connection ended the transaction with it; the rollback then has nothing to do (NHibernateStorageProvider).
+                await unitOfWork.RollbackAsync(CancellationToken.None);
+                var counted = await CountFailedReadAsync(id);
+                logger.LogError(e.InnerException, "Report delivery {DeliveryId}: its report could not be read from the database (attempt counted: {Counted})", id, counted);
+                failed++;
+            }
             catch (Exception e) when (e is not OperationCanceledException)
             {
                 // Left as it was (Pending or Failed): a later round tries again; this round goes on.
@@ -320,5 +378,25 @@ public sealed class ReportDeliveryRound(IServiceScopeFactory scopes, ILogger<Rep
         }
 
         return new ReportDeliveryRun(due.Count, sent, skipped, failed);
+    }
+
+    // Whatever the round's token says, as the outcome of a send is recorded (ARV-096e): the read was tried and failed. The command
+    // timeout bounds it; a failure here leaves the delivery as it was, for a later round.
+    private async Task<bool> CountFailedReadAsync(Guid id)
+    {
+        await using var scope = scopes.CreateAsyncScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        try
+        {
+            var counted = await scope.ServiceProvider.GetRequiredService<ISvcReportDeliveries>().CountFailedReadAsync(id, CancellationToken.None);
+            await unitOfWork.EndAsync(CancellationToken.None);
+            return counted;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            await unitOfWork.RollbackAsync(CancellationToken.None);
+            logger.LogError(e, "Report delivery {DeliveryId}: the attempt of its failed read could not be counted; a later round tries it again", id);
+            return false;
+        }
     }
 }

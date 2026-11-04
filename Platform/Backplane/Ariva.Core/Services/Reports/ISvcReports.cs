@@ -94,6 +94,21 @@ public interface ISvcReportDeliveries : ISvcScoped
     /// <summary>Records what is owed and answers the deliveries due now (none while another round prepares, or with email off).</summary>
     Task<IReadOnlyList<Guid>> PrepareAsync(CancellationToken ct = default);
 
-    /// <summary>Sends one due delivery to its recipient, or skips it when the recipient may no longer have it.</summary>
+    /// <summary>ARV-291: the fixed reason of a delivery whose report read failed in the database.</summary>
+    const string ReadFailedReason = "The report could not be read from the database.";
+
+    /// <summary>
+    /// Sends one due delivery to its recipient, or skips it when the recipient may no longer have it. Throws
+    /// <see cref="ReportReadFailedException"/> when its report read failed in the database (a statement timeout, a lost connection):
+    /// its transaction may then only be rolled back, and the caller counts the attempt with <see cref="CountFailedReadAsync"/>.
+    /// </summary>
     Task<ReportDeliveryOutcome> DeliverAsync(Guid deliveryId, CancellationToken ct = default);
+
+    /// <summary>
+    /// ARV-291: counts the attempt of a delivery whose report read failed in the database, in a unit of work of its own after the
+    /// failed one is rolled back: Failed, one attempt more, <see cref="ReadFailedReason"/>, so <see cref="MaxAttempts"/> ends a read
+    /// that fails every time as it ends a failed send. Counts nothing when the delivery is no longer due (sent, skipped, at its limit)
+    /// or another transaction holds it (a round that claimed it meanwhile counts its own attempt). Answers whether it counted.
+    /// </summary>
+    Task<bool> CountFailedReadAsync(Guid deliveryId, CancellationToken ct = default);
 }
