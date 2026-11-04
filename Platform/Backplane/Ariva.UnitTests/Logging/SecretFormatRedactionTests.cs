@@ -276,6 +276,11 @@ public sealed class SecretFormatRedactionTests
     [InlineData("Cookie:")]
     [InlineData("ABCDEFGH")]
     [InlineData("A-")]
+    [InlineData("eyJ-")]
+    [InlineData("eyJabcde.")]
+    [InlineData("Bearer ")]
+    [InlineData("?token=")]
+    [InlineData("ardk_-")]
     public void RedactText_Should_FinishQuickly_When_TheTextIsALongAdversarialRun(string fragment)
     {
         // Exception text is unbounded: 100,000 characters of a rule's own fragments, with a private key block left open first.
@@ -352,8 +357,8 @@ public sealed class SecretFormatRedactionTests
     #region Rules
 
     public static TheoryData<string> RuleNames =>
-        ["PrivateKeyBlock", "DerBase64", "IntegrationClientSecret", "TemporaryPassword", "RecoveryCode", "Base32Seed", "CredentialHeader", "JsonMember", "Assignment",
-         "UnquotedAssignment", "PasswordAssignment"];
+        ["AuthorizationScheme", "TokenQueryParameter", "DeviceKey", "Jwt", "PrivateKeyBlock", "DerBase64", "IntegrationClientSecret", "TemporaryPassword", "RecoveryCode",
+         "Base32Seed", "CredentialHeader", "JsonMember", "Assignment", "UnquotedAssignment", "PasswordAssignment"];
 
     [Theory]
     [MemberData(nameof(RuleNames))]

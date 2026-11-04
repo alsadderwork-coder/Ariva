@@ -219,6 +219,14 @@ public sealed partial class RedactionEnricher(LogProtection protection, Security
 
     // ARV-285: the rules live in SecretText (Ariva.Infra), so the dead letters, the outbox and the jobs protect text as the logs
     // do; these name them where the tests and the inventory look for them.
+    public static Regex AuthorizationScheme() => SecretText.AuthorizationScheme();
+
+    public static Regex TokenQueryParameter() => SecretText.TokenQueryParameter();
+
+    public static Regex DeviceKey() => SecretText.DeviceKey();
+
+    public static Regex Jwt() => SecretText.Jwt();
+
     public static Regex PrivateKeyBlock() => SecretText.PrivateKeyBlock();
 
     public static Regex DerBase64() => SecretText.DerBase64();
