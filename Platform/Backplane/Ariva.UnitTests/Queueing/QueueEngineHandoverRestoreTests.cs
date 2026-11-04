@@ -8,9 +8,12 @@ namespace Ariva.UnitTests.Queueing;
 
 /// <summary>
 /// ARV-238 (CWE-501, CWE-120): the queue engine's restore takes a hand-over deadline only as the engine sets one (its sighting plus
-/// the hand-over window, at a sighting it applied, at most MaxAhead after its clock, never after its entrant's last sighting), and a
-/// zone snapshot of version 9 or later without the engine's clock is refused; one written before version 9 has its events ahead of
-/// the clock bounded a lateness past the clock it derives. Genuine snapshots still restore and continue as the engine did.
+/// the hand-over window, at a sighting it applied, at most MaxAhead after its clock, never after its entrant's last sighting) and a
+/// held entrant's last sighting only as the engine sets it (none without a track, at or after its entry, applied, at most MaxAhead
+/// after the clock), the instant a full step stopped inside counting as applied; a zone snapshot of version 9 or later without the
+/// engine's clock is refused, one written before version 9 has its events ahead of the clock bounded a lateness past the clock it
+/// derives, and no buffered event not marked ahead may be after the zone's reference. Genuine snapshots still restore and continue as
+/// the engine did.
 /// </summary>
 public sealed class QueueEngineHandoverRestoreTests
 {
@@ -48,7 +51,9 @@ public sealed class QueueEngineHandoverRestoreTests
                      (state with { Handovers = [Handover(live.Key, clock.Add(Settings.MaxAhead).AddSeconds(1))] }, "a sighting further after the clock than MaxAhead"),
                      (state with { Handovers = [Handover(live.Key, state.WatermarkUtc.AddSeconds(-1))] }, "a sighting after the entrant's last one"),
                      // A track no entrant holds, so the entrant's rule cannot be what refuses it.
-                     (state with { Handovers = [Handover("Z/9", state.WatermarkUtc.AddSeconds(1))] }, "a sighting the engine had not applied, of a track nobody holds")
+                     (state with { Handovers = [Handover("Z/9", state.WatermarkUtc.AddSeconds(1))] }, "a sighting the engine had not applied, of a track nobody holds"),
+                     // X/9's buffered time: first in the buffer, but no step stopped there (the watermark is not one tick before it).
+                     (state with { Handovers = [Handover("Z/9", t0.AddSeconds(40))] }, "a sighting at the first buffered event's time, where no step stopped")
                  })
         {
             var restore = () => QueueStateEngine.Restore(Hall, Settings, RoundTrip(bad));
@@ -93,6 +98,46 @@ public sealed class QueueEngineHandoverRestoreTests
         superseded.Should().NotBeNull("a deadline before the entrant's last sighting is one the engine drops when it comes due");
     }
 
+    [Fact]
+    public void Restore_Should_AcceptAHandoverAtTheInstantAFullStepStoppedInside_And_ContinueIdentically()
+    {
+        // Review (M2): a step that fills MaxStepRecords inside an instant leaves the watermark one tick before it with part of it
+        // applied. At 08:00:10 C/x (held, not sighted before) and E/b are sighted; applying the first fragments 1,000 entrants last
+        // seen at 08:00:00 (the step's 1,000 records) and sights C/x, and the step stops before E/b: C/x's hand-over and last
+        // sighting are after the watermark, at the instant the step stopped in.
+        var settings = Settings with { Lateness = TimeSpan.Zero, HandoverWindow = TimeSpan.FromSeconds(1), MaxStepRecords = 1_000 };
+        var engine = new QueueStateEngine(Hall, settings);
+        var t1 = Midnight.AddHours(8);
+        var at = t1.AddSeconds(10);
+        engine.Offer(new QueueCrossing("in", CrossingDirection.In, "C/x", t1), t1);
+        for (var k = 0; k < 1_000; k++)
+        {
+            engine.Offer(new QueueCrossing("in", CrossingDirection.In, $"D/{k}", t1), t1);
+            engine.Offer(new QueueTrackSeen($"D/{k}", t1), t1);
+        }
+
+        for (var step = 0; step < 10 && engine.Advance(t1).More; step++)
+        {
+        }
+
+        engine.Offer(new QueueTrackSeen("C/x", at), at);
+        engine.Offer(new QueueTrackSeen("E/b", at), at);
+        engine.Advance(at).More.Should().BeTrue("the step is full inside 08:00:10");
+        var state = RoundTrip(engine.Capture());
+        state.WatermarkUtc.Should().Be(at.AddTicks(-1));
+        state.Handovers.Should().ContainSingle(h => h.Key == "C/x").Which.Seen.Should().Be(at, "C/x was sighted before the step stopped");
+        state.Held.Should().ContainSingle(h => h.TrackKey == "C/x").Which.LastSeenUtc.Should().Be(at);
+        state.Buffer.Should().ContainSingle().Which.Input.TrackKey.Should().Be("E/b", "the step stopped at E/b");
+
+        var restored = QueueStateEngine.Restore(Hall, settings, state);
+
+        Json(restored.Capture()).Should().Be(Json(engine.Capture()));
+        var later = at.AddSeconds(5);
+        for (var step = 0; step < 10; step++)
+            Json(restored.Advance(later)).Should().Be(Json(engine.Advance(later)), "a genuine snapshot continues as the engine");
+        Json(restored.Capture()).Should().Be(Json(engine.Capture()));
+    }
+
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
@@ -125,6 +170,56 @@ public sealed class QueueEngineHandoverRestoreTests
         }
 
         Json(restored.Advance(t.AddMinutes(10))).Should().Be(Json(straight.Advance(t.AddMinutes(10))));
+    }
+
+    #endregion
+
+    #region Last sightings
+
+    private const string LastSightingProblem = "The queue engine snapshot has an entrant's last sighting that is not one the engine applied.";
+
+    [Fact]
+    public void Restore_Should_RefuseAnEntrantsLastSighting_When_ItIsNotOneTheEngineApplied()
+    {
+        // Review (L1): the engine sets a last sighting only when it applies a sighting of the entrant's track, so a snapshot cannot
+        // move it before the entry, past what was applied, or onto an entrant without a track. Without the deadlines, so the
+        // hand-over rules cannot be what refuses them.
+        var (engine, t0) = TrackedEntrant();
+        var state = RoundTrip(engine.Capture()) with { Handovers = [] };
+        var entrant = state.Held.Should().ContainSingle().Subject;
+        Func<QueueStateEngine> With(DateTime? seen, string track = "D/1") =>
+            () => QueueStateEngine.Restore(Hall, Settings, RoundTrip(state with { Held = [entrant with { LastSeenUtc = seen, TrackKey = track }] }));
+
+        foreach (var (seen, because) in new (DateTime?, string)[] { (t0.AddSeconds(10), "its own"), (t0, "at its entry"), (t0.AddSeconds(30), "at the watermark"), (null, "never sighted") })
+            With(seen).Should().NotThrow(because);
+        foreach (var (seen, track, because) in new (DateTime?, string, string)[]
+                 {
+                     (t0.AddHours(-1), "D/1", "before its entry"),
+                     (t0.AddTicks(-1), "D/1", "a tick before its entry"),
+                     (t0.AddSeconds(30).AddTicks(1), "D/1", "after the watermark, not applied"),
+                     (t0.AddSeconds(10), null, "an entrant without a track is never sighted")
+                 })
+            With(seen, track).Should().Throw<InvalidDataException>(because).WithMessage(LastSightingProblem);
+    }
+
+    [Fact]
+    public void Restore_Should_RefuseALastSightingFurtherAfterTheClockThanMaxAhead_When_AQuietZonesWatermarkPassedIt()
+    {
+        // A held entrant never sighted (no deadline), in a quiet zone whose watermark followed the receive clock past the event clock.
+        var engine = new QueueStateEngine(Hall, Settings);
+        var t0 = Midnight.AddHours(8);
+        engine.Offer(new QueueCrossing("in", CrossingDirection.In, "D/2", t0), t0);
+        engine.Advance(t0.AddMinutes(10));
+        var state = RoundTrip(engine.Capture());
+        var clock = state.ClockUtc.Should().NotBeNull().And.Subject.Value;
+        var entrant = state.Held.Should().ContainSingle().Subject;
+        entrant.LastSeenUtc.Should().BeNull();
+        var beyond = clock.Add(Settings.MaxAhead).AddSeconds(1);
+        beyond.Should().BeBefore(state.WatermarkUtc, "the watermark of a quiet zone passed the clock");
+        Func<QueueStateEngine> With(DateTime seen) => () => QueueStateEngine.Restore(Hall, Settings, RoundTrip(state with { Held = [entrant with { LastSeenUtc = seen }] }));
+
+        With(clock.Add(Settings.MaxAhead)).Should().NotThrow("a sample ahead of the clock may be applied, at most MaxAhead after it");
+        With(beyond).Should().Throw<InvalidDataException>("a sighting further after the clock than MaxAhead").WithMessage(LastSightingProblem);
     }
 
     #endregion
@@ -167,9 +262,40 @@ public sealed class QueueEngineHandoverRestoreTests
 
         SnapshotChecks.Of(state, "S/Q", Hall.QueueZone, 1, notAfter).Should().NotContain(Problem);
         SnapshotChecks.Of(state with { Engine = state.Engine with { ClockUtc = null } }, "S/Q", Hall.QueueZone, 1, notAfter).Should().Contain(Problem);
+        SnapshotChecks.Of(state with { Version = ZoneProcessorState.ClockSinceVersion, Engine = state.Engine with { ClockUtc = null } }, "S/Q", Hall.QueueZone, 1, notAfter)
+            .Should().Contain(Problem, "version 9 itself carries the clock");
         SnapshotChecks.Of(state with { Version = 8, Engine = state.Engine with { ClockUtc = null } }, "S/Q", Hall.QueueZone, 1, notAfter)
             .Should().NotContain(Problem, "a snapshot before version 9 had no clock");
         ZoneProcessorState.ClockSinceVersion.Should().Be(9);
+    }
+
+    [Fact]
+    public void Checks_Should_RefuseABufferedEventNotMarkedAhead_When_ItIsAfterTheZonesReference()
+    {
+        // Review (M1): an event not marked ahead was at or before the reference it arrived with, so a clockless snapshot (one marked
+        // as written before version 9) cannot derive its clock, and with it the bound of its events ahead, past the zone's reference.
+        const string Implausible = "1 values of the snapshot are not plausible (negative counts, implausible times or empty items).";
+        var settings = new ZoneProcessorSettings();
+        var zone = new ZoneProcessor("S/Q", Hall, 1, settings);
+        var now = Midnight.AddHours(12);
+        zone.Tick(now);
+        var state = zone.Capture();
+        var engine = new QueueStateEngine(Hall, settings.Engine);
+        engine.Offer(new QueueCrossing("in", CrossingDirection.In, "A/1", now), now);
+        var held = RoundTrip(engine.Capture());
+        var buffered = held.Buffer.Should().ContainSingle().Subject;
+        buffered.Ahead.Should().BeFalse();
+        var notAfter = Midnight.AddDays(2);
+        ZoneProcessorState At(DateTime time, bool ahead) =>
+            state with { Engine = held with { Buffer = [buffered with { Ahead = ahead, Input = buffered.Input with { TimeUtc = time } }] } };
+
+        SnapshotChecks.Of(At(now, ahead: false), "S/Q", Hall.QueueZone, 1, notAfter).Should().BeEmpty("an event at the reference it arrived with");
+        SnapshotChecks.Of(At(now.AddHours(20), ahead: false), "S/Q", Hall.QueueZone, 1, notAfter).Should().Equal([Implausible], "not marked ahead, yet after the reference");
+        SnapshotChecks.Of(At(now.AddHours(20), ahead: false) with { Version = 8, Engine = At(now.AddHours(20), false).Engine with { ClockUtc = null } }, "S/Q", Hall.QueueZone, 1, notAfter)
+            .Should().Contain(Implausible, "a snapshot marked as written before version 9 is refused alike");
+        SnapshotChecks.Of(At(now.AddMinutes(4), ahead: true), "S/Q", Hall.QueueZone, 1, notAfter).Should().BeEmpty("an event marked ahead is bounded by the engine's restore");
+        var restore = () => ZoneProcessor.Restore("S/Q", Hall, 1, settings, At(now.AddHours(20), ahead: false), notAfter);
+        restore.Should().Throw<InvalidDataException>();
     }
 
     #endregion

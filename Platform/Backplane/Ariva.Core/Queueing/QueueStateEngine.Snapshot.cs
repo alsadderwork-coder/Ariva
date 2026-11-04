@@ -375,19 +375,31 @@ public sealed partial class QueueStateEngine
     }
 
     /// <summary>
-    /// ARV-238 (CWE-501): each hand-over deadline as the engine sets one, its sighting plus the hand-over window, at a sighting the
-    /// engine applied (at or behind its watermark, or at the instant a step stopped in) and at most MaxAhead after its clock (a quiet
-    /// zone's watermark follows the receive clock, so a sample ahead of the clock may be applied, ARV-239), never after the last
-    /// sighting of a held entrant of its track (a deadline before it is one the engine superseded and drops when it comes due). A
-    /// snapshot otherwise could fragment an entrant at a time it chooses.
+    /// ARV-238 (CWE-501): a held entrant's last sighting and each hand-over deadline as the engine sets them. The engine sets a last
+    /// sighting only when it applies a sighting of the entrant's track, so an entrant without a track has none, and one with a track
+    /// has it at or after its entry, at a sighting the engine applied (at or behind its watermark, or at the instant a step stopped
+    /// in) and at most MaxAhead after its clock (a quiet zone's watermark follows the receive clock, so a sample ahead of the clock
+    /// may be applied, ARV-239). A deadline is its sighting plus the hand-over window, at a sighting applied the same way, never after
+    /// the last sighting of a held entrant of its track (a deadline before it is one the engine superseded and drops when it comes
+    /// due). Anything else is refused, so a snapshot cannot move a deadline or a last sighting away from the sightings applied; what
+    /// stays is a forgery consistent with those rules (a last sighting moved to another applied instant with its deadline), which
+    /// needs write access to the zone's stored state (docs/security/cwe-controls.md, CWE-501).
     /// </summary>
     private static void RestoreHandovers(QueueStateEngine engine, QueueEngineState state)
     {
         var window = engine._settings.HandoverWindow;
         var aheadUntil = Plus(engine._clock, engine._settings.MaxAhead);
-        DateTime? splitInstant = engine._watermark < DateTime.MaxValue && engine._buffer.TryPeek(out _, out var first) && first.Time == engine._watermark.AddTicks(1)
-            ? first.Time
-            : null;
+        var splitInstant = SplitInstant(engine);
+        foreach (var entrant in engine._held)
+        {
+            var last = entrant.LastSeenUtc;
+            if (!last.HasValue)
+                continue;
+            var applied = last.Value <= engine._watermark || last.Value == splitInstant;
+            if (entrant.TrackKey is null || last.Value < entrant.EntryUtc || last.Value > aheadUntil || !applied)
+                throw new InvalidDataException("The queue engine snapshot has an entrant's last sighting that is not one the engine applied.");
+        }
+
         foreach (var h in state.Handovers ?? [])
         {
             if (h?.Key is null)
@@ -398,10 +410,24 @@ public sealed partial class QueueStateEngine
                 throw new InvalidDataException("The queue engine snapshot has a hand-over deadline that is not its sighting plus the hand-over window.");
             if (seen > aheadUntil || (seen > engine._watermark && seen != splitInstant))
                 throw new InvalidDataException("The queue engine snapshot has a hand-over sighting further after its clock than MaxAhead, or one it had not applied.");
-            if (engine._byTrack.TryGetValue(h.Key, out var entrant) && entrant.LastSeenUtc is { } last && seen > last)
+            var held = engine._byTrack.TryGetValue(h.Key, out var entrant);
+            var last = held ? entrant.LastSeenUtc : null;
+            if (last.HasValue && seen > last.Value)
                 throw new InvalidDataException("The queue engine snapshot has a hand-over sighting after its entrant's last sighting.");
             engine._handovers.Enqueue((h.Key, seen), deadline);
         }
+    }
+
+    /// <summary>
+    /// The instant a full step stopped inside, or null: a step that fills MaxStepRecords inside an instant leaves the watermark one
+    /// tick before it, part of it applied, and the event it stopped at first in the buffer.
+    /// </summary>
+    private static DateTime? SplitInstant(QueueStateEngine engine)
+    {
+        // Declared first, not in the condition (ARV-069a).
+        Due first = default;
+        var stopped = engine._watermark < DateTime.MaxValue && engine._buffer.TryPeek(out _, out first) && first.Time == engine._watermark.AddTicks(1);
+        return stopped ? first.Time : null;
     }
 
     /// <summary>
@@ -423,9 +449,7 @@ public sealed partial class QueueStateEngine
         var buffered = engine._buffer.UnorderedItems.Select(i => i.Element.Input).OfType<QueueTrackSeen>()
             .Select(seen => (seen.TrackKey, seen.TimeUtc)).ToHashSet();
         var aheadUntil = Plus(engine._clock, engine._settings.MaxAhead);
-        DateTime? splitInstant = engine._watermark < DateTime.MaxValue && engine._buffer.TryPeek(out _, out var first) && first.Time == engine._watermark.AddTicks(1)
-            ? first.Time
-            : null;
+        var splitInstant = SplitInstant(engine);
         foreach (var r in runs)
         {
             if (r is null || string.IsNullOrEmpty(r.TrackKey) || engine._runs.ContainsKey(r.TrackKey))

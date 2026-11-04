@@ -143,6 +143,11 @@ public static class SnapshotChecks
                 Times(b.Input.FromUtc);
                 if (b.Input.In < 0 || b.Input.Out < 0 || b.Input.Count < 0)
                     bad++;
+                // ARV-238 review (M1): an event not marked ahead was at or before the reference it arrived with, which the zone's
+                // reference only moves on from (as a run's pending sample, above), so a snapshot without the engine's clock cannot
+                // derive one past the zone's receive clock from its held events.
+                if (!b.Ahead && state.ReferenceUtc != DateTime.MinValue && b.Input.TimeUtc > state.ReferenceUtc)
+                    bad++;
             }
         }
 
