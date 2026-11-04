@@ -59,6 +59,7 @@
   "Ariva.UnitTests.Queueing.QueueEngineWatermarkTests.Advance_Should_MoveTheWatermarkToTheZonesClockLessTheLateness_When_Stepped": 9,
   "Ariva.UnitTests.Queueing.QueueStateEngineTests.Restore_Should_RefuseAPendingCheck_When_NoFullStepLeavesItThere": 12,
   "Ariva.UnitTests.Queueing.SensorCycleTests.Window_Should_FlagTheWindow_When_ItFallsBack": 6,
+  "Ariva.UnitTests.Reports.ReportDeliveryFailureTests.FailedInDatabase_Should_TellADatabaseFailureFromACancelledRound_When_TheReadFails": 8,
   "Ariva.UnitTests.Resilience.DependencyOutageTests.Is_Should_BeFalse_When_TheErrorIsNotAnOutage": 6,
   "Ariva.UnitTests.Resilience.DependencyOutageTests.Is_Should_BeTrue_When_ADependencyIsUnreachableOrStalled": 7
 }
