@@ -69,15 +69,15 @@ public class LinearRuleTests
         {
             ["AuthorizationScheme"] = (@"\b(?<scheme>Bearer|Basic)\s+[A-Za-z0-9\-._~+/]+=*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
                 SecretText.AuthorizationScheme, m => m.Groups["scheme"].Value + " " + SecretText.Redacted,
-                ["Bearer", "Basic", "bearer", "BASIC", "Beare", "xBearer", " ", "\t", "\n", "abc", "Z9", "-", ".", "_", "~", "+", "/", "=", "==", ":", ",", "\u00e9"]),
+                ["Bearer", "Basic", "bearer", "BASIC", "Beare", "xBearer", " ", "\t", "\n", "abc", "Z9", "-", ".", "_", "~", "+", "/", "=", "==", ":", ",", "\u00e9", "\u200d", "\u017f", "\u212a", "\u00a0"]),
             ["TokenQueryParameter"] = (@"(?<key>[?&#](access_token|refresh_token|id_token|token|code|totp|otp|password|key)=)[^&#\s""']+",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, SecretText.TokenQueryParameter, m => m.Groups["key"].Value + SecretText.Redacted,
                 ["?", "&", "#", "=", "access_token", "refresh_token", "id_token", "token", "TOKEN", "code", "totp", "otp", "password", "key", "keys", "tok", "abc",
-                 " ", "\"", "'", "/", "%20", "\n"]),
+                 " ", "\"", "'", "/", "%20", "\n", "\u017f", "\u212a", "\u200d"]),
             ["DeviceKey"] = (@"ard[kp]_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant, SecretText.DeviceKey, m => m.Value[..5] + SecretText.Redacted,
-                ["ardk_", "ardp_", "ardx_", "ARDK_", "ard", "k_", "abcdefghij", "0123456789", "-", "_", ".", " ", "\u00e9"]),
+                ["ardk_", "ardp_", "ardx_", "ARDK_", "ard", "k_", "abcdefghij", "0123456789", "-", "_", ".", " ", "\u00e9", "\u200d", "\u212a"]),
             ["Jwt"] = (@"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*", RegexOptions.CultureInvariant, SecretText.Jwt, _ => SecretText.Redacted,
-                ["eyJ", "eyj", "xeyJ", "abcde", "12345", "ab", "-", "_", ".", "..", " ", "=", "\n", "\u00e9"])
+                ["eyJ", "eyJabcde", "eyJabcde.", "abcde.", "abcde", "12345", "eyj", "xeyJ", "ab", "-", "_", ".", "..", " ", "=", "\n", "\u00e9", "\u200d", "\u212a"])
         };
 
     public static TheoryData<string> LogRuleNames => [.. LogRules.Keys];
@@ -91,8 +91,16 @@ public class LinearRuleTests
         var linear = rule();
 
         linear.Options.Should().HaveFlag(RegexOptions.NonBacktracking);
+        var matched = 0;
         Gen.OneOfConst(fragments).Array[0, 24].Select(parts => string.Concat(parts))
-            .Sample(text => linear.Replace(text, replace) == old.Replace(text, replace), iter: Iterations);
+            .Sample(text =>
+            {
+                if (old.IsMatch(text))
+                    Interlocked.Increment(ref matched);
+                return linear.Replace(text, replace) == old.Replace(text, replace);
+            }, iter: Iterations);
+        // Texts the old rule replaces in, not only misses: at least one in a hundred of those sampled.
+        matched.Should().BeGreaterThan(Iterations / 100, "the property compares replacements, so the texts must hold matches");
     }
 
     #endregion

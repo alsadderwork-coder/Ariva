@@ -287,6 +287,9 @@ public sealed class SecretFormatRedactionTests
         var marker = new string('-', 5);
         var opening = marker + "BEGIN PRIVATE KEY" + marker;
         var text = opening + string.Concat(Enumerable.Repeat(fragment, 100_000 / fragment.Length));
+        // ARV-289 review: the linear engine's first long match in a process builds its states (about a second on a cold host for
+        // the token parameter and device key rules, linear still), so the first pass is untimed; a quadratic rule is slow in either.
+        RedactionEnricher.RedactText(text);
         var watch = System.Diagnostics.Stopwatch.StartNew();
 
         RedactionEnricher.RedactText(text);
