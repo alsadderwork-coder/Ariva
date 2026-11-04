@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Ariva.Infra.Messaging;
+using Ariva.Infra.Settings;
 using Ariva.Infra.Timescale;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
@@ -21,6 +22,26 @@ public sealed partial class OpsScriptTests
     #endregion
 
     #region Tests
+
+    /// <summary>
+    /// ARV-290 review: check's "runtime caps" judges the runtime login's statement timeout and temporary file cap by the bounds
+    /// the hosts and the migration job hold the settings to, so a value the job would refuse fails it.
+    /// </summary>
+    [Fact]
+    public void RuntimeCapBounds_Should_BeTheDatabaseSettingsBounds_When_CheckJudgesTheRuntimeLogin()
+    {
+        int Constant(string name)
+        {
+            var match = Regex.Match(Script.Value, $"^readonly {name}=(?<value>[0-9]+)$", RegexOptions.Multiline | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
+            match.Success.Should().BeTrue($"the script declares {name}");
+            return int.Parse(match.Groups["value"].Value, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        Constant("RUNTIME_TIMEOUT_MIN_SECONDS").Should().Be(DatabaseSettings.MinStatementTimeoutSeconds);
+        Constant("RUNTIME_TIMEOUT_MAX_SECONDS").Should().Be(DatabaseSettings.MaxStatementTimeoutSeconds);
+        Constant("RUNTIME_TEMP_FILE_MIN_MEGABYTES").Should().Be(DatabaseSettings.MinTempFileLimitMegabytes);
+        Constant("RUNTIME_TEMP_FILE_MAX_MEGABYTES").Should().Be(DatabaseSettings.MaxTempFileLimitMegabytes);
+    }
 
     [Fact]
     public void CompactedTopics_Should_BeTheTopicsProvisionedWithCompaction_When_Listed()

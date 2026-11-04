@@ -1,4 +1,5 @@
--- ARV-290 (CWE-400): the server's own cap on the temporary files one session of the runtime login may hold at once. A sort or
+-- ARV-290 (CWE-400): the server's own cap on the temporary files one server process of the runtime login may hold at once (a
+-- session, and each parallel worker of its statements: explicit temporary tables are not counted). A sort or
 -- hash that outgrows work_mem spills to temporary files in the data directory's disk, and without a cap one statement could fill
 -- it; past the cap PostgreSQL ends the statement (SQLSTATE 53400) instead. As for the statement timeout (script 0063), a setting
 -- of the ariva_runtime group role would not reach its members and no script knows the login's name, so the migration job sets it

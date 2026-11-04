@@ -252,6 +252,14 @@ zone_outage=SELECT,INSERT,UPDATE(closed recorded_on to_utc)"
 # continuous aggregate its hypertable, a plain view the relations it names (separated by spaces). check compares them, as
 # it does the privileges, once the database is at ARIVA_RUNTIME_PRIVILEGES_AT: a view a forged dump adds takes the default
 # DML of script 0001 and reads with its owner's rights. OpsScriptTests holds the names equal to the scripts' views.
+# ARV-290 review: the bounds the hosts and the migration job hold the runtime login's caps to (DatabaseSettings'
+# MinStatementTimeoutSeconds to MaxStatementTimeoutSeconds and MinTempFileLimitMegabytes to MaxTempFileLimitMegabytes;
+# OpsScriptTests holds them equal), so check's "runtime caps" fails on a value the migration job would refuse, not only on
+# one it never writes.
+readonly RUNTIME_TIMEOUT_MIN_SECONDS=301
+readonly RUNTIME_TIMEOUT_MAX_SECONDS=3600
+readonly RUNTIME_TEMP_FILE_MIN_MEGABYTES=64
+readonly RUNTIME_TEMP_FILE_MAX_MEGABYTES=102400
 readonly ARIVA_VIEWS="line_minute_15m=line_minute;overflow_bin_15m=overflow_minute;queue_minute_15m=queue_minute"
 
 # ARV-262 (CWE-269, CWE-345): every object of Ariva's in public as a database the scripts migrated holds it, as
@@ -458,8 +466,8 @@ as_migration() {
 }
 
 # psql as the database superuser over the local socket (peer authentication; the restore's TimescaleDB steps, the
-# extensions' update and check's read of the ALTER SYSTEM settings only: OpsScriptTests holds every call to one of five
-# fixed statements). The search path is the system catalog's for the whole session, a startup option that wins over any
+# extensions' update, check's read of the ALTER SYSTEM settings and grant-settings' grant only: OpsScriptTests holds every
+# call to one of six fixed statements). The search path is the system catalog's for the whole session, a startup option that wins over any
 # setting the database owner made (ALTER DATABASE ... SET search_path), so no object the migration login can create in a
 # schema of its own is picked up by a name in these statements (ARV-183 review); a caller's startup options come first.
 as_superuser() {
@@ -787,7 +795,9 @@ cmd_check() {
   report="$(as_migration_catalog --tuples-only --no-align --set=runtime="$runtime" --set=reader="$reader" --set=allowed_extensions="$extensions" \
     --set=allowed_logins="$logins_allowed" --set=allowed_settings="$settings_allowed" --set=ariva_functions="$ARIVA_FUNCTIONS" \
     --set=runtime_privileges="$ARIVA_RUNTIME_PRIVILEGES" --set=runtime_privileges_at="$ARIVA_RUNTIME_PRIVILEGES_AT" \
-    --set=ariva_views="$ARIVA_VIEWS" --set=after_restore="$check_after_restore" <<'SQL'
+    --set=ariva_views="$ARIVA_VIEWS" --set=after_restore="$check_after_restore" \
+    --set=timeout_min="$RUNTIME_TIMEOUT_MIN_SECONDS" --set=timeout_max="$RUNTIME_TIMEOUT_MAX_SECONDS" \
+    --set=temp_min="$RUNTIME_TEMP_FILE_MIN_MEGABYTES" --set=temp_max="$RUNTIME_TEMP_FILE_MAX_MEGABYTES" <<'SQL'
 WITH RECURSIVE me AS (SELECT oid FROM pg_roles WHERE rolname = current_user),
 foreign_owned AS (
     SELECT n.nspname || '.' || c.relname AS name
@@ -1110,13 +1120,18 @@ parameter_grants AS (
                 AND r.rolname IN (current_user, 'ariva_migration'))
        AND NOT coalesce(r.rolname = ANY (string_to_array(:'allowed_logins', ',')), false)),
 -- ARV-290 review (L3): the runtime login's own settings in this database, which role_settings allows by name: the migration job
--- sets both on every release, and the migration login may change them in between (it may set temp_file_limit, to -1 too).
+-- sets both on every release, and the migration login may change them in between (it may set temp_file_limit, to -1 or to
+-- terabytes too). Each is judged by its value, in the form the job writes and within the bounds the job holds it to; at most
+-- seven digits are read, so no text makes the cast fail.
 runtime_caps AS (
-    SELECT max(substr(c, length('statement_timeout=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'statement_timeout') AS statement_timeout,
-           max(substr(c, length('temp_file_limit=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'temp_file_limit') AS temp_file_limit
-      FROM pg_db_role_setting s CROSS JOIN LATERAL unnest(s.setconfig) c
-     WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = :'runtime')
-       AND s.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database())),
+    SELECT statement_timeout, temp_file_limit,
+           coalesce(substring(statement_timeout FROM '^([1-9][0-9]{0,6})s$')::int BETWEEN :'timeout_min'::int AND :'timeout_max'::int, false) AS timeout_ok,
+           coalesce(substring(temp_file_limit FROM '^([1-9][0-9]{0,6})MB$')::int BETWEEN :'temp_min'::int AND :'temp_max'::int, false) AS temp_ok
+      FROM (SELECT max(substr(c, length('statement_timeout=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'statement_timeout') AS statement_timeout,
+                   max(substr(c, length('temp_file_limit=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'temp_file_limit') AS temp_file_limit
+              FROM pg_db_role_setting s CROSS JOIN LATERAL unnest(s.setconfig) c
+             WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = :'runtime')
+               AND s.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database())) raw),
 -- ARV-183: a rule created after the server's own (pg_settings has two) that is not a view's (_RETURN), outside the extensions:
 -- it rewrites what its table's statements do.
 rules AS (
@@ -1214,14 +1229,13 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'parameter privileges|SET on temp_f
                                                 || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', and the allowed logins'' own' END
                       ELSE 'FAIL parameter privileges|' || string_agg(name, ', ' ORDER BY name)
                            || ' (GRANT ... ON PARAMETER, the cluster''s: find out who granted it, wiki 10 section 4.19)' END FROM parameter_grants
-UNION ALL SELECT CASE WHEN statement_timeout ~ '^[1-9][0-9]*s$' AND temp_file_limit ~ '^[1-9][0-9]*MB$'
+UNION ALL SELECT CASE WHEN timeout_ok AND temp_ok
                       THEN 'runtime caps|' || :'runtime' || ' in this database: statement_timeout ' || statement_timeout || ', temp_file_limit ' || temp_file_limit
                       ELSE 'FAIL runtime caps|' || :'runtime' || ' in this database: '
-                           || concat_ws(', ', CASE WHEN coalesce(statement_timeout ~ '^[1-9][0-9]*s$', false) THEN NULL
-                                                   ELSE 'statement_timeout ' || coalesce(statement_timeout, 'not set') END,
-                                              CASE WHEN coalesce(temp_file_limit ~ '^[1-9][0-9]*MB$', false) THEN NULL
-                                                   ELSE 'temp_file_limit ' || coalesce(temp_file_limit, 'not set') END)
-                           || ' (ARV-096d, ARV-290): run the migration job' END
+                           || concat_ws(', ', CASE WHEN timeout_ok THEN NULL ELSE 'statement_timeout ' || coalesce(statement_timeout, 'not set') END,
+                                              CASE WHEN temp_ok THEN NULL ELSE 'temp_file_limit ' || coalesce(temp_file_limit, 'not set') END)
+                           || ' (the migration job sets ' || :'timeout_min' || 's to ' || :'timeout_max' || 's and ' || :'temp_min' || 'MB to '
+                           || :'temp_max' || 'MB; ARV-096d, ARV-290): run the migration job' END
                  FROM runtime_caps WHERE :'runtime' <> '' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'runtime')
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'rules|none but the views'' own'
                       ELSE 'FAIL rules|' || string_agg(name, ', ' ORDER BY name) END FROM rules
@@ -2064,7 +2078,9 @@ SQL
 # ARV-290: SET on temp_file_limit for the migration login, which the migration job needs to cap the runtime login's temporary
 # files (script 0069); the chart's init script grants it to the login on a new volume, this on a server first started before
 # ARV-290, to ariva_migration (script 0001), whose privileges the migration login holds: one constant statement as the
-# superuser over the local socket, then the migration login's own view of it.
+# superuser over the local socket, then the migration login's own view of it. Unlike update-extensions it runs without
+# planted_objects first: GRANT ON PARAMETER names a server-wide parameter and a role, nothing it resolves through the
+# search path, and no event trigger fires for it (its review).
 cmd_grant_settings() {
   (($# == 0)) || usage
   check_settings

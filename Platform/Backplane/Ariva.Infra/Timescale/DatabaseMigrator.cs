@@ -115,7 +115,7 @@ internal sealed class DatabaseMigrator(
         tempFiles.Parameters.AddWithValue("name", settings.Username);
         tempFiles.Parameters.AddWithValue("megabytes", settings.TempFileLimitMegabytes);
         await tempFiles.ExecuteNonQueryAsync(ct);
-        _logger.LogInformation("Runtime login {Login}: each session holds at most {Megabytes} MB of temporary files on the server", settings.Username, settings.TempFileLimitMegabytes);
+        _logger.LogInformation("Runtime login {Login}: each of its server processes holds at most {Megabytes} MB of temporary files on the server", settings.Username, settings.TempFileLimitMegabytes);
     }
 
     /// <summary>

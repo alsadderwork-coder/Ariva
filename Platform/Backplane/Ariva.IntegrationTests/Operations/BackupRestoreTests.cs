@@ -477,9 +477,12 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         check.Stdout.Should().Contain("FAIL  role settings|it_back temp_file_limit, it_back work_mem (");
         // ARV-290 review: privileges on parameters beside the migration login's SET on temp_file_limit, and the runtime login's
         // cap lifted by the migration login, which may set it (role settings allows the runtime login's own by name).
+        // Its round 2: the migration login's own grants widened too (another parameter, another privilege, a grant option).
         Line(check, "FAIL  parameter privileges|").Should().Contain("session_preload_libraries SET to ariva_runtime")
-            .And.Contain("temp_file_limit SET with grant option to it_back").And.Contain("work_mem ALTER SYSTEM to PUBLIC");
-        check.Stdout.Should().Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit -1 (ARV-096d, ARV-290): run the migration job");
+            .And.Contain("temp_file_limit SET with grant option to it_back").And.Contain("work_mem ALTER SYSTEM to PUBLIC")
+            .And.Contain("session_preload_libraries SET to ariva, ").And.Contain("temp_file_limit ALTER SYSTEM to ariva_migration")
+            .And.Contain("temp_file_limit SET with grant option to ariva, ");
+        check.Stdout.Should().Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit -1 (the migration job sets 301s to 3600s and 64MB to 102400MB; ARV-096d, ARV-290): run the migration job");
         // ARV-262: every file but the server's postgresql.conf: ALTER SYSTEM's and the one an include line names.
         Line(check, "FAIL  settings|").Should().Contain("set outside the server's postgresql.conf: maintenance_work_mem (")
             .And.Contain("/ariva-planted.conf), work_mem (").And.Contain("/postgresql.auto.conf): find out who");
@@ -837,6 +840,9 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             GRANT SET ON PARAMETER session_preload_libraries TO ariva_runtime;
             GRANT SET ON PARAMETER temp_file_limit TO it_back WITH GRANT OPTION;
             GRANT ALTER SYSTEM ON PARAMETER work_mem TO PUBLIC;
+            GRANT SET ON PARAMETER session_preload_libraries TO ariva;
+            GRANT ALTER SYSTEM ON PARAMETER temp_file_limit TO ariva_migration;
+            GRANT SET ON PARAMETER temp_file_limit TO ariva WITH GRANT OPTION;
             CREATE FUNCTION public.zone_profile_immutable(integer) RETURNS int LANGUAGE sql AS 'SELECT 1';
             CREATE FUNCTION pg_catalog.it_hidden() RETURNS int LANGUAGE sql AS 'SELECT 1';
             ALTER EXTENSION plpgsql ADD FUNCTION pg_catalog.it_hidden();

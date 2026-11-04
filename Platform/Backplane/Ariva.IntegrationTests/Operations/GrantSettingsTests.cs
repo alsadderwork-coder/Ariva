@@ -63,7 +63,7 @@ public sealed class GrantSettingsTests : IAsyncLifetime
 
         var before = await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         before.Stdout.Should().Contain("FAIL  temp file cap|the migration login may not set temp_file_limit, so the migration job stops (ARV-290): run grant-settings")
-            .And.Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit not set (ARV-096d, ARV-290): run the migration job");
+            .And.Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit not set (the migration job sets 301s to 3600s and 64MB to 102400MB; ARV-096d, ARV-290): run the migration job");
         // The job logs "The migration login ariva may not set temp_file_limit ... GRANT SET ON PARAMETER ... grant-settings" (Critical)
         // and exits 1, as for any failure, so the release's hook fails before a host starts.
         (await MigrateAsync()).Should().Be(1, "the job stops when its login may not set the cap");
@@ -85,6 +85,15 @@ public sealed class GrantSettingsTests : IAsyncLifetime
         (await RuntimeScalarAsync("SHOW temp_file_limit")).Should().Be("1GB");
         (await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Stdout.Should().Contain($"ok    runtime caps|{RuntimeLogin} in this database: ")
             .And.NotContain("FAIL", "the job capped the runtime login again");
+
+        // Its review: the migration login, which may set the cap, raises both past what the job writes (well formed, out of the
+        // settings' bounds): the check names each, and the next migration sets them back.
+        await MigrationLoginAsync("ALTER ROLE ariva_app IN DATABASE ariva SET temp_file_limit = '102401MB'");
+        await MigrationLoginAsync("ALTER ROLE ariva_app IN DATABASE ariva SET statement_timeout = '3601s'");
+        (await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Stdout.Should()
+            .Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: statement_timeout 3601s, temp_file_limit 102401MB (the migration job sets ");
+        (await MigrateAsync()).Should().Be(0);
+        (await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Stdout.Should().Contain($"ok    runtime caps|{RuntimeLogin} in this database: ");
         (await _server.OpsAsync(Ct, "grant-settings")).ExitCode.Should().Be(0, "a second grant changes nothing");
     }
 
@@ -126,6 +135,16 @@ public sealed class GrantSettingsTests : IAsyncLifetime
         await using var command = new NpgsqlCommand(sql, connection);
 #pragma warning restore CA2100
         return Convert.ToString(await command.ExecuteScalarAsync(Ct), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private async Task MigrationLoginAsync([System.Diagnostics.CodeAnalysis.ConstantExpected] string sql)
+    {
+        await using var connection = new NpgsqlConnection(_server.ConnectionString(ChartDatabase.MigrationLogin, _server.MigrationPassword));
+        await connection.OpenAsync(Ct);
+#pragma warning disable CA2100 // test helper: every caller passes a literal (ConstantExpected, CA1857 is an error)
+        await using var command = new NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
+        await command.ExecuteNonQueryAsync(Ct);
     }
 
     private async Task SuperuserAsync(string sql)
