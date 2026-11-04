@@ -198,24 +198,35 @@ public static partial class SecretText
 
     #region Rules
 
-    // ARV-289: these four run on the linear engine without a timeout too (ARV-163), each proven to replace what its backtracking
-    // rule replaced (LinearRuleTests): a timeout would let a log event out unprotected, and since ARV-285 would throw in
-    // DeadLetters.Create, fail the outbox relay's pass or turn a job's failure into Unprotectable; and the backtracking Jwt could
-    // start at every eyJ of a long run of eyJ- and read to its end each time (time quadratic in the text's length).
+    // ARV-289: these four run without a timeout (ARV-163): a timeout would let a log event out unprotected, and since ARV-285
+    // would throw in DeadLetters.Create, fail the outbox relay's pass or turn a job's failure into Unprotectable. The scheme and
+    // Jwt rules run on the linear engine, each proven to replace what its backtracking rule replaced (LinearRuleTests): the
+    // backtracking Jwt could start at every eyJ of a long run of eyJ- and read to its end each time (time quadratic in the
+    // text's length). Since its checkpoint fix the token parameter and device key rules run on the backtracking engine again,
+    // linear by their shape (each says why): on the runtime's linear engine (NonBacktracking, .NET 10.0.13) an instance of
+    // either, after a long scan (a long value or key, a long run that could belong to one, or many runs of about 8,000
+    // characters), missed or overran a match that ends a text, in that call and on later ones (LinearRuleTests' long scan
+    // theory reproduces it on either rule put back), while the other rules matched right after the same texts. A missed match
+    // leaves a credential in the log (CWE-532); the backtracking engine keeps nothing from one call to the next.
 
     // "Bearer abc.def", "Basic dXNlcjpwYXNz" (also inside "Authorization: Bearer ..." header dumps).
     [GeneratedRegex(@"\b(?<scheme>Bearer|Basic)\s+[A-Za-z0-9\-._~+/]+=*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Timeout.Infinite)]
     public static partial Regex AuthorizationScheme();
 
-    // ?access_token=... in SignalR negotiate and WebSocket URLs, and other token-bearing query parameters.
-    [GeneratedRegex(@"(?<key>[?&#](access_token|refresh_token|id_token|token|code|totp|otp|password|key)=)[^&#\s""']+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Timeout.Infinite)]
+    // ?access_token=... in SignalR negotiate and WebSocket URLs, and other token-bearing query parameters. Backtracking and linear:
+    // an attempt reads one of ?&#, one of the nine names (13 characters at most) and '=', then a run of value characters that
+    // nothing follows, so it succeeds at the run's first character and never reads it again; a failed attempt reads at most 16
+    // characters, and the scan goes on after a match.
+    [GeneratedRegex(@"(?<key>[?&#](access_token|refresh_token|id_token|token|code|totp|otp|password|key)=)[^&#\s""']+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, Timeout.Infinite)]
     public static partial Regex TokenQueryParameter();
 
     /// <summary>
     /// A device credential (ARV-022, ardk_) or a display player credential (ARV-058, ardp_), wherever it appears: the
-    /// marker and 43 base64url characters.
+    /// marker and 43 base64url characters. Backtracking and linear: an attempt reads the five-character marker, then a run of
+    /// key characters that nothing follows, so it succeeds once the run holds 20 and never reads it again; a failed attempt
+    /// reads at most 25 characters, and the scan goes on after a match.
     /// </summary>
-    [GeneratedRegex(@"ard[kp]_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Timeout.Infinite)]
+    [GeneratedRegex(@"ard[kp]_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant, Timeout.Infinite)]
     public static partial Regex DeviceKey();
 
     // A compact JWS anywhere in text (header.payload.signature, header starting with eyJ).

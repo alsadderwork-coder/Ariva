@@ -281,6 +281,11 @@ public sealed class SecretFormatRedactionTests
     [InlineData("Bearer ")]
     [InlineData("?token=")]
     [InlineData("ardk_-")]
+    // ARV-289 (checkpoint fix): the near misses of the two backtracking rules, an attempt failing at each start: a name with no
+    // '=', and a marker with 19 key characters before a character no key holds.
+    [InlineData("?token")]
+    [InlineData("&access_tokex=")]
+    [InlineData("ardk_0123456789012345678.")]
     public void RedactText_Should_FinishQuickly_When_TheTextIsALongAdversarialRun(string fragment)
     {
         // Exception text is unbounded: 100,000 characters of a rule's own fragments, with a private key block left open first.
@@ -359,8 +364,11 @@ public sealed class SecretFormatRedactionTests
 
     #region Rules
 
+    // ARV-289 (checkpoint fix): every rule but the token parameter's and the device key's, which run on the backtracking engine
+    // without a timeout (LinearRuleTests.SecretTextRule_Should_RunOnTheBacktrackingEngineWithoutATimeout_When_ItIsTheTokenOrDeviceKeyRule),
+    // linear by their shape; their long runs are timed below with the others.
     public static TheoryData<string> RuleNames =>
-        ["AuthorizationScheme", "TokenQueryParameter", "DeviceKey", "Jwt", "PrivateKeyBlock", "DerBase64", "IntegrationClientSecret", "TemporaryPassword", "RecoveryCode",
+        ["AuthorizationScheme", "Jwt", "PrivateKeyBlock", "DerBase64", "IntegrationClientSecret", "TemporaryPassword", "RecoveryCode",
          "Base32Seed", "CredentialHeader", "JsonMember", "Assignment", "UnquotedAssignment", "PasswordAssignment"];
 
     [Theory]
