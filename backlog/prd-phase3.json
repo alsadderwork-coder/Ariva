@@ -1235,7 +1235,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 309,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Low (needs write access to the zone state, which already holds every count), so Phase 3. 2026-10-23: L3 of ARV-239's review added (Low: write access to the zone state, and the tenth's own bound still holds).",
       "dependsOn": [
         "ARV-230"

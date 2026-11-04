@@ -29,10 +29,18 @@ public sealed record QueueEngineSettings
     /// <summary>T_censor: an entrant still unresolved this long after entry is censored (F6, Proposed 120 min).</summary>
     public TimeSpan CensorAfter { get; init; } = TimeSpan.FromMinutes(120);
 
-    /// <summary>A track with position samples not seen for this long is fragmented (F6, To confirm).</summary>
+    /// <summary>
+    /// A track with position samples not seen for this long is fragmented (F6, To confirm). A restore sets each hand-over deadline
+    /// again from its sighting with the window in force (ARV-238), so a change takes effect at the next restart; a run's pending
+    /// sample further from its anchor than the new window is refused there (ARV-230), so lowering it can restart such a zone afresh.
+    /// </summary>
     public TimeSpan HandoverWindow { get; init; } = TimeSpan.FromSeconds(30);
 
-    /// <summary>Events further ahead of the reference clock than this are refused (the 5 minutes of Ingest).</summary>
+    /// <summary>
+    /// Events further ahead of the reference clock than this are refused (the 5 minutes of Ingest). A restore refuses a snapshot
+    /// holding an event, a run's sample or a sighting further after its clock than this (ARV-239, ARV-238), so lowering it can restart
+    /// afresh a zone whose device clock ran ahead.
+    /// </summary>
     public TimeSpan MaxAhead { get; init; } = TimeSpan.FromMinutes(5);
 
     /// <summary>Occupancy readings older than this (behind the watermark) no longer give the queue length.</summary>
