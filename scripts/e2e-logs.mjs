@@ -57,8 +57,8 @@ export function pruneLogFolders(logsDir, keep, startedMs, remove = removeFolder)
     try {
       remove(path.join(logsDir, run.name));
       removed.push(run.name);
-    } catch {
-      left.push(run.name);
+    } catch (error) {
+      left.push(`${run.name} (${error?.code ?? 'error'})`);
     }
   }
   return { removed, left };
@@ -115,7 +115,7 @@ function selfTest() {
       removeFolder(folder);
     });
     expect('a folder that cannot be removed is left and named, the others removed',
-      JSON.stringify(refused.left) === JSON.stringify([held]) && refused.removed.length === 3 && fs.existsSync(path.join(logs, held)));
+      JSON.stringify(refused.left) === JSON.stringify([`${held} (EBUSY)`]) && refused.removed.length === 3 && fs.existsSync(path.join(logs, held)));
     expect('keeping none removes every earlier run, still not the run in progress',
       pruneLogFolders(logs, 0, started).removed.length === 1 && fs.existsSync(path.join(logs, inProgress)));
     expect('a missing folder removes nothing', pruneLogFolders(path.join(root, 'none'), 0, started).removed.length === 0);
