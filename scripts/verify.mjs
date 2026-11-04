@@ -183,13 +183,14 @@ const taken = port => new Promise(done => {
 function pruneE2eLogs(name, started) {
   const keep = runsToKeep(process.env.ARIVA_E2E_LOG_RUNS);
   if (keep === null) {
-    console.log(`${name}: ARIVA_E2E_LOG_RUNS is a whole number of runs from 1 to 1,000 (5 when not set)`);
+    console.log(`${name}: ARIVA_E2E_LOG_RUNS is a whole number of runs from 2 to 1,000 (5 when not set)`);
     results.push({ name, ok: false, exit: 1 });
     return false;
   }
   if (PLAN) return true;
-  const removed = pruneLogFolders(path.join(E2E, 'logs'), keep - 1, started);
+  const { removed, left } = pruneLogFolders(path.join(E2E, 'logs'), keep - 1, started);
   if (removed.length) console.log(`E2E host logs: ${removed.length} older run folder(s) removed, the latest ${keep} runs kept`);
+  if (left.length) console.log(`E2E host logs: could not remove ${left.join(', ')} (held open or refused); left for a later run`);
   return true;
 }
 
