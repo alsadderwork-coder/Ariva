@@ -1,5 +1,5 @@
-using System.Globalization;
 using Ariva.Core;
+using Ariva.Core.Queueing;
 using Ariva.Core.Reports;
 using Ariva.Core.Security;
 using Ariva.Core.Services.Reports;
@@ -8,16 +8,69 @@ using Ariva.Infra.Services.Foundation;
 namespace Ariva.Infra.Services.Reports;
 
 /// <summary>
-/// Reads one site's local day for the daily report (ARV-060) and builds it (<see cref="DailyReports"/>): the stored
-/// minutes of its queue zones with their histograms, the alerts raised that day that the given roles see (the same rule
+/// Reads one site's local day for the daily report (ARV-060) and builds it (<see cref="DailyReports"/>): its queue zones' stored
+/// minutes aggregated per zone and local hour in the database (<see cref="HoursSql"/>, ARV-234), the alerts raised that day that the given roles see (the same rule
 /// as the alert screens: the owner role, the escalation role once escalated, or an administrator; an alert on a
 /// border-only metric only for roles holding <c>ArrivalWaveLanes.View</c>, <see cref="BorderAlerts"/>, ARV-181b2 and ARV-187; and
 /// none at all for roles without <c>Alert.View</c>, <see cref="ReportAlerts"/>, ARV-180), and the outages of its devices. The caller decides who may read the site; this class only reads. ARV-096d (CWE-400, CWE-120): each read
 /// takes at most its bound of <see cref="Limits"/> plus one row, and a day past a bound is refused (<see cref="ReportErrors.TooLarge"/>),
-/// never cut short.
+/// never cut short. ARV-234: the hours statement runs in one of <see cref="DailyReportLimits.DatabaseSlots"/> slots across the
+/// cluster or not at all (<see cref="ReportErrors.Busy"/>).
 /// </summary>
 internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
 {
+    /// <summary>
+    /// The first key of the report slots' transaction advisory locks (the second is the slot, 1 to
+    /// <see cref="DailyReportLimits.DatabaseSlots"/>); no other lock of Ariva takes this class.
+    /// </summary>
+    public const int SlotLockClass = 60;
+
+    /// <summary>
+    /// ARV-234 (CWE-400, CWE-120): the site's queue minutes of the day aggregated per zone and local hour, one row per zone hour,
+    /// in no particular order. First a slot: the first of the advisory locks <c>(:lockClass, :first)</c> to
+    /// <c>(:lockClass, :slots)</c> it takes without waiting (held to the end of the statement outside a transaction, to the commit
+    /// inside one), and nothing is read without one; every row carries whether it had one (<c>slotted</c>), and a statement with
+    /// no zone hour still answers one row of NULLs for it. The zone hours are grouped first (the sums of entries and waits, the
+    /// longest queue, provisional when a minute is not final or has no status, a missing histogram when a minute with waits has
+    /// none); then each zone hour's minutes are merged on their own through a lateral join on the table's zone and minute index,
+    /// each minute's histogram taken up to the shorter of its two lists without their NULL elements (as the minutes' text read
+    /// did) and left out whole when a bucket is outside 0 to the last or a count is negative, so no merge sorts the day's pairs
+    /// at once or spills to disk. <c>pairs</c> is the row's merged pair count, which the reader sums row by row.
+    /// </summary>
+    internal const string HoursSql = """
+        WITH slot AS MATERIALIZED (
+            SELECT s FROM generate_series(:first, :slots) s WHERE pg_try_advisory_xact_lock(:lockClass, s) LIMIT 1),
+        hours AS (
+            SELECT zone_key, floor(extract(epoch FROM minute_utc - :from) / 3600)::int AS hour,
+                   sum(COALESCE(entries, 0))::bigint AS entries, sum(COALESCE(waits, 0))::bigint AS waits, max(queue_length) AS queue_length,
+                   bool_or(status IS DISTINCT FROM 'Final') AS provisional,
+                   bool_or(COALESCE(waits, 0) > 0 AND COALESCE(cardinality(array_remove(wait_buckets, NULL)), 0) = 0) AS missing
+            FROM queue_minute
+            WHERE EXISTS (SELECT 1 FROM slot) AND zone_key LIKE :prefix AND minute_utc >= :from AND minute_utc < :to
+            GROUP BY 1, 2),
+        merged AS (
+            SELECT h.zone_key, h.hour, h.entries, h.waits, h.queue_length, h.provisional, h.missing, g.buckets, g.counts,
+                   COALESCE(cardinality(g.buckets), 0) AS pairs
+            FROM hours h
+            LEFT JOIN LATERAL (
+                SELECT array_agg(p.b ORDER BY p.b) AS buckets, array_agg(p.c ORDER BY p.b) AS counts
+                FROM (
+                    SELECT x.b, sum(x.c)::bigint AS c
+                    FROM (
+                        SELECT array_remove(q.wait_buckets, NULL) AS bk, array_remove(q.wait_counts, NULL) AS ck
+                        FROM queue_minute q
+                        WHERE q.zone_key = h.zone_key AND q.minute_utc >= :from + h.hour * interval '1 hour'
+                          AND q.minute_utc < LEAST(:from + (h.hour + 1) * interval '1 hour', :to)) m
+                    CROSS JOIN LATERAL (SELECT least(COALESCE(cardinality(m.bk), 0), COALESCE(cardinality(m.ck), 0)) AS n) k
+                    CROSS JOIN LATERAL unnest(m.bk[1 : k.n], m.ck[1 : k.n]) AS x(b, c)
+                    WHERE k.n > 0 AND 0 <= ALL (m.bk[1 : k.n]) AND :buckets > ALL (m.bk[1 : k.n]) AND 0 <= ALL (m.ck[1 : k.n])
+                    GROUP BY x.b) p) g ON true)
+        SELECT r.zone_key, r.hour, r.entries, r.waits, r.queue_length, r.provisional, r.missing, r.buckets, r.counts,
+               (SELECT count(*)::int FROM slot) AS slotted, COALESCE(r.pairs, 0) AS pairs
+        FROM (SELECT 1) one LEFT JOIN merged r ON true
+        LIMIT :cap
+        """;
+
     /// <summary>
     /// The site's device outages overlapping the day, and those still open (ARV-228a: a range of zone_outage's end and open
     /// indexes, script 0068, whatever the table's history; OutageReadPlanTests explains it as written here).
@@ -44,23 +97,31 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
     public async Task<bool> SiteExistsAsync(string siteCode, CancellationToken ct) =>
         (await ExecuteSqlAsync<TextRow>("""SELECT code AS "Value" FROM site WHERE code = :site""", new Dictionary<string, object> { ["site"] = siteCode }, ct)).Count > 0;
 
+    /// <summary>Who reads: a report on demand takes any slot, a scheduled delivery the last only (<see cref="DailyReportLimits.DatabaseSlots"/>).</summary>
+    internal enum ReadFor
+    {
+        OnDemand,
+        Delivery
+    }
+
+    /// <summary>The report of the site's local day on demand; see <see cref="ReadAsync(string, DateOnly, IReadOnlyCollection{string}, DateTime, ReadFor, CancellationToken)"/>.</summary>
+    public Task<Result<DailyReport>> ReadAsync(string siteCode, DateOnly date, IReadOnlyCollection<string> roles, DateTime nowUtc, CancellationToken ct) =>
+        ReadAsync(siteCode, date, roles, nowUtc, ReadFor.OnDemand, ct);
+
     /// <summary>
     /// The report of the site's local day; <paramref name="roles"/> decide which alerts it lists. Refused
-    /// (<see cref="ReportErrors.TooLarge"/>) when a read passes its bound in <see cref="Limits"/>.
+    /// (<see cref="ReportErrors.TooLarge"/>) when a read passes its bound in <see cref="Limits"/>, and answered
+    /// <see cref="ReportErrors.Busy"/> when every slot <paramref name="readFor"/> may take is in use.
     /// </summary>
-    public async Task<Result<DailyReport>> ReadAsync(string siteCode, DateOnly date, IReadOnlyCollection<string> roles, DateTime nowUtc, CancellationToken ct)
+    internal async Task<Result<DailyReport>> ReadAsync(string siteCode, DateOnly date, IReadOnlyCollection<string> roles, DateTime nowUtc, ReadFor readFor, CancellationToken ct)
     {
         var tz = await TimeZoneAsync(siteCode, ct);
         var (from, to) = DailyReports.DayBounds(date, tz);
-        var window = new Dictionary<string, object> { ["prefix"] = siteCode + "/%", ["from"] = from, ["to"] = to, ["cap"] = Limits.MaxQueueMinutes + 1 };
 
-        var minutes = await ExecuteSqlAsync<MinuteRow>("""
-            SELECT zone_key AS "ZoneKey", minute_utc AS "MinuteUtc", status AS "Status", entries AS "Entries", waits AS "Waits",
-                   queue_length AS "QueueLength", array_to_string(wait_buckets, ',') AS "Buckets", array_to_string(wait_counts, ',') AS "Counts"
-            FROM queue_minute WHERE zone_key LIKE :prefix AND minute_utc >= :from AND minute_utc < :to
-            ORDER BY zone_key, minute_utc LIMIT :cap
-            """, window, ct);
-        if (minutes.Count > Limits.MaxQueueMinutes)
+        var read = await ReadHoursAsync(siteCode, from, to, readFor, ct);
+        if (!read.Slotted)
+            return Result.Error<DailyReport>(ReportErrors.Busy);
+        if (read.Hours.Count > Limits.MaxZoneHours || read.Pairs > Limits.MaxHistogramPairs)
             return TooLarge();
 
         // Every queue zone of the published profile, and any other zone with minutes that day (a zone since renamed or
@@ -78,7 +139,7 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
             SELECT z.name AS "Value" FROM zone z JOIN zone_profile p ON p.id = z.profile_id
             WHERE p.site_code = :site AND z.kind = 'Queue' AND p.status = 'Published' LIMIT :cap
             """, new Dictionary<string, object> { ["site"] = siteCode, ["cap"] = Limits.MaxZones + 1 }, ct)).Select(r => r.Value).ToHashSet(StringComparer.Ordinal);
-        var withData = minutes.Select(m => m.ZoneKey).ToHashSet(StringComparer.Ordinal);
+        var withData = read.Hours.Select(h => h.ZoneKey).ToHashSet(StringComparer.Ordinal);
         var lanes = zones.ToDictionary(z => z.Name, z => z.Lane, StringComparer.Ordinal);
         var reportZones = published.Concat(withData.Select(k => k[(siteCode.Length + 1)..])).Distinct(StringComparer.Ordinal)
             .Select(name => new ReportZone(siteCode + "/" + name, name, lanes.GetValueOrDefault(name)))
@@ -134,20 +195,69 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
 
         return new Result<DailyReport>(DailyReports.Build(new DailyReportInput(
             siteCode, date, tz, reportZones,
-            [.. minutes.Select(m => new ReportMinute(m.ZoneKey, Utc(m.MinuteUtc), m.Status == "Final", m.Entries ?? 0, m.Waits ?? 0, m.QueueLength,
-                Numbers(m.Buckets), Numbers(m.Counts)))],
+            [],
             [.. alerts.Select(a => new ReportAlert(a.RuleCode, a.RuleName, a.ZoneName, a.DeviceCode, a.Severity, a.State, Utc(a.RaisedUtc),
                 a.ClearedUtc is { } c ? Utc(c) : null))],
             reportDevices,
-            nowUtc)));
+            nowUtc,
+            read.Hours)));
     }
+
+    /// <summary>The zone hours of [<paramref name="from"/>, <paramref name="to"/>) for a report on demand.</summary>
+    internal Task<HoursRead> ReadHoursAsync(string siteCode, DateTime from, DateTime to, CancellationToken ct) => ReadHoursAsync(siteCode, from, to, ReadFor.OnDemand, ct);
+
+    /// <summary>
+    /// The site's zone hours of [<paramref name="from"/>, <paramref name="to"/>) through <see cref="HoursSql"/>, at most
+    /// <see cref="DailyReportLimits.MaxZoneHours"/> plus one; the merged pairs are counted row by row and no histogram is read once
+    /// the count passes <see cref="DailyReportLimits.MaxHistogramPairs"/> (the caller refuses such a day).
+    /// </summary>
+    internal async Task<HoursRead> ReadHoursAsync(string siteCode, DateTime from, DateTime to, ReadFor readFor, CancellationToken ct)
+    {
+        long pairs = 0;
+        var rows = await ReadSqlAsync(HoursSql, new Dictionary<string, object>
+        {
+            ["first"] = readFor == ReadFor.Delivery ? Limits.DatabaseSlots : 1,
+            ["slots"] = Limits.DatabaseSlots,
+            ["lockClass"] = SlotLockClass,
+            ["prefix"] = siteCode + "/%",
+            ["from"] = from,
+            ["to"] = to,
+            ["buckets"] = WaitStatistics.Buckets,
+            ["cap"] = Limits.MaxZoneHours + 1
+        }, r =>
+        {
+            pairs += r.GetInt32(10);
+            return RowOf(r, pairs <= Limits.MaxHistogramPairs);
+        }, ct);
+        return new HoursRead(rows.Count > 0 && rows[0].Slotted, pairs, [.. rows.Where(r => r.Hour is not null).Select(r => r.Hour)]);
+    }
+
+    /// <summary>
+    /// A row of <see cref="HoursSql"/> by position, its histogram read only when <paramref name="withHistogram"/>; the merged
+    /// histogram's two arrays are as long as each other.
+    /// </summary>
+    private static HoursRow RowOf(System.Data.Common.DbDataReader r, bool withHistogram)
+    {
+        var slotted = r.GetInt32(9) > 0;
+        if (r.IsDBNull(0))
+            return new HoursRow(slotted, null);
+        var buckets = !withHistogram || r.IsDBNull(7) ? [] : r.GetFieldValue<int[]>(7);
+        var counts = !withHistogram || r.IsDBNull(8) ? [] : r.GetFieldValue<long[]>(8);
+        var histogram = new (int Bucket, long Count)[Math.Min(buckets.Length, counts.Length)];
+        for (var i = 0; i < histogram.Length; i++)
+            histogram[i] = (buckets[i], counts[i]);
+        return new HoursRow(slotted, new ReportHour(r.GetString(0), r.GetInt32(1), r.GetInt64(2), r.GetInt64(3), r.IsDBNull(4) ? null : r.GetInt32(4),
+            r.GetBoolean(5), r.GetBoolean(6), histogram));
+    }
+
+    /// <summary>A day's zone hours as read: whether the statement had a slot, the merged pairs it counted, and the hours.</summary>
+    internal sealed record HoursRead(bool Slotted, long Pairs, List<ReportHour> Hours);
+
+    private sealed record HoursRow(bool Slotted, ReportHour Hour);
 
     private static Result<DailyReport> TooLarge() => Result.Error<DailyReport>(ReportErrors.TooLarge);
 
     private static DateTime Utc(DateTime value) => value.Kind == DateTimeKind.Utc ? value : DateTime.SpecifyKind(value.ToUniversalTime(), DateTimeKind.Utc);
-
-    private static int[] Numbers(string csv) =>
-        string.IsNullOrEmpty(csv) ? [] : [.. csv.Split(',').Select(n => int.Parse(n, NumberStyles.Integer, CultureInfo.InvariantCulture))];
 
     private sealed class TextRow
     {
@@ -158,18 +268,6 @@ internal sealed class ReportReader(IUnitOfWork unitOfWork) : SvcDb(unitOfWork)
     {
         public string Name { get; set; }
         public string Lane { get; set; }
-    }
-
-    private sealed class MinuteRow
-    {
-        public string ZoneKey { get; set; }
-        public DateTime MinuteUtc { get; set; }
-        public string Status { get; set; }
-        public long? Entries { get; set; }
-        public long? Waits { get; set; }
-        public int? QueueLength { get; set; }
-        public string Buckets { get; set; }
-        public string Counts { get; set; }
     }
 
     private sealed class AlertRow

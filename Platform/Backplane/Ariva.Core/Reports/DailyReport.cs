@@ -16,6 +16,24 @@ public sealed record ReportMinute(
     IReadOnlyList<int> Buckets,
     IReadOnlyList<int> Counts);
 
+/// <summary>
+/// One queue zone's local hour of the day (ARV-234): <paramref name="Hour"/> counts whole hours from the start of the local day
+/// (not the UTC hour: a site half an hour off the hour, or a 25-hour day, is where the two part). The sums of entries and waits,
+/// the longest queue, provisional when a minute is not final (or has no status), a missing histogram when a minute with waits has
+/// none, and the merged histogram of its minutes in bucket order. Read per zone hour in the database
+/// (<c>ReportReader.HoursSql</c>), or computed from minutes by <see cref="DailyReports.HoursOf"/>, the reference the
+/// database's read is held to.
+/// </summary>
+public sealed record ReportHour(
+    string ZoneKey,
+    int Hour,
+    long Entries,
+    long Waits,
+    int? MaxQueueLength,
+    bool Provisional,
+    bool HistogramMissing,
+    IReadOnlyList<(int Bucket, long Count)> Histogram);
+
 /// <summary>An alert raised during the day at the site, as the report shows it.</summary>
 public sealed record ReportAlert(
     string RuleCode,
@@ -31,30 +49,44 @@ public sealed record ReportAlert(
 public sealed record ReportDevice(string Code, string ZoneName, IReadOnlyList<(DateTime FromUtc, DateTime? ToUtc)> Outages);
 
 /// <summary>
-/// ARV-096d (CWE-400, CWE-120): the bounds of one daily report's reads; a read that would pass one is refused, never cut short
-/// (the alerts keep their own cut of 5,000). The queue minutes are those of <see cref="MaxQueueZones"/> queue zones for a local day
-/// of 25 hours, the longest a change of clock makes. Below the 500 zones a profile can hold
-/// (<see cref="Domain.Entities.ZoneProfile.MaxZones"/>): a report of 500 zones' full day was measured once at a sampled managed heap
-/// peak of about 406 MB (8 s; <c>docs/security/costly-operations.md</c> section 4), and two run at once on api-main, whose heap limit is 750 MiB,
-/// so a site of more queue zones gets its report once the read is aggregated by the hour in the database (Phase 3).
+/// ARV-096d, ARV-234 (CWE-400, CWE-120): the bounds of one daily report's reads; a read that would pass one is refused, never cut
+/// short (the alerts keep their own cut of 5,000). The queue minutes are read aggregated per zone and local hour in the database, so
+/// the bound is in zone hours: the <see cref="MaxQueueZones"/> queue zones a profile can hold
+/// (<see cref="Domain.Entities.ZoneProfile.MaxZones"/>) over a local day of 25 hours, the longest a change of clock makes, with at
+/// most <see cref="ZoneHourBuckets"/> merged histogram buckets a zone hour on average (<see cref="MaxHistogramPairs"/>, above the
+/// 241 buckets a wait censored at the default 120 minutes fills). Measured at that bound in <c>docs/security/costly-operations.md</c>
+/// section 4. The hours statement first takes one of <see cref="DatabaseSlots"/> transaction advisory locks across the cluster
+/// without waiting, and a report that finds every slot taken is answered busy (<c>ReportErrors.Busy</c>) rather than queued.
 /// </summary>
-/// <param name="MaxQueueMinutes">Stored minutes of the site's queue zones in the day.</param>
+/// <param name="MaxZoneHours">Zone hours (queue zone and local hour with stored minutes) of the site's day.</param>
 /// <param name="MaxZones">Queue zone names of the site's published and retired profiles.</param>
 /// <param name="MaxDevices">Devices of the site.</param>
 /// <param name="MaxOutages">Device outages that overlap the day.</param>
+/// <param name="MaxHistogramPairs">Merged histogram pairs (bucket and count) of the day's zone hours, counted row by row.</param>
+/// <param name="DatabaseSlots">Hours statements the database runs at once across the cluster (Proposed, decisions.md): reports on
+/// demand take any, scheduled deliveries the last only.</param>
 public sealed record DailyReportLimits(
-    int MaxQueueMinutes = DailyReportLimits.MaxQueueZones * 25 * 60,
+    int MaxZoneHours = DailyReportLimits.MaxQueueZones * 25,
     int MaxZones = 2_000,
     int MaxDevices = 2_000,
-    int MaxOutages = 20_000)
+    int MaxOutages = 20_000,
+    long MaxHistogramPairs = DailyReportLimits.MaxQueueZones * 25L * DailyReportLimits.ZoneHourBuckets,
+    int DatabaseSlots = 2)
 {
-    /// <summary>The queue zones whose full day <see cref="MaxQueueMinutes"/> holds by default.</summary>
-    public const int MaxQueueZones = 200;
+    /// <summary>The queue zones whose full day <see cref="MaxZoneHours"/> holds by default: as many as a profile holds.</summary>
+    public const int MaxQueueZones = Domain.Entities.ZoneProfile.MaxZones;
+
+    /// <summary>The merged histogram buckets a zone hour holds on average within <see cref="MaxHistogramPairs"/>.</summary>
+    public const int ZoneHourBuckets = 250;
 
     public static DailyReportLimits Default { get; } = new();
 }
 
-/// <summary>Everything a daily report is built from: the site, its local day and the rows read for that day.</summary>
+/// <summary>
+/// Everything a daily report is built from: the site, its local day and the rows read for that day. The queue zones' day comes as
+/// <paramref name="Hours"/> when given (the reader's, aggregated in the database, ARV-234); otherwise from
+/// <paramref name="Minutes"/> through <see cref="DailyReports.HoursOf"/> (a caller with minutes, the unit tests among them).
+/// </summary>
 public sealed record DailyReportInput(
     string SiteCode,
     DateOnly Date,
@@ -63,7 +95,8 @@ public sealed record DailyReportInput(
     IReadOnlyList<ReportMinute> Minutes,
     IReadOnlyList<ReportAlert> Alerts,
     IReadOnlyList<ReportDevice> Devices,
-    DateTime GeneratedUtc);
+    DateTime GeneratedUtc,
+    IReadOnlyList<ReportHour> Hours = null);
 
 /// <summary>One local hour of a lane. P50 and P90 come from the hour's merged histogram, exact to 30 seconds (F7).</summary>
 public sealed record LaneHour(
@@ -164,10 +197,12 @@ public static class DailyReports
         var (from, to) = DayBounds(input.Date, input.TimeZone);
         var hours = HourStarts(from, to);
 
-        var byZone = input.Minutes.Where(m => m.MinuteUtc >= from && m.MinuteUtc < to).ToLookup(m => m.ZoneKey, StringComparer.Ordinal);
+        var byZone = (input.Hours ?? HoursOf(input.Minutes ?? [], from, to))
+            .Where(h => h.Hour >= 0 && h.Hour < hours.Count)
+            .ToLookup(h => h.ZoneKey, StringComparer.Ordinal);
         var lanes = input.Zones
             .OrderBy(z => z.LaneCategory ?? "~", StringComparer.Ordinal).ThenBy(z => z.Name, StringComparer.Ordinal)
-            .Select(zone => Lane(zone, byZone[zone.ZoneKey].ToList(), hours, to, input.TimeZone))
+            .Select(zone => Lane(zone, byZone[zone.ZoneKey].ToDictionary(h => h.Hour), hours, to, input.TimeZone))
             .ToList();
 
         var alerts = input.Alerts.Where(a => a.RaisedUtc >= from && a.RaisedUtc < to).OrderBy(a => a.RaisedUtc).ThenBy(a => a.RuleCode, StringComparer.Ordinal).ToList();
@@ -202,28 +237,56 @@ public static class DailyReports
         return starts;
     }
 
-    private static LaneReport Lane(ReportZone zone, List<ReportMinute> minutes, List<DateTime> hours, DateTime dayEnd, TimeZoneInfo tz)
+    /// <summary>
+    /// The zone hours of minutes in [<paramref name="from"/>, <paramref name="to"/>), one per queue zone and local hour with a
+    /// minute, by the report's rules for minutes: the sums of entries and waits, the longest queue, provisional when a minute is not
+    /// final, a missing histogram when a minute with waits has none, and the merge of the minutes' histograms (each taken up to the
+    /// shorter of its two lists, and left out whole when a bucket is outside 0 to the last or a count is negative). The reference
+    /// the database's read (<c>ReportReader.HoursSql</c>) is held to; in no particular order.
+    /// </summary>
+    public static IReadOnlyList<ReportHour> HoursOf(IEnumerable<ReportMinute> minutes, DateTime from, DateTime to)
+    {
+        ArgumentNullException.ThrowIfNull(minutes);
+        return [.. minutes
+            .Where(m => m.MinuteUtc >= from && m.MinuteUtc < to)
+            .GroupBy(m => (m.ZoneKey, Hour: (int)Math.Floor((m.MinuteUtc - from).TotalHours)))
+            .Select(g =>
+            {
+                var inHour = g.ToList();
+                return new ReportHour(
+                    g.Key.ZoneKey,
+                    g.Key.Hour,
+                    inHour.Sum(m => m.Entries),
+                    inHour.Sum(m => m.Waits),
+                    inHour.Max(m => m.QueueLength),
+                    inHour.Any(m => !m.Final),
+                    inHour.Any(m => m.Waits > 0 && m.Buckets is not { Count: > 0 }),
+                    WaitStatistics.Merge([.. inHour.Where(m => m.Buckets is { Count: > 0 }).Select(Histogram)]));
+            })];
+    }
+
+    private static LaneReport Lane(ReportZone zone, Dictionary<int, ReportHour> zoneHours, List<DateTime> hours, DateTime dayEnd, TimeZoneInfo tz)
     {
         var rows = new List<LaneHour>();
         var dayHistograms = new List<IReadOnlyList<(int Bucket, long Count)>>();
-        foreach (var start in hours)
+        for (var i = 0; i < hours.Count; i++)
         {
+            var start = hours[i];
             var end = start.AddHours(1) < dayEnd ? start.AddHours(1) : dayEnd;
-            var inHour = minutes.Where(m => m.MinuteUtc >= start && m.MinuteUtc < end).ToList();
-            var histograms = inHour.Where(m => m.Buckets is { Count: > 0 }).Select(Histogram).ToList();
-            dayHistograms.AddRange(histograms);
-            var merged = WaitStatistics.Merge([.. histograms]);
-            var waits = inHour.Sum(m => m.Waits);
+            // An hour without a stored minute reads as before: no passengers, no waits, no percentiles, nothing provisional.
+            var hour = zoneHours.GetValueOrDefault(i);
+            var merged = hour?.Histogram ?? [];
+            dayHistograms.Add(merged);
             rows.Add(new LaneHour(
                 LocalText(start, tz)[^5..],
                 LocalText(end, tz)[^5..],
-                inHour.Sum(m => m.Entries),
-                waits,
+                hour?.Entries ?? 0,
+                hour?.Waits ?? 0,
                 Round(WaitStatistics.Percentile(merged, 0.5)),
                 Round(WaitStatistics.Percentile(merged, 0.9)),
-                inHour.Max(m => m.QueueLength),
-                inHour.Any(m => !m.Final),
-                inHour.Any(m => m.Waits > 0 && m.Buckets is not { Count: > 0 })));
+                hour?.MaxQueueLength,
+                hour?.Provisional ?? false,
+                hour?.HistogramMissing ?? false));
         }
 
         var day = WaitStatistics.Merge([.. dayHistograms]);

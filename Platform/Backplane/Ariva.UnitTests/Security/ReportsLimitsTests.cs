@@ -89,6 +89,39 @@ public sealed class ReportsLimitsTests
 
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
         HttpResponses.ParseProblem(await response.BodyAsync()).GetProperty("detail").GetString().Should().Be(ReportErrors.TooLarge);
+        response.Headers.Contains("Retry-After").Should().BeFalse("a day past the bounds stays past them");
+    }
+
+    [Theory]
+    [InlineData(Daily)]
+    [InlineData(DailyCsv)]
+    public async Task Get_Should_Answer503WithRetryAfterAndTheFixedText_When_EveryReportDatabaseSlotIsInUse(string path)
+    {
+        // ARV-234: the hours statement found every report database slot taken across the cluster; the caller is asked to come back.
+        await using var app = MainHost(new HeldReports { Error = ReportErrors.Busy });
+        using var client = app.CreateClient();
+        using var request = Request(path);
+
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        response.Header("Retry-After").Should().Be(RateLimitingExtensions.ConcurrencyRetryAfterSeconds.ToString(CultureInfo.InvariantCulture));
+        HttpResponses.ParseProblem(await response.BodyAsync()).GetProperty("detail").GetString().Should().Be(ReportErrors.Busy);
+    }
+
+    [Theory]
+    [InlineData(Daily)]
+    [InlineData(DailyCsv)]
+    public async Task Get_Should_Answer400WithoutRetryAfter_When_TheDateIsNotValid(string path)
+    {
+        await using var app = MainHost(new HeldReports { Error = ReportErrors.InvalidDate });
+        using var client = app.CreateClient();
+        using var request = Request(path);
+
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.Headers.Contains("Retry-After").Should().BeFalse("only a busy answer asks the caller to come back");
     }
 
     [Fact]

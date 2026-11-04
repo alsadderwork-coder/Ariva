@@ -294,8 +294,10 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
     public async Task Rounds_Should_SendEachRecipientItsReportOnce_When_TwoRunAtOnce()
     {
         // ARV-124a: TickerQ 10.0.2 fires about one occurrence in ten twice, so two rounds run at once on one replica as they may
-        // on two. A delivery is claimed with its status checked again (FOR UPDATE SKIP LOCKED), so a report is sent once even
-        // while the other round delivers beside it; a failed one may be tried by both, within the attempt limit.
+        // on two. A delivery is claimed with its status checked again (FOR UPDATE SKIP LOCKED), so a report is sent once. ARV-234:
+        // deliveries read in the report database's last slot only, held to each delivery's commit, so while the first round holds
+        // it the second leaves every delivery as it was (none claimed for good, no attempt counted) and reports on demand keep the
+        // first slot; the first round then sends them all, the failed one tried once.
         var admin = await AdminAsync();
         var border = await UserAsync(admin, RoleCodes.BorderShiftSupervisor, "DMO", "twice.border@ariva.test");
         var manager = await UserAsync(admin, RoleCodes.TerminalDutyManager, "DMO", "twice.manager@ariva.test");
@@ -303,24 +305,27 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
         var schedule = (await Host.AsCallerAsync(border, s => Schedules(s).CreateAsync(new ReportScheduleRequest("DMO", "Twice at once", null, "06:00", [border, manager, flaky]), Ct))).Data;
         _transport.FailFor.Add("twice.flaky@ariva.test");
 
-        // The first round holds its first send (and so that delivery's row) until the second round sends one of its own: the
-        // second round prepares after the first's preparation committed and delivers while the first is mid-delivery.
+        // The first round holds its first send (that delivery's row and the deliveries' slot) until it is released: the second
+        // round prepares after the first's preparation committed and runs to its end while the first is mid-delivery.
         _transport.HoldFirstSend();
         var first = Task.Run(RunAsync, Ct);
         await _transport.FirstSendEntered.WaitAsync(TimeSpan.FromSeconds(30), Ct);
         var second = await RunAsync();
+        var pendingMeanwhile = await Host.ReadAsync<int>("SELECT count(*)::int FROM report_delivery WHERE schedule_id = @id AND status = 'Pending' AND attempts = 0", schedule.Id);
+        _transport.ReleaseHeldSend();
         var firstRun = await first;
 
-        (second.Sent + second.Failed).Should().BeGreaterThan(0, "the second round delivered while the first held a delivery");
-        _transport.ReleasedBySend.Should().BeTrue("the held send went on because the second round sent, not after its 10 s");
-        (firstRun.Sent + second.Sent).Should().BeGreaterThanOrEqualTo(2);
+        (second.Sent + second.Failed).Should().Be(0, "the second round finds the deliveries' slot held and leaves its deliveries for a later round");
+        pendingMeanwhile.Should().Be(3, "nothing the second round touched was written, no attempt counted");
+        _transport.ReleasedBySend.Should().BeTrue("the held send went on at its release, not after its 10 s");
+        (firstRun.Sent + firstRun.Failed).Should().Be(3, "the first round delivers all three once the second has left them");
         _transport.SentTo("twice.border@ariva.test").Should().Be(1);
         _transport.SentTo("twice.manager@ariva.test").Should().Be(1);
         _transport.SentTo("twice.flaky@ariva.test").Should().Be(0);
         (await Host.ReadAsync<string>("SELECT string_agg(status, ',' ORDER BY status) FROM report_delivery WHERE schedule_id = @id", schedule.Id))
             .Should().Be("Failed,Sent,Sent");
         (await Host.ReadAsync<int>("SELECT attempts FROM report_delivery WHERE schedule_id = @id AND status = 'Failed'", schedule.Id))
-            .Should().BeInRange(1, 2, "each copy tries a failed delivery at most once");
+            .Should().Be(1, "the failed delivery is tried once, by the first round");
 
         // The failed one goes out once later, and nothing is owed after it.
         _transport.FailFor.Clear();
@@ -365,8 +370,8 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
 
     /// <summary>
     /// Records what the relay would send; safe for rounds that send at the same time. After <see cref="HoldFirstSend"/> the
-    /// next send waits (at most 10 s) until another send arrives, so two rounds can be made to overlap;
-    /// <see cref="ReleasedBySend"/> tells which ended the wait.
+    /// next send waits (at most 10 s) until another send arrives or <see cref="ReleaseHeldSend"/>, so two rounds can be made to
+    /// overlap; <see cref="ReleasedBySend"/> tells whether the wait ended before its 10 s.
     /// </summary>
     private sealed class RecordingTransport : IEmailTransport
     {
@@ -394,6 +399,8 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
             _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Volatile.Write(ref _holding, 1);
         }
+
+        public void ReleaseHeldSend() => _release.TrySetResult();
 
         public int SentTo(string recipient)
         {

@@ -1176,7 +1176,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 306,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Low (a site of more than 200 queue zones is far from the pilot hall's five; such a site gets a fixed 409 rather than an out-of-memory host), so Phase 3 by the owner's rule. DailyReportBoundsTests holds the measurement at the current bound.",
       "dependsOn": [
         "ARV-096d"
@@ -2425,6 +2425,44 @@
       "notes": "Size S. Phase 3. Filed 2026-11-02 from the ARV-285 security review round 2 (advisory 1). Predates ARV-285 (the rule is ARV-007's, applied to exception text since ARV-212). No sign-in code.",
       "dependsOn": [
         "ARV-285"
+      ]
+    },
+    {
+      "id": "ARV-290",
+      "title": "[E17] A temporary file limit on the runtime login, so a statement past its memory never fills the database's disk",
+      "description": "Found by the ARV-234 security review (round 1, note N2, 2026-11-03). The daily report's hours statement keeps every zone hour's merge in memory at its bounds and writes no temporary file (DailyReportHeapTests), but a day refused at a bound still runs its whole statement, and any statement whose sorts or hashes outgrow work_mem spills to temporary files without a cap: nothing stops one query from filling the database's disk. Set temp_file_limit on the runtime login (ariva_runtime) in a versioned script, with a value that leaves the largest measured statement room, and prove that a statement past it is refused with its error (53400) rather than filling the disk. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "A versioned script sets temp_file_limit for the runtime login (ALTER ROLE ... SET), its checksum in checksums.lock, with the value and its reasoning in docs/security/costly-operations.md",
+        "An integration test proves a statement whose temporary files would pass the limit is refused under the runtime login, and that the report's hours statement at its bound (DailyReportHeapTests) still runs",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 319,
+      "passes": false,
+      "notes": "Size S. Low: the report's statement writes no temporary file at its bounds; the limit caps any statement that would.",
+      "dependsOn": [
+        "ARV-234"
+      ]
+    },
+    {
+      "id": "ARV-291",
+      "title": "[E17] A scheduled report delivery whose read fails in the database counts its attempt",
+      "description": "Found by the ARV-234 security review (round 2, L1, from ARV-096e; round 3, N1). A delivery whose report read fails in the database (a statement timeout, a lost connection) throws inside its transaction; the round rolls the delivery back and leaves it as it was, so its attempt is not counted and a read that fails every time is tried by every round without end, each taking the deliveries' report database slot for its statement. Count the attempt of a delivery whose read fails (in a transaction of its own after the rollback, or by catching the failure before it), so the attempt limit ends it as it ends a failed send. CWEs to review: CWE-400.",
+      "acceptanceCriteria": [
+        "A delivery whose report read fails in the database is marked Failed with its attempt counted and a fixed reason, and is not tried past ISvcReportDeliveries.MaxAttempts",
+        "An integration test makes the read fail (a statement timeout on the deliveries' read) and proves the attempt is counted round by round up to the limit, and that a delivery left as it was by a busy slot (ARV-234) still counts none",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 320,
+      "passes": false,
+      "notes": "Size S. Low: a read that fails every time is retried by every round, each within the deliveries' single slot, so it costs one statement a round, not more.",
+      "dependsOn": [
+        "ARV-234"
       ]
     }
   ]
