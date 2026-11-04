@@ -148,9 +148,9 @@ Changes since the last release that an operator must act on when upgrading, newe
 
 ### ARV-290: a temporary file cap on the runtime login (2026-11-04)
 
-- Behaviour: the migration job caps the temporary files each session of the runtime login may hold (`Database:TempFileLimitMegabytes`, 1,024 MB, Proposed); a statement past it is ended with SQLSTATE 53400 instead of filling the database's disk (wiki 10 section 4.19). The migration job stops, with the grant to run, when its login may not set this superuser setting.
+- Behaviour: the migration job caps the temporary files each server process of the runtime login may hold (`Database:TempFileLimitMegabytes`, 1,024 MB, Proposed; a parallel worker has its own); a statement past it is ended with SQLSTATE 53400 instead of filling the database's disk (wiki 10 section 4.19). The migration job stops before its first script, with the grant to run, when its login may not set this superuser setting, so the upgrade's hook fails and the running hosts keep serving.
 - Before the upgrade, on every server first started before this release: run `node scripts/ops/ariva-ops.mjs grant-settings --namespace <ns>` once (wiki 04 section 6.10), or the migration job stops and the upgrade waits; a server the chart starts afterwards needs nothing. With your own PostgreSQL, the administrator runs `GRANT SET ON PARAMETER temp_file_limit TO ariva;` once.
-- After the upgrade: `ariva-db.sh check` passes "temp file cap" and lists the cap among the runtime login's settings.
+- After the upgrade: `ariva-db.sh check` passes "temp file cap" and "parameter privileges", lists the cap among the runtime login's settings, and with `--runtime-login` passes "runtime caps". A "FAIL parameter privileges" names a privilege on a parameter someone else granted (wiki 10 section 4.19).
 
 ### ARV-291: a scheduled report delivery whose read fails in the database counts its attempt (2026-11-04)
 

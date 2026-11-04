@@ -106,8 +106,9 @@ public sealed partial class DatabaseSettings
     /// ARV-290 (CWE-400): the most temporary files one session of the runtime login may hold at once, in megabytes
     /// (<c>temp_file_limit</c>, set on the login by the migration job through script 0069): a sort or hash past work_mem spills to
     /// the database's disk, and a statement past this cap is ended (SQLSTATE 53400) instead of filling it. 1,024 (Proposed,
-    /// docs/security/costly-operations.md): the daily report's statement at its bounds writes none. The cap is per session, so all
-    /// of them together hold at most the server's connections times it. A host and the migration job refuse to start outside
+    /// docs/security/costly-operations.md): the daily report's statement at its bounds writes none. The cap is per server process:
+    /// a statement run in parallel holds up to it in each worker too (1 plus max_parallel_workers_per_gather), and explicit
+    /// temporary tables are not counted, so it bounds what one statement spills, not the disk. A host and the migration job refuse to start outside
     /// <see cref="MinTempFileLimitMegabytes"/> to <see cref="MaxTempFileLimitMegabytes"/>.
     /// </summary>
     public int TempFileLimitMegabytes { get; init; } = 1_024;

@@ -12,7 +12,8 @@ namespace Ariva.IntegrationTests.Operations;
 /// migration job, as that non-superuser owner, caps the runtime login and the check passes. On a server first started before
 /// ARV-290 (here: the grant taken back) the check fails and the job stops with the grant to run, setting nothing;
 /// <c>ariva-db.sh grant-settings</c> (no option) then grants it to ariva_migration as the superuser, after which the check passes
-/// and the job caps the runtime login again.
+/// and the job caps the runtime login again. Its review: the check names any other privilege on a parameter and the runtime
+/// login's own caps, and a server prepared without the grant stops the job before its first script.
 /// </summary>
 public sealed class GrantSettingsTests : IAsyncLifetime
 {
@@ -50,7 +51,9 @@ public sealed class GrantSettingsTests : IAsyncLifetime
         (await RuntimeScalarAsync("SHOW temp_file_limit")).Should().Be("1GB");
         var granted = await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         granted.Stdout.Should().Contain("temp file cap|the migration login may set temp_file_limit on the runtime login (ARV-290)")
-            .And.Contain("role settings|none but the runtime login's statement timeout and temporary file cap").And.NotContain("FAIL", granted.Stdout);
+            .And.Contain("role settings|none but the runtime login's statement timeout and temporary file cap")
+            .And.Contain("ok    parameter privileges|SET on temp_file_limit to the migration login or ariva_migration only")
+            .And.Contain($"ok    runtime caps|{RuntimeLogin} in this database: statement_timeout ").And.Contain(", temp_file_limit 1024MB").And.NotContain("FAIL", granted.Stdout);
 
         // A server first started before ARV-290: neither the login nor ariva_migration holds SET on it, and no cap is set.
         await SuperuserAsync("REVOKE SET ON PARAMETER temp_file_limit FROM ariva");
@@ -59,7 +62,8 @@ public sealed class GrantSettingsTests : IAsyncLifetime
         NpgsqlConnection.ClearAllPools();
 
         var before = await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
-        before.Stdout.Should().Contain("FAIL  temp file cap|the migration login may not set temp_file_limit, so the migration job stops (ARV-290): run grant-settings");
+        before.Stdout.Should().Contain("FAIL  temp file cap|the migration login may not set temp_file_limit, so the migration job stops (ARV-290): run grant-settings")
+            .And.Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit not set (ARV-096d, ARV-290): run the migration job");
         // The job logs "The migration login ariva may not set temp_file_limit ... GRANT SET ON PARAMETER ... grant-settings" (Critical)
         // and exits 1, as for any failure, so the release's hook fails before a host starts.
         (await MigrateAsync()).Should().Be(1, "the job stops when its login may not set the cap");
@@ -75,10 +79,37 @@ public sealed class GrantSettingsTests : IAsyncLifetime
         (await SuperuserScalarAsync("SELECT has_parameter_privilege('ariva_app', 'temp_file_limit', 'SET')")).Should().Be("f", "never the runtime login");
 
         var after = await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
-        after.Stdout.Should().Contain("temp file cap|the migration login may set temp_file_limit").And.NotContain("FAIL  temp file cap");
+        after.Stdout.Should().Contain("temp file cap|the migration login may set temp_file_limit").And.NotContain("FAIL  temp file cap")
+            .And.Contain("ok    parameter privileges|SET on temp_file_limit to the migration login or ariva_migration only", "grant-settings' own grant passes");
         (await MigrateAsync()).Should().Be(0);
         (await RuntimeScalarAsync("SHOW temp_file_limit")).Should().Be("1GB");
+        (await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Stdout.Should().Contain($"ok    runtime caps|{RuntimeLogin} in this database: ")
+            .And.NotContain("FAIL", "the job capped the runtime login again");
         (await _server.OpsAsync(Ct, "grant-settings")).ExitCode.Should().Be(0, "a second grant changes nothing");
+    }
+
+    [Fact(Timeout = 600_000)]
+    public async Task Migration_Should_StopBeforeAnyScript_When_TheMigrationLoginMayNotSetTheCap()
+    {
+        // A server prepared without the chart's grant: the job stops before its first script, so nothing changes, and with the
+        // release's pre-upgrade hook failed the hosts already running keep serving.
+        await SuperuserAsync("REVOKE SET ON PARAMETER temp_file_limit FROM ariva");
+        (await MigrateAsync()).Should().Be(1, "the job stops when its login may not set the cap");
+        (await SuperuserScalarAsync("SELECT to_regclass('public.schema_version') IS NULL")).Should().Be("t", "no script ran");
+        (await SuperuserScalarAsync("SELECT count(*) FROM pg_roles WHERE rolname IN ('ariva_app', 'ariva_migration', 'ariva_runtime')")).Should().Be("0",
+            "no login or group role was created");
+
+        // grant-settings grants ariva_migration, which no migration has created yet: it says what to do instead and grants nothing.
+        var grant = await _server.OpsAsync(Ct, "grant-settings");
+        grant.ExitCode.Should().NotBe(0);
+        grant.Stderr.Should().Contain("ariva_migration does not exist: no migration has run on this server yet");
+        (await SuperuserScalarAsync("SELECT count(*) FROM pg_parameter_acl p CROSS JOIN LATERAL aclexplode(p.paracl) a WHERE p.parname = 'temp_file_limit' AND a.grantee <> 10"))
+            .Should().Be("0");
+
+        // The superuser's grant to the migration login, as the chart's init script gives it, lets the job run.
+        await SuperuserAsync("GRANT SET ON PARAMETER temp_file_limit TO ariva");
+        (await MigrateAsync()).Should().Be(0);
+        (await RuntimeScalarAsync("SHOW temp_file_limit")).Should().Be("1GB");
     }
 
     private Task<int> MigrateAsync()
