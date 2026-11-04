@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 
 namespace Ariva.Infra.Security;
@@ -107,27 +108,27 @@ public static partial class SecretText
         if (string.IsNullOrEmpty(text))
             return text;
 
-        var result = AuthorizationScheme().Replace(text, m => m.Groups["scheme"].Value + " " + Redacted);
-        result = TokenQueryParameter().Replace(result, m => m.Groups["key"].Value + Redacted);
-        result = Jwt().Replace(result, Redacted);
-        result = DeviceKey().Replace(result, m => m.Value[..5] + Redacted);
+        var result = Replace(AuthorizationScheme(), text, m => m.Groups["scheme"].Value + " " + Redacted);
+        result = Replace(TokenQueryParameter(), result, m => m.Groups["key"].Value + Redacted);
+        result = Replace(Jwt(), result, Redacted);
+        result = Replace(DeviceKey(), result, m => m.Value[..5] + Redacted);
         // ARV-212: the other credentials by their shapes, the longer shapes first (a temporary password holds two groups that
         // look like a recovery code), then any value under a sensitive name.
-        result = PrivateKeyBlock().Replace(result, Redacted);
-        result = DerBase64().Replace(result, Redacted);
-        result = IntegrationClientSecret().Replace(result, IntegrationSecretMarker + Redacted);
-        result = TemporaryPassword().Replace(result, Redacted);
-        result = RecoveryCode().Replace(result, Redacted);
-        result = Base32Seed().Replace(result, Redacted);
-        result = CredentialHeader().Replace(result, HeaderValue);
-        result = JsonMember().Replace(result, JsonValue);
-        result = Assignment().Replace(result, AssignedValue);
+        result = Replace(PrivateKeyBlock(), result, Redacted);
+        result = Replace(DerBase64(), result, Redacted);
+        result = Replace(IntegrationClientSecret(), result, IntegrationSecretMarker + Redacted);
+        result = Replace(TemporaryPassword(), result, Redacted);
+        result = Replace(RecoveryCode(), result, Redacted);
+        result = Replace(Base32Seed(), result, Redacted);
+        result = Replace(CredentialHeader(), result, HeaderValue);
+        result = Replace(JsonMember(), result, JsonValue);
+        result = Replace(Assignment(), result, AssignedValue);
         // A quoted value under a harmless name (ConnectionStrings="Host=db;Password=...") is passed over whole by the pass
         // above; this pass takes no quoted value, so it walks into the quotes and finds the pairs inside them.
-        result = UnquotedAssignment().Replace(result, AssignedValue);
+        result = Replace(UnquotedAssignment(), result, AssignedValue);
         // A password's value runs to the next ';' or the line's end, so one holding ',', '&', '?' or an angle bracket, which
         // the passes above stop at, goes whole too.
-        result = PasswordAssignment().Replace(result, AssignedValue);
+        result = Replace(PasswordAssignment(), result, AssignedValue);
         return string.Equals(result, text, StringComparison.Ordinal) ? text : result;
     }
 
@@ -157,7 +158,7 @@ public static partial class SecretText
         if (string.IsNullOrEmpty(text) || !text.Contains('@', StringComparison.Ordinal))
             return text;
 
-        var result = EmailAddress().Replace(text, m => Mask(m.Value));
+        var result = Replace(EmailAddress(), text, m => Mask(m.Value));
         return string.Equals(result, text, StringComparison.Ordinal) ? text : result;
     }
 
@@ -174,7 +175,7 @@ public static partial class SecretText
         var prefix = match.Value[..(value.Index - match.Index)];
         if (match.Groups["name"].Value.EndsWith("Authorization", StringComparison.OrdinalIgnoreCase))
         {
-            var scheme = AuthorizationSchemeWord().Match(value.Value);
+            var scheme = FirstMatch(AuthorizationSchemeWord(), value.Value);
             if (scheme.Success)
                 return prefix + scheme.Groups["scheme"].Value + " " + Redacted;
         }
@@ -193,6 +194,57 @@ public static partial class SecretText
         IsSensitiveName(match.Groups["name"].Value)
             ? match.Value[..(match.Groups["value"].Index - match.Index)] + Redacted
             : match.Value;
+
+    #endregion
+
+    #region Exclusive use (ARV-289 checkpoint fix)
+
+    /// <summary>
+    /// Runs <paramref name="use"/> on <paramref name="rule"/> while no other thread uses that rule through this method (each
+    /// rule has a lock of its own). <see cref="Redact"/>, <see cref="MaskAddressesIn"/> and anything else that matches with one
+    /// of these rules goes through it. The linear engine (NonBacktracking) builds its matcher's states inside an instance as
+    /// texts need them; with one instance used by many threads at once, the unit suite's full run (the log tests redacting on
+    /// many threads while the rules' properties ran) found it ending a match a character early or late (a one-character query
+    /// value left whole, a dot taken into a device key) in about one run in two, while a new instance given the same text, and
+    /// the same texts replayed on one thread, matched right; a match that ends early leaves part of a credential in the text
+    /// (CWE-532). With no instance used by two threads at once the same runs pass. One instance per thread would hold each
+    /// rule's states once per thread (tens of megabytes for a thread's set after varied text), so each rule keeps one instance
+    /// and its use is serialized: a short text takes it for microseconds.
+    /// </summary>
+    /// <typeparam name="T">What <paramref name="use"/> returns.</typeparam>
+    /// <param name="rule">One of the rules (or any expression whose matching must not overlap).</param>
+    /// <param name="use">The matching to run.</param>
+    /// <returns>What <paramref name="use"/> returned.</returns>
+    public static T Exclusively<T>(Regex rule, Func<Regex, T> use)
+    {
+        ArgumentNullException.ThrowIfNull(rule);
+        ArgumentNullException.ThrowIfNull(use);
+        lock (GateOf(rule))
+            return use(rule);
+    }
+
+    private static string Replace(Regex rule, string text, MatchEvaluator evaluator)
+    {
+        lock (GateOf(rule))
+            return rule.Replace(text, evaluator);
+    }
+
+    private static string Replace(Regex rule, string text, string replacement)
+    {
+        lock (GateOf(rule))
+            return rule.Replace(text, replacement);
+    }
+
+    private static Match FirstMatch(Regex rule, string text)
+    {
+        lock (GateOf(rule))
+            return rule.Match(text);
+    }
+
+    /// <summary>Each rule's lock, kept as long as the rule (the rules are the generated singletons, so for the process).</summary>
+    private static readonly ConditionalWeakTable<Regex, Lock> Gates = new();
+
+    private static Lock GateOf(Regex rule) => Gates.GetValue(rule, static _ => new Lock());
 
     #endregion
 

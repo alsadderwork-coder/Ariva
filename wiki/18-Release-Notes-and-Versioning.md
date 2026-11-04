@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-289 (checkpoint fix): each log protection rule matched by one thread at a time (2026-11-04)
+
+- Behaviour: the rules that mask credentials and email addresses in log text, dead letters, the outbox's errors and job failures (`SecretText`) are each matched by one thread at a time. One instance matched by many threads at once was seen, under the unit suite's full load, to end a match a character early or late, which could leave part of a credential in a log line. What the rules mask is unchanged.
+- Cost: on a 4-core runner a host protects about 100,000 short texts a second across its threads (about 200,000 before), far above what a host logs.
+- After the upgrade: nothing to do.
+
 ### ARV-291: a scheduled report delivery whose read fails in the database counts its attempt (2026-11-04)
 
 - Behaviour: a scheduled delivery whose report read fails in the database (a statement timeout, a lost connection) is marked Failed with the reason "The report could not be read from the database." and its attempt counted, so after 5 failed attempts it is not tried again, as a failed send. Before, it stayed as it was and every round tried it again without end (wiki 10 section 4.19).

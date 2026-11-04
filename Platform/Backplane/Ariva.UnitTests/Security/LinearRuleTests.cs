@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.RegularExpressions;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Flights;
@@ -82,23 +83,89 @@ public class LinearRuleTests
 
     public static TheoryData<string> LogRuleNames => [.. LogRules.Keys];
 
+    /// <summary>Every rule SecretText gives: its public methods that return a <see cref="Regex"/> and take nothing.</summary>
+    public static TheoryData<string> SecretTextRuleNames =>
+        [.. typeof(SecretText).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(m => m.ReturnType == typeof(Regex) && m.GetParameters().Length == 0).Select(m => m.Name).Order(StringComparer.Ordinal)];
+
+    /// <summary>
+    /// ARV-289 (checkpoint fix): no two threads match with a rule at once. While one thread holds a rule (here through
+    /// <see cref="SecretText.Exclusively"/>), Protect, which runs every rule (the address rule on text with an @), waits for it,
+    /// then protects the text. Without the rule's lock Protect finishes at once and the test fails; under load it may only pass
+    /// wrongly, never fail wrongly.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(SecretTextRuleNames))]
+    public async Task SecretTextRule_Should_BeUsedByOneThreadAtATime_When_TextIsProtected(string name)
+    {
+        var method = typeof(SecretText).GetMethod(name, BindingFlags.Public | BindingFlags.Static, Type.EmptyTypes);
+        var rule = (Regex)method.Invoke(null, null);
+        using var inside = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var ct = TestContext.Current.CancellationToken;
+
+        var holder = Task.Factory.StartNew(() => SecretText.Exclusively(rule, _ =>
+        {
+            inside.Set();
+            release.Wait(ct);
+            return 0;
+        }), ct, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        inside.Wait(ct);
+        var protect = Task.Factory.StartNew(() => SecretText.Protect("ops@example.com Bearer abc.def ?token=t1 ardk_01234567890123456789abc"), ct,
+            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+        (await Task.WhenAny(protect, Task.Delay(TimeSpan.FromMilliseconds(300), ct))).Should().NotBeSameAs(protect, $"Protect waits while another thread holds {name}");
+        release.Set();
+        await holder;
+        (await protect).Should().Be($"o***@example.com Bearer {SecretText.Redacted} ?token={SecretText.Redacted} ardk_{SecretText.Redacted}");
+    }
+
+    /// <summary>
+    /// ARV-289 (checkpoint fix): the rules are matched only through SecretText's own exclusive use: no source outside it matches
+    /// with one directly (a test may, through <see cref="SecretText.Exclusively"/>), and inside it every match goes through the
+    /// lock.
+    /// </summary>
+    [Fact]
+    public void SecretTextRules_Should_BeMatchedOnlyUnderTheirLock_When_TheSourcesAreRead()
+    {
+        var sources = Directory.EnumerateFiles(RepositoryPaths.Platform, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
+                        !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
+                        !f.Contains($"{Path.DirectorySeparatorChar}Ariva.UnitTests{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .ToList();
+        var direct = new Regex(@"\b(SecretText|RedactionEnricher|LogProtection)\.[A-Za-z]+\(\)\.(Replace|Match|Matches|IsMatch|Count|EnumerateMatches|Split)\(",
+            RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
+        sources.SelectMany(f => File.ReadLines(f).Where(l => direct.IsMatch(l)).Select(l => $"{Path.GetFileName(f)}: {l.Trim()}")).Should().BeEmpty();
+
+        var secretText = sources.Single(f => f.EndsWith(Path.Combine("Ariva.Infra", "Security", "SecretText.cs"), StringComparison.Ordinal));
+        var unlocked = new Regex(@"\b[A-Za-z]+\(\)\.(Replace|Match|Matches|IsMatch|Count|EnumerateMatches|Split)\(", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
+        File.ReadLines(secretText).Where(l => unlocked.IsMatch(l)).Should().BeEmpty("Redact, MaskAddressesIn and HeaderValue match through Replace and FirstMatch");
+        File.ReadAllText(secretText).Should().Contain("lock (GateOf(rule))");
+    }
+
+    private static string Escaped(string text) => System.Text.Json.JsonSerializer.Serialize(text);
+
     [Theory]
     [MemberData(nameof(LogRuleNames))]
     public void LogRule_Should_ReplaceWhatTheBacktrackingRuleReplaced_When_RandomTextsAreRedacted(string name)
     {
         var (pattern, options, rule, replace, fragments) = LogRules[name];
         var old = new Regex(pattern, options);
-        var linear = rule();
 
-        linear.Options.Should().HaveFlag(RegexOptions.NonBacktracking);
+        rule().Options.Should().HaveFlag(RegexOptions.NonBacktracking);
         var matched = 0;
+        // The rule as Redact uses it, on the sampling threads: through SecretText.Exclusively, so no two of them match with it at
+        // once (the checkpoint fix). A difference prints the text and both replacements escaped, since the texts hold line
+        // breaks and invisible characters.
         Gen.OneOfConst(fragments).Array[0, 24].Select(parts => string.Concat(parts))
             .Sample(text =>
             {
                 if (old.IsMatch(text))
                     Interlocked.Increment(ref matched);
-                return linear.Replace(text, replace) == old.Replace(text, replace);
-            }, iter: Iterations);
+                return SecretText.Exclusively(rule(), linear => linear.Replace(text, replace)) == old.Replace(text, replace);
+            }, iter: Iterations,
+            print: text => $"{Escaped(text)} gives {Escaped(SecretText.Exclusively(rule(), linear => linear.Replace(text, replace)))} (a new instance "
+                + $"{Escaped(new Regex(pattern, options | RegexOptions.NonBacktracking).Replace(text, replace))}), the backtracking rule {Escaped(old.Replace(text, replace))}");
         // Texts the old rule replaces in, not only misses: at least one in a hundred of those sampled.
         matched.Should().BeGreaterThan(Iterations / 100, "the property compares replacements, so the texts must hold matches");
     }
