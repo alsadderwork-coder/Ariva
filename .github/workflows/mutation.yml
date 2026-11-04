@@ -1,7 +1,7 @@
 # Mutation testing of the pure engines (ARV-069): Stryker.NET mutates the formulas, the queue state engine, realised wait
 # attribution and the nowcast in Ariva.Core and runs the unit tests that cover them against each mutant. The score must
 # stay at 70 percent or more (the run fails below it; 80 is the target). Weekly and on demand; the HTML and JSON reports
-# are an artifact, and surviving mutants are triaged in backlog/progress.md. Scope and thresholds:
+# are an artifact once checked for secrets (ARV-271), and surviving mutants are triaged in backlog/progress.md. Scope and thresholds:
 # Platform/Backplane/Ariva.UnitTests/stryker-config.json.
 name: mutation
 
@@ -59,12 +59,25 @@ jobs:
       - name: Mutation run (fails below the break threshold, on safe mode, without a score or with tests left out)
         working-directory: Platform/Backplane/Ariva.UnitTests
         run: node "$GITHUB_WORKSPACE/scripts/mutation-run.mjs" --log "$GITHUB_WORKSPACE/.verify/mutation.log" --tests "$GITHUB_WORKSPACE/Platform/Backplane/Ariva.UnitTests/bin/Debug/net10.0/Ariva.UnitTests.dll" -- dotnet-stryker --concurrency 4 --output "$GITHUB_WORKSPACE/.verify/stryker"
+      # ARV-271 (CWE-532): Stryker's log and report carry test failures' messages, and this repository is public. They are copied
+      # to checked/ (links followed, so the check reads what the upload would) and that copy is checked for a credential
+      # (Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs, as the backend and E2E jobs check theirs) before the copy alone is
+      # uploaded; a finding fails the job and nothing is uploaded. The script's self-test holds this wiring (mutationLogWiring).
+      - name: Mutation log and report hold no secret (CWE-532)
+        id: mutation-logs
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir checked
+          for item in .verify/mutation.log .verify/stryker/reports; do
+            if [ -e "$item" ]; then cp -RL "$item" checked/; fi
+          done
+          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked
       - name: Mutation report
-        if: always()
+        if: ${{ !cancelled() && steps.mutation-logs.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mutation-report
           path: |
-            .verify/stryker/reports/
-            .verify/mutation.log
+            checked/reports/
+            checked/mutation.log
           if-no-files-found: warn

@@ -214,7 +214,7 @@ jobs:
           rm -rf checked
           mkdir checked
           for item in unit.log integration.log TestResults .verify/pacts; do
-            if [ -e "$item" ]; then cp -R "$item" checked/; fi
+            if [ -e "$item" ]; then cp -RL "$item" checked/; fi
           done
           node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked
       # ARV-068: the AMAN feed's message pact, written by the unit tests, for AMAN's provider verification (wiki 08).
@@ -298,10 +298,10 @@ jobs:
           {
             echo "### Backend job failed (${GITHUB_SHA::7})"
             if [ -f restore.log ] && grep -q ' error ' restore.log; then
-              echo '#### Restore'; echo '```'; grep ' error ' restore.log | sort -u | head -40 | cut -c1-400; echo '```'
+              echo '#### Restore'; echo '```'; grep ' error ' restore.log | sort -u | head -40 | cut -c1-400 | tr -d '\140'; echo '```'
             fi
             if [ -f build.log ] && grep -Eq ': error [A-Z]+[0-9]+' build.log; then
-              echo '#### Build'; echo '```'; grep -E ': error [A-Z]+[0-9]+' build.log | sed 's#/home/runner/work/[^/]*/[^/]*/##' | sort -u | head -60 | cut -c1-400; echo '```'
+              echo '#### Build'; echo '```'; grep -E ': error [A-Z]+[0-9]+' build.log | sed 's#/home/runner/work/[^/]*/[^/]*/##' | sort -u | head -60 | cut -c1-400 | tr -d '\140'; echo '```'
             fi
             # Both test suites' output is Microsoft Testing Platform's ("failed <name> (<time>)", the error on the next lines;
             # ARV-164a, ARV-164b). ARV-252: quoted from the checked copy only once the test log check has passed it, without
@@ -322,7 +322,7 @@ jobs:
               echo "#### Test logs: not quoted (the test log check did not pass: ${LOGS_CHECKED:-not run}; see its findings in the job log)"
             fi
             if [ -f vulnerable.txt ] && grep -Eq '\b(High|Critical)\b' vulnerable.txt; then
-              echo '#### Vulnerable packages'; echo '```'; grep -E '>|High|Critical' vulnerable.txt | head -40; echo '```'
+              echo '#### Vulnerable packages'; echo '```'; grep -E '>|High|Critical' vulnerable.txt | head -40 | tr -d '\140'; echo '```'
             fi
           } > failure.md
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file failure.md
@@ -581,17 +581,19 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set +o pipefail # head closes pipes early on purpose here
+          # ARV-271: every quoted line loses its backticks, so a log line cannot end a code block and be read as Markdown (an
+          # @mention among it); e2eCommentQuotes in artifact-secrets.mjs holds it.
           {
             echo "### E2E job failed (${GITHUB_SHA::7})"
             if [ -f e2e.log ]; then
               echo '#### Failing tests'; echo '```'
-              grep -E '^\s+[0-9]+\) \[' e2e.log | sed -E 's/ ─+$//' | sort -u | head -60 | cut -c1-300
+              grep -E '^\s+[0-9]+\) \[' e2e.log | sed -E 's/ ─+$//' | sort -u | head -60 | cut -c1-300 | tr -d '\140'
               echo '```'; echo '#### First failure details'; echo '```'
-              sed -n '/^  1) \[/,$p' e2e.log | grep -v '^\s*$' | head -120 | cut -c1-300
+              sed -n '/^  1) \[/,$p' e2e.log | grep -v '^\s*$' | head -120 | cut -c1-300 | tr -d '\140'
               echo '```'; echo '#### Host output (WebServer, last lines)'; echo '```'
-              grep '\[WebServer\]' e2e.log | tail -n 40 | cut -c1-300
+              grep '\[WebServer\]' e2e.log | tail -n 40 | cut -c1-300 | tr -d '\140'
               echo '```'; echo '#### Last lines'; echo '```'
-              grep -v '^\s*$' e2e.log | tail -n 15 | cut -c1-300; echo '```'
+              grep -v '^\s*$' e2e.log | tail -n 15 | cut -c1-300 | tr -d '\140'; echo '```'
             fi
             # The hosts' error lines only when every run's own log scan passed (global-teardown.ts prints this line then); the
             # artifact check above read the same logs. A failed scan means a host log may hold a credential: nothing is quoted.
@@ -605,7 +607,7 @@ jobs:
                 [ -f "$log" ] || continue
                 if grep -qE '"@l":"(Error|Fatal)"|"Level":"(Error|Fatal)"' "$log"; then
                   echo "#### ${log##*/}: errors"; echo '```'
-                  grep -E '"@l":"(Error|Fatal)"|"Level":"(Error|Fatal)"' "$log" | head -8 | cut -c1-600; echo '```'
+                  grep -E '"@l":"(Error|Fatal)"|"Level":"(Error|Fatal)"' "$log" | head -8 | cut -c1-600 | tr -d '\140'; echo '```'
                 fi
               done
             else
