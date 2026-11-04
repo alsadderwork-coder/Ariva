@@ -39,8 +39,6 @@ public class LinearRuleTests
         ["ClamdScanner.VersionPattern"] = ClamdScanner.VersionPattern,
         ["LocalDiskFileStorage.KeyPattern"] = LocalDiskFileStorage.KeyPattern,
         ["SecretText.AuthorizationScheme"] = SecretText.AuthorizationScheme,
-        ["SecretText.TokenQueryParameter"] = SecretText.TokenQueryParameter,
-        ["SecretText.DeviceKey"] = SecretText.DeviceKey,
         ["SecretText.Jwt"] = SecretText.Jwt
     };
 
@@ -61,7 +59,8 @@ public class LinearRuleTests
     #region Log text rules (ARV-289)
 
     /// <summary>
-    /// The four log text rules as they were before ARV-289 (backtracking, no timeout), each with the replacement
+    /// The log text rules ARV-289 moved onto the linear engine and that stay there (the token parameter and device key rules
+    /// went back to the backtracking engine with its checkpoint fix), as they were before (backtracking, no timeout), each with the replacement
     /// <see cref="SecretText.Redact"/> makes (the scheme, the query parameter's name and the credential's marker kept), and
     /// fragments of its own and near misses to build texts from.
     /// </summary>
@@ -71,112 +70,97 @@ public class LinearRuleTests
             ["AuthorizationScheme"] = (@"\b(?<scheme>Bearer|Basic)\s+[A-Za-z0-9\-._~+/]+=*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
                 SecretText.AuthorizationScheme, m => m.Groups["scheme"].Value + " " + SecretText.Redacted,
                 ["Bearer", "Basic", "bearer", "BASIC", "Beare", "xBearer", " ", "\t", "\n", "abc", "Z9", "-", ".", "_", "~", "+", "/", "=", "==", ":", ",", "\u00e9", "\u200d", "\u017f", "\u212a", "\u00a0"]),
-            ["TokenQueryParameter"] = (@"(?<key>[?&#](access_token|refresh_token|id_token|token|code|totp|otp|password|key)=)[^&#\s""']+",
-                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, SecretText.TokenQueryParameter, m => m.Groups["key"].Value + SecretText.Redacted,
-                ["?token=", "&access_token=", "#code=", "?", "&", "#", "=", "access_token", "refresh_token", "id_token", "token", "TOKEN", "code", "totp", "otp", "password", "key", "keys", "tok", "abc",
-                 " ", "\"", "'", "/", "%20", "\n", "\u017f", "\u212a", "\u200d"]),
-            ["DeviceKey"] = (@"ard[kp]_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant, SecretText.DeviceKey, m => m.Value[..5] + SecretText.Redacted,
-                ["ardk_", "ardp_", "ardx_", "ARDK_", "ard", "k_", "abcdefghij", "0123456789", "-", "_", ".", " ", "\u00e9", "\u200d", "\u212a"]),
             ["Jwt"] = (@"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*", RegexOptions.CultureInvariant, SecretText.Jwt, _ => SecretText.Redacted,
                 ["eyJ", "eyJabcde", "eyJabcde.", "abcde.", "abcde", "12345", "eyj", "xeyJ", "ab", "-", "_", ".", "..", " ", "=", "\n", "\u00e9", "\u200d", "\u212a"])
         };
 
     public static TheoryData<string> LogRuleNames => [.. LogRules.Keys];
 
+    /// <summary>
+    /// ARV-289 (checkpoint fix): the token parameter and device key rules run on the backtracking engine without a timeout, linear
+    /// by their shape (each rule's documentation says why); the format tests time them on 100,000-character runs.
+    /// </summary>
+    [Theory]
+    [InlineData("TokenQueryParameter")]
+    [InlineData("DeviceKey")]
+    public void SecretTextRule_Should_RunOnTheBacktrackingEngineWithoutATimeout_When_ItIsTheTokenOrDeviceKeyRule(string name)
+    {
+        var rule = (Regex)typeof(SecretText).GetMethod(name, BindingFlags.Public | BindingFlags.Static, Type.EmptyTypes).Invoke(null, null);
+
+        rule.Options.Should().NotHaveFlag(RegexOptions.NonBacktracking, "the linear engine left these two matching wrong after long scans");
+        rule.MatchTimeout.Should().Be(Regex.InfiniteMatchTimeout, "a timeout would let a log event out unprotected");
+    }
+
     /// <summary>Every rule SecretText holds, public or not: its static methods that return a <see cref="Regex"/> and take nothing.</summary>
     public static TheoryData<string> SecretTextRuleNames =>
         [.. typeof(SecretText).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
             .Where(m => m.ReturnType == typeof(Regex) && m.GetParameters().Length == 0).Select(m => m.Name).Order(StringComparer.Ordinal)];
 
-    private static readonly string[] TokenFragments = ["?token=", "&access_token=", "#code=", "?", "&", "#", "=", "access_token", "refresh_token", "id_token", "token", "TOKEN",
-        "code", "totp", "otp", "password", "key", "keys", "tok", "abc", " ", "\"", "'", "/", "%20", "\n", "\u017f", "\u212a", "\u200d"];
-
-    private static readonly string[] DeviceFragments = ["ardk_", "ardp_", "ardx_", "ARDK_", "ard", "k_", "abcdefghij", "0123456789", "-", "_", ".", " ", "\u00e9", "\u200d", "\u212a"];
-
-    private static readonly string[] OtherFragments = ["Bearer ", "Basic ", "eyJ", "eyJabcde.", "abcde.", "MIIB", "ics_", "ABCDE", "ABCDE-", "-----BEGIN PRIVATE KEY-----",
-        "-----END PRIVATE KEY-----", "password=", "pwd=", "\"secret\":", ":", ";", ",", "a@b.c", "Authorization: ", "Cookie: ", "{", "}", "AAAAAAAAAAAAAAAA", "2345", "\t"];
-
-    /// <summary>The long texts the format tests redact (a private key block left open, then 100,000 characters of a fragment).</summary>
-    private static IEnumerable<string> LongRuns()
+    /// <summary>Each rule's shortest match, and a fragment whose runs make the rule's long scans.</summary>
+    private static readonly Dictionary<string, (string Minimal, string Run)> LongScanCases = new(StringComparer.Ordinal)
     {
-        var marker = new string('-', 5);
-        var opening = marker + "BEGIN PRIVATE KEY" + marker;
-        foreach (var fragment in new[] { "a=", "a=b", "\"a\":\"", "Cookie:", "ABCDEFGH", "A-", "eyJ-", "eyJabcde.", "Bearer ", "?token=", "ardk_-" })
-        {
-            var text = opening + string.Concat(Enumerable.Repeat(fragment, 100_000 / fragment.Length));
-            yield return text;
-            yield return text[opening.Length..];
-        }
-    }
-
-    private static string[] Texts(int count, int seed, params string[][] fragments)
-    {
-        var random = new Bogus.Randomizer(seed);
-        var all = fragments.SelectMany(f => f).ToArray();
-        return [.. Enumerable.Range(0, count).Select(_ => string.Concat(Enumerable.Range(0, random.Number(0, 24)).Select(_ => random.ArrayElement(all))))];
-    }
+        ["TokenQueryParameter"] = ("?token=x", "?token="), ["DeviceKey"] = ("ardk_01234567890123456789", "ardk_-"),
+        ["AuthorizationScheme"] = ("Bearer x", "Bearer "), ["Jwt"] = ("eyJabcde.abcde.", "eyJabcde."),
+        ["PrivateKeyBlock"] = (new string('-', 5) + "BEGIN PRIVATE KEY" + new string('-', 5), "a"), ["DerBase64"] = ("MII" + new string('A', 60), "MIIA"),
+        ["IntegrationClientSecret"] = ("ics_" + new string('a', 20), "ics_a"), ["TemporaryPassword"] = ("abcde-fghjk-mnpqr-stuvw", "abcde-"),
+        ["RecoveryCode"] = ("ABCDE-FGHJK", "ABCDE-"), ["Base32Seed"] = ("ABCDEFGHIJKLMNOP", "ABCDEFGH"),
+        ["CredentialHeader"] = ("Cookie: x", "Cookie:"), ["AuthorizationSchemeWord"] = ("Bearer ", "Bearer "),
+        ["JsonMember"] = ("\"a\":1", "\"a\":\""), ["Assignment"] = ("a=b", "a=b"), ["UnquotedAssignment"] = ("a=b", "a="),
+        ["PasswordAssignment"] = ("pwd=x", "pwd=a"), ["EmailAddress"] = ("a@b.c", "a@a.")
+    };
 
     /// <summary>
-    /// ARV-289 (checkpoint fix): on the runtime's linear engine one search that scans 32,000 characters or more leaves the
-    /// instance matching wrong on its later calls (the token parameter rule on a new instance, the device key rule after other
-    /// texts), so SecretText matches a text longer than <see cref="SecretText.LongestSharedText"/> on an instance of its own. The
-    /// instance given here then matches as the backtracking engine does; with the long texts on it, it does not (the two orders
-    /// below each left one rule wrong, about one text in 400 and one in 15,000).
-    /// </summary>
-    [Theory]
-    [InlineData("TokenQueryParameter", false)]
-    [InlineData("DeviceKey", true)]
-    public void LongText_Should_LeaveTheSharedInstanceMatchingAsBefore_When_ItIsRedacted(string name, bool shortTextsFirst)
-    {
-        var shape = (Regex)typeof(SecretText).GetMethod(name, BindingFlags.Public | BindingFlags.Static, Type.EmptyTypes).Invoke(null, null);
-        var shared = new Regex(shape.ToString(), shape.Options, shape.MatchTimeout);
-        var reference = new Regex(shape.ToString(), shape.Options & ~RegexOptions.NonBacktracking);
-        var own = name == "TokenQueryParameter" ? TokenFragments : DeviceFragments;
-        if (shortTextsFirst)
-            foreach (var text in Texts(30_000, 1, own))
-                SecretText.Replace(shared, text, "<$0>");
-
-        foreach (var text in LongRuns().Concat(LongRuns()))
-            SecretText.Replace(shared, text, "<$0>").Should().Be(reference.Replace(text, "<$0>"), "a long text's own call matches right");
-
-        Texts(60_000, 2, own).Where(text => shared.Replace(text, "<$0>") != reference.Replace(text, "<$0>")).Select(Escaped).Should().BeEmpty();
-    }
-
-    /// <summary>
-    /// ARV-289 (checkpoint fix): no rule of SecretText is left matching wrong by the long texts SecretText matches (each on an
-    /// instance of its own), in either order (new, or after short texts), so a change of pattern or of runtime that brings the
-    /// defect to another rule's shared instance fails here as long as the guard holds, and the guard's own test above fails if
-    /// it goes.
+    /// ARV-289 (checkpoint fix): on the runtime's linear engine (NonBacktracking, .NET 10.0.13) an instance of the token
+    /// parameter or device key rule, after a long scan, missed or overran a match that ends a text: after one run of 60,000
+    /// characters, after seven runs of about 8,000, after a match followed by 60,000 characters it could take, and in the long
+    /// call's own last match. Every rule of SecretText, on instances of its own engine and options, must match texts that end at
+    /// its shortest match (or one character past it) as the backtracking engine does after each of those, new and after the
+    /// short texts first; either of the two rules put back on the linear engine fails here.
     /// </summary>
     [Theory]
     [MemberData(nameof(SecretTextRuleNames))]
-    public void SecretTextRule_Should_MatchAsTheBacktrackingEngine_When_LongTextsWereRedacted(string name)
+    public void SecretTextRule_Should_MatchAsTheBacktrackingEngine_When_LongScansCameFirst(string name)
     {
+        LongScanCases.Should().ContainKey(name, "every rule needs its shortest match and a run here");
+        var (minimal, run) = LongScanCases[name];
         var shape = (Regex)typeof(SecretText).GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, Type.EmptyTypes).Invoke(null, null);
         var reference = new Regex(shape.ToString(), shape.Options & ~RegexOptions.NonBacktracking);
-        var samples = Texts(10_000, 3, TokenFragments, DeviceFragments, OtherFragments);
-        var hit = samples.FirstOrDefault(reference.IsMatch) ?? "x";
-        string[] shapes = [hit + new string(hit[^1], 40_000), new string(hit[0], 40_000) + hit, new string('q', 40_000) + hit, hit + new string('q', 40_000)];
+        Regex Instance() => new(shape.ToString(), shape.Options, shape.MatchTimeout);
+        string Run(int length) => string.Concat(Enumerable.Repeat(run, Math.Max(1, length / run.Length)));
+        string[] leads = ["", " ", "\n", "x", "?", "#", "&", "-", "_", ".", "\u212a"];
+        string[] tails = ["", "x", ".", " ", "\n", "\u00e9", "\u212a", "\u017f", "=", "-", "_", "1", "A", "\"", ";"];
+        var probes = leads.SelectMany(lead => tails.Select(tail => lead + minimal + tail)).ToArray();
+        var wrong = new List<string>();
 
-        foreach (var shortTextsFirst in new[] { false, true })
+        var last = Instance();
+        foreach (var probe in probes.Where((_, i) => i % 15 == 0))
         {
-            var shared = new Regex(shape.ToString(), shape.Options, shape.MatchTimeout);
-            if (shortTextsFirst)
-                foreach (var text in samples)
-                    SecretText.Replace(shared, text, "<$0>");
-            foreach (var text in LongRuns().Concat(shapes))
-                SecretText.Replace(shared, text, "<$0>");
-
-            samples.Where(text => shared.Replace(text, "<$0>") != reference.Replace(text, "<$0>")).Select(Escaped).Should().BeEmpty(shortTextsFirst ? "after short texts" : "new");
+            var text = minimal + new string('a', 30_000) + "\n" + probe;
+            if (last.Replace(text, "<$0>") != reference.Replace(text, "<$0>"))
+                wrong.Add($"the last match of a long call ending {Escaped(probe)}");
         }
-    }
 
-    [Fact]
-    public void LongestSharedText_Should_BeWellBelowTheShortestScanThatLeftAnInstanceWrong_When_Read()
-    {
-        // 16,000 characters never left an instance wrong, 32,000 did (the token parameter and device key rules, measured on
-        // .NET 10.0.13); the bound keeps a shared instance's scans at half the first.
-        SecretText.LongestSharedText.Should().BeLessThanOrEqualTo(8_192);
+        var scans = new (string Label, string[] Texts)[]
+        {
+            ("one run of 60,000", [Run(60_000)]),
+            ("seven runs of about 8,000", [.. Enumerable.Range(0, 7).Select(k => Run(8_000) + run[..(k % run.Length)])]),
+            ("a match then 60,000 a", [minimal + new string('a', 60_000)]),
+            ("60,000 a then a match", [new string('a', 60_000) + minimal])
+        };
+        foreach (var shortTextsFirst in new[] { false, true })
+            foreach (var (label, texts) in scans)
+            {
+                var instance = Instance();
+                if (shortTextsFirst)
+                    foreach (var probe in probes)
+                        instance.Replace(probe, "<$0>");
+                foreach (var text in texts)
+                    instance.Replace(text, "<$0>");
+                wrong.AddRange(probes.Where(probe => instance.Replace(probe, "<$0>") != reference.Replace(probe, "<$0>"))
+                    .Select(probe => $"{Escaped(probe)} after {label}{(shortTextsFirst ? ", short texts first" : string.Empty)}"));
+            }
+
+        wrong.Should().BeEmpty();
     }
 
     private static string Escaped(string text) => System.Text.Json.JsonSerializer.Serialize(text);

@@ -281,27 +281,24 @@ public sealed class SecretFormatRedactionTests
     [InlineData("Bearer ")]
     [InlineData("?token=")]
     [InlineData("ardk_-")]
+    // ARV-289 (checkpoint fix): the near misses of the two backtracking rules, an attempt failing at each start: a name with no
+    // '=', and a marker with 19 key characters before a character no key holds.
+    [InlineData("?token")]
+    [InlineData("&access_tokex=")]
+    [InlineData("ardk_0123456789012345678.")]
     public void RedactText_Should_FinishQuickly_When_TheTextIsALongAdversarialRun(string fragment)
     {
         // Exception text is unbounded: 100,000 characters of a rule's own fragments, with a private key block left open first.
         var marker = new string('-', 5);
         var opening = marker + "BEGIN PRIVATE KEY" + marker;
         var text = opening + string.Concat(Enumerable.Repeat(fragment, 100_000 / fragment.Length));
-        // ARV-289 (checkpoint fix): a text this long is matched on new instances (SecretText.LongestSharedText), which build their
-        // states as they go (about a second for the token parameter and device key rules, linear still), so the rules are timed on
-        // instances of this test's own after an untimed first pass; a quadratic rule (the backtracking Jwt took 3.7 s for 80,000
-        // characters) is slow in either. LinearRuleTests checks what a long text's own instances replace.
-        var rules = RuleNames.Select(name => (Regex)typeof(RedactionEnricher).GetMethod(name).Invoke(null, null))
-            .Select(rule => new Regex(rule.ToString(), rule.Options, rule.MatchTimeout)).ToList();
-        foreach (var rule in rules)
-            rule.Replace(text, "[R]");
+        // ARV-289 review: the linear engine's first long match in a process builds its states (about a second on a cold host for
+        // the token parameter and device key rules, linear still), so the first pass is untimed; a quadratic rule is slow in either.
+        RedactionEnricher.RedactText(text);
         var watch = System.Diagnostics.Stopwatch.StartNew();
 
-        foreach (var rule in rules)
-        {
-            rule.Replace(text, "[R]");
-            rule.Replace(text[opening.Length..], "[R]");
-        }
+        RedactionEnricher.RedactText(text);
+        RedactionEnricher.RedactText(text[opening.Length..]);
 
         watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2), "every rule is linear in the text's length");
     }
@@ -367,8 +364,11 @@ public sealed class SecretFormatRedactionTests
 
     #region Rules
 
+    // ARV-289 (checkpoint fix): every rule but the token parameter's and the device key's, which run on the backtracking engine
+    // without a timeout (LinearRuleTests.SecretTextRule_Should_RunOnTheBacktrackingEngineWithoutATimeout_When_ItIsTheTokenOrDeviceKeyRule),
+    // linear by their shape; their long runs are timed below with the others.
     public static TheoryData<string> RuleNames =>
-        ["AuthorizationScheme", "TokenQueryParameter", "DeviceKey", "Jwt", "PrivateKeyBlock", "DerBase64", "IntegrationClientSecret", "TemporaryPassword", "RecoveryCode",
+        ["AuthorizationScheme", "Jwt", "PrivateKeyBlock", "DerBase64", "IntegrationClientSecret", "TemporaryPassword", "RecoveryCode",
          "Base32Seed", "CredentialHeader", "JsonMember", "Assignment", "UnquotedAssignment", "PasswordAssignment"];
 
     [Theory]

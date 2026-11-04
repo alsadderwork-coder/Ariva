@@ -146,10 +146,9 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
-### ARV-289 (checkpoint fix): long log texts no longer leave a protection rule matching wrong (2026-11-04)
+### ARV-289 (checkpoint fix): the token parameter and device key masks no longer go wrong after a long log text (2026-11-04)
 
-- Behaviour: the rules that mask credentials and email addresses in log text, dead letters, the outbox's errors and job failures (`SecretText`) match a text longer than 8,192 characters on new instances made for it. On .NET 10.0.13's linear regular expression engine, one search over a stretch of 32,000 characters or more left the rule's shared instance matching wrong afterwards (a one-character token value at the end of a line left unmasked, a device key match one character long), until the host restarted. What the rules mask is unchanged.
-- Cost: a text over 8,192 characters takes about 25 to 40 ms to protect (3 to 13 ms before); shorter texts are unchanged.
+- Behaviour: the rules that mask a token-bearing query parameter (`?access_token=...`) and a device or display key (`ardk_`, `ardp_`) in log text, dead letters, the outbox's errors and job failures run on .NET's backtracking regular expression engine again. On .NET 10.0.13's linear engine, once a host had logged a long text of a certain shape (tens of thousands of characters of query parameters or key characters), those rules could miss a one-character token value at the end of a text, or take one character past a key, until the host restarted. What the rules mask is unchanged, and so is the cost.
 - After the upgrade: nothing to do.
 
 ### ARV-291: a scheduled report delivery whose read fails in the database counts its attempt (2026-11-04)

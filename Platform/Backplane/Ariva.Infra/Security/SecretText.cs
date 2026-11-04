@@ -107,27 +107,27 @@ public static partial class SecretText
         if (string.IsNullOrEmpty(text))
             return text;
 
-        var result = Replace(AuthorizationScheme(), text, m => m.Groups["scheme"].Value + " " + Redacted);
-        result = Replace(TokenQueryParameter(), result, m => m.Groups["key"].Value + Redacted);
-        result = Replace(Jwt(), result, Redacted);
-        result = Replace(DeviceKey(), result, m => m.Value[..5] + Redacted);
+        var result = AuthorizationScheme().Replace(text, m => m.Groups["scheme"].Value + " " + Redacted);
+        result = TokenQueryParameter().Replace(result, m => m.Groups["key"].Value + Redacted);
+        result = Jwt().Replace(result, Redacted);
+        result = DeviceKey().Replace(result, m => m.Value[..5] + Redacted);
         // ARV-212: the other credentials by their shapes, the longer shapes first (a temporary password holds two groups that
         // look like a recovery code), then any value under a sensitive name.
-        result = Replace(PrivateKeyBlock(), result, Redacted);
-        result = Replace(DerBase64(), result, Redacted);
-        result = Replace(IntegrationClientSecret(), result, IntegrationSecretMarker + Redacted);
-        result = Replace(TemporaryPassword(), result, Redacted);
-        result = Replace(RecoveryCode(), result, Redacted);
-        result = Replace(Base32Seed(), result, Redacted);
-        result = Replace(CredentialHeader(), result, HeaderValue);
-        result = Replace(JsonMember(), result, JsonValue);
-        result = Replace(Assignment(), result, AssignedValue);
+        result = PrivateKeyBlock().Replace(result, Redacted);
+        result = DerBase64().Replace(result, Redacted);
+        result = IntegrationClientSecret().Replace(result, IntegrationSecretMarker + Redacted);
+        result = TemporaryPassword().Replace(result, Redacted);
+        result = RecoveryCode().Replace(result, Redacted);
+        result = Base32Seed().Replace(result, Redacted);
+        result = CredentialHeader().Replace(result, HeaderValue);
+        result = JsonMember().Replace(result, JsonValue);
+        result = Assignment().Replace(result, AssignedValue);
         // A quoted value under a harmless name (ConnectionStrings="Host=db;Password=...") is passed over whole by the pass
         // above; this pass takes no quoted value, so it walks into the quotes and finds the pairs inside them.
-        result = Replace(UnquotedAssignment(), result, AssignedValue);
+        result = UnquotedAssignment().Replace(result, AssignedValue);
         // A password's value runs to the next ';' or the line's end, so one holding ',', '&', '?' or an angle bracket, which
         // the passes above stop at, goes whole too.
-        result = Replace(PasswordAssignment(), result, AssignedValue);
+        result = PasswordAssignment().Replace(result, AssignedValue);
         return string.Equals(result, text, StringComparison.Ordinal) ? text : result;
     }
 
@@ -157,7 +157,7 @@ public static partial class SecretText
         if (string.IsNullOrEmpty(text) || !text.Contains('@', StringComparison.Ordinal))
             return text;
 
-        var result = Replace(EmailAddress(), text, m => Mask(m.Value));
+        var result = EmailAddress().Replace(text, m => Mask(m.Value));
         return string.Equals(result, text, StringComparison.Ordinal) ? text : result;
     }
 
@@ -174,7 +174,7 @@ public static partial class SecretText
         var prefix = match.Value[..(value.Index - match.Index)];
         if (match.Groups["name"].Value.EndsWith("Authorization", StringComparison.OrdinalIgnoreCase))
         {
-            var scheme = FirstMatch(AuthorizationSchemeWord(), value.Value);
+            var scheme = AuthorizationSchemeWord().Match(value.Value);
             if (scheme.Success)
                 return prefix + scheme.Groups["scheme"].Value + " " + Redacted;
         }
@@ -196,53 +196,37 @@ public static partial class SecretText
 
     #endregion
 
-    #region Long texts (ARV-289 checkpoint fix)
-
-    /// <summary>
-    /// The longest text a rule's shared instance matches; a longer one is matched on an instance made for that one call and
-    /// then dropped. On the runtime's linear engine (NonBacktracking, .NET 10.0.13) one search that scans over a long stretch
-    /// (32,000 characters or more in every case measured, never 16,000 or less: a long token parameter value, a long run of
-    /// device key characters after other texts) leaves that instance matching wrong on its later calls: a one-character value
-    /// left whole, a match run one character past the key, about one later text in 400 for the token parameter. The call itself
-    /// matches right, and no other instance is touched, so a long text gets an instance of its own and the shared ones never
-    /// scan that far. Each rule's shared instance matches every text a host logs below this, warm; a longer text costs about
-    /// 25 to 40 ms for the 17 rules (measured on 8 to 128 KiB of log text), as against 3 to 13 ms warm.
-    /// </summary>
-    internal const int LongestSharedText = 8_192;
-
-    /// <summary>Replaces with <paramref name="rule"/>, on an instance of its own when the text is longer than <see cref="LongestSharedText"/>.</summary>
-    internal static string Replace(Regex rule, string text, MatchEvaluator evaluator) => InstanceFor(rule, text).Replace(text, evaluator);
-
-    /// <inheritdoc cref="Replace(Regex, string, MatchEvaluator)"/>
-    internal static string Replace(Regex rule, string text, string replacement) => InstanceFor(rule, text).Replace(text, replacement);
-
-    private static Match FirstMatch(Regex rule, string text) => InstanceFor(rule, text).Match(text);
-
-    private static Regex InstanceFor(Regex rule, string text) =>
-        text.Length <= LongestSharedText ? rule : new Regex(rule.ToString(), rule.Options, rule.MatchTimeout);
-
-    #endregion
-
     #region Rules
 
-    // ARV-289: these four run on the linear engine without a timeout too (ARV-163), each proven to replace what its backtracking
-    // rule replaced (LinearRuleTests): a timeout would let a log event out unprotected, and since ARV-285 would throw in
-    // DeadLetters.Create, fail the outbox relay's pass or turn a job's failure into Unprotectable; and the backtracking Jwt could
-    // start at every eyJ of a long run of eyJ- and read to its end each time (time quadratic in the text's length).
+    // ARV-289: these four run without a timeout (ARV-163): a timeout would let a log event out unprotected, and since ARV-285
+    // would throw in DeadLetters.Create, fail the outbox relay's pass or turn a job's failure into Unprotectable. The scheme and
+    // Jwt rules run on the linear engine, each proven to replace what its backtracking rule replaced (LinearRuleTests): the
+    // backtracking Jwt could start at every eyJ of a long run of eyJ- and read to its end each time (time quadratic in the
+    // text's length). Since its checkpoint fix the token parameter and device key rules run on the backtracking engine again,
+    // linear by their shape (each says why): on the runtime's linear engine (NonBacktracking, .NET 10.0.13) an instance of
+    // either, after a long scan (a long value or key, a long run that could belong to one, or many runs of about 8,000
+    // characters), missed or overran a match that ends a text, in that call and on later ones (LinearRuleTests' long scan
+    // theory reproduces it on either rule put back), while the other rules matched right after the same texts. A missed match
+    // leaves a credential in the log (CWE-532); the backtracking engine keeps nothing from one call to the next.
 
     // "Bearer abc.def", "Basic dXNlcjpwYXNz" (also inside "Authorization: Bearer ..." header dumps).
     [GeneratedRegex(@"\b(?<scheme>Bearer|Basic)\s+[A-Za-z0-9\-._~+/]+=*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Timeout.Infinite)]
     public static partial Regex AuthorizationScheme();
 
-    // ?access_token=... in SignalR negotiate and WebSocket URLs, and other token-bearing query parameters.
-    [GeneratedRegex(@"(?<key>[?&#](access_token|refresh_token|id_token|token|code|totp|otp|password|key)=)[^&#\s""']+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Timeout.Infinite)]
+    // ?access_token=... in SignalR negotiate and WebSocket URLs, and other token-bearing query parameters. Backtracking and linear:
+    // an attempt reads one of ?&#, one of the nine names (13 characters at most) and '=', then a run of value characters that
+    // nothing follows, so it succeeds at the run's first character and never reads it again; a failed attempt reads at most 15
+    // characters, and the scan goes on after a match.
+    [GeneratedRegex(@"(?<key>[?&#](access_token|refresh_token|id_token|token|code|totp|otp|password|key)=)[^&#\s""']+", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, Timeout.Infinite)]
     public static partial Regex TokenQueryParameter();
 
     /// <summary>
     /// A device credential (ARV-022, ardk_) or a display player credential (ARV-058, ardp_), wherever it appears: the
-    /// marker and 43 base64url characters.
+    /// marker and 43 base64url characters. Backtracking and linear: an attempt reads the five-character marker, then a run of
+    /// key characters that nothing follows, so it succeeds once the run holds 20 and never reads it again; a failed attempt
+    /// reads at most 25 characters, and the scan goes on after a match.
     /// </summary>
-    [GeneratedRegex(@"ard[kp]_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Timeout.Infinite)]
+    [GeneratedRegex(@"ard[kp]_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant, Timeout.Infinite)]
     public static partial Regex DeviceKey();
 
     // A compact JWS anywhere in text (header.payload.signature, header starting with eyJ).
