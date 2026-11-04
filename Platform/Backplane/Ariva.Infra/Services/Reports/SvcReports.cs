@@ -4,14 +4,17 @@ using Ariva.Core.Security;
 using Ariva.Core.Services.Reports;
 using Ariva.Infra.Services.Administration;
 using Ariva.Infra.Services.Foundation;
+using Microsoft.Extensions.Logging;
 
 namespace Ariva.Infra.Services.Reports;
 
 /// <summary>
 /// The daily report on demand (ARV-060, <see cref="ISvcReports"/>): a site the caller reaches, a local day at most
-/// 400 days back and not after today at the site; the alerts listed are those the caller's roles see.
+/// 400 days back and not after today at the site; the alerts listed are those the caller's roles see. ARV-234: a report that
+/// finds every database slot of the hours read in use is answered busy (<see cref="ReportErrors.Busy"/>) and logged.
 /// </summary>
-internal sealed class SvcReports(IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider timeProvider, ISiteScope siteScope, CallerRoles callerRoles, ReportReader reader)
+internal sealed class SvcReports(IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider timeProvider, ISiteScope siteScope, CallerRoles callerRoles, ReportReader reader,
+    ILogger<SvcReports> logger)
     : SvcBase(unitOfWork, currentUser, timeProvider), ISvcReports
 {
     public async Task<Result<DailyReport>> DailyAsync(string siteCode, DateOnly? date, CancellationToken ct = default)
@@ -24,7 +27,10 @@ internal sealed class SvcReports(IUnitOfWork unitOfWork, ICurrentUser currentUse
         if (date is not { } day || day > today || day < today.AddDays(-ISvcReports.MaxDaysBack))
             return Result.Error<DailyReport>(ReportErrors.InvalidDate);
         // ARV-096d: a day past the report's read bounds is refused (ReportErrors.TooLarge), never cut short.
-        return await reader.ReadAsync(siteCode, day, await callerRoles.GetAsync(ct), now, ct);
+        var report = await reader.ReadAsync(siteCode, day, await callerRoles.GetAsync(ct), now, ct);
+        if (report.HasErrors && report.ErrorMessages.Contains(ReportErrors.Busy))
+            logger.LogWarning("Daily report of site {SiteCode} refused: every report database slot is in use", siteCode);
+        return report;
     }
 }
 

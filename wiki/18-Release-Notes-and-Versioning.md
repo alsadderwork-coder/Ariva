@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-234: the daily report read aggregated by the hour in the database, so a site of up to 500 queue zones gets its report (2026-11-03)
+
+- Behaviour: the daily report and its CSV read the site's queue minutes aggregated per zone and local hour in PostgreSQL. A site of up to 500 queue zones (the most a profile holds) gets its report; before, a site of more than 200 got 409. The figures are the same as before. A day past the new bounds (12,500 zone hours, 3,125,000 merged histogram pairs) is still refused with 409 and its fixed text.
+- Behaviour: at most two report statements run at once across the cluster. A report on demand that finds both slots taken answers 503 with `Retry-After: 10` and a fixed text; a scheduled delivery that finds the deliveries' slot taken is left pending for a later round and logged (wiki 10 section 4.19).
+- After the upgrade: nothing to do. A 503 from the report under load means two reports were being built; ask again after the delay.
+
 ### ARV-229a: one account's live hub connections bounded, and Integration calls without credentials take no slot (2026-11-03)
 
 - Behaviour: one account holds at most `Security:Hubs:MaxConnectionsPerAccount` live hub connections on an Ariva.Api.Main replica (200 by default, Proposed), every sign-in of the account together, beside the 8 of each sign-in and the replica's total. A negotiate beyond is answered 429 with Retry-After (security event 9116, policy `hub-connections`, partition `user`) and a connection past it is closed with `account_full`; the screen shows its live feed as disconnected, as for `hub_full`. A setting outside 8 to 20,000 stops Main at start.

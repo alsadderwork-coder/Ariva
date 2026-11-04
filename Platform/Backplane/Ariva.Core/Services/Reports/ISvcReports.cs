@@ -12,7 +12,10 @@ public static class ReportErrors
     public const string InvalidTemplate = "Unknown report template.";
     public const string InvalidRecipients = "A schedule has 1 to 20 recipients, each an enabled account that may read reports of the site.";
     public const string TooMany = "A site has at most 100 report schedules.";
-    public const string TooLarge = "The day holds more than a report reads (queue minutes, zones, devices or outages); it is refused rather than cut short.";
+    public const string TooLarge = "The day holds more than a report reads (queue zone hours, histogram pairs, zones, devices or outages); it is refused rather than cut short.";
+
+    /// <summary>ARV-234: every database slot for the report's hours read is in use across the cluster (503, Retry-After).</summary>
+    public const string Busy = "Every report the database builds at once is being built; try again shortly.";
 }
 
 /// <summary>The daily report of a site (ARV-060), for the caller's sites; alerts are the ones the caller's roles see.</summary>

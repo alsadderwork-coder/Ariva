@@ -20,7 +20,10 @@ namespace Ariva.Infra.Services.Reports;
 /// a usable address) and gets the report its own roles see, with the hours, alerts and devices as CSV attachments. A
 /// report that cannot be built or an email the relay refuses marks that delivery Failed, retried by later rounds up to the
 /// attempt limit; the others go on. The send comes just before its own commit, so only a crash between the two can send a
-/// report twice (at least once, never lost).
+/// report twice (at least once, never lost). ARV-234: a delivery reads its report in the last of the report database slots only
+/// (<see cref="ReportReader.ReadFor.Delivery"/>), held to its commit, so rounds that overlap (TickerQ starts one while another
+/// runs) hold one slot between them and reports on demand always have the first; a delivery that finds it in use is left as it
+/// was (nothing written, its claim rolled back, no attempt counted) for a later round, and logged.
 /// </summary>
 internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider timeProvider, ReportReader reader, IEmailTransport transport,
     EmailSettings settings, Ariva.Infra.Settings.AuthSettings auth, ILogger<SvcReportDeliveries> logger) : SvcDb(unitOfWork), ISvcReportDeliveries
@@ -116,7 +119,14 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
         OutgoingEmail email;
         try
         {
-            var report = await reader.ReadAsync(row.SiteCode, DateOnly.FromDateTime(row.ReportDate), await RolesAsync(row.UserId, ct), now, ct);
+            var report = await reader.ReadAsync(row.SiteCode, DateOnly.FromDateTime(row.ReportDate), await RolesAsync(row.UserId, ct), now, ReportReader.ReadFor.Delivery, ct);
+            if (report.HasErrors && Enumerable.Contains(report.ErrorMessages, ReportErrors.Busy, StringComparer.Ordinal))
+            {
+                // ARV-234: the deliveries' slot is held (by another round's delivery, until its commit): left as it was, for a later round.
+                logger.LogWarning("Report delivery {DeliveryId} of schedule {ScheduleId}: the deliveries' report database slot is in use, left for a later round", row.Id, row.ScheduleId);
+                return ReportDeliveryOutcome.None;
+            }
+
             if (report.HasErrors && Enumerable.Contains(report.ErrorMessages, ReportErrors.TooLarge, StringComparer.Ordinal))
             {
                 // ARV-096d: a day past the report's read bounds stays past them, so the delivery is not tried again (its attempts at

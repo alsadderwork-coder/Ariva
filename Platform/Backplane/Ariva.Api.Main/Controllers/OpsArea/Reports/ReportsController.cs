@@ -75,7 +75,8 @@ public sealed class ReportsController(ISvcReports reports) : ControllerBase
 
 /// <summary>
 /// Problem answers of the report endpoints: unknown or foreign records 404, the per-site limit and a day past the report's read
-/// bounds (ARV-096d) 409, the rest 400.
+/// bounds (ARV-096d) 409, every database slot of the report's hours read in use (ARV-234) 503 with Retry-After (the
+/// concurrency policies' delay), the rest 400.
 /// </summary>
 internal static class ReportAnswers
 {
@@ -85,8 +86,11 @@ internal static class ReportAnswers
         {
             null or ReportErrors.NotFound => (StatusCodes.Status404NotFound, "Not found"),
             ReportErrors.TooMany or ReportErrors.TooLarge => (StatusCodes.Status409Conflict, "Conflict"),
+            ReportErrors.Busy => (StatusCodes.Status503ServiceUnavailable, "Busy"),
             _ => (StatusCodes.Status400BadRequest, "Not valid")
         };
+        if (status == StatusCodes.Status503ServiceUnavailable)
+            controller.Response.Headers.RetryAfter = RateLimitingExtensions.ConcurrencyRetryAfterSeconds.ToString(CultureInfo.InvariantCulture);
         return controller.Problem(statusCode: status, title: title, detail: status == StatusCodes.Status404NotFound ? null : error);
     }
 }

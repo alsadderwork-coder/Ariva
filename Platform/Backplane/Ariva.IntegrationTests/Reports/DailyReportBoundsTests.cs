@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Ariva.Core;
 using Ariva.Core.Reports;
 using Ariva.Core.Services;
@@ -16,15 +15,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 namespace Ariva.IntegrationTests.Reports;
 
 /// <summary>
-/// ARV-096d (CWE-400, CWE-120, ASVS 5.0 V15.2.2) against PostgreSQL 17 with TimescaleDB: the daily report reads at most its bound
-/// of queue minutes, zones, devices and outages (each read takes the bound plus one row) and refuses a day past one, never cutting
-/// it short; a scheduled delivery of such a day is failed once with the fixed reason and not tried again; and a report at its own
-/// bound (200 queue zones, a full day of minutes with histograms) is built within the reports' request timeout, its time and the
-/// managed heap it peaks at written to the test output for <c>docs/security/costly-operations.md</c> (where the 500 zones a profile
-/// can hold are recorded too: measured once, past what api-main's heap takes for two reports at once). Sites of their own per test.
+/// ARV-096d, ARV-234 (CWE-400, CWE-120, ASVS 5.0 V15.2.2) against PostgreSQL 17 with TimescaleDB: the daily report reads at most its
+/// bound of queue zone hours, zones, devices and outages (each read takes the bound plus one row) and of merged histogram pairs
+/// (counted row by row, no histogram read past the bound), and refuses a day past one, never cutting it short; a scheduled
+/// delivery of such a day is failed once with the fixed reason and not tried again. The report at its own bound is measured in
+/// <see cref="DailyReportHeapTests"/>. Sites of their own per test.
 /// </summary>
 [Collection(PostgresCollection.Name)]
-public sealed class DailyReportBoundsTests(PostgresFixture fixture, ITestOutputHelper output) : IAsyncDisposable
+public sealed class DailyReportBoundsTests(PostgresFixture fixture) : IAsyncDisposable
 {
     /// <summary>The host's clock is 2026-10-01 08:00 UTC; these sites have no airport, so their day is UTC's.</summary>
     private static readonly DateOnly Day = new(2026, 9, 30);
@@ -89,19 +87,30 @@ public sealed class DailyReportBoundsTests(PostgresFixture fixture, ITestOutputH
             SELECT (SELECT count(*) FROM minutes)::int + (SELECT count(*) FROM devices)::int + (SELECT count(*) FROM outages)::int
             """)).Should().Be(30 + 4 + 5);
 
-        var exact = await ReadAsync("BND", new DailyReportLimits(MaxQueueMinutes: 30, MaxZones: 3, MaxDevices: 4, MaxOutages: 5));
+        // Three zone hours (three zones' 10:00 hour), each merging two buckets: six pairs.
+        var exact = await ReadAsync("BND", new DailyReportLimits(MaxZoneHours: 3, MaxZones: 3, MaxDevices: 4, MaxOutages: 5, MaxHistogramPairs: 6));
         exact.HasErrors.Should().BeFalse(string.Join(" ", exact.ErrorMessages ?? []));
-        exact.Data.Should().NotBeNull("each read at its bound is served");
+        exact.Data.Lanes.Should().HaveCount(3).And.OnlyContain(l => l.Passengers == 20 && l.P90Minutes == 4.5, "each read at its bound is served whole");
 
         foreach (var (why, limits) in new[]
                  {
-                     ("queue minutes", new DailyReportLimits(MaxQueueMinutes: 29, MaxZones: 3, MaxDevices: 4, MaxOutages: 5)),
-                     ("devices", new DailyReportLimits(MaxQueueMinutes: 30, MaxZones: 3, MaxDevices: 3, MaxOutages: 5)),
-                     ("outages", new DailyReportLimits(MaxQueueMinutes: 30, MaxZones: 3, MaxDevices: 4, MaxOutages: 4))
+                     ("zone hour", new DailyReportLimits(MaxZoneHours: 2, MaxZones: 3, MaxDevices: 4, MaxOutages: 5, MaxHistogramPairs: 6)),
+                     ("histogram pair", new DailyReportLimits(MaxZoneHours: 3, MaxZones: 3, MaxDevices: 4, MaxOutages: 5, MaxHistogramPairs: 5)),
+                     ("device", new DailyReportLimits(MaxZoneHours: 3, MaxZones: 3, MaxDevices: 3, MaxOutages: 5, MaxHistogramPairs: 6)),
+                     ("outage", new DailyReportLimits(MaxZoneHours: 3, MaxZones: 3, MaxDevices: 4, MaxOutages: 4, MaxHistogramPairs: 6))
                  })
         {
-            (await ReadAsync("BND", limits)).ErrorMessages.Should().Equal([ReportErrors.TooLarge], $"one {why} row past the bound refuses the day");
+            (await ReadAsync("BND", limits)).ErrorMessages.Should().Equal([ReportErrors.TooLarge], $"one {why} past the bound refuses the day");
         }
+
+        // Past the pairs bound the reader counts every row's pairs but reads no histogram once the count passes it (the first
+        // row's two pairs are within a bound of three, the next rows' are not).
+        var (from, to) = DailyReports.DayBounds(Day, TimeZoneInfo.Utc);
+        var read = await Host.AsCallerAsync(null, s => new ReportReader(s.GetRequiredService<IUnitOfWork>()) { Limits = new DailyReportLimits(MaxHistogramPairs: 3) }
+            .ReadHoursAsync("BND", from, to, Ct));
+        read.Pairs.Should().Be(6, "every row's pairs are counted");
+        read.Hours.Should().HaveCount(3);
+        read.Hours.Count(h => h.Histogram.Count > 0).Should().Be(1, "no histogram is read past the pairs bound");
     }
 
     [Fact]
@@ -127,7 +136,7 @@ public sealed class DailyReportBoundsTests(PostgresFixture fixture, ITestOutputH
     [Fact]
     public async Task Delivery_Should_FailOnceWithTheFixedReason_When_TheDayIsPastABound()
     {
-        _deliveryLimits = new DailyReportLimits(MaxQueueMinutes: 5);
+        _deliveryLimits = new DailyReportLimits(MaxZoneHours: 0);
         var admin = await Host.CreateUserAsync("it.bounds.admin", roles: [RoleCodes.SystemAdministrator], allSites: true);
         (await Host.ReadAsync<int>("UPDATE \"user\" SET email = @secret WHERE id = @id RETURNING 1", admin, "bounds.admin@ariva.test")).Should().Be(1);
         (await Host.ReadAsync<int>("""
@@ -149,55 +158,6 @@ public sealed class DailyReportBoundsTests(PostgresFixture fixture, ITestOutputH
         (await Host.ReadAsync<string>("SELECT status || '|' || attempts || '|' || reason FROM report_delivery WHERE schedule_id = @id", schedule.Id))
             .Should().Be($"Failed|{ISvcReportDeliveries.MaxAttempts}|{ReportErrors.TooLarge}", "recorded once, with the fixed reason, at the attempt limit");
         (second.Sent + second.Failed).Should().Be(0, "a day past the bound stays past it, so it is not tried again");
-    }
-
-    [Fact]
-    public async Task Read_Should_BuildTheReportWithinTheRequestTimeout_When_TheSiteHasTheMostQueueZonesAReportReads()
-    {
-        // The report's bound: its most queue zones, each with a full UTC day of final minutes and a histogram.
-        const int zones = DailyReportLimits.MaxQueueZones;
-        await Host.CreateUserAsync("it.bounds.big", roles: [RoleCodes.SystemAdministrator], allSites: true);
-        (await Host.ReadAsync<long>("""
-            WITH site AS (INSERT INTO site (id, code, name) VALUES (gen_random_uuid(), 'BIG', 'Largest') RETURNING code),
-            minutes AS (
-                INSERT INTO queue_minute (zone_key, minute_utc, profile_version, status, entries, exits, waits, queue_length, wait_buckets, wait_counts, updated_on)
-                SELECT 'BIG/Q-' || lpad(z::text, 3, '0'), timestamptz '2026-09-30T00:00:00Z' + m * interval '1 minute', 1, 'Final', 12, 11, 11, 40,
-                       ARRAY[2, 4, 6, 10, 14, 20], ARRAY[1, 3, 3, 2, 1, 1], now()
-                FROM generate_series(1, 200) z CROSS JOIN generate_series(0, 1439) m
-                RETURNING 1)
-            SELECT count(*) FROM minutes
-            """)).Should().Be(zones * 1440L);
-
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-        var baseline = GC.GetTotalMemory(forceFullCollection: true);
-        var peak = baseline;
-        using var sampling = new CancellationTokenSource();
-        var sampler = Task.Run(async () =>
-        {
-            while (!sampling.IsCancellationRequested)
-            {
-                var now = GC.GetTotalMemory(forceFullCollection: false);
-                if (now > Interlocked.Read(ref peak))
-                    Interlocked.Exchange(ref peak, now);
-                await Task.Delay(5, CancellationToken.None);
-            }
-        }, CancellationToken.None);
-        var allocatedBefore = GC.GetTotalAllocatedBytes(precise: true);
-        var clock = Stopwatch.StartNew();
-
-        var report = await ReadAsync("BIG", DailyReportLimits.Default);
-
-        clock.Stop();
-        var allocated = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
-        await sampling.CancelAsync();
-        await sampler;
-
-        report.HasErrors.Should().BeFalse(string.Join(" ", report.ErrorMessages ?? []));
-        output.WriteLine($"Daily report at its bound ({zones} queue zones, {zones * 1440:N0} minutes): {clock.Elapsed.TotalSeconds:F1} s, " +
-                         $"peak managed heap {(peak - baseline) / 1048576.0:F0} MB above the baseline, {allocated / 1048576.0:F0} MB allocated in all.");
-        clock.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(60), "within the reports' request timeout (60 s)");
     }
 
     /// <summary>Counts what the relay would send; nothing leaves the test.</summary>
