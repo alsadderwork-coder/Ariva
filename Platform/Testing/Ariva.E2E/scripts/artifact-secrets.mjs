@@ -277,6 +277,10 @@ export function checkArtifacts(paths, { requireSeed = false, env = process.env, 
 	return findings.length === 0;
 }
 
+// ARV-271: a check step that goes on after an error: set +e, set +ex and the like, set +o errexit, or a shell of its own (a step's
+// `shell: bash {0}` drops the default's -e).
+const ERREXIT_OFF = /\bset\s+(?:\+[A-Za-z]*e[A-Za-z]*\b|\+o\s+errexit\b)|^\s*shell:/m;
+
 /**
  * ARV-252: the backend job's wiring in a CI workflow's text (.github/workflows/ci.yml), read step by step with comments left
  * out (whole lines and a comment after a value), so a step is read by what it runs:
@@ -326,7 +330,7 @@ export function backendLogWiring(workflow) {
 	const checkStep = steps[check];
 	if (!/^\s*if: \$\{\{ !cancelled\(\) \}\}\s*$/m.test(checkStep)) problems.push('the test log check does not run after a failed suite');
 	if (/^\s*continue-on-error:/m.test(checkStep)) problems.push('the test log check may continue on an error');
-	if (/\bset \+e\b/.test(checkStep)) problems.push('the test log check turns off stopping on an error (set +e)');
+	if (ERREXIT_OFF.test(checkStep)) problems.push('the test log check turns off stopping on an error (set +e or the like, or a shell of its own)');
 	if (!/^\s*for item in unit\.log integration\.log TestResults\b[^\n]*; do\s*$/m.test(checkStep) || !/cp -RL "\$item" checked\//.test(checkStep)) problems.push('the test log check does not copy unit.log, integration.log and TestResults to checked/ with links followed (cp -RL)');
 	if (!/^\s*node \S*artifact-secrets\.mjs checked\s*$/m.test(checkStep)) problems.push('the test log check does not check the copy in checked/ (and that alone)');
 	const allowed = new Set(['checked/unit.log', 'checked/integration.log', 'restore.log', 'build.log']);
@@ -384,7 +388,7 @@ export function mutationLogWiring(workflow) {
 	const checkStep = steps[check];
 	if (!/^\s*if: \$\{\{ !cancelled\(\) \}\}\s*$/m.test(checkStep)) problems.push('the mutation log check does not run after a failed run');
 	if (/^\s*continue-on-error:/m.test(checkStep)) problems.push('the mutation log check may continue on an error');
-	if (/\bset \+e\b/.test(checkStep)) problems.push('the mutation log check turns off stopping on an error (set +e)');
+	if (ERREXIT_OFF.test(checkStep)) problems.push('the mutation log check turns off stopping on an error (set +e or the like, or a shell of its own)');
 	if (!/^\s*for item in \.verify\/mutation\.log \.verify\/stryker\/reports; do\s*$/m.test(checkStep) || !/cp -RL "\$item" checked\//.test(checkStep))
 		problems.push('the mutation log check does not copy the log and the report to checked/ with links followed (cp -RL)');
 	if (!/^\s*node \S*artifact-secrets\.mjs checked\s*$/m.test(checkStep)) problems.push('the mutation log check does not check the copy in checked/ (and that alone)');
@@ -401,6 +405,16 @@ export function mutationLogWiring(workflow) {
 		for (const p of paths) if (!p.startsWith('checked/')) problems.push(`"${name}" uploads ${p}, not the checked copy`);
 	});
 	if (uploads === 0) problems.push('no step uploads the checked report');
+	// Stryker's output stays out of the public job log: the run writes it to the log file only, and no other step reads the log or
+	// the report where the run wrote them (the check reads its copy in checked/).
+	const runs = steps.filter((s) => /mutation-run\.mjs" --log /.test(s) || /mutation-run\.mjs --log /.test(s));
+	if (runs.length !== 1) problems.push('not one mutation run (mutation-run.mjs --log)');
+	else if (!/^\s*ARIVA_MUTATION_QUIET: 'true'\s*$/m.test(runs[0]) || /\btee\b/.test(runs[0])) problems.push("the mutation run prints Stryker's output to the job log (ARIVA_MUTATION_QUIET: 'true', no tee)");
+	steps.forEach((step, i) => {
+		if (i === check || runs.includes(step)) return;
+		const name = /^(?:name: |\s*name: )(.*)$/m.exec(step)?.[1] ?? `step ${i + 1}`;
+		if (/\.verify\/(?:mutation\.log|stryker)/.test(step)) problems.push(`"${name}" reads the mutation log or report in place, not the checked copy`);
+	});
 	return problems;
 }
 
@@ -670,6 +684,9 @@ function selfTest() {
 		};
 		miswired['a copy that keeps links'] = replace('cp -RL "$item" checked/', 'cp -R "$item" checked/');
 		miswired['a check that goes on after an error'] = replace('          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068', '          set +e\n          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068');
+		miswired['a check that turns errexit off by name'] = replace('          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068', '          set +o errexit\n          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068');
+		miswired['a check that turns errexit off among other flags'] = replace('          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068', '          set +eu\n          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068');
+		miswired['a check with a shell of its own'] = replace('id: test-logs\n', 'id: test-logs\n        shell: bash {0}\n');
 		miswired['a gate or-ed away'] = replace("if: ${{ !cancelled() && steps.test-logs.outcome == 'success' }}\n        uses: actions/upload-artifact", "if: ${{ always() || steps.test-logs.outcome == 'success' }}\n        uses: actions/upload-artifact");
 		for (const [label, change] of Object.entries(miswired)) {
 			const changed = change(workflow);
@@ -698,7 +715,11 @@ function selfTest() {
 			'a check a failed run skips': replace('id: mutation-logs\n        if: ${{ !cancelled() }}', 'id: mutation-logs\n        if: success()'),
 			'a check that continues on an error': replace('id: mutation-logs\n', 'id: mutation-logs\n        continue-on-error: true\n'),
 			'a copy that keeps links': replace('cp -RL "$item" checked/', 'cp -R "$item" checked/'),
-			'a check of the files in place': replace('artifact-secrets.mjs checked\n', 'artifact-secrets.mjs .verify\n')
+			'a check of the files in place': replace('artifact-secrets.mjs checked\n', 'artifact-secrets.mjs .verify\n'),
+			'a check that goes on after an error': replace('          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      - name: Mutation report', '          set +e\n          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      - name: Mutation report'),
+			'a check with a shell of its own': replace('id: mutation-logs\n', 'id: mutation-logs\n        shell: bash {0}\n'),
+			"a run that prints Stryker's output": replace("ARIVA_MUTATION_QUIET: 'true'", "ARIVA_MUTATION_QUIET: 'false'"),
+			'the log printed in place': replace('      - name: Mutation report\n', '      - name: Print the log\n        run: tail -n 50 .verify/mutation.log\n      - name: Mutation report\n')
 		};
 		for (const [label, change] of Object.entries(mutationMiswired)) {
 			const changed = change(mutation);

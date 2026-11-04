@@ -106,8 +106,12 @@ function runDotnet(file, dll, dotnetArgs) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const log = fs.createWriteStream(file);
   const child = spawn('dotnet', dotnetArgs, { stdio: ['inherit', 'pipe', 'pipe'] });
-  child.stdout.on('data', d => { process.stdout.write(d); log.write(d); });
-  child.stderr.on('data', d => { process.stderr.write(d); log.write(d); });
+  // ARV-271 (CWE-532): with ARIVA_MUTATION_QUIET=true (the mutation workflow, whose job log is public) Stryker's output, which
+  // carries test failures' messages, goes to the log file only, which the workflow checks for secrets before it uploads it; this
+  // script's own findings (the score, methods in safe mode, tests left out) still print. Locally it goes to this console too.
+  const quiet = process.env.ARIVA_MUTATION_QUIET === 'true';
+  child.stdout.on('data', d => { if (!quiet) process.stdout.write(d); log.write(d); });
+  child.stderr.on('data', d => { if (!quiet) process.stderr.write(d); log.write(d); });
   // A spawn failure emits both 'error' and 'close': only the first one settles the exit code.
   let settled = false;
   child.on('error', e => {

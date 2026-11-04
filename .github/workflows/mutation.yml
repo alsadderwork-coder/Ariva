@@ -56,8 +56,12 @@ jobs:
       # found fewer tests than the unit test build it made (Debug) lists.
       - name: Mutation gate self-test (its checks fire on a safe-mode log, a log without a score and tests left out)
         run: node scripts/mutation-run.mjs --self-test
+      # ARV-271: Stryker's output goes to the log file only (ARIVA_MUTATION_QUIET), not to this public job log: the check below
+      # reads that file before anything of it is uploaded.
       - name: Mutation run (fails below the break threshold, on safe mode, without a score or with tests left out)
         working-directory: Platform/Backplane/Ariva.UnitTests
+        env:
+          ARIVA_MUTATION_QUIET: 'true'
         run: node "$GITHUB_WORKSPACE/scripts/mutation-run.mjs" --log "$GITHUB_WORKSPACE/.verify/mutation.log" --tests "$GITHUB_WORKSPACE/Platform/Backplane/Ariva.UnitTests/bin/Debug/net10.0/Ariva.UnitTests.dll" -- dotnet-stryker --concurrency 4 --output "$GITHUB_WORKSPACE/.verify/stryker"
       # ARV-271 (CWE-532): Stryker's log and report carry test failures' messages, and this repository is public. They are copied
       # to checked/ (links followed, so the check reads what the upload would) and that copy is checked for a credential
