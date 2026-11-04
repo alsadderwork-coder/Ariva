@@ -66,7 +66,9 @@ public static class SnapshotChecks
         Time(e.WatermarkUtc);
         Time(e.CursorUtc);
         Times(e.EarliestLateUtc);
-        if (e.WatermarkUtc > state.ReferenceUtc && state.ReferenceUtc != DateTime.MinValue)
+        // ARV-238 review (round 2): with the reference unset too. A zone sets its reference before its engine takes any event, so a
+        // zone without one has neither moved its watermark nor held an event, a run's pending sample included (below).
+        if (e.WatermarkUtc > state.ReferenceUtc)
             bad++;
         // ARV-238: the engine writes its clock in every snapshot from version 9 on; one without it could keep events up to a day ahead.
         if (state.Version >= ZoneProcessorState.ClockSinceVersion && e.ClockUtc is null)
@@ -97,7 +99,7 @@ public static class SnapshotChecks
             {
                 Time(run.AnchorUtc);
                 Times(run.PendingUtc);
-                if (run.PendingUtc is { } pendingAt && !run.PendingAhead && state.ReferenceUtc != DateTime.MinValue && pendingAt > state.ReferenceUtc)
+                if (run.PendingUtc is { } pendingAt && !run.PendingAhead && pendingAt > state.ReferenceUtc)
                     bad++;
             }
         }
@@ -145,8 +147,8 @@ public static class SnapshotChecks
                     bad++;
                 // ARV-238 review (M1): an event not marked ahead was at or before the reference it arrived with, which the zone's
                 // reference only moves on from (as a run's pending sample, above), so a snapshot without the engine's clock cannot
-                // derive one past the zone's receive clock from its held events.
-                if (!b.Ahead && state.ReferenceUtc != DateTime.MinValue && b.Input.TimeUtc > state.ReferenceUtc)
+                // derive one past the zone's receive clock from its held events; a zone without a reference holds no event.
+                if (!b.Ahead && b.Input.TimeUtc > state.ReferenceUtc)
                     bad++;
             }
         }

@@ -379,11 +379,13 @@ public sealed partial class QueueStateEngine
     /// sighting only when it applies a sighting of the entrant's track, so an entrant without a track has none, and one with a track
     /// has it at or after its entry, at a sighting the engine applied (at or behind its watermark, or at the instant a step stopped
     /// in) and at most MaxAhead after its clock (a quiet zone's watermark follows the receive clock, so a sample ahead of the clock
-    /// may be applied, ARV-239). A deadline is its sighting plus the hand-over window, at a sighting applied the same way, never after
-    /// the last sighting of a held entrant of its track (a deadline before it is one the engine superseded and drops when it comes
-    /// due). Anything else is refused, so a snapshot cannot move a deadline or a last sighting away from the sightings applied; what
-    /// stays is a forgery consistent with those rules (a last sighting moved to another applied instant with its deadline), which
-    /// needs write access to the zone's stored state (docs/security/cwe-controls.md, CWE-501).
+    /// may be applied, ARV-239). A hand-over's sighting must be applied the same way and never after the last sighting of a held
+    /// entrant of its track (one before it is a deadline the engine superseded and drops when it comes due); its deadline is not read
+    /// from the snapshot but set again as the engine sets it, the sighting plus the hand-over window in force (as
+    /// <c>RebuildHandovers</c> does), so a stored deadline cannot be forged and a window a release changed takes effect at the restart
+    /// instead of refusing the zone. Anything else is refused, so a snapshot cannot move a deadline or a last sighting away from the
+    /// sightings applied; what stays is a forgery consistent with those rules (a last sighting and its hand-over moved together to
+    /// another applied instant), which needs write access to the zone's stored state (docs/security/cwe-controls.md, CWE-501).
     /// </summary>
     private static void RestoreHandovers(QueueStateEngine engine, QueueEngineState state)
     {
@@ -405,16 +407,13 @@ public sealed partial class QueueStateEngine
             if (h?.Key is null)
                 continue;
             var seen = QueueInputState.Utc(h.Seen);
-            var deadline = QueueInputState.Utc(h.Deadline);
-            if (deadline != Plus(seen, window))
-                throw new InvalidDataException("The queue engine snapshot has a hand-over deadline that is not its sighting plus the hand-over window.");
             if (seen > aheadUntil || (seen > engine._watermark && seen != splitInstant))
                 throw new InvalidDataException("The queue engine snapshot has a hand-over sighting further after its clock than MaxAhead, or one it had not applied.");
             var held = engine._byTrack.TryGetValue(h.Key, out var entrant);
             var last = held ? entrant.LastSeenUtc : null;
             if (last.HasValue && seen > last.Value)
                 throw new InvalidDataException("The queue engine snapshot has a hand-over sighting after its entrant's last sighting.");
-            engine._handovers.Enqueue((h.Key, seen), deadline);
+            engine._handovers.Enqueue((h.Key, seen), Plus(seen, window));
         }
     }
 

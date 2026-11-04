@@ -7,13 +7,13 @@ using FluentAssertions;
 namespace Ariva.UnitTests.Queueing;
 
 /// <summary>
-/// ARV-238 (CWE-501, CWE-120): the queue engine's restore takes a hand-over deadline only as the engine sets one (its sighting plus
-/// the hand-over window, at a sighting it applied, at most MaxAhead after its clock, never after its entrant's last sighting) and a
-/// held entrant's last sighting only as the engine sets it (none without a track, at or after its entry, applied, at most MaxAhead
-/// after the clock), the instant a full step stopped inside counting as applied; a zone snapshot of version 9 or later without the
-/// engine's clock is refused, one written before version 9 has its events ahead of the clock bounded a lateness past the clock it
-/// derives, and no buffered event not marked ahead may be after the zone's reference. Genuine snapshots still restore and continue as
-/// the engine did.
+/// ARV-238 (CWE-501, CWE-120): the queue engine's restore takes a hand-over only at a sighting it applied (at most MaxAhead after its
+/// clock, never after its entrant's last sighting) and sets its deadline again as the engine does, the sighting plus the window in
+/// force, and a held entrant's last sighting only as the engine sets it (none without a track, at or after its entry, applied, at most
+/// MaxAhead after the clock), the instant a full step stopped inside counting as applied; a zone snapshot of version 9 or later without
+/// the engine's clock is refused, one written before version 9 has its events ahead of the clock bounded a lateness past the clock it
+/// derives, and no buffered event or run's pending sample not marked ahead, nor the watermark, may be after the zone's reference, an
+/// unset one included. Genuine snapshots still restore and continue as the engine did.
 /// </summary>
 public sealed class QueueEngineHandoverRestoreTests
 {
@@ -45,8 +45,6 @@ public sealed class QueueEngineHandoverRestoreTests
 
         foreach (var (bad, because) in new (QueueEngineState, string)[]
                  {
-                     (state with { Handovers = [live with { Deadline = live.Deadline.AddSeconds(1) }] }, "a deadline past its sighting plus the window"),
-                     (state with { Handovers = [live with { Deadline = live.Seen }] }, "a deadline at its sighting"),
                      (state with { Handovers = [Handover(live.Key, state.WatermarkUtc.AddSeconds(1))] }, "a sighting the engine had not applied"),
                      (state with { Handovers = [Handover(live.Key, clock.Add(Settings.MaxAhead).AddSeconds(1))] }, "a sighting further after the clock than MaxAhead"),
                      (state with { Handovers = [Handover(live.Key, state.WatermarkUtc.AddSeconds(-1))] }, "a sighting after the entrant's last one"),
@@ -59,6 +57,25 @@ public sealed class QueueEngineHandoverRestoreTests
             var restore = () => QueueStateEngine.Restore(Hall, Settings, RoundTrip(bad));
             restore.Should().Throw<InvalidDataException>(because);
         }
+    }
+
+    [Fact]
+    public void Restore_Should_SetEachDeadlineAgainFromItsSighting_When_TheStoredDeadlineIsAnotherOrTheWindowChanged()
+    {
+        // Review (round 2): a stored deadline is not read: the restore sets it as the engine does, the sighting plus the window in
+        // force, so a forged deadline has no effect and a window a release changed takes effect at the restart.
+        var (engine, t0) = TrackedEntrant();
+        var state = RoundTrip(engine.Capture());
+        var live = state.Handovers.Single(h => h.Seen == t0.AddSeconds(10));
+        var forged = state with { Handovers = [.. state.Handovers.Select(h => h == live ? h with { Deadline = t0.AddMinutes(1) } : h)] };
+        var wider = Settings with { HandoverWindow = TimeSpan.FromSeconds(45) };
+
+        var restored = QueueStateEngine.Restore(Hall, Settings, RoundTrip(forged));
+        var rewindowed = QueueStateEngine.Restore(Hall, wider, state);
+
+        Json(restored.Capture()).Should().Be(Json(engine.Capture()), "the forged deadline was set again from its sighting");
+        Json(restored.Advance(t0.AddMinutes(5))).Should().Be(Json(engine.Advance(t0.AddMinutes(5))), "and the entrant is fragmented as by the engine");
+        rewindowed.Capture().Handovers.Should().Contain(h => h.Seen == live.Seen && h.Deadline == live.Seen.Add(wider.HandoverWindow), "the window in force");
     }
 
     [Fact]
@@ -296,6 +313,36 @@ public sealed class QueueEngineHandoverRestoreTests
         SnapshotChecks.Of(At(now.AddMinutes(4), ahead: true), "S/Q", Hall.QueueZone, 1, notAfter).Should().BeEmpty("an event marked ahead is bounded by the engine's restore");
         var restore = () => ZoneProcessor.Restore("S/Q", Hall, 1, settings, At(now.AddHours(20), ahead: false), notAfter);
         restore.Should().Throw<InvalidDataException>();
+    }
+
+    [Fact]
+    public void Checks_Should_RefuseHeldEventsAndAMovedWatermark_When_TheZonesReferenceIsUnset()
+    {
+        // Review (round 2): a zone sets its reference before its engine takes any event, so one without a reference holds no event,
+        // no run's pending sample and no moved watermark; a snapshot marked as written before version 9 cannot claim otherwise.
+        var settings = new ZoneProcessorSettings();
+        var untouched = new ZoneProcessor("S/Q", Hall, 1, settings).Capture();
+        untouched.ReferenceUtc.Should().Be(DateTime.MinValue, "the zone never took a batch");
+        var notAfter = Midnight.AddDays(2);
+        var now = Midnight.AddHours(12);
+        var engine = new QueueStateEngine(Hall, settings.Engine);
+        engine.Offer(new QueueCrossing("in", CrossingDirection.In, "A/1", now), now);
+        engine.Offer(new QueueTrackSeen("B/1", now), now);
+        engine.Offer(new QueueTrackSeen("B/1", now.AddSeconds(1)), now.AddSeconds(1));
+        var held = RoundTrip(engine.Capture());
+        held.Runs.Should().ContainSingle(r => r.PendingUtc != null && !r.PendingAhead, "the second sample is its run's pending one");
+        held.WatermarkUtc.Should().Be(DateTime.MinValue, "nothing advanced the engine");
+        const string Implausible = "1 values of the snapshot are not plausible (negative counts, implausible times or empty items).";
+        IEnumerable<string> Problems(QueueEngineState e) => SnapshotChecks.Of(untouched with { Version = 8, Engine = e with { ClockUtc = null, Counters = [.. e.Counters.Take(11)] } },
+            "S/Q", Hall.QueueZone, 1, notAfter);
+        var crossing = held.Buffer.Single(b => b.Input.Name == "in");
+        var noRuns = held with { Runs = [], Buffer = [crossing with { Device = null }] };
+
+        SnapshotChecks.Of(untouched, "S/Q", Hall.QueueZone, 1, notAfter).Should().BeEmpty("a zone that never took a batch");
+        Problems(noRuns).Should().Contain(Implausible, "an event not marked ahead held without a reference");
+        Problems(noRuns with { Buffer = [crossing with { Device = null, Ahead = true }] }).Should().NotContain(p => p.Contains("not plausible"), "marked ahead, the engine's restore bounds it");
+        Problems(noRuns with { Buffer = [], WatermarkUtc = now }).Should().Contain(Implausible, "a watermark moved without a reference");
+        Problems(held with { Buffer = [], Runs = [.. held.Runs.Select(r => r with { PendingDevice = null })] }).Should().Contain(Implausible, "a run's pending sample not marked ahead held without a reference");
     }
 
     #endregion
