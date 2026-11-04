@@ -56,6 +56,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkArtifacts, derivedVariables } from '../Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs';
 import { methodFilter } from './test-counts.mjs';
+import { pruneLogFolders, runsToKeep } from './e2e-logs.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = path.join(ROOT, 'Platform', 'Frontplane', 'Ariva.Web');
@@ -177,9 +178,26 @@ const taken = port => new Promise(done => {
   return false;
 }
 
+// ARV-272 (the gate's own disk): each run's host logs stay for the latest ARIVA_E2E_LOG_RUNS runs (5 by default), the one starting
+// included; older run folders go as a run starts, never one of a run that started at or after it (scripts/e2e-logs.mjs).
+function pruneE2eLogs(name, started) {
+  const keep = runsToKeep(process.env.ARIVA_E2E_LOG_RUNS);
+  if (keep === null) {
+    console.log(`${name}: ARIVA_E2E_LOG_RUNS is a whole number of runs from 2 to 1,000 (5 when not set)`);
+    results.push({ name, ok: false, exit: 1 });
+    return false;
+  }
+  if (PLAN) return true;
+  const { removed, left } = pruneLogFolders(path.join(E2E, 'logs'), keep - 1, started);
+  if (removed.length) console.log(`E2E host logs: ${removed.length} older run folder(s) removed, the latest ${keep} runs kept`);
+  if (left.length) console.log(`E2E host logs: could not remove ${left.join(', ')} (held open or refused); left for a later run`);
+  return true;
+}
+
 function playwright(name, playwrightArgs, folders = ['playwright-report', 'test-results']) {
   if (!hostPortsFree(name)) return;
   const started = Date.now();
+  if (!pruneE2eLogs(name, started)) return;
   process.env.ARIVA_E2E_ACCOUNT_SEED = CALLER_SEED || crypto.randomBytes(24).toString('base64url');
   const derived = Object.entries(derivedVariables(process.env.ARIVA_E2E_ACCOUNT_SEED)).filter(([variable]) => !CALLER_VARIABLES.has(variable));
   for (const [variable, value] of derived) process.env[variable] = value;
@@ -610,6 +628,7 @@ const steps = {
     run('E2E expect message check self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs', '--self-test']);
     run('E2E expect messages hold no answer body', 'node', ['Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs']);
     run('E2E artifact secret check self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs', '--self-test']);
+    run('E2E host log folders self-test', 'node', ['scripts/e2e-logs.mjs', '--self-test']);
     // ARV-249 (CWE-532): a failing assertion prints the value it got and the one it expected, so no C# test asserts a secret by
     // value (the TypeScript side is expect-messages.mjs's matcher rule, above).
     run('C# secret assertion check self-test', 'node', ['scripts/security/secret-assertions.mjs', '--self-test']);

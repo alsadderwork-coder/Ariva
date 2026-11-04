@@ -2107,7 +2107,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 316,
-      "passes": false,
+      "passes": true,
       "notes": "Size XS. Phase 3. Filed 2026-10-28 by ARV-252 (found during ARV-270's gate). No sign-in code.",
       "dependsOn": []
     },
