@@ -2459,7 +2459,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 320,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Low: a read that fails every time is retried by every round, each within the deliveries' single slot, so it costs one statement a round, not more.",
       "dependsOn": [
         "ARV-234"
@@ -2481,6 +2481,25 @@
       "notes": "Size S. Phase 3. Split from ARV-271 by its security review (2026-11-04). No sign-in code.",
       "dependsOn": [
         "ARV-271"
+      ]
+    },
+    {
+      "id": "ARV-292",
+      "title": "[E17] Runtime login sessions that end an idle transaction and notice a lost client",
+      "description": "Found by the ARV-291 security review (round 1, L1, 2026-11-04). When a host's connection is lost on the network (a client timeout whose cancel cannot reach the server, a middlebox that keeps the server side open), Npgsql breaks the connector and the unit of work ends as rolled back, but the server session stays open, idle in its transaction with its locks, until the server's TCP notices the client gone: nothing on the runtime login bounds it (no idle_in_transaction_session_timeout, no TCP keepalives, no client_connection_check_interval). A scheduled report delivery's row stays locked meanwhile, so no round claims it and its failed read goes uncounted (ARV-291's count passes it over), and when that session had taken the deliveries' report database slot (ARV-234) every delivery finds the slot busy; any other lock such a session holds is held as long. Set, on the runtime login in a versioned script beside 0063 (through the migration job, as the statement timeout is), an idle_in_transaction_session_timeout above every transaction the hosts hold open on purpose (the inventory in the criteria below) and TCP keepalives or client_connection_check_interval, with the values and their reasoning in docs/security/costly-operations.md. CWEs to review: CWE-400. Note: client_connection_check_interval acts only while a query runs, and keepalives do not help behind a middlebox that answers for the lost client, so the idle-in-transaction limit is what bounds the session left idle in its transaction (the ARV-291 review's probe), and statement_timeout (360 s) bounds the phase while its statement still runs.",
+      "acceptanceCriteria": [
+        "A versioned script (and the migration job) sets idle_in_transaction_session_timeout and TCP keepalives or client_connection_check_interval on the runtime login only, its checksum in checksums.lock, the ops script's and the chart's audits allowing exactly these settings on runtime logins",
+        "An inventory of every transaction a host holds open while it waits on other work (among them AlertEvaluation's and StaffingRecommendations' lock units, the inbox filter's transaction across a consumer, the outbox relay's pass, a report delivery across its send, and every other holder of a transaction advisory lock under Ariva.Infra, checked one by one), each bounded below the limit; an integration test proves a runtime login session left idle in its transaction is ended within the limit and lets go of its locks (a report delivery's row, the deliveries' slot), and that the longest of those transactions still commits",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 322,
+      "passes": false,
+      "notes": "Size S. Phase 3. Found by the ARV-291 security review (2026-11-04). Low: needs a connection lost on the network; nothing of the session's transaction can commit. The settings are user-settable, so the migration login can set them as it sets statement_timeout (unlike ARV-290's temp_file_limit). No sign-in code.",
+      "dependsOn": [
+        "ARV-291"
       ]
     }
   ]
