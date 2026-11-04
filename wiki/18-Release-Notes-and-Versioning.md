@@ -146,7 +146,7 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
-### ARV-234: the daily report read aggregated by the hour in the database, so a site of up to 500 queue zones gets its report (2026-11-03)
+### ARV-234: the daily report read aggregated by the hour in the database, so a site of up to 500 queue zones gets its report (2026-11-04)
 
 - Behaviour: the daily report and its CSV read the site's queue minutes aggregated per zone and local hour in PostgreSQL. A site of up to 500 queue zones (the most a profile holds) gets its report; before, a site of more than 200 got 409. The figures are the same as before. A day past the new bounds (12,500 zone hours, 3,125,000 merged histogram pairs) is still refused with 409 and its fixed text.
 - Behaviour: at most two report statements run at once across the cluster. A report on demand that finds both slots taken answers 503 with `Retry-After: 10` and a fixed text; a scheduled delivery that finds the deliveries' slot taken is left pending for a later round and logged (wiki 10 section 4.19).

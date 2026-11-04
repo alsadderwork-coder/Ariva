@@ -80,6 +80,36 @@ public sealed class DailyReportSlotsTests(PostgresFixture fixture) : IAsyncDispo
         (await HeldSlotsAsync()).Should().BeEmpty("a report on demand holds its slot for its statement only");
     }
 
+    [Fact]
+    public async Task Statement_Should_TakeTheFirstFreeSlotOnly_When_EverySlotIsFree()
+    {
+        // Inside a transaction a statement's slot lasts to its end, so what one statement takes can be seen: one slot, the first.
+        var admin = await SiteAsync("SLO", "it.slots.one");
+        List<int> held;
+        Fluentx.Result<DailyReport> onDemand;
+        await using (var connection = new NpgsqlConnection(Unpooled(await Host.DatabaseAsync())))
+        {
+            await connection.OpenAsync(Ct);
+            await using var transaction = await connection.BeginTransactionAsync(Ct);
+            await using (var hours = HoursCommand(connection, "SLO", ReportReader.HoursSql))
+            {
+                hours.Transaction = transaction;
+                await using var reader = await hours.ExecuteReaderAsync(Ct);
+                while (await reader.ReadAsync(Ct))
+                {
+                }
+            }
+
+            held = await HeldSlotsAsync();
+            onDemand = await Host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcReports>().DailyAsync("SLO", Day, Ct));
+            await transaction.RollbackAsync(Ct);
+        }
+
+        held.Should().Equal([1], "a statement takes the first slot it gets and no other");
+        onDemand.HasErrors.Should().BeFalse("the other slot serves a report on demand meanwhile");
+        (await HeldSlotsAsync()).Should().BeEmpty("the slot ends with the transaction");
+    }
+
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
@@ -277,21 +307,30 @@ public sealed class DailyReportSlotsTests(PostgresFixture fixture) : IAsyncDispo
     {
         await using var connection = new NpgsqlConnection(Unpooled(await Host.DatabaseAsync()));
         await connection.OpenAsync(Ct);
-        await using var explain = new NpgsqlCommand("EXPLAIN (ANALYZE, FORMAT JSON) " + ReportReader.HoursSql, connection);
-        var (from, to) = DailyReports.DayBounds(Day, TimeZoneInfo.Utc);
-        explain.Parameters.AddWithValue("first", 1);
-        explain.Parameters.AddWithValue("slots", DailyReportLimits.Default.DatabaseSlots);
-        explain.Parameters.AddWithValue("lockClass", ReportReader.SlotLockClass);
-        explain.Parameters.AddWithValue("prefix", site + "/%");
-        explain.Parameters.AddWithValue("from", from);
-        explain.Parameters.AddWithValue("to", to);
-        explain.Parameters.AddWithValue("buckets", Ariva.Core.Queueing.WaitStatistics.Buckets);
-        explain.Parameters.AddWithValue("cap", DailyReportLimits.Default.MaxZoneHours + 1);
+        await using var explain = HoursCommand(connection, site, "EXPLAIN (ANALYZE, FORMAT JSON) " + ReportReader.HoursSql);
         using var plan = JsonDocument.Parse((string)await explain.ExecuteScalarAsync(Ct));
         var scans = new List<int>();
         Scans(plan.RootElement[0].GetProperty("Plan"), scans);
         scans.Should().NotBeEmpty("the plan scans the minutes when it runs");
         return scans.Sum();
+    }
+
+    /// <summary>The hours statement (or its plan) for the site's day as a report on demand binds it.</summary>
+    private static NpgsqlCommand HoursCommand(NpgsqlConnection connection, string site, [System.Diagnostics.CodeAnalysis.ConstantExpected] string sql)
+    {
+#pragma warning disable CA2100 // the hours statement, or EXPLAIN of it: constants
+        var command = new NpgsqlCommand(sql, connection);
+#pragma warning restore CA2100
+        var (from, to) = DailyReports.DayBounds(Day, TimeZoneInfo.Utc);
+        command.Parameters.AddWithValue("first", 1);
+        command.Parameters.AddWithValue("slots", DailyReportLimits.Default.DatabaseSlots);
+        command.Parameters.AddWithValue("lockClass", ReportReader.SlotLockClass);
+        command.Parameters.AddWithValue("prefix", site + "/%");
+        command.Parameters.AddWithValue("from", from);
+        command.Parameters.AddWithValue("to", to);
+        command.Parameters.AddWithValue("buckets", Ariva.Core.Queueing.WaitStatistics.Buckets);
+        command.Parameters.AddWithValue("cap", DailyReportLimits.Default.MaxZoneHours + 1);
+        return command;
     }
 
     private static void Scans(JsonElement node, List<int> loops)

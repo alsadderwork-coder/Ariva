@@ -111,6 +111,11 @@ public sealed class DailyReportBoundsTests(PostgresFixture fixture) : IAsyncDisp
         read.Pairs.Should().Be(6, "every row's pairs are counted");
         read.Hours.Should().HaveCount(3);
         read.Hours.Count(h => h.Histogram.Count > 0).Should().Be(1, "no histogram is read past the pairs bound");
+
+        // The zone hours read stop at the bound plus one row, whatever the day holds beyond it.
+        var capped = await Host.AsCallerAsync(null, s => new ReportReader(s.GetRequiredService<IUnitOfWork>()) { Limits = new DailyReportLimits(MaxZoneHours: 1) }
+            .ReadHoursAsync("BND", from, to, Ct));
+        capped.Hours.Should().HaveCount(2, "the read takes its bound plus one row, not the day's three");
     }
 
     [Fact]
