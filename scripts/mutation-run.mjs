@@ -98,7 +98,11 @@ function check(file, dll) {
     return 1;
   }
   const listed = listedCount(dll);
-  return report(strykerProblems(fs.readFileSync(file, 'utf8'), listed), listed);
+  const text = fs.readFileSync(file, 'utf8');
+  // The score itself (a number, no secret), so a quiet run's job log still says it (ARV-271).
+  const score = SCORE.exec(text);
+  if (score) console.log(`mutation-run: final mutation score ${score[1]} %`);
+  return report(strykerProblems(text, listed), listed);
 }
 
 // dotnet only, with an argument array and no shell: the arguments come from verify.mjs.
@@ -108,7 +112,7 @@ function runDotnet(file, dll, dotnetArgs) {
   const child = spawn('dotnet', dotnetArgs, { stdio: ['inherit', 'pipe', 'pipe'] });
   // ARV-271 (CWE-532): with ARIVA_MUTATION_QUIET=true (the mutation workflow, whose job log is public) Stryker's output, which
   // carries test failures' messages, goes to the log file only, which the workflow checks for secrets before it uploads it; this
-  // script's own findings (the score, methods in safe mode, tests left out) still print. Locally it goes to this console too.
+  // script's own lines (the final score, methods in safe mode, tests left out) still print. Locally it goes to this console too.
   const quiet = process.env.ARIVA_MUTATION_QUIET === 'true';
   child.stdout.on('data', d => { if (!quiet) process.stdout.write(d); log.write(d); });
   child.stderr.on('data', d => { if (!quiet) process.stderr.write(d); log.write(d); });
