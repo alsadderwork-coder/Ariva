@@ -185,7 +185,8 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
     public async Task<bool> CountFailedReadAsync(Guid deliveryId, CancellationToken ct = default)
     {
         await BeginAsync(ct);
-        // The same rule as the claim: a delivery still due and held by no one else. A round that claimed it meanwhile counts its own.
+        // The same rule as the claim: a delivery still due and held by no one else (never waiting: a round that claimed it meanwhile,
+        // or the failed read's server session after a connection lost on the network, leaves this attempt uncounted).
         var counted = await ExecuteCommandAsync<IdRow>("""
             WITH due AS (
                 SELECT id FROM report_delivery
@@ -362,7 +363,7 @@ public sealed class ReportDeliveryRound(IServiceScopeFactory scopes, ILogger<Rep
             }
             catch (ReportReadFailedException e)
             {
-                // A lost connection ended the transaction with it; the rollback then has nothing to do (NHibernateStorageProvider).
+                // After a broken connection the rollback has nothing to do: nothing of that transaction can commit (NHibernateStorageProvider).
                 await unitOfWork.RollbackAsync(CancellationToken.None);
                 var counted = await CountFailedReadAsync(id);
                 logger.LogError(e.InnerException, "Report delivery {DeliveryId}: its report could not be read from the database (attempt counted: {Counted})", id, counted);

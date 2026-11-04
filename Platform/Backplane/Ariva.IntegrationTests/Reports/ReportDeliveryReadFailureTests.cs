@@ -122,6 +122,29 @@ public sealed class ReportDeliveryReadFailureTests(PostgresFixture fixture) : IA
     }
 
     [Fact]
+    public async Task Round_Should_CountTheAttempt_When_TheHostsCommandTimeoutEndsTheRead()
+    {
+        // Review (L2): with the default settings the host's command timeout (Database:CommandTimeoutSeconds, 30 s; 5 here, its least)
+        // ends the wait before the runtime login's statement timeout (360 s): Npgsql cancels the statement and the connection stays
+        // usable, so the rollback is an ordinary one.
+        var settings = Settings();
+        settings["Database:CommandTimeoutSeconds"] = "5";
+        var host = new AccountsHost(fixture, settings, TestDatabase.ReportReadLost, Configure);
+        _host = host;
+        var admin = await SiteAsync(host, "RFK", "it.readfail.command", "readfail.command@ariva.test");
+        var schedule = await ScheduleAsync(host, admin, "RFK", "Client timeout");
+
+        ReportDeliveryRun run;
+        await using (await LockMinutesAsync(host))
+            run = await RunAsync(host);
+
+        run.Should().Be(new ReportDeliveryRun(1, 0, 0, 1));
+        (await StatusAsync(host, schedule)).Should().Be($"Failed:1:{Reason}");
+        _logs.Failures.Should().ContainSingle().Which.Exception.GetBaseException().Should().BeOfType<TimeoutException>("the host stopped waiting");
+        (await RunAsync(host)).Sent.Should().Be(1, "the next round sends it");
+    }
+
+    [Fact]
     public async Task CountFailedRead_Should_CountNothing_When_AnotherTransactionHoldsTheDeliveryOrItIsAtItsLimit()
     {
         var host = await TimeoutHostAsync();

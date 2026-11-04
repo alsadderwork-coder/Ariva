@@ -107,8 +107,10 @@ public interface ISvcReportDeliveries : ISvcScoped
     /// <summary>
     /// ARV-291: counts the attempt of a delivery whose report read failed in the database, in a unit of work of its own after the
     /// failed one is rolled back: Failed, one attempt more, <see cref="ReadFailedReason"/>, so <see cref="MaxAttempts"/> ends a read
-    /// that fails every time as it ends a failed send. Counts nothing when the delivery is no longer due (sent, skipped, at its limit)
-    /// or another transaction holds it (a round that claimed it meanwhile counts its own attempt). Answers whether it counted.
+    /// that fails every time as it ends a failed send. Counts nothing, without waiting, when the delivery is no longer due (sent,
+    /// skipped, at its limit) or another transaction holds it: a round that claimed it meanwhile, or the failed read's own server
+    /// session when its connection was lost on the network (that session keeps its locks until the server notices). The attempt is
+    /// then not counted; a later round tries the delivery again. Answers whether it counted.
     /// </summary>
     Task<bool> CountFailedReadAsync(Guid deliveryId, CancellationToken ct = default);
 }

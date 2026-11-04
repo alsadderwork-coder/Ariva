@@ -2,6 +2,8 @@ using System.Data;
 using System.Data.Common;
 using System.Diagnostics.CodeAnalysis;
 using Ariva.Infra.NHibernate.Interceptors;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NHibernate;
 using NHibernate.Engine;
 using NHibernate.Linq;
@@ -17,8 +19,11 @@ namespace Ariva.Infra.NHibernate;
 internal sealed class NHibernateStorageProvider(
     NHibernateSessionFactoryProvider factoryProvider,
     ICurrentUser currentUser,
-    TimeProvider timeProvider) : IStorageProvider, IDisposable
+    TimeProvider timeProvider,
+    ILogger<NHibernateStorageProvider> logger = null) : IStorageProvider, IDisposable
 {
+    private readonly ILogger _logger = logger ?? (ILogger)NullLogger.Instance;
+
     private ISession _session;
 
     private ISession Session => _session ??= OpenSession();
@@ -60,10 +65,13 @@ internal sealed class NHibernateStorageProvider(
         Session.GetCurrentTransaction()?.CommitAsync(ct) ?? Task.CompletedTask;
 
     /// <summary>
-    /// ARV-291: a transaction whose connection the database ended (a lost connection, a terminated session) cannot be rolled back:
-    /// Npgsql disposed it when the connection broke and says why in the inner exception. The server ended the transaction with the
-    /// connection, so nothing is left to roll back: the session is closed with it (a later use in the scope opens another), and the
-    /// unit of work ends as rolled back instead of throwing from its rollback and again from its disposal.
+    /// ARV-291: a transaction whose connection broke (a session the server terminated, a client timeout whose cancel failed, a
+    /// connection lost on the network) cannot be rolled back: Npgsql disposed it when the connection broke and gives the cause as
+    /// the inner exception (a <see cref="DbException"/>; a transaction disposed for any other reason has none, and its rollback still
+    /// throws). Nothing of that transaction can commit any more: the server ends it, and lets go of its locks, when it sees the
+    /// connection gone, at once for a session it terminated, only when its TCP notices for a connection lost on the network. So the
+    /// session is closed with it (a later use in the scope opens another, with a transaction of its own), the unit of work ends as
+    /// rolled back instead of throwing from its rollback and again from its disposal, and a warning names the cause.
     /// </summary>
     public async Task RollbackTransactionAsync(CancellationToken ct = default)
     {
@@ -75,6 +83,9 @@ internal sealed class NHibernateStorageProvider(
         }
         catch (ObjectDisposedException e) when (e.InnerException is DbException)
         {
+            // The cause's type and SQLSTATE only, never its text (it may hold the statement).
+            _logger.LogWarning("A transaction was rolled back after its database connection broke ({Cause}, SQLSTATE {SqlState}); nothing of it commits",
+                e.InnerException.GetType().Name, (e.InnerException as DbException)?.SqlState ?? "none");
             Dispose();
         }
     }
