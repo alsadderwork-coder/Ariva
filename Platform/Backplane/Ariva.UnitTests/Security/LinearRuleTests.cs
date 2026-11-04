@@ -4,6 +4,7 @@ using Ariva.Core.Flights;
 using Ariva.Core.Integration;
 using Ariva.Infra.Imports;
 using Ariva.Infra.Notifications;
+using Ariva.Infra.Security;
 using Ariva.Infra.Storage;
 using Ariva.UnitTests.Setup;
 using CsCheck;
@@ -35,7 +36,11 @@ public class LinearRuleTests
         ["EmailAttachment.FileNameRule"] = EmailAttachment.FileNameRule,
         ["CsvImportReader.Number"] = CsvImportReader.Number,
         ["ClamdScanner.VersionPattern"] = ClamdScanner.VersionPattern,
-        ["LocalDiskFileStorage.KeyPattern"] = LocalDiskFileStorage.KeyPattern
+        ["LocalDiskFileStorage.KeyPattern"] = LocalDiskFileStorage.KeyPattern,
+        ["SecretText.AuthorizationScheme"] = SecretText.AuthorizationScheme,
+        ["SecretText.TokenQueryParameter"] = SecretText.TokenQueryParameter,
+        ["SecretText.DeviceKey"] = SecretText.DeviceKey,
+        ["SecretText.Jwt"] = SecretText.Jwt
     };
 
     public static TheoryData<string> RuleNames => [.. Rules.Keys];
@@ -48,6 +53,54 @@ public class LinearRuleTests
 
         rule.Options.Should().HaveFlag(RegexOptions.NonBacktracking, "linear time in the input's length is the bound against ReDoS");
         rule.MatchTimeout.Should().Be(Regex.InfiniteMatchTimeout, "a wall-clock timeout refuses a short valid value on a loaded node");
+    }
+
+    #endregion
+
+    #region Log text rules (ARV-289)
+
+    /// <summary>
+    /// The four log text rules as they were before ARV-289 (backtracking, no timeout), each with the replacement
+    /// <see cref="SecretText.Redact"/> makes (the scheme, the query parameter's name and the credential's marker kept), and
+    /// fragments of its own and near misses to build texts from.
+    /// </summary>
+    private static readonly Dictionary<string, (string Pattern, RegexOptions Options, Func<Regex> Rule, MatchEvaluator Replace, string[] Fragments)> LogRules =
+        new(StringComparer.Ordinal)
+        {
+            ["AuthorizationScheme"] = (@"\b(?<scheme>Bearer|Basic)\s+[A-Za-z0-9\-._~+/]+=*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                SecretText.AuthorizationScheme, m => m.Groups["scheme"].Value + " " + SecretText.Redacted,
+                ["Bearer", "Basic", "bearer", "BASIC", "Beare", "xBearer", " ", "\t", "\n", "abc", "Z9", "-", ".", "_", "~", "+", "/", "=", "==", ":", ",", "\u00e9", "\u200d", "\u017f", "\u212a", "\u00a0"]),
+            ["TokenQueryParameter"] = (@"(?<key>[?&#](access_token|refresh_token|id_token|token|code|totp|otp|password|key)=)[^&#\s""']+",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, SecretText.TokenQueryParameter, m => m.Groups["key"].Value + SecretText.Redacted,
+                ["?token=", "&access_token=", "#code=", "?", "&", "#", "=", "access_token", "refresh_token", "id_token", "token", "TOKEN", "code", "totp", "otp", "password", "key", "keys", "tok", "abc",
+                 " ", "\"", "'", "/", "%20", "\n", "\u017f", "\u212a", "\u200d"]),
+            ["DeviceKey"] = (@"ard[kp]_[A-Za-z0-9_-]{20,}", RegexOptions.CultureInvariant, SecretText.DeviceKey, m => m.Value[..5] + SecretText.Redacted,
+                ["ardk_", "ardp_", "ardx_", "ARDK_", "ard", "k_", "abcdefghij", "0123456789", "-", "_", ".", " ", "\u00e9", "\u200d", "\u212a"]),
+            ["Jwt"] = (@"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*", RegexOptions.CultureInvariant, SecretText.Jwt, _ => SecretText.Redacted,
+                ["eyJ", "eyJabcde", "eyJabcde.", "abcde.", "abcde", "12345", "eyj", "xeyJ", "ab", "-", "_", ".", "..", " ", "=", "\n", "\u00e9", "\u200d", "\u212a"])
+        };
+
+    public static TheoryData<string> LogRuleNames => [.. LogRules.Keys];
+
+    [Theory]
+    [MemberData(nameof(LogRuleNames))]
+    public void LogRule_Should_ReplaceWhatTheBacktrackingRuleReplaced_When_RandomTextsAreRedacted(string name)
+    {
+        var (pattern, options, rule, replace, fragments) = LogRules[name];
+        var old = new Regex(pattern, options);
+        var linear = rule();
+
+        linear.Options.Should().HaveFlag(RegexOptions.NonBacktracking);
+        var matched = 0;
+        Gen.OneOfConst(fragments).Array[0, 24].Select(parts => string.Concat(parts))
+            .Sample(text =>
+            {
+                if (old.IsMatch(text))
+                    Interlocked.Increment(ref matched);
+                return linear.Replace(text, replace) == old.Replace(text, replace);
+            }, iter: Iterations);
+        // Texts the old rule replaces in, not only misses: at least one in a hundred of those sampled.
+        matched.Should().BeGreaterThan(Iterations / 100, "the property compares replacements, so the texts must hold matches");
     }
 
     #endregion

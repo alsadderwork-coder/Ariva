@@ -276,12 +276,20 @@ public sealed class SecretFormatRedactionTests
     [InlineData("Cookie:")]
     [InlineData("ABCDEFGH")]
     [InlineData("A-")]
+    [InlineData("eyJ-")]
+    [InlineData("eyJabcde.")]
+    [InlineData("Bearer ")]
+    [InlineData("?token=")]
+    [InlineData("ardk_-")]
     public void RedactText_Should_FinishQuickly_When_TheTextIsALongAdversarialRun(string fragment)
     {
         // Exception text is unbounded: 100,000 characters of a rule's own fragments, with a private key block left open first.
         var marker = new string('-', 5);
         var opening = marker + "BEGIN PRIVATE KEY" + marker;
         var text = opening + string.Concat(Enumerable.Repeat(fragment, 100_000 / fragment.Length));
+        // ARV-289 review: the linear engine's first long match in a process builds its states (about a second on a cold host for
+        // the token parameter and device key rules, linear still), so the first pass is untimed; a quadratic rule is slow in either.
+        RedactionEnricher.RedactText(text);
         var watch = System.Diagnostics.Stopwatch.StartNew();
 
         RedactionEnricher.RedactText(text);
@@ -352,8 +360,8 @@ public sealed class SecretFormatRedactionTests
     #region Rules
 
     public static TheoryData<string> RuleNames =>
-        ["PrivateKeyBlock", "DerBase64", "IntegrationClientSecret", "TemporaryPassword", "RecoveryCode", "Base32Seed", "CredentialHeader", "JsonMember", "Assignment",
-         "UnquotedAssignment", "PasswordAssignment"];
+        ["AuthorizationScheme", "TokenQueryParameter", "DeviceKey", "Jwt", "PrivateKeyBlock", "DerBase64", "IntegrationClientSecret", "TemporaryPassword", "RecoveryCode",
+         "Base32Seed", "CredentialHeader", "JsonMember", "Assignment", "UnquotedAssignment", "PasswordAssignment"];
 
     [Theory]
     [MemberData(nameof(RuleNames))]

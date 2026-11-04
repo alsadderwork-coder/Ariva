@@ -2421,7 +2421,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 318,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Filed 2026-11-02 from the ARV-285 security review round 2 (advisory 1). Predates ARV-285 (the rule is ARV-007's, applied to exception text since ARV-212). No sign-in code.",
       "dependsOn": [
         "ARV-285"
