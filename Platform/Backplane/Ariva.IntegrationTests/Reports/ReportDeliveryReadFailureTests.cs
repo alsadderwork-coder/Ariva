@@ -206,6 +206,9 @@ public sealed class ReportDeliveryReadFailureTests(PostgresFixture fixture) : IA
         run.Should().Be(new ReportDeliveryRun(1, 0, 0, 1));
         (await StatusAsync(host, schedule)).Should().Be($"Failed:1:{Reason}", "counted in a transaction of its own, on another connection");
         _logs.Failures.Should().ContainSingle().Which.Message.Should().Contain("(attempt counted: True)");
+        // The broken connection's rollback is logged with the cause's type and SQLSTATE only, never its text (CWE-532).
+        _logs.Entries.Where(e => e.StartsWith("A transaction was rolled back", StringComparison.Ordinal)).Should().Equal(
+            ["A transaction was rolled back after its database connection broke (PostgresException, SQLSTATE 57P01); nothing of it commits"]);
         var sent = await RunAsync(host);
         sent.Sent.Should().Be(1, "the next round sends it");
         (await StatusAsync(host, schedule)).Should().Be("Sent:2:");
