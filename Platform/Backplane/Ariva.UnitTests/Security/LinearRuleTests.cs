@@ -83,64 +83,100 @@ public class LinearRuleTests
 
     public static TheoryData<string> LogRuleNames => [.. LogRules.Keys];
 
-    /// <summary>Every rule SecretText gives: its public methods that return a <see cref="Regex"/> and take nothing.</summary>
+    /// <summary>Every rule SecretText holds, public or not: its static methods that return a <see cref="Regex"/> and take nothing.</summary>
     public static TheoryData<string> SecretTextRuleNames =>
-        [.. typeof(SecretText).GetMethods(BindingFlags.Public | BindingFlags.Static)
+        [.. typeof(SecretText).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
             .Where(m => m.ReturnType == typeof(Regex) && m.GetParameters().Length == 0).Select(m => m.Name).Order(StringComparer.Ordinal)];
 
-    /// <summary>
-    /// ARV-289 (checkpoint fix): no two threads match with a rule at once. While one thread holds a rule (here through
-    /// <see cref="SecretText.Exclusively"/>), Protect, which runs every rule (the address rule on text with an @), waits for it,
-    /// then protects the text. Without the rule's lock Protect finishes at once and the test fails; under load it may only pass
-    /// wrongly, never fail wrongly.
-    /// </summary>
-    [Theory]
-    [MemberData(nameof(SecretTextRuleNames))]
-    public async Task SecretTextRule_Should_BeUsedByOneThreadAtATime_When_TextIsProtected(string name)
+    private static readonly string[] TokenFragments = ["?token=", "&access_token=", "#code=", "?", "&", "#", "=", "access_token", "refresh_token", "id_token", "token", "TOKEN",
+        "code", "totp", "otp", "password", "key", "keys", "tok", "abc", " ", "\"", "'", "/", "%20", "\n", "\u017f", "\u212a", "\u200d"];
+
+    private static readonly string[] DeviceFragments = ["ardk_", "ardp_", "ardx_", "ARDK_", "ard", "k_", "abcdefghij", "0123456789", "-", "_", ".", " ", "\u00e9", "\u200d", "\u212a"];
+
+    private static readonly string[] OtherFragments = ["Bearer ", "Basic ", "eyJ", "eyJabcde.", "abcde.", "MIIB", "ics_", "ABCDE", "ABCDE-", "-----BEGIN PRIVATE KEY-----",
+        "-----END PRIVATE KEY-----", "password=", "pwd=", "\"secret\":", ":", ";", ",", "a@b.c", "Authorization: ", "Cookie: ", "{", "}", "AAAAAAAAAAAAAAAA", "2345", "\t"];
+
+    /// <summary>The long texts the format tests redact (a private key block left open, then 100,000 characters of a fragment).</summary>
+    private static IEnumerable<string> LongRuns()
     {
-        var method = typeof(SecretText).GetMethod(name, BindingFlags.Public | BindingFlags.Static, Type.EmptyTypes);
-        var rule = (Regex)method.Invoke(null, null);
-        using var inside = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
-        var ct = TestContext.Current.CancellationToken;
-
-        var holder = Task.Factory.StartNew(() => SecretText.Exclusively(rule, _ =>
+        var marker = new string('-', 5);
+        var opening = marker + "BEGIN PRIVATE KEY" + marker;
+        foreach (var fragment in new[] { "a=", "a=b", "\"a\":\"", "Cookie:", "ABCDEFGH", "A-", "eyJ-", "eyJabcde.", "Bearer ", "?token=", "ardk_-" })
         {
-            inside.Set();
-            release.Wait(ct);
-            return 0;
-        }), ct, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-        inside.Wait(ct);
-        var protect = Task.Factory.StartNew(() => SecretText.Protect("ops@example.com Bearer abc.def ?token=t1 ardk_01234567890123456789abc"), ct,
-            TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            var text = opening + string.Concat(Enumerable.Repeat(fragment, 100_000 / fragment.Length));
+            yield return text;
+            yield return text[opening.Length..];
+        }
+    }
 
-        (await Task.WhenAny(protect, Task.Delay(TimeSpan.FromMilliseconds(300), ct))).Should().NotBeSameAs(protect, $"Protect waits while another thread holds {name}");
-        release.Set();
-        await holder;
-        (await protect).Should().Be($"o***@example.com Bearer {SecretText.Redacted} ?token={SecretText.Redacted} ardk_{SecretText.Redacted}");
+    private static string[] Texts(int count, int seed, params string[][] fragments)
+    {
+        var random = new Bogus.Randomizer(seed);
+        var all = fragments.SelectMany(f => f).ToArray();
+        return [.. Enumerable.Range(0, count).Select(_ => string.Concat(Enumerable.Range(0, random.Number(0, 24)).Select(_ => random.ArrayElement(all))))];
     }
 
     /// <summary>
-    /// ARV-289 (checkpoint fix): the rules are matched only through SecretText's own exclusive use: no source outside it matches
-    /// with one directly (a test may, through <see cref="SecretText.Exclusively"/>), and inside it every match goes through the
-    /// lock.
+    /// ARV-289 (checkpoint fix): on the runtime's linear engine one search that scans 32,000 characters or more leaves the
+    /// instance matching wrong on its later calls (the token parameter rule on a new instance, the device key rule after other
+    /// texts), so SecretText matches a text longer than <see cref="SecretText.LongestSharedText"/> on an instance of its own. The
+    /// instance given here then matches as the backtracking engine does; with the long texts on it, it does not (the two orders
+    /// below each left one rule wrong, about one text in 400 and one in 15,000).
     /// </summary>
-    [Fact]
-    public void SecretTextRules_Should_BeMatchedOnlyUnderTheirLock_When_TheSourcesAreRead()
+    [Theory]
+    [InlineData("TokenQueryParameter", false)]
+    [InlineData("DeviceKey", true)]
+    public void LongText_Should_LeaveTheSharedInstanceMatchingAsBefore_When_ItIsRedacted(string name, bool shortTextsFirst)
     {
-        var sources = Directory.EnumerateFiles(RepositoryPaths.Platform, "*.cs", SearchOption.AllDirectories)
-            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
-                        !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
-                        !f.Contains($"{Path.DirectorySeparatorChar}Ariva.UnitTests{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            .ToList();
-        var direct = new Regex(@"\b(SecretText|RedactionEnricher|LogProtection)\.[A-Za-z]+\(\)\.(Replace|Match|Matches|IsMatch|Count|EnumerateMatches|Split)\(",
-            RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
-        sources.SelectMany(f => File.ReadLines(f).Where(l => direct.IsMatch(l)).Select(l => $"{Path.GetFileName(f)}: {l.Trim()}")).Should().BeEmpty();
+        var shape = (Regex)typeof(SecretText).GetMethod(name, BindingFlags.Public | BindingFlags.Static, Type.EmptyTypes).Invoke(null, null);
+        var shared = new Regex(shape.ToString(), shape.Options, shape.MatchTimeout);
+        var reference = new Regex(shape.ToString(), shape.Options & ~RegexOptions.NonBacktracking);
+        var own = name == "TokenQueryParameter" ? TokenFragments : DeviceFragments;
+        if (shortTextsFirst)
+            foreach (var text in Texts(30_000, 1, own))
+                SecretText.Replace(shared, text, "<$0>");
 
-        var secretText = sources.Single(f => f.EndsWith(Path.Combine("Ariva.Infra", "Security", "SecretText.cs"), StringComparison.Ordinal));
-        var unlocked = new Regex(@"\b[A-Za-z]+\(\)\.(Replace|Match|Matches|IsMatch|Count|EnumerateMatches|Split)\(", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
-        File.ReadLines(secretText).Where(l => unlocked.IsMatch(l)).Should().BeEmpty("Redact, MaskAddressesIn and HeaderValue match through Replace and FirstMatch");
-        File.ReadAllText(secretText).Should().Contain("lock (GateOf(rule))");
+        foreach (var text in LongRuns().Concat(LongRuns()))
+            SecretText.Replace(shared, text, "<$0>").Should().Be(reference.Replace(text, "<$0>"), "a long text's own call matches right");
+
+        Texts(60_000, 2, own).Where(text => shared.Replace(text, "<$0>") != reference.Replace(text, "<$0>")).Select(Escaped).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// ARV-289 (checkpoint fix): no rule of SecretText is left matching wrong by the long texts SecretText matches (each on an
+    /// instance of its own), in either order (new, or after short texts), so a change of pattern or of runtime that brings the
+    /// defect to another rule's shared instance fails here as long as the guard holds, and the guard's own test above fails if
+    /// it goes.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(SecretTextRuleNames))]
+    public void SecretTextRule_Should_MatchAsTheBacktrackingEngine_When_LongTextsWereRedacted(string name)
+    {
+        var shape = (Regex)typeof(SecretText).GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, Type.EmptyTypes).Invoke(null, null);
+        var reference = new Regex(shape.ToString(), shape.Options & ~RegexOptions.NonBacktracking);
+        var samples = Texts(10_000, 3, TokenFragments, DeviceFragments, OtherFragments);
+        var hit = samples.FirstOrDefault(reference.IsMatch) ?? "x";
+        string[] shapes = [hit + new string(hit[^1], 40_000), new string(hit[0], 40_000) + hit, new string('q', 40_000) + hit, hit + new string('q', 40_000)];
+
+        foreach (var shortTextsFirst in new[] { false, true })
+        {
+            var shared = new Regex(shape.ToString(), shape.Options, shape.MatchTimeout);
+            if (shortTextsFirst)
+                foreach (var text in samples)
+                    SecretText.Replace(shared, text, "<$0>");
+            foreach (var text in LongRuns().Concat(shapes))
+                SecretText.Replace(shared, text, "<$0>");
+
+            samples.Where(text => shared.Replace(text, "<$0>") != reference.Replace(text, "<$0>")).Select(Escaped).Should().BeEmpty(shortTextsFirst ? "after short texts" : "new");
+        }
+    }
+
+    [Fact]
+    public void LongestSharedText_Should_BeWellBelowTheShortestScanThatLeftAnInstanceWrong_When_Read()
+    {
+        // 16,000 characters never left an instance wrong, 32,000 did (the token parameter and device key rules, measured on
+        // .NET 10.0.13); the bound keeps a shared instance's scans at half the first.
+        SecretText.LongestSharedText.Should().BeLessThanOrEqualTo(8_192);
     }
 
     private static string Escaped(string text) => System.Text.Json.JsonSerializer.Serialize(text);
@@ -151,20 +187,20 @@ public class LinearRuleTests
     {
         var (pattern, options, rule, replace, fragments) = LogRules[name];
         var old = new Regex(pattern, options);
+        var linear = rule();
 
-        rule().Options.Should().HaveFlag(RegexOptions.NonBacktracking);
+        linear.Options.Should().HaveFlag(RegexOptions.NonBacktracking);
         var matched = 0;
-        // The rule as Redact uses it, on the sampling threads: through SecretText.Exclusively, so no two of them match with it at
-        // once (the checkpoint fix). A difference prints the text and both replacements escaped, since the texts hold line
-        // breaks and invisible characters.
         Gen.OneOfConst(fragments).Array[0, 24].Select(parts => string.Concat(parts))
             .Sample(text =>
             {
                 if (old.IsMatch(text))
                     Interlocked.Increment(ref matched);
-                return SecretText.Exclusively(rule(), linear => linear.Replace(text, replace)) == old.Replace(text, replace);
+                return linear.Replace(text, replace) == old.Replace(text, replace);
             }, iter: Iterations,
-            print: text => $"{Escaped(text)} gives {Escaped(SecretText.Exclusively(rule(), linear => linear.Replace(text, replace)))} (a new instance "
+            // A difference prints the text and both replacements escaped (the texts hold line breaks and invisible characters),
+            // and what a new instance gives, which tells a pattern's difference from an instance left matching wrong.
+            print: text => $"{Escaped(text)} gives {Escaped(linear.Replace(text, replace))} (a new instance "
                 + $"{Escaped(new Regex(pattern, options | RegexOptions.NonBacktracking).Replace(text, replace))}), the backtracking rule {Escaped(old.Replace(text, replace))}");
         // Texts the old rule replaces in, not only misses: at least one in a hundred of those sampled.
         matched.Should().BeGreaterThan(Iterations / 100, "the property compares replacements, so the texts must hold matches");

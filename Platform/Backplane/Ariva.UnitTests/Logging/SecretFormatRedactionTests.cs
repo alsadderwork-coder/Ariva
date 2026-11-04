@@ -287,13 +287,21 @@ public sealed class SecretFormatRedactionTests
         var marker = new string('-', 5);
         var opening = marker + "BEGIN PRIVATE KEY" + marker;
         var text = opening + string.Concat(Enumerable.Repeat(fragment, 100_000 / fragment.Length));
-        // ARV-289 review: the linear engine's first long match in a process builds its states (about a second on a cold host for
-        // the token parameter and device key rules, linear still), so the first pass is untimed; a quadratic rule is slow in either.
-        RedactionEnricher.RedactText(text);
+        // ARV-289 (checkpoint fix): a text this long is matched on new instances (SecretText.LongestSharedText), which build their
+        // states as they go (about a second for the token parameter and device key rules, linear still), so the rules are timed on
+        // instances of this test's own after an untimed first pass; a quadratic rule (the backtracking Jwt took 3.7 s for 80,000
+        // characters) is slow in either. LinearRuleTests checks what a long text's own instances replace.
+        var rules = RuleNames.Select(name => (Regex)typeof(RedactionEnricher).GetMethod(name).Invoke(null, null))
+            .Select(rule => new Regex(rule.ToString(), rule.Options, rule.MatchTimeout)).ToList();
+        foreach (var rule in rules)
+            rule.Replace(text, "[R]");
         var watch = System.Diagnostics.Stopwatch.StartNew();
 
-        RedactionEnricher.RedactText(text);
-        RedactionEnricher.RedactText(text[opening.Length..]);
+        foreach (var rule in rules)
+        {
+            rule.Replace(text, "[R]");
+            rule.Replace(text[opening.Length..], "[R]");
+        }
 
         watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2), "every rule is linear in the text's length");
     }

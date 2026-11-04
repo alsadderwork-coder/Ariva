@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 
 namespace Ariva.Infra.Security;
@@ -197,54 +196,30 @@ public static partial class SecretText
 
     #endregion
 
-    #region Exclusive use (ARV-289 checkpoint fix)
+    #region Long texts (ARV-289 checkpoint fix)
 
     /// <summary>
-    /// Runs <paramref name="use"/> on <paramref name="rule"/> while no other thread uses that rule through this method (each
-    /// rule has a lock of its own). <see cref="Redact"/>, <see cref="MaskAddressesIn"/> and anything else that matches with one
-    /// of these rules goes through it. The linear engine (NonBacktracking) builds its matcher's states inside an instance as
-    /// texts need them; with one instance used by many threads at once, the unit suite's full run (the log tests redacting on
-    /// many threads while the rules' properties ran) found it ending a match a character early or late (a one-character query
-    /// value left whole, a dot taken into a device key) in about one run in two, while a new instance given the same text, and
-    /// the same texts replayed on one thread, matched right; a match that ends early leaves part of a credential in the text
-    /// (CWE-532). With no instance used by two threads at once the same runs pass. One instance per thread would hold each
-    /// rule's states once per thread (tens of megabytes for a thread's set after varied text), so each rule keeps one instance
-    /// and its use is serialized: a short text takes it for microseconds.
+    /// The longest text a rule's shared instance matches; a longer one is matched on an instance made for that one call and
+    /// then dropped. On the runtime's linear engine (NonBacktracking, .NET 10.0.13) one search that scans over a long stretch
+    /// (32,000 characters or more in every case measured, never 16,000 or less: a long token parameter value, a long run of
+    /// device key characters after other texts) leaves that instance matching wrong on its later calls: a one-character value
+    /// left whole, a match run one character past the key, about one later text in 400 for the token parameter. The call itself
+    /// matches right, and no other instance is touched, so a long text gets an instance of its own and the shared ones never
+    /// scan that far. Each rule's shared instance matches every text a host logs below this, warm; a longer text costs about
+    /// 25 to 40 ms for the 17 rules (measured on 8 to 128 KiB of log text), as against 3 to 13 ms warm.
     /// </summary>
-    /// <typeparam name="T">What <paramref name="use"/> returns.</typeparam>
-    /// <param name="rule">One of the rules (or any expression whose matching must not overlap).</param>
-    /// <param name="use">The matching to run.</param>
-    /// <returns>What <paramref name="use"/> returned.</returns>
-    public static T Exclusively<T>(Regex rule, Func<Regex, T> use)
-    {
-        ArgumentNullException.ThrowIfNull(rule);
-        ArgumentNullException.ThrowIfNull(use);
-        lock (GateOf(rule))
-            return use(rule);
-    }
+    internal const int LongestSharedText = 8_192;
 
-    private static string Replace(Regex rule, string text, MatchEvaluator evaluator)
-    {
-        lock (GateOf(rule))
-            return rule.Replace(text, evaluator);
-    }
+    /// <summary>Replaces with <paramref name="rule"/>, on an instance of its own when the text is longer than <see cref="LongestSharedText"/>.</summary>
+    internal static string Replace(Regex rule, string text, MatchEvaluator evaluator) => InstanceFor(rule, text).Replace(text, evaluator);
 
-    private static string Replace(Regex rule, string text, string replacement)
-    {
-        lock (GateOf(rule))
-            return rule.Replace(text, replacement);
-    }
+    /// <inheritdoc cref="Replace(Regex, string, MatchEvaluator)"/>
+    internal static string Replace(Regex rule, string text, string replacement) => InstanceFor(rule, text).Replace(text, replacement);
 
-    private static Match FirstMatch(Regex rule, string text)
-    {
-        lock (GateOf(rule))
-            return rule.Match(text);
-    }
+    private static Match FirstMatch(Regex rule, string text) => InstanceFor(rule, text).Match(text);
 
-    /// <summary>Each rule's lock, kept as long as the rule (the rules are the generated singletons, so for the process).</summary>
-    private static readonly ConditionalWeakTable<Regex, Lock> Gates = new();
-
-    private static Lock GateOf(Regex rule) => Gates.GetValue(rule, static _ => new Lock());
+    private static Regex InstanceFor(Regex rule, string text) =>
+        text.Length <= LongestSharedText ? rule : new Regex(rule.ToString(), rule.Options, rule.MatchTimeout);
 
     #endregion
 

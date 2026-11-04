@@ -2501,6 +2501,26 @@
       "dependsOn": [
         "ARV-291"
       ]
+    },
+    {
+      "id": "ARV-293",
+      "title": "[E17] The other shared linear rules that find matches, kept off long scans; a bound on the text SecretText protects",
+      "description": "Found by the ARV-289 checkpoint fix (2026-11-04). On the runtime's linear engine (NonBacktracking, .NET 10.0.13) one search that scans 32,000 characters or more (never 16,000 or less in the cases measured) leaves that Regex instance matching wrong on its later calls: SecretText's token parameter rule left a one-character value whole (about one later text in 400), its device key rule, after other texts first, took one character past the key. The call itself matches right, IsMatch never did it (it runs no backward search), and no other instance is touched. SecretText now matches a text longer than 8,192 characters on new instances (SecretText.LongestSharedText). Three other shared NonBacktracking rules find match positions: EmailTemplates.Placeholder (Ariva.Infra/Notifications/Email.cs: Fill's Replace and the template check's Matches, on the templates, so a placeholder left in a sent email or a value in the wrong place), ClamdScanner.VersionPattern (its Match on the scanner's version reply) and JobsDashboard.BaseElement (Ariva.Api.Cronz/Jobs/JobsDashboard.cs: Replace on the dashboard page, held by the sign-in freeze with the dashboard's other rules, ARV-163a). Give each the same guard (move SecretText's to a shared helper in Ariva.Utilities or Ariva.Infra), or show its input is bounded below the guard's length, with a test as LinearRuleTests' LongText_Should_LeaveTheSharedInstanceMatchingAsBefore_When_ItIsRedacted. And bound the text SecretText protects (CWE-400): nothing caps it, a long text now costs new instances (about a second for each rule whose match is a 100,000-character run), and the enricher protects every string property of every event; cut a text past a bound before protecting it only where a cut cannot leave part of a credential unmasked (a pattern that needs its end, such as a JWT's three parts, does not match a cut one), or protect in pieces split where no rule's match can cross. The IsMatch validators (Site, Topology, FlightRules, OutboundRules, LocalDiskFileStorage, CsvImportReader, EmailAddresses, EmailAttachment, FeedSettings) stay unless a failure is found. CWEs to review: CWE-532, CWE-400, CWE-20.",
+      "acceptanceCriteria": [
+        "EmailTemplates.Placeholder and ClamdScanner.VersionPattern match a text longer than the guard's length on a new instance (a shared helper, SecretText's moved to it), or their input is shown bounded below it; a unit test runs the long scans that left SecretText's rules wrong and proves each shared instance then matches as the backtracking engine does",
+        "JobsDashboard.BaseElement follows when the sign-in freeze lifts (ARV-163a), recorded in that story's notes, not changed here",
+        "SecretText.Protect (and Redact) bound the work of one text: a text past the bound is protected so that no credential in it is left partly unmasked (tests with a credential across the bound for every rule), and the bound, its cost and why in docs/security/costly-operations.md",
+        "A unit test reads the production sources and finds no Replace, Match, Matches, EnumerateMatches or Split on a shared NonBacktracking rule outside the guard, the validators' IsMatch allowed and named",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 323,
+      "passes": false,
+      "notes": "Size M. Phase 3. Found by the ARV-289 checkpoint fix (2026-11-04). Low for the three rules (their inputs are short: a template, a version line, the dashboard page); the unbounded protected text is the larger part. The dashboard's rule is in the sign-in freeze. No sign-in code.",
+      "dependsOn": [
+        "ARV-289"
+      ]
     }
   ]
 }
