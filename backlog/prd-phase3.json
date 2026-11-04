@@ -2089,7 +2089,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 315,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Filed 2026-10-28 by ARV-252 from its security review. No sign-in code.",
       "dependsOn": [
         "ARV-252"
@@ -2463,6 +2463,24 @@
       "notes": "Size S. Low: a read that fails every time is retried by every round, each within the deliveries' single slot, so it costs one statement a round, not more.",
       "dependsOn": [
         "ARV-234"
+      ]
+    },
+    {
+      "id": "ARV-271a",
+      "title": "[E17] CI log wiring checks: the gaps left by ARV-252 and ARV-271, and third-party text quoted with its backticks",
+      "description": "Split from ARV-271 on 2026-11-04 (its description's round 2 items not in its criteria, and its security review: round 1 finding 4 and advice 5, round 2 finding 4). The wiring checks of Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs still pass a few deliberate edits: backendLogWiring a step before the check that reads the TRX other than the count guards' --trx, a read outside the LOGS_CHECKED block of a step that tests it elsewhere, a log named through a variable, and a negated gate (!(steps.test-logs.outcome == 'success')); mutationLogWiring an upload path through checked/../, a write into checked/ after the check (later in the check step or in another step before the upload); mutationLogWiring also passes a read on the run line itself (...; cat .verify/mutation.log, the run step being exempt from the reads rule: require the run line to be its only command), an inline ARIVA_MUTATION_QUIET=false before node that overrides the step's env, and a glob read (cat .verify/*.log); both checks pass their required artifact-secrets.mjs checked line inside a function never called; e2eCommentQuotes reads only lines that start with grep, sed or tail, so a head, cat, awk or LC_ALL=C grep line passes, as do grep ... && ... | tr and grep -q ...; grep ..., and nothing checks the backend failure comment's backtick filters. Other pull request comments quote third-party text inside code fences with its backticks kept (images.yml, security-scan.yml's Trivy tables, base-images.yml). Each needs a deliberate edit of a workflow, so the main controls (output to files, the check, gating on its success) hold. CWEs to review: CWE-532.",
+      "acceptanceCriteria": [
+        "backendLogWiring, mutationLogWiring and e2eCommentQuotes refuse each edit named in the description, each with a self-test case, and the backend failure comment's quoted lines are held as the E2E comment's are",
+        "The other workflows' pull request comments quote third-party text without backticks, held by a check",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 321,
+      "passes": false,
+      "notes": "Size S. Phase 3. Split from ARV-271 by its security review (2026-11-04). No sign-in code.",
+      "dependsOn": [
+        "ARV-271"
       ]
     }
   ]
