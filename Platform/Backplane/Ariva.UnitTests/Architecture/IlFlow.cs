@@ -73,7 +73,7 @@ internal static class IlFlow
         var body = method.GetMethodBody();
         var argTypes = (method.IsStatic ? [] : new[] { method.DeclaringType }).Concat(method.GetParameters().Select(p => p.ParameterType)).ToArray();
         if (body is null || instructions.Count == 0)
-            return new Result([], fields, [], [], 0, new int[argTypes.Length]);
+            return new Result([], fields, [], [], [], 0, new int[argTypes.Length]);
         var byOffset = instructions.Select((ins, k) => (ins.Offset, k)).ToDictionary(x => x.Offset, x => x.k);
         var localTypes = body.LocalVariables.Select(l => l.LocalType).ToArray();
         var returnsValue = method is MethodInfo info && info.ReturnType != typeof(void);
@@ -97,9 +97,10 @@ internal static class IlFlow
 
         var arguments = new Dictionary<int, int[]>();
         var comparisons = new Dictionary<int, int>();
-        var invoked = new Dictionary<int, MethodBase>();
+        var invoked = new Dictionary<int, HashSet<MethodBase>>();
+        var passed = new Dictionary<int, HashSet<MethodBase>>();
         var fieldAliases = new Dictionary<(Module, int), ImmutableHashSet<int>>();
-        var fieldTargets = new Dictionary<(Module, int), MethodBase>();
+        var fieldTargets = new Dictionary<(Module, int), ImmutableHashSet<MethodBase>>();
         var returned = 0;
         var stored = new int[argTypes.Length];
         // Fields are followed across the whole method: the interpretation is run again until no field gains a flag.
@@ -222,7 +223,6 @@ internal static class IlFlow
                 }
 
                 var falls = true;
-                var flaggedFields = fields.Count > 0 && fields.Values.Any(v => v != 0);
 
                 if (ins.Callee is { } callee && (ins.OpCode == OpCodes.Call || ins.OpCode == OpCodes.Callvirt || ins.OpCode == OpCodes.Newobj))
                 {
@@ -235,6 +235,10 @@ internal static class IlFlow
                         slots[a] = Pop();
                     var taken = slots.Select(s => s.Flags).ToArray();
                     arguments[k] = arguments.TryGetValue(k, out var seen) ? [.. seen.Zip(taken, (x, y) => x | y)] : taken;
+                    // ARV-287: the delegates a call is given (a predicate, a selector), by the method each runs.
+                    if (!(created && typeof(Delegate).IsAssignableFrom(callee.DeclaringType)))
+                        foreach (var given in slots.Where(s => s.Runs is { IsEmpty: false }).SelectMany(s => s.Runs))
+                            (passed.TryGetValue(k, out var those) ? those : passed[k] = []).Add(given);
                     int Others(int except) => slots.Where((_, a) => a != except).Aggregate(0, (x, s) => x | s.Flags);
                     // The async machinery (a builder, an awaiter, a task) moves the state machine and its awaiters by reference, not
                     // values into each other.
@@ -242,31 +246,35 @@ internal static class IlFlow
                         .Where(a => instance && a == 0 ? IsContainer(callee.DeclaringType) : IsContainer(parameters[a - (instance ? 1 : 0)].ParameterType))
                         .ToArray();
 
-                    Summary summary = null;
-                    var shift = 0;
+                    // Each summary with the stack position its first argument is at (a static delegate target takes no receiver).
+                    var summaries = new List<(Summary Summary, int Shift)>();
                     if (summarize is not null)
                     {
-                        if (instance && callee.Name == "Invoke" && typeof(Delegate).IsAssignableFrom(callee.DeclaringType) && slots[0].Target is { } target)
+                        if (instance && callee.Name == "Invoke" && typeof(Delegate).IsAssignableFrom(callee.DeclaringType) && slots[0].Runs is { IsEmpty: false } runs)
                         {
-                            // A delegate's call runs its target, given the delegate's receiver (a closure) unless the target is static.
-                            invoked[k] = target;
-                            shift = target.IsStatic ? 1 : 0;
-                            summary = summarize(target, false, taken[shift..], fields);
+                            // A delegate's call runs each method it may hold, given the delegate's receiver (a closure) unless the
+                            // method is static.
+                            (invoked.TryGetValue(k, out var those) ? those : invoked[k] = []).UnionWith(runs);
+                            foreach (var target in runs)
+                                if (summarize(target, false, taken[(target.IsStatic ? 1 : 0)..], fields) is { } one)
+                                    summaries.Add((one, target.IsStatic ? 1 : 0));
                         }
-                        else if (taken.Any(t => t != 0) || flaggedFields)
+                        else if (summarize(callee, created, taken, fields) is { } one)
                         {
-                            summary = summarize(callee, created, taken, fields);
+                            summaries.Add((one, 0));
                         }
                     }
 
-                    if (summary is not null)
+                    foreach (var (one, shift) in summaries)
                     {
-                        foreach (var (key, flags) in summary.Fields)
+                        foreach (var (key, flags) in one.Fields)
                             fields[key] = fields.GetValueOrDefault(key) | flags;
-                        for (var a = 0; a < summary.ArgumentsOut.Length && a + shift < count; a++)
-                            Store(slots[a + shift].Homes, summary.ArgumentsOut[a]);
+                        for (var a = 0; a < one.ArgumentsOut.Length && a + shift < count; a++)
+                            Store(slots[a + shift].Homes, one.ArgumentsOut[a]);
                     }
-                    else
+
+                    var summary = summaries.Count == 0 ? null : new Summary(summaries.Aggregate(0, (x, y) => x | y.Summary.Returned), [], new Dictionary<(Module, int), int>());
+                    if (summaries.Count == 0)
                     {
                         // A call outside the scope keeps what it is given in what it was given it with: an array, a span, a
                         // builder, a collection, a by-ref argument or a struct taken by address.
@@ -289,15 +297,15 @@ internal static class IlFlow
                             : [];
                         if (created)
                             homes = homes.Add(MadeHomes - k);
-                        var made = created && typeof(Delegate).IsAssignableFrom(callee.DeclaringType) && count > 1 ? slots[1].Target : null;
-                        stack.Push(new Slot(flags, homes, false, made));
+                        var made = created && typeof(Delegate).IsAssignableFrom(callee.DeclaringType) && count > 1 ? slots[1].Runs : null;
+                        stack.Push(new Slot(flags, homes, false, made, returns.IsByRef));
                     }
                 }
                 else if (ins.OpCode == OpCodes.Ldftn || ins.OpCode == OpCodes.Ldvirtftn)
                 {
                     if (ins.OpCode == OpCodes.Ldvirtftn)
                         Pop();
-                    stack.Push(new Slot(0, [], false, ins.Callee));
+                    stack.Push(new Slot(0, [], false, [ins.Callee]));
                 }
                 else if (name.StartsWith("ldloca", StringComparison.Ordinal))
                 {
@@ -310,7 +318,7 @@ internal static class IlFlow
                     var i = ins.Index;
                     var known = i >= 0 && i < state.Locals.Length;
                     stack.Push(new Slot(state.Locals.ElementAtOrDefault(i) | typeFlags(localTypes.ElementAtOrDefault(i)), known ? state.LocalHomes[i] : [],
-                        false, known ? state.LocalTargets[i] : null));
+                        false, known ? state.LocalRuns[i] : null));
                 }
                 else if (name.StartsWith("stloc", StringComparison.Ordinal))
                 {
@@ -321,7 +329,7 @@ internal static class IlFlow
                         state.Locals[i] = value.Flags;
                         // A value with no home of its own is the object this store made it.
                         state.LocalHomes[i] = value.Homes.IsEmpty ? [MadeHomes - k] : value.Homes;
-                        state.LocalTargets[i] = value.Target;
+                        state.LocalRuns[i] = value.Runs ?? ImmutableHashSet<MethodBase>.Empty;
                     }
                 }
                 else if (name.StartsWith("ldarga", StringComparison.Ordinal))
@@ -348,10 +356,13 @@ internal static class IlFlow
                 }
                 else if (ins.Member is FieldInfo field && name is "ldfld" or "ldsfld" or "ldflda" or "ldsflda")
                 {
-                    if (name is "ldfld" or "ldflda")
-                        Pop();
+                    var receiver = name is "ldfld" or "ldflda" ? Pop() : new Slot(0, []);
                     var key = (field.Module, field.MetadataToken);
                     var flags = fields.GetValueOrDefault(key) | typeFlags(field.FieldType);
+                    // ARV-287: a field of a struct or a public field (a tuple's item, a StrongBox's value) is part of the value it
+                    // is read from; a closure's or a state machine's fields are followed by themselves.
+                    if (field.DeclaringType is { } holder && !holder.Name.StartsWith('<') && (holder.IsValueType || field.IsPublic))
+                        flags |= Read(receiver.Flags);
                     stack.Push(new Slot(flags, fieldAliases.GetValueOrDefault(key, ImmutableHashSet<int>.Empty).Add(FieldHome(key)), false, fieldTargets.GetValueOrDefault(key)));
                 }
                 else if (ins.Member is FieldInfo written && name is "stfld" or "stsfld")
@@ -363,8 +374,8 @@ internal static class IlFlow
                     fields[key] = fields.GetValueOrDefault(key) | value.Flags;
                     if (!value.Homes.IsEmpty)
                         fieldAliases[key] = fieldAliases.GetValueOrDefault(key, ImmutableHashSet<int>.Empty).Union(value.Homes);
-                    if (value.Target is not null)
-                        fieldTargets[key] = value.Target;
+                    if (value.Runs is { IsEmpty: false })
+                        fieldTargets[key] = fieldTargets.TryGetValue(key, out var runs) ? runs.Union(value.Runs) : value.Runs;
                     Store([FieldHome(key)], value.Flags);
                 }
                 else if (ins.OpCode == OpCodes.Newarr)
@@ -382,7 +393,7 @@ internal static class IlFlow
                 {
                     Pop();
                     var array = Pop();
-                    stack.Push(array with { Flags = Read(array.Flags), Target = null });
+                    stack.Push(array with { Flags = Read(array.Flags), Runs = null, Element = true });
                 }
                 else if (name.StartsWith("ldelem", StringComparison.Ordinal))
                 {
@@ -391,13 +402,15 @@ internal static class IlFlow
                 }
                 else if (name.StartsWith("stind", StringComparison.Ordinal) || ins.OpCode == OpCodes.Stobj)
                 {
+                    // Through an element's address (an array's, a span's, a list's) the value goes into its container, as stelem.
                     var value = Pop();
-                    Store(Pop().Homes, value.Flags);
+                    var address = Pop();
+                    Store(address.Homes, address.Element ? Held(value.Flags) : value.Flags);
                 }
                 else if (name.StartsWith("ldind", StringComparison.Ordinal) || ins.OpCode == OpCodes.Ldobj)
                 {
                     var address = Pop();
-                    stack.Push(new Slot(address.Flags | (ins.Member is Type loaded ? typeFlags(loaded) : 0), [], false, address.Target));
+                    stack.Push(new Slot(address.Flags | (ins.Member is Type loaded ? typeFlags(loaded) : 0), [], false, address.Runs));
                 }
                 else if (ins.OpCode == OpCodes.Ldnull)
                 {
@@ -486,10 +499,10 @@ internal static class IlFlow
                 break;
         }
 
-        return new Result(arguments, fields, comparisons, invoked, returned, stored);
+        return new Result(arguments, fields, comparisons, invoked.ToDictionary(p => p.Key, p => (IReadOnlyCollection<MethodBase>)p.Value), passed.ToDictionary(p => p.Key, p => (IReadOnlyCollection<MethodBase>)p.Value), returned, stored);
 
         // Everything the passes carry over only grows, so an unchanged signature means nothing was gained.
-        long Signature() => fields.Values.Sum(v => (long)v) + fieldAliases.Values.Sum(h => (long)h.Count) + fieldTargets.Count * 7L + returned + stored.Sum(v => (long)v);
+        long Signature() => fields.Values.Sum(v => (long)v) + fieldAliases.Values.Sum(h => (long)h.Count) + fieldTargets.Values.Sum(t => 7L * t.Count) + returned + stored.Sum(v => (long)v);
     }
 
     /// <summary>The compiler's async and iterator machinery and the tasks it awaits; the interpolated string handler is a builder, not machinery.</summary>
@@ -518,7 +531,7 @@ internal static class IlFlow
     }
 
     /// <summary>A value that holds no text: a number, a flag, a character, an enum, a time.</summary>
-    private static bool IsPlain(Type type) =>
+    internal static bool IsPlain(Type type) =>
         type is null || type.IsPrimitive || type.IsEnum || type == typeof(decimal) || type == typeof(DateTime) || type == typeof(DateTimeOffset) ||
         type == typeof(TimeSpan) || type == typeof(Guid) || type == typeof(CancellationToken) ||
         (Nullable.GetUnderlyingType(type) is { } underlying && IsPlain(underlying));
@@ -541,24 +554,25 @@ internal static class IlFlow
 
     /// <summary>
     /// A method's flow: the flags each call takes (by instruction index), the flags each field gained, the flags of the values
-    /// each ceq, beq or bne.un compares by reference (none when either is a null), the delegate targets invoked (by
-    /// instruction index), and the flags it returns and stores into each argument.
+    /// each ceq, beq or bne.un compares by reference (none when either is a null), the delegate targets invoked and the ones
+    /// each call is given (by instruction index), and the flags it returns and stores into each argument.
     /// </summary>
     public sealed record Result(Dictionary<int, int[]> Arguments, Dictionary<(Module, int), int> Fields, Dictionary<int, int> Comparisons,
-        Dictionary<int, MethodBase> Invoked, int Returned, int[] ArgumentsOut);
+        Dictionary<int, IReadOnlyCollection<MethodBase>> Invoked, Dictionary<int, IReadOnlyCollection<MethodBase>> Passed, int Returned, int[] ArgumentsOut);
 
     /// <summary>What a call does: the flags it returns, stores into each argument, and leaves in the fields.</summary>
     public sealed record Summary(int Returned, int[] ArgumentsOut, IReadOnlyDictionary<(Module, int), int> Fields);
 
     /// <summary>
     /// A value on the stack: its flags; its homes (the locals, arguments, fields and made objects it may be or point into); whether
-    /// it is a null on every path; and the method a delegate or method pointer runs, when known.
+    /// it is a null on every path; the methods a delegate or method pointer may run; and whether it is the address of a
+    /// container's element.
     /// </summary>
-    private readonly record struct Slot(int Flags, ImmutableHashSet<int> Homes, bool IsNull = false, MethodBase Target = null);
+    private readonly record struct Slot(int Flags, ImmutableHashSet<int> Homes, bool IsNull = false, ImmutableHashSet<MethodBase> Runs = null, bool Element = false);
 
-    /// <summary>The union of two sets of homes: the first itself when it holds every home of the second.</summary>
-    private static ImmutableHashSet<int> Union(ImmutableHashSet<int> mine, ImmutableHashSet<int> theirs) =>
-        ReferenceEquals(mine, theirs) || theirs.IsEmpty || mine.IsSupersetOf(theirs) ? mine : mine.Union(theirs);
+    /// <summary>The union of two sets (of homes, of methods): the first itself when it holds every member of the second.</summary>
+    private static ImmutableHashSet<T> Union<T>(ImmutableHashSet<T> mine, ImmutableHashSet<T> theirs) =>
+        theirs is null || ReferenceEquals(mine, theirs) || theirs.IsEmpty ? mine : mine is null || mine.IsEmpty ? theirs : mine.IsSupersetOf(theirs) ? mine : mine.Union(theirs);
 
     /// <summary>The values on the stack and in the locals and arguments at one instruction, with their homes.</summary>
     private sealed class State
@@ -569,7 +583,7 @@ internal static class IlFlow
 
         public ImmutableHashSet<int>[] LocalHomes { get; private init; }
 
-        public MethodBase[] LocalTargets { get; private init; }
+        public ImmutableHashSet<MethodBase>[] LocalRuns { get; private init; }
 
         public int[] Arguments { get; private init; }
 
@@ -581,7 +595,7 @@ internal static class IlFlow
             Stack = new Stack<Slot>(),
             Locals = new int[locals],
             LocalHomes = Enumerable.Range(0, locals).Select(_ => ImmutableHashSet<int>.Empty).ToArray(),
-            LocalTargets = new MethodBase[locals],
+            LocalRuns = Enumerable.Range(0, locals).Select(_ => ImmutableHashSet<MethodBase>.Empty).ToArray(),
             Arguments = [.. arguments],
             ArgumentHomes = Enumerable.Range(0, arguments.Length).Select(a => ImmutableHashSet.Create(-1 - a)).ToArray()
         };
@@ -594,7 +608,7 @@ internal static class IlFlow
             Stack = new Stack<Slot>(stack),
             Locals = [.. Locals],
             LocalHomes = [.. LocalHomes],
-            LocalTargets = [.. LocalTargets],
+            LocalRuns = [.. LocalRuns],
             Arguments = [.. Arguments],
             ArgumentHomes = [.. ArgumentHomes]
         };
@@ -608,8 +622,9 @@ internal static class IlFlow
             for (var i = 0; i < Math.Min(mine.Length, theirs.Length); i++)
             {
                 var merged = new Slot(mine[i].Flags | theirs[i].Flags, Union(mine[i].Homes, theirs[i].Homes), mine[i].IsNull && theirs[i].IsNull,
-                    mine[i].Target ?? theirs[i].Target);
-                if (merged.Flags == mine[i].Flags && ReferenceEquals(merged.Homes, mine[i].Homes) && merged.IsNull == mine[i].IsNull && merged.Target == mine[i].Target)
+                    Union(mine[i].Runs, theirs[i].Runs), mine[i].Element || theirs[i].Element);
+                if (merged.Flags == mine[i].Flags && ReferenceEquals(merged.Homes, mine[i].Homes) && merged.IsNull == mine[i].IsNull &&
+                    ReferenceEquals(merged.Runs, mine[i].Runs) && merged.Element == mine[i].Element)
                     continue;
                 mine[i] = merged;
                 changed = true;
@@ -644,9 +659,10 @@ internal static class IlFlow
                     changed = true;
                 }
 
-                if (LocalTargets[i] is null && other.LocalTargets[i] is not null)
+                var runs = Union(LocalRuns[i], other.LocalRuns[i]);
+                if (!ReferenceEquals(runs, LocalRuns[i]))
                 {
-                    LocalTargets[i] = other.LocalTargets[i];
+                    LocalRuns[i] = runs;
                     changed = true;
                 }
             }

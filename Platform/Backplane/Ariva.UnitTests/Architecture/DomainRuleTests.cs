@@ -32,12 +32,14 @@ namespace Ariva.UnitTests.Architecture;
 /// Limits, each failing closed or outside these checks: a catch body that awaits is moved by the compiler out of its handler
 /// (outside code that answers callers, its text reads are not attributed to the catch); an exception read outside any catch
 /// (a task's, a resilience outcome's) is checked only in code that answers callers; the framework's bodies are not followed
-/// (what a call returns keeps the text it takes, a rule's as held, and a container it is given takes its other arguments'
-/// flags); a helper of the scope is followed back only when it takes a flagged value or a closure's field is flagged, so a
-/// rule's text another service returns is not, nor a value across an await (an awaiter carries nothing) or through a
-/// delegate whose target is set elsewhere (its Invoke then counts as a call outside the scope); summaries nest at most six
-/// deep and skip a recursive call; fields are flagged per field, not per object; framework throws (Enum.Parse, Single,
-/// checked arithmetic) and type initializers are not walked by the rule walk.
+/// (what a call returns keeps the text it takes, a rule's as held; a container it is given takes its other arguments' flags;
+/// a delegate it is given is judged with them; a plain value it computes from a rule's held text is a finding, a size, an
+/// emptiness check or an iteration apart); a helper of the scope is followed back when it takes a flagged value, reads a
+/// flagged field, or reads a rule's text itself or through its helpers, so nothing is followed across an await (an
+/// awaiter carries nothing: an async helper's result, ARV-287a) or through a delegate whose target is set outside the
+/// method (its Invoke counts as a call outside the scope); summaries nest at most six deep and skip a recursive call;
+/// fields are flagged per field, not per object; framework throws (Enum.Parse, Single, checked arithmetic) and type
+/// initializers are not walked by the rule walk.
 /// </summary>
 public sealed class DomainRuleTests
 {
@@ -63,14 +65,24 @@ public sealed class DomainRuleTests
     /// </summary>
     private static readonly Dictionary<string, string> TextReaders = new(StringComparer.Ordinal)
     {
-        ["Ariva.Api.Common.Extensions.ErrorHandlingExtensions"] = "ARV-287: the problem details carry an exception's message and text only in vm-local (IsVmLocal, a developer's machine); in every other environment Detail is cleared and the exception extension removed",
-        ["Ariva.Api.Integration.Batches.BatchBody"] = "ARV-287: a malformed batch answers its JsonException's path cut by KnownPath to the members Ariva knows (array indices kept), so no member name or value of the caller's is echoed; the rest of the answer is fixed text",
         ["Ariva.Api.Cronz.Jobs.JobRun"] = "ARV-285: reads a job's failure text only to protect it (ProtectedExceptionSink.Protect, RedactionEnricher.ProtectText) and throws it on protected to TickerQ, whose dashboard shows that protected text (the original before ARV-285); tells no rule apart by it and answers no API caller",
         ["Ariva.Di.TopicProvisioning"] = "ARV-177: the topic provisioning command logs why it refused (through the log redaction) and answers no caller",
         ["Ariva.Infra.Border.AmanPoller"] = "records an OutboundUnavailableException's text, Ariva's own (an open circuit, a token already asked for), on the endpoint's status",
-        ["Ariva.Infra.Sensing.SensingIngest"] = "ARV-287: a push the mapper refuses answers its PushFormatException's text, Ariva's own: the mappers' fixed texts naming the mapping's fields and paths (the device's declarative mapping, an administrator's) and a JSON path cut to Ariva's known members, never a pushed value",
         ["Ariva.Infra.Flights.Acris.AcrisPoller"] = "records an OutboundUnavailableException's text, Ariva's own (an open circuit, a token already asked for), on the endpoint's status",
         ["Ariva.Infra.Streaming.PartitionedConsumer`1"] = "a dead letter records the exception for the operators (protected by ARV-285); answers no caller",
+    };
+
+    /// <summary>
+    /// ARV-287: reads of an exception's text in code that answers callers, each by its method and call (not by its type, so the
+    /// type's other code is still checked), with its reason; each must still be found.
+    /// </summary>
+    private static readonly Dictionary<string, string> TextReads = new(StringComparer.Ordinal)
+    {
+        ["ErrorHandlingExtensions.CustomizeProblemDetails: get_Message in code that answers callers"] = "the problem details carry an exception's message only in vm-local (IsVmLocal, a developer's machine); in every other environment Detail is cleared",
+        ["ErrorHandlingExtensions.CustomizeProblemDetails: ToString in code that answers callers"] = "the exception extension is written only in vm-local and removed in every other environment",
+        ["BatchBody.Parse: get_Path in code that answers callers"] = "a malformed batch answers its JsonException's path cut by KnownPath to the members Ariva knows (array indices kept), so no member name or value of the caller's is echoed; the rest of the answer is fixed text",
+        ["BatchBody.Parse: KnownPath in code that answers callers"] = "KnownPath is that cut: it compares the path's members with the ones Ariva knows and keeps the known prefix",
+        ["SensingIngest.Read: get_Message in code that answers callers"] = "a push the mapper refuses answers its PushFormatException's text, Ariva's own: the mappers' fixed texts naming the mapping's fields and paths (the device's declarative mapping, an administrator's) and a JSON path cut to Ariva's known members, never a pushed value"
     };
 
     /// <summary>
@@ -128,11 +140,13 @@ public sealed class DomainRuleTests
         scope.DispatchSkipped.Should().Be(0, "a type whose interfaces cannot be read would hide its implementations from every check");
         var called = methods.SelectMany(IlReader.Read).Select(i => i.Callee).Where(c => c is not null).Select(c => $"{c.DeclaringType?.Name}.{c.Name}").ToHashSet();
         ErrorCodes.Keys.Should().BeSubsetOf(called, "a code no longer read is taken off");
-        findings.Where(f => !(f.Kind == "frame" && FrameReaders.ContainsKey(f.Type)) && !(f.Kind == "catch text" && TextReaders.ContainsKey(f.Type)))
+        findings.Where(f => !(f.Kind == "frame" && FrameReaders.ContainsKey(f.Type)) && !(f.Kind == "catch text" && TextReaders.ContainsKey(f.Type)) &&
+                            !(f.Kind == "catch text" && TextReads.ContainsKey(f.Text)))
             .Select(f => f.Text).Distinct().Should()
             .BeEmpty("a rule is told apart by its type, which inlining cannot change, and no exception's text is matched or answered");
         FrameReaders.Keys.Should().OnlyContain(type => findings.Any(f => f.Kind == "frame" && f.Type == type), "an entry no longer needed is taken off");
         TextReaders.Keys.Should().OnlyContain(type => findings.Any(f => f.Kind == "catch text" && f.Type == type), "an entry no longer needed is taken off");
+        TextReads.Keys.Should().OnlyContain(text => findings.Any(f => f.Kind == "catch text" && f.Text == text), "an entry no longer needed is taken off");
 
         // The check fires on each way it must not be passed, and not on the type and kind checks.
         var fixtures = Scope.Of([typeof(DomainRuleTests).Assembly]);
@@ -166,7 +180,14 @@ public sealed class DomainRuleTests
             "Bypasses.RefNullMergeB", "Bypasses.GenericAnswer", "Bypasses.NonRuleCatchAnswer", "Bypasses.NonRuleCatchTuple", "Bypasses.HeldText",
             "Bypasses.ValidationText", "Bypasses.AddressCarryAnswer", "Bypasses.HandlerMergesLocalsAnswer", "Bypasses.AsyncResultAnswer",
             "Bypasses.HandlerAnswer", "Bypasses.TryLocalAnswer", "Bypasses.FluentRuleAnswer", "AnswerFilter.InvokeAsync", "AnswerMiddleware.InvokeAsync",
-            "Bypasses.DetailWriter"
+            "Bypasses.DetailWriter",
+            // ARV-287 review round 2: a delegate's every possible target; a holder of a rule's text given to a set operation,
+            // a computing call and a predicate; a rule's text stashed in a field (static and instance) for a helper given
+            // nothing; a guard's answer compared by its caller; an exception's part decoded or cast; an exception kept in a
+            // tuple, a value tuple or a box; and a hub push.
+            "Bypasses.TwoTargetsA", "Bypasses.TwoTargetsB", "Bypasses.HeldIntersect", "Bypasses.HeldRemove", "Bypasses.HeldAnyLambda",
+            "Bypasses.FieldStashStatic", "Refusals.Answer", "Bypasses.GuardResultSync", "Bypasses.PartBytes", "Bypasses.PartCast",
+            "Bypasses.TupleObjectException", "Bypasses.ValueTupleException", "Bypasses.StrongBoxException", "Bypasses.HubPushAnswer"
         ]);
     }
 
@@ -371,7 +392,9 @@ public sealed class DomainRuleTests
                (name == "Microsoft.AspNetCore.Http.IResult" && callee.Name == "ExecuteAsync") ||
                (Is(declared, "Microsoft.AspNetCore.Mvc.ProblemDetails") && (callee.Name.StartsWith("set_", StringComparison.Ordinal) || callee.Name == "get_Extensions")) ||
                (callee.Name == "set_Result" && Is(declared, "Microsoft.AspNetCore.Mvc.Filters.FilterContext")) ||
-               (opCode == OpCodes.Newobj && Is(declared, "Microsoft.AspNetCore.SignalR.HubException"));
+               (opCode == OpCodes.Newobj && Is(declared, "Microsoft.AspNetCore.SignalR.HubException")) ||
+               (name == "Microsoft.AspNetCore.SignalR.ClientProxyExtensions" && callee.Name == "SendAsync") ||
+               (name == "Microsoft.AspNetCore.SignalR.IClientProxy" && callee.Name == "SendCoreAsync");
     }
 
     /// <summary>Whether a type is the named one or derives from it.</summary>
@@ -445,6 +468,11 @@ public sealed class DomainRuleTests
 
     private static bool HasBody(MethodBase method) => method.GetMethodBody() is not null;
 
+    /// <summary>ARV-287: a call that measures or walks a collection (its size, whether it is empty, the next item), not its items' text.</summary>
+    private static bool Sizes(MethodBase callee) =>
+        callee.Name is "MoveNext" or "get_Count" or "get_Length" or "get_IsEmpty" or "get_HasValue" or "get_LongLength" ||
+        (callee.Name is "Count" or "LongCount" or "Any" && callee.GetParameters().Length == 1);
+
     private static int TypeFlags(Type type) => IsExceptionValue(type) ? IlFlow.Exception : 0;
 
     private static bool IsExceptionValue(Type type) =>
@@ -487,7 +515,16 @@ public sealed class DomainRuleTests
              "Compare" or "CompareOrdinal" or "CompareTo") ||
         (callee.DeclaringType == typeof(Regex) && callee.Name is "IsMatch" or "Match" or "Matches" or "Replace" or "Split" or "Count") ||
         (callee.DeclaringType == typeof(object) && callee.Name == "Equals") ||
-        callee.Name is "Contains" or "ContainsKey" or "TryGetValue" or "SequenceEqual" or "IndexOf" or "LastIndexOf" or "BinarySearch" or "Equals";
+        callee.Name is "Contains" or "ContainsKey" or "TryGetValue" or "SequenceEqual" or "IndexOf" or "LastIndexOf" or "BinarySearch" or "Equals" ||
+        // ARV-287: a set or grouping operation of LINQ matches its items, and a call given a comparer or a StringComparison compares.
+        (callee.DeclaringType?.FullName is "System.Linq.Enumerable" or "System.Linq.Queryable" &&
+         callee.Name is "Intersect" or "IntersectBy" or "Except" or "ExceptBy" or "Union" or "UnionBy" or "Distinct" or "DistinctBy" or "GroupBy" or
+             "GroupJoin" or "Join" or "ToHashSet" or "ToDictionary" or "ToLookup" or "Order" or "OrderDescending" or "OrderBy" or "OrderByDescending" or
+             "ThenBy" or "ThenByDescending" or "Min" or "Max" or "MinBy" or "MaxBy" or "CountBy" or "AggregateBy") ||
+        callee.GetParameters().Any(p => p.ParameterType == typeof(StringComparison) || typeof(System.Collections.IEqualityComparer).IsAssignableFrom(p.ParameterType) ||
+                                        typeof(System.Collections.IComparer).IsAssignableFrom(p.ParameterType) ||
+                                        (p.ParameterType.IsGenericType && p.ParameterType.GetGenericTypeDefinition() is var open &&
+                                         (open == typeof(IEqualityComparer<>) || open == typeof(IComparer<>))));
 
     /// <summary>
     /// The flags of a call's result for <see cref="IlFlow"/>: a rule's text, an exception's text, or text made from either; what
@@ -507,18 +544,25 @@ public sealed class DomainRuleTests
         if (made.IsByRef)
             made = made.GetElementType();
         var receiver = callee is MethodInfo && !callee.IsStatic && taken.Length > 0 ? taken[0] : 0;
-        if (callee is MethodInfo && !callee.IsStatic && (typeof(Exception).IsAssignableFrom(callee.DeclaringType) || (receiver & IlFlow.ExceptionPart) != 0) &&
-            !made.IsValueType && made != typeof(string) && made != typeof(Type) && !typeof(MemberInfo).IsAssignableFrom(made) && !IsExceptionValue(made))
+        // What can hold an exception's text: an object, not a string, a type, a member or another exception (an exception's
+        // inner exception is an exception, not a part).
+        var holds = !made.IsValueType && made != typeof(string) && made != typeof(Type) && !typeof(MemberInfo).IsAssignableFrom(made) && !IsExceptionValue(made);
+        if (callee is MethodInfo && !callee.IsStatic && (typeof(Exception).IsAssignableFrom(callee.DeclaringType) || (receiver & IlFlow.ExceptionPart) != 0) && holds)
             return IlFlow.Held(any & Kept) | IlFlow.ExceptionPart;
         if (Carries(made))
             return any;
         if (made == typeof(string))
         {
+            // ARV-287: a string made from an exception's part (bytes decoded, a value converted) is the exception's text.
             var text = IlFlow.Read(any) & Text;
-            return Formats(callee) && ((any & ExceptionLike) != 0 || ForExceptionType(callee)) ? text | IlFlow.ExceptionText : text;
+            return (Formats(callee) && ((any & ExceptionLike) != 0 || ForExceptionType(callee))) || (any & IlFlow.ExceptionPart) != 0 ? text | IlFlow.ExceptionText : text;
         }
 
-        return made.IsValueType ? 0 : IlFlow.Held(any & Kept);
+        if (made.IsValueType)
+            return 0;
+        // ARV-287: an object the framework makes from an exception (a tuple, a box) holds it, as a part of it.
+        var framework = callee.DeclaringType?.Assembly.GetName().Name?.StartsWith("Ariva.", StringComparison.Ordinal) != true;
+        return IlFlow.Held(any & Kept) | (framework && holds && (any & ExceptionLike) != 0 ? IlFlow.ExceptionPart : 0);
     }
 
     private static IlFlow.Result Flow(MethodBase method, IReadOnlyList<IlReader.Instruction> instructions, IReadOnlyList<IlReader.Region> regions, int[] seed,
@@ -552,12 +596,51 @@ public sealed class DomainRuleTests
         // it (a comparer, a lookup, an indexer, a delegate) tells rules apart by their text, unless it is a helper of the scope,
         // whose own body is judged below.
         var invoked = flow?.Invoked.GetValueOrDefault(k);
-        var targets = (invoked is not null ? scope.Targets(invoked) : scope.Targets(callee)).Where(HasBody).ToList();
-        if (mode == Mode.Answer && (any & IlFlow.RuleText) != 0 && targets.Count == 0 && !Formats(callee) && !AnswersOrLogs(callee))
+        var targets = (invoked is not null ? invoked.SelectMany(scope.Targets) : scope.Targets(callee)).Where(HasBody).ToList();
+        var returns = (callee as MethodInfo)?.ReturnType;
+        if (targets.Count == 0)
+        {
+            if (mode == Mode.Answer && (any & IlFlow.RuleText) != 0 && !Formats(callee) && !AnswersOrLogs(callee))
+                return true;
+            // ARV-287: a holder of a rule's text given to a call outside the scope that computes a plain value from it (a
+            // match, a position) tells rules apart by their text; a size, an emptiness check or an iteration does not.
+            if (mode == Mode.Answer && (any & IlFlow.RuleHeld) != 0 && returns is not null && returns != typeof(void) && IlFlow.IsPlain(returns) &&
+                !Formats(callee) && !AnswersOrLogs(callee) && !Sizes(callee))
+                return true;
+            // ARV-287: a string a call outside the scope makes from an exception's part (bytes decoded, a value converted) is
+            // the exception's text.
+            if (returns == typeof(string) && (any & IlFlow.ExceptionPart) != 0)
+                return true;
+            // ARV-287: the delegates a call outside the scope is given run on what it is given: each is judged with the
+            // flags of the other arguments (a predicate given a rule's text compares it).
+            if ((any & (Text | IlFlow.RuleHeld | ExceptionLike)) != 0 && flow?.Passed.GetValueOrDefault(k) is { } given)
+                foreach (var lambda in given.SelectMany(scope.Targets).Where(HasBody))
+                {
+                    if (!seen.Add((lambda.Module, lambda.MetadataToken)))
+                        continue;
+                    var parameters = Enumerable.Repeat(IlFlow.Read(any), lambda.GetParameters().Length);
+                    int[] seeded = lambda.IsStatic ? [.. parameters] : [0, .. parameters];
+                    var body = IlReader.Read(lambda);
+                    var lambdaFlow = Flow(lambda, body, IlReader.Regions(lambda, body), seeded, scope, flow.Fields);
+                    if (lambdaFlow is null || lambdaFlow.Comparisons.Values.Any(flags => (flags & Text) != 0))
+                        return true;
+                    for (var j = 0; j < body.Count; j++)
+                        if (Offends(lambda, body, lambdaFlow, j, mode, scope, seen))
+                            return true;
+                }
+        }
+
+        // ARV-287: an answer made from an exception or its part (a result, a response, a problem detail, a hub's error).
+        if (mode == Mode.Answer && (any & ExceptionLike) != 0 &&
+            ((callee.DeclaringType?.Namespace == "Fluentx" && callee.DeclaringType.Name.StartsWith("Result", StringComparison.Ordinal)) ||
+             WritesAnswer(callee, instruction.OpCode)))
             return true;
         var pointer = instruction.OpCode == OpCodes.Ldftn || instruction.OpCode == OpCodes.Ldvirtftn;
+        // ARV-287: a helper given nothing flagged is still judged when it reads a field that holds a flag (a rule's text
+        // stashed in a field or a static before the call).
         if (!pointer && any == 0 && invoked is null && !callee.GetParameters().Any(p => IsExceptionValue(p.ParameterType) || p.ParameterType == typeof(object)) &&
-            !(callee.DeclaringType is { } owner && (IsGenerated(owner) || IsExceptionValue(owner))) && !callee.Name.StartsWith('<'))
+            !(callee.DeclaringType is { } owner && (IsGenerated(owner) || IsExceptionValue(owner))) && !callee.Name.StartsWith('<') &&
+            !targets.Any(t => scope.ReadsFlagged(t, flow?.Fields)))
             return false;
         foreach (var target in targets)
         {
@@ -567,7 +650,7 @@ public sealed class DomainRuleTests
             // ARV-287: a constructor made with newobj takes no receiver from the stack, so its arguments start after its own; a
             // static delegate target takes no receiver either; the fields start as this method left them (the closure fields a
             // lambda reads).
-            int[] seed = pointer ? null : instruction.OpCode == OpCodes.Newobj ? [0, .. taken] : invoked is { IsStatic: true } ? taken[1..] : taken;
+            int[] seed = pointer ? null : instruction.OpCode == OpCodes.Newobj ? [0, .. taken] : invoked is not null && target.IsStatic ? taken[1..] : taken;
             var targetFlow = Flow(target, body, IlReader.Regions(target, body), seed, scope, flow?.Fields);
             if (targetFlow is null || targetFlow.Comparisons.Values.Any(flags => (flags & Text) != 0))
                 return true;
@@ -694,7 +777,8 @@ public sealed class DomainRuleTests
         private readonly Dictionary<string, IlFlow.Summary> summaries = new(StringComparer.Ordinal);
         private readonly HashSet<string> following = new(StringComparer.Ordinal);
         private readonly Dictionary<MethodBase, List<MethodBase>> bodies = [];
-        private readonly Dictionary<Type, HashSet<(Module, int)>> fieldsOf = [];
+        private readonly Dictionary<MethodBase, HashSet<(Module, int)>> fieldsRead = [];
+        private readonly Dictionary<MethodBase, bool> readsRule = [];
         private IlReader.Dispatch dispatch;
 
         public Assembly[] Assemblies { get; private init; }
@@ -727,14 +811,13 @@ public sealed class DomainRuleTests
         /// </summary>
         public IlFlow.Summary Summarize(MethodBase callee, bool created, int[] taken, IReadOnlyDictionary<(Module, int), int> fields)
         {
-            // A lambda or local function reads closures nested in each other (a display class's CS$<>8__locals field), so any
-            // flagged field may reach it.
-            if (Array.TrueForAll(taken, t => t == 0) &&
-                !(callee.DeclaringType is { } holder && IsGenerated(holder) ? fields.Values.Any(v => v != 0) : HoldsAny(callee.DeclaringType, fields)))
-                return null;
             if (!bodies.TryGetValue(callee, out var targets))
                 bodies[callee] = targets = [.. Targets(callee).Where(HasBody)];
             if (targets.Count == 0)
+                return null;
+            // Given nothing flagged, a body is followed when it reads a field that holds a flag (a closure's, nested ones too,
+            // or a static), or when it reads a rule's text itself or through the helpers it calls (a guard answering a rule).
+            if (Array.TrueForAll(taken, t => t == 0) && !targets.Any(t => ReadsFlagged(t, fields) || ReadsRule(t)))
                 return null;
             var flagged = fields.Where(f => f.Value != 0).OrderBy(f => f.Key.Item2).ThenBy(f => f.Key.Item1.Name, StringComparer.Ordinal).ToList();
             var key = string.Join(":", callee.Module.ModuleVersionId, callee.MetadataToken, created, string.Join(',', taken),
@@ -769,25 +852,45 @@ public sealed class DomainRuleTests
             }
         }
 
-        /// <summary>Whether a type (its definition) declares a field that holds a flag.</summary>
-        private bool HoldsAny(Type type, IReadOnlyDictionary<(Module, int), int> fields)
+        /// <summary>ARV-287: whether a body reads (ldfld, ldsfld, or their address) a field that holds a flag.</summary>
+        public bool ReadsFlagged(MethodBase method, IReadOnlyDictionary<(Module, int), int> fields)
         {
-            if (type is null || fields.Count == 0)
+            if (fields is null || fields.Count == 0)
                 return false;
-            if (!fieldsOf.TryGetValue(type, out var declared))
-            {
-                var definition = type.IsGenericType && !type.IsGenericTypeDefinition ? type.GetGenericTypeDefinition() : type;
-                fieldsOf[type] = declared = definition
-                    .GetFields(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
-                    .Select(f => (f.Module, f.MetadataToken)).ToHashSet();
-            }
-
-            if (declared.Count == 0)
+            if (!fieldsRead.TryGetValue(method, out var read))
+                fieldsRead[method] = read = IlReader.Read(method)
+                    .Where(i => i.Member is FieldInfo && i.OpCode.Name is "ldfld" or "ldsfld" or "ldflda" or "ldsflda")
+                    .Select(i => (i.Member.Module, i.Member.MetadataToken)).ToHashSet();
+            if (read.Count == 0)
                 return false;
             foreach (var (key, flags) in fields)
-                if (flags != 0 && declared.Contains(key))
+                if (flags != 0 && read.Contains(key))
                     return true;
             return false;
+        }
+
+        /// <summary>
+        /// ARV-287: whether a body reads a rule's text (IDomainRule.Rule), itself or through a helper of the scope it calls; an
+        /// async method's own state machine is not called from it, so its text is not reached this way (a stated limit).
+        /// </summary>
+        public bool ReadsRule(MethodBase method)
+        {
+            if (readsRule.TryGetValue(method, out var known))
+                return known;
+            readsRule[method] = false;
+            var reads = false;
+            foreach (var instruction in IlReader.Read(method))
+            {
+                if (instruction.Callee is not { } callee || instruction.OpCode == OpCodes.Ldftn || instruction.OpCode == OpCodes.Ldvirtftn)
+                    continue;
+                if (RuleText(callee) || Targets(callee).Where(HasBody).Any(ReadsRule))
+                {
+                    reads = true;
+                    break;
+                }
+            }
+
+            return readsRule[method] = reads;
         }
 
         /// <summary>The bodies a call can run within the scope: its own, and its overrides and implementations here.</summary>
@@ -1908,6 +2011,211 @@ public sealed class DomainRuleTests
         }
 
         public static void DetailWriter(Microsoft.AspNetCore.Mvc.ProblemDetails details, Exception e) => details.Detail = e.Message;
+
+        public static Task HubPushAnswer(Microsoft.AspNetCore.SignalR.IClientProxy clients, Exception e) =>
+            Microsoft.AspNetCore.SignalR.ClientProxyExtensions.SendAsync(clients, "Refused", e.Message);
+
+        public static string TwoTargetsA(Action act)
+        {
+            try
+            {
+                act();
+                return null;
+            }
+            catch (InvalidOperationException e) when (e is IDomainRule r)
+            {
+                Func<string, bool> test = act is null ? s => s == "A code is taken." : s => s.Length > 0;
+                return test(r.Rule) ? "code" : "other";
+            }
+        }
+
+        public static string TwoTargetsB(Action act)
+        {
+            try
+            {
+                act();
+                return null;
+            }
+            catch (InvalidOperationException e) when (e is IDomainRule r)
+            {
+                Func<string, bool> test = act is null ? s => s.Length > 0 : s => s == "A code is taken.";
+                return test(r.Rule) ? "code" : "other";
+            }
+        }
+
+        public static string HeldIntersect(Action act)
+        {
+            try
+            {
+                act();
+                return null;
+            }
+            catch (InvalidOperationException e) when (e is IDomainRule r)
+            {
+                string[] held = [r.Rule];
+                return held.Intersect(Known, StringComparer.Ordinal).Any() ? "code" : "other";
+            }
+        }
+
+        public static string HeldRemove(Action act)
+        {
+            try
+            {
+                act();
+                return null;
+            }
+            catch (InvalidOperationException e) when (e is IDomainRule r)
+            {
+                List<string> held = [r.Rule];
+                return held.Remove("A code is taken.") ? "code" : "other";
+            }
+        }
+
+        public static string HeldAnyLambda(Action act)
+        {
+            try
+            {
+                act();
+                return null;
+            }
+            catch (InvalidOperationException e) when (e is IDomainRule r)
+            {
+                string[] held = [r.Rule];
+                return held.Any(s => s == "A code is taken.") ? "code" : "other";
+            }
+        }
+
+        public static string FieldStashStatic(Action act)
+        {
+            try
+            {
+                act();
+                return null;
+            }
+            catch (InvalidOperationException e) when (e is IDomainRule r)
+            {
+                Stash.Last = r.Rule;
+                return Judge.IsCode() ? "code" : "other";
+            }
+        }
+
+        public static Fluentx.Result<int> GuardResultSync(Action act)
+        {
+            var tried = Guard(act);
+            return tried.ErrorMessages.Contains("A code is taken.") ? Fluentx.Result.Error<int>("code") : tried;
+        }
+
+        public static string PartBytes(Action act)
+        {
+            try
+            {
+                act();
+                return null;
+            }
+            catch (Exception e) when (e is Confluent.Kafka.ConsumeException c)
+            {
+                return Encoding.UTF8.GetString(c.ConsumerRecord.Message.Value);
+            }
+        }
+
+        public static Fluentx.Result<int> PartCast(Action act)
+        {
+            try
+            {
+                act();
+                return Fluentx.Result.Return(1);
+            }
+            catch (PostgresException p)
+            {
+                return Fluentx.Result.Error<int>((string)p.BatchCommand.Parameters[0].Value);
+            }
+        }
+
+        public static string TupleObjectException(Action act)
+        {
+            try
+            {
+                act();
+                return null;
+            }
+            catch (InvalidOperationException e)
+            {
+                return string.Concat("Refused: ", Tuple.Create<object>(e).Item1);
+            }
+        }
+
+        public static string ValueTupleException(Action act)
+        {
+            try
+            {
+                act();
+                return null;
+            }
+            catch (InvalidOperationException e)
+            {
+                (object Error, int Code) held = (e, 1);
+                return string.Concat("Refused: ", held.Error);
+            }
+        }
+
+        public static string StrongBoxException(Action act)
+        {
+            try
+            {
+                act();
+                return null;
+            }
+            catch (InvalidOperationException e)
+            {
+                var box = new System.Runtime.CompilerServices.StrongBox<object>(e);
+                return string.Concat("Refused: ", box.Value);
+            }
+        }
+
+        /// <summary>Answers a rule as its result: not a finding itself, but its caller above compares the answer's text.</summary>
+        private static Fluentx.Result<int> Guard(Action act)
+        {
+            try
+            {
+                act();
+                return Fluentx.Result.Return(1);
+            }
+            catch (InvalidOperationException e) when (e is IDomainRule r)
+            {
+                return Fluentx.Result.Error<int>(r.Rule);
+            }
+        }
+
+        private static class Stash
+        {
+            internal static string Last;
+        }
+
+        private static class Judge
+        {
+            internal static bool IsCode() => Stash.Last == "A code is taken.";
+        }
+
+        private sealed class Refusals
+        {
+            private string last;
+
+            public string Answer(Action act)
+            {
+                try
+                {
+                    act();
+                    return null;
+                }
+                catch (InvalidOperationException e) when (e is IDomainRule r)
+                {
+                    last = r.Rule;
+                    return IsCode() ? "code" : "other";
+                }
+            }
+
+            private bool IsCode() => last == "A code is taken.";
+        }
 
         private static string TextOf(IDomainRule r) => r.Rule;
 

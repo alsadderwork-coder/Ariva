@@ -226,7 +226,7 @@ internal sealed class SvcDeskCodeMappingImports(
             }
 
             // ARV-287: the system's codes fit only some desk kinds; checked here, so the entity's refusal is never matched by its text.
-            if (Enum.TryParse<ExternalSystem>(row.System, ignoreCase: false, out var system) && !Ariva.Core.Domain.Entities.DeskCodeMapping.Fits(system, desk.Kind))
+            if (SiteConfigurationRules.ParseKind<ExternalSystem>(row.System) is { } system && !Ariva.Core.Domain.Entities.DeskCodeMapping.Fits(system, desk.Kind))
             {
                 table.Errors.Add(row.Row, table.Column("desk"), CsvImportErrors.MappingDoesNotFitDesk);
                 continue;
