@@ -17,13 +17,16 @@ namespace Ariva.IntegrationTests.Persistence;
 
 /// <summary>
 /// ARV-235 (CWE-400, ASVS 5.0 V15.2.2): every bounded loop and every Cronz job of <c>RunTimeoutInventoryTests</c> passes its
-/// run's token on to its statements. Each is built by its own host on a migrated database, run once while the database
+/// run's token on to its first statement. Each is built by its own host on a migrated database, run once while the database
 /// answers (so the pool holds an open connection and the session factory is built), then run with a short run timeout while
 /// another session holds every table of the schema (and TimescaleDB's catalog) in ACCESS EXCLUSIVE mode: the run's first
 /// statement waits on that lock, seen in <c>pg_stat_activity</c>, and the run ends with <see cref="RunTimeoutException"/> at
-/// its timeout, well before <c>Database:CommandTimeoutSeconds</c> would end the statement; once the lock goes the next run
-/// succeeds. The unit inventory proves the same against a database that never answers, where the connection timeout ends
-/// the open; this proves it at a statement.
+/// its timeout, its cause a cancellation (no client timeout, no lock timeout), within 8 s, below the 10 s that the shortest
+/// command timeout of Ariva.Infra would take and far below <c>Database:CommandTimeoutSeconds</c>; no statement of the run
+/// waits once it has ended; once the lock goes the next run succeeds. The runtime login has no lock timeout and no
+/// statement timeout under the command timeout, checked first, so nothing but the run's token can end the wait in time. The
+/// unit inventory proves the same against a database that never answers, where the connection timeout ends the open; this
+/// proves it at a statement.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class RunTimeoutStatementTests(PostgresFixture fixture)
@@ -42,8 +45,11 @@ public sealed class RunTimeoutStatementTests(PostgresFixture fixture)
     /// <summary>The run timeout set for the test.</summary>
     private static readonly TimeSpan RunTimeout = TimeSpan.FromSeconds(2);
 
-    /// <summary>Well before the command timeout: the run timeout, the cancellation's round trip and a margin for a busy machine.</summary>
-    private static readonly TimeSpan WellBefore = TimeSpan.FromSeconds(12);
+    /// <summary>
+    /// Well before any other bound: the run timeout and the unit inventory's margin for a busy machine, below the 10 s command
+    /// timeout of Ariva.Infra's own short reads (the desk term source, the stream store, the outbox's backlog measurement).
+    /// </summary>
+    private static readonly TimeSpan WellBefore = TimeSpan.FromSeconds(2 + 6);
 
     /// <summary>
     /// Every table of the schema, of TimescaleDB's materialized aggregates and of its catalog, locked in the holder's
@@ -98,10 +104,17 @@ public sealed class RunTimeoutStatementTests(PostgresFixture fixture)
         }
     }
 
+    /// <summary>The assemblies that hold Ariva's hosted services (as <c>RunTimeoutInventoryTests</c> reads them; Ingest runs no loop and is not referenced here).</summary>
+    private static readonly System.Reflection.Assembly[] ArivaAssemblies =
+    [
+        typeof(Ariva.Infra._IAssemblyMark).Assembly, typeof(Ariva.Api.Common.Hubs.HubSessionSweeper).Assembly, typeof(Ariva.Api.Main._IAssemblyMark).Assembly,
+        typeof(Ariva.Api.Stream._IAssemblyMark).Assembly, typeof(Ariva.Api.Cronz._IAssemblyMark).Assembly, typeof(Ariva.Api.Integration._IAssemblyMark).Assembly
+    ];
+
     [Fact]
     public void Loops_Should_BeEveryBoundedLoop_When_Listed()
     {
-        var bounded = typeof(Ariva.Infra._IAssemblyMark).Assembly.GetTypes()
+        var bounded = ArivaAssemblies.SelectMany(a => a.GetTypes())
             .Where(t => typeof(IBoundedRuns).IsAssignableFrom(t) && typeof(IHostedService).IsAssignableFrom(t) && !t.IsAbstract)
             .Select(t => t.Name);
 
@@ -115,7 +128,7 @@ public sealed class RunTimeoutStatementTests(PostgresFixture fixture)
     {
         var database = await MigratedAsync();
         await using var app = Host(host, database);
-        var type = typeof(Ariva.Infra._IAssemblyMark).Assembly.GetTypes().Single(t => t.Name == loop && typeof(IBoundedRuns).IsAssignableFrom(t));
+        var type = ArivaAssemblies.SelectMany(a => a.GetTypes()).Single(t => t.Name == loop && typeof(IBoundedRuns).IsAssignableFrom(t));
         var instance = ActivatorUtilities.CreateInstance(app.Services, type);
         ShortenRunTimeout(instance);
         var runOnce = type.GetMethod("RunOnceAsync", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, [typeof(CancellationToken)]);
@@ -155,6 +168,7 @@ public sealed class RunTimeoutStatementTests(PostgresFixture fixture)
     /// </summary>
     private async Task HeldAsync(string database, string name, Func<Task> run)
     {
+        await NoOtherBoundAsync(database);
         await run();
 
         await using var holder = new NpgsqlConnection(fixture.ConnectionString(database));
@@ -179,14 +193,62 @@ public sealed class RunTimeoutStatementTests(PostgresFixture fixture)
         }
 
         var elapsed = watch.Elapsed;
+        var stillWaiting = await WaitingAsync(database);
         await hold.RollbackAsync(Ct);
 
         failure.Should().BeOfType<RunTimeoutException>($"{name}'s statement waited on the lock until its run's token ended it")
             .Which.Timeout.Should().Be(RunTimeout);
+        // The cut's cause is the run's token: a cancellation, never a client timeout or the server's lock timeout that RunBound would
+        // report the same way once the run's time had passed (review round 1).
+        var causes = Causes(failure).ToList();
+        causes.Should().Contain(e => e is OperationCanceledException, $"{name}'s run was ended by its token");
+        causes.Should().NotContain(e => e is NpgsqlException && e.InnerException is TimeoutException, "no client command timeout ended it");
+        causes.OfType<PostgresException>().Select(e => e.SqlState).Should().NotContain("55P03", "no lock timeout ended it");
         waited.Should().BeTrue($"{name}'s run reached the database and its statement waited on the held lock");
+        stillWaiting.Should().Be(0, $"no statement of {name}'s run waits once the run has ended (none left behind on its own token)");
         elapsed.Should().BeGreaterThanOrEqualTo(RunTimeout - TimeSpan.FromMilliseconds(20))
             .And.BeLessThan(WellBefore, $"the run's token ended {name}'s statement at its {RunTimeout.TotalSeconds:F0} s, not the {CommandTimeoutSeconds} s command timeout");
         await run();
+    }
+
+    /// <summary>
+    /// The runtime login's own bounds on a statement, which would end a lock wait without the run's token: no lock timeout, and
+    /// no statement timeout under the command timeout (script 0063 sets 360 s).
+    /// </summary>
+    private async Task NoOtherBoundAsync(string database)
+    {
+        await using var runtime = new NpgsqlConnection(fixture.ConnectionString(database, RuntimeLogin, RuntimePassword));
+        await runtime.OpenAsync(Ct);
+        await using var read = new NpgsqlCommand(
+            "SELECT current_setting('lock_timeout'), (SELECT setting::bigint FROM pg_settings WHERE name = 'statement_timeout')", runtime);
+        await using var reader = await read.ExecuteReaderAsync(Ct);
+        (await reader.ReadAsync(Ct)).Should().BeTrue();
+        reader.GetString(0).Should().Be("0", "a lock timeout would end the wait without the run's token");
+        var statementTimeoutMs = reader.GetInt64(1);
+        (statementTimeoutMs == 0 || statementTimeoutMs >= CommandTimeoutSeconds * 1000L).Should().BeTrue("a statement timeout under the command timeout would end the wait first");
+    }
+
+    /// <summary>How many statements of the runtime login wait on a lock in the test's database now (read from the maintenance database).</summary>
+    private async Task<long> WaitingAsync(string database)
+    {
+        await using var monitor = new NpgsqlConnection(fixture.ConnectionString("postgres"));
+        await monitor.OpenAsync(Ct);
+        await using var waiting = new NpgsqlCommand(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = @database AND usename = @login AND wait_event_type = 'Lock'", monitor);
+        waiting.Parameters.AddWithValue("database", database);
+        waiting.Parameters.AddWithValue("login", RuntimeLogin);
+        return (long)(await waiting.ExecuteScalarAsync(Ct) ?? 0L);
+    }
+
+    private static IEnumerable<Exception> Causes(Exception exception)
+    {
+        for (var e = exception; e is not null; e = e.InnerException)
+        {
+            yield return e;
+            if (e is AggregateException aggregate)
+                foreach (var inner in aggregate.InnerExceptions.SelectMany(Causes))
+                    yield return inner;
+        }
     }
 
     /// <summary>

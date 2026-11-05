@@ -364,6 +364,29 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
             .Should().Be("Sent,Sent");
     }
 
+    [Fact]
+    public async Task Round_Should_LeaveADeliveryPendingWithNoAttempt_When_ItsRunTimeoutCutsTheRoundBeforeTheSend()
+    {
+        // ARV-235 (ARV-096e round 2, N3): the round is cut while the transport waits to begin a report's send. The transport answers
+        // that it tried nothing, so the delivery stays pending with no attempt counted, and the next round sends it.
+        var admin = await AdminAsync();
+        var recipient = await UserAsync(admin, RoleCodes.TerminalDutyManager, "DMO", "never.begins@ariva.test");
+        var schedule = (await Host.AsCallerAsync(admin, s => Schedules(s).CreateAsync(new ReportScheduleRequest("DMO", "Never begins", null, "06:00", [recipient]), Ct))).Data;
+        _transport.NeverBegins = "never.begins@ariva.test";
+        var round = Host.Provider.GetRequiredService<ReportDeliveryRound>();
+
+        var cut = () => Ariva.Infra.Resilience.RunBound.RunAsync("Report deliveries", TimeSpan.FromSeconds(3), TimeProvider.System, round.RunAsync, Ct);
+
+        await cut.Should().ThrowAsync<Ariva.Infra.Resilience.RunTimeoutException>();
+        _transport.SentTo("never.begins@ariva.test").Should().Be(0);
+        (await Host.ReadAsync<string>("SELECT status || ':' || attempts FROM report_delivery d JOIN \"user\" u ON u.id = d.recipient_id WHERE d.schedule_id = @id AND u.email = @secret",
+            schedule.Id, "never.begins@ariva.test")).Should().Be("Pending:0", "a delivery the round was cut before is not tried: no attempt counted");
+
+        _transport.NeverBegins = null;
+        await RunAsync();
+        _transport.SentTo("never.begins@ariva.test").Should().Be(1, "the next round sends it");
+    }
+
     private Task<ReportDeliveryRun> RunAsync() => Host.Provider.GetRequiredService<ReportDeliveryRound>().RunAsync(Ct);
 
     private static string Text(EmailAttachment attachment) => Encoding.UTF8.GetString(attachment.Content);
@@ -389,6 +412,12 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
         /// </summary>
         public string SlowAfterTaking { get; set; }
 
+        /// <summary>
+        /// ARV-235 (ARV-096e round 2, N3): a recipient whose send never begins: the transport waits on the connection until the
+        /// round's token is cancelled, then answers that no email was tried, as MailKit's transport does when cut before a message.
+        /// </summary>
+        public string NeverBegins { get; set; }
+
         public Task FirstSendEntered => _entered.Task;
 
         public bool ReleasedBySend { get; private set; }
@@ -410,6 +439,12 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
 
         public async Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
         {
+            if (NeverBegins is { } stalled && emails.Any(e => string.Equals(e.Recipient, stalled, StringComparison.OrdinalIgnoreCase)))
+            {
+                await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+                return new EmailBatch(new Dictionary<Guid, string>(), emails.Select(e => e.Id).ToHashSet());
+            }
+
             if (Interlocked.CompareExchange(ref _holding, 2, 1) == 1)
             {
                 _entered.TrySetResult();

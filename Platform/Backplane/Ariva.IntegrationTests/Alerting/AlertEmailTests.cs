@@ -363,12 +363,14 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
 
         var round = await worker.RunOnceAsync(Ct);
 
-        watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(20), "the begun message ended at its 1 s SMTP timeout, not at the relay's 60 s or the round's 120 s");
+        watch.Elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(1)).And.BeLessThan(TimeSpan.FromSeconds(8),
+            "the begun message ended at its 1 s SMTP timeout, not at the relay's 60 s, the round's 120 s or any fixed bound");
         round.Should().Be(new EmailRound(0, 0, count), "every email is kept for a retry, none given up");
         _sink.Received.Should().BeEmpty("the relay answered no message");
         var rows = await EmailsAsync(alert.Id);
         rows.Should().OnlyContain(r => r.Status == "Pending" && r.Attempts == 1 && r.NextAttemptUtc == first.AddMinutes(3));
-        rows.Count(r => r.Reason.StartsWith("SMTP refused the message: ", StringComparison.Ordinal)).Should().Be(1, "the begun message failed at the SMTP timeout");
+        rows.Count(r => r.Reason == "SMTP refused the message: TimeoutException").Should().Be(1, "the begun message failed at the SMTP timeout (MailKit's TimeoutException)");
+        rows.Count(r => r.Reason == "SMTP connection lost.").Should().Be(count - 1, "the timeout closed the connection the others were to go on");
 
         _sink.DataDelay = TimeSpan.Zero;
         (await SendAsync(first.AddMinutes(4))).Sent.Should().Be(count, "each is sent on its retry");
