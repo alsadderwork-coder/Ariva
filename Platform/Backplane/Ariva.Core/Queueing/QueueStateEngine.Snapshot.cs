@@ -487,9 +487,8 @@ public sealed partial class QueueStateEngine
                 run.FlushScheduled = true;
             }
 
-            engine._runs.Add(r.TrackKey, run);
             // ARV-240: counted for the device its key names, as the engine that kept going counts it.
-            Count(engine._runsByDevice, OwnerOfTrack(r.TrackKey), 1);
+            engine.AddRun(run);
             engine.ScheduleEnd(run);
         }
     }

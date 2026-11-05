@@ -67,8 +67,9 @@ public sealed record QueueEngineSettings
     /// <summary>
     /// ARV-230: tracks whose position samples are coalesced at most (the engine's remarks); the samples of further tracks are
     /// buffered one place each. The pilot hall's busiest zone (20 T3 sensors at 30 people) holds about 850. Each device holds at
-    /// most its share of them (ARV-240): the bound over the devices holding runs (the zone's devices, at least two), never less than
-    /// <see cref="DeviceShareFloor"/>'s part of the buffer of it (2,000 at the defaults) and one.
+    /// most its share of them (ARV-240): the bound over the most of the devices holding runs, the zone's devices and two, never less
+    /// than <see cref="DeviceShareFloor"/>'s part of the buffer of it (2,000 at the defaults) nor one; a device over its share gives a
+    /// run back when the runs are at their bound and another device below its share needs one.
     /// </summary>
     public int MaxSightingRuns { get; init; } = 20_000;
 
@@ -225,8 +226,9 @@ public sealed partial class QueueStateEngine
     private readonly Dictionary<string, SightingRun> _runs = new(StringComparer.Ordinal);
     private readonly PriorityQueue<SightingRun, DateTime> _flushes = new();
     private readonly PriorityQueue<SightingRun, DateTime> _runEnds = new();
-    // ARV-240: the runs each device holds (only devices holding any), its track's key naming it, for its share of the runs.
-    private readonly Dictionary<string, int> _runsByDevice = new(StringComparer.Ordinal);
+    // ARV-240: the tracks whose runs each device holds (only devices holding any), its track's key naming it, for its share of
+    // the runs, and in key order for the run a device over its share gives back.
+    private readonly Dictionary<string, SortedSet<string>> _runsByDevice = new(StringComparer.Ordinal);
     private int _pending;
     // ARV-231: the events each device holds, buffered or pending (only devices holding any), for its share of the buffer.
     private readonly Dictionary<string, int> _heldByDevice = new(StringComparer.Ordinal);
@@ -284,6 +286,12 @@ public sealed partial class QueueStateEngine
     /// devices that push next. Not part of the snapshot: the zone processor's own device liveness is.
     /// </summary>
     public int ZoneDevices { get; set; }
+
+    /// <summary>
+    /// ARV-240: the runs of position samples taken back from a device holding more than its share since the engine started (for
+    /// tests; not part of the snapshot).
+    /// </summary>
+    internal long RunsTakenBack { get; private set; }
 
     /// <summary>Events waiting in the reorder buffer, the tracks' pending position samples included (ARV-230).</summary>
     public int BufferedEvents => _buffer.Count + _pending;
@@ -1096,37 +1104,105 @@ public sealed partial class QueueStateEngine
     }
 
     // ARV-240 (CWE-400): each device holds at most its share of the runs of position samples, as of the buffer: the runs' bound
-    // over the devices sharing them (those holding runs, the zone's devices heard recently, at least two), never less than the runs'
-    // part of DeviceShareFloor (the floor over the buffer's bound, of the runs' bound: 2,000 at the defaults, and one run at least; a
-    // floor at the buffer's bound turns both shares off). A run counts for the device its track's key names, so a restore counts
-    // them from the keys alone; a track of no device (a key without one) is held to the runs' bound alone. A track of a device past
-    // its share gets no run: its samples are buffered one place each, as for a track past the runs' bound, and since applying an extra
-    // sample changes no outcome, the share changes none either. A device flooding unique tracks (each a new run) so takes at most its
-    // share and leaves the others' tracks coalesced, among them a fast sensor's samples ahead of the clock, which would otherwise
-    // take a place each of its share of the ahead tenth. Many devices at the floor can still use the runs up together (bound over
-    // floor: 10 at the defaults), their further tracks then buffered as before.
+    // over the devices sharing them (the most of: the devices holding runs with the offering one, the zone's devices heard recently,
+    // two), never less than the runs' part of DeviceShareFloor (the floor over the buffer's bound, of the runs' bound: 2,000 at the
+    // defaults, one run at least and the runs' bound at most, so a floor at the buffer's bound turns both shares off). A run counts
+    // for the device its track's key names, so a restore counts them from the keys alone; a track of no device (a key without one)
+    // is held to the runs' bound alone. A track of a device at its share gets no run. Shares fall as devices join, and a run lasts
+    // as long as its track is seen again within its window, so a device may hold more than its share: when the runs are at their
+    // bound, a track of a device below its share takes a run back from the device holding the most above its share (ties by device
+    // code), the run of its first track by key, which ends as at its pending sample (that sample buffered). So devices that flooded
+    // a quiet zone before the others pushed keep no runs the others need (ARV-240 review, M1). Taking a run back, and giving a track
+    // none, only leaves samples buffered one place each, and since applying an extra sample changes no outcome, neither changes one;
+    // the choice depends on the runs held alone, so a restored engine takes back the same runs. A device flooding unique tracks so
+    // leaves the others' tracks coalesced, among them a fast sensor's samples ahead of the clock, which would otherwise take a place
+    // each of its share of the ahead tenth. Devices that each hold the floor can still use the runs up together (bound over floor:
+    // ten at the defaults) and keep them while they see their tracks again; the other devices' further tracks are then buffered a
+    // sample a place, and a sensor whose clock runs fast can be refused its events ahead of the clock at its share of the tenth.
 
     /// <summary>True when the device <paramref name="track"/> names holds its share of the runs already.</summary>
     private bool RunsOverShare(string track)
     {
         var device = OwnerOfTrack(track);
-        return device is not null && _runsByDevice.GetValueOrDefault(device) >= RunShareOf;
+        return device is not null && RunsOf(device) >= RunShareOf(device);
     }
 
-    private int RunShareOf => Math.Max(RunShareFloor, _settings.MaxSightingRuns / RunSharing);
+    private int RunsOf(string device) => _runsByDevice.TryGetValue(device, out var tracks) ? tracks.Count : 0;
+
+    private int RunShareOf(string device) => Math.Max(RunShareFloor, _settings.MaxSightingRuns / RunSharing(device));
+
+    /// <summary>The devices the runs' share divides by: those holding runs with the offering one, the zone's devices, at least two.</summary>
+    private int RunSharing(string device) =>
+        Math.Max(2, Math.Max(_runsByDevice.Count + (_runsByDevice.ContainsKey(device) ? 0 : 1), ZoneDevices));
 
     /// <summary>
-    /// The devices the runs' share divides by: those holding runs, the zone's devices, at least two. A device holding none is not
-    /// added as the buffer's share adds it: its share is at least one run, so its first is never refused for the share, and from
-    /// then on it is among those holding runs.
+    /// The runs' part of <see cref="QueueEngineSettings.DeviceShareFloor"/> (in proportion to the buffer's bound), one run at least,
+    /// as the ahead tenth's share keeps one place, and the runs' bound at most (the product fits a long; its quotient may not fit an
+    /// int at the settings' extremes: ARV-240 review, L3).
     /// </summary>
-    private int RunSharing => Math.Max(2, Math.Max(_runsByDevice.Count, ZoneDevices));
+    private int RunShareFloor => RunShareFloorOf(_settings);
 
-    /// <summary>
-    /// The runs' part of <see cref="QueueEngineSettings.DeviceShareFloor"/> (in proportion to the buffer's bound), and one run at
-    /// least, as the ahead tenth's share keeps one place.
-    /// </summary>
-    private int RunShareFloor => (int)Math.Max(1, (long)_settings.MaxSightingRuns * _settings.DeviceShareFloor / _settings.MaxBufferedEvents);
+    /// <inheritdoc cref="RunShareFloor"/>
+    internal static int RunShareFloorOf(QueueEngineSettings settings) =>
+        (int)Math.Clamp((long)settings.MaxSightingRuns * settings.DeviceShareFloor / settings.MaxBufferedEvents, 1, Math.Max(1, settings.MaxSightingRuns));
+
+    /// <summary>Takes a run of a device holding more than its share back for <paramref name="track"/>; false when none does.</summary>
+    private bool TakeBackRun(string track)
+    {
+        // A track of no device is held to the runs' bound alone, and takes no run back.
+        var device = OwnerOfTrack(track);
+        if (device is null)
+            return false;
+        var share = RunShareOf(device);
+        string most = null;
+        var mostRuns = share;
+        foreach (var (holder, tracks) in _runsByDevice)
+        {
+            if (tracks.Count > mostRuns || (tracks.Count == mostRuns && most is not null && string.CompareOrdinal(holder, most) < 0))
+            {
+                most = holder;
+                mostRuns = tracks.Count;
+            }
+        }
+
+        if (most is null)
+            return false;
+        var run = _runs[_runsByDevice[most].Min];
+        if (run.Pending is not null)
+            BufferPending(run);
+        RemoveRun(run);
+        RunsTakenBack++;
+        return true;
+    }
+
+    private void AddRun(SightingRun run)
+    {
+        _runs.Add(run.Track, run);
+        var device = OwnerOfTrack(run.Track);
+        if (device is null)
+            return;
+        if (!_runsByDevice.TryGetValue(device, out var tracks))
+        {
+            tracks = new SortedSet<string>(StringComparer.Ordinal);
+            _runsByDevice.Add(device, tracks);
+        }
+
+        tracks.Add(run.Track);
+    }
+
+    /// <summary>Forgets a run; its heaps' entries go when they come up (FlushSightings, EndRuns).</summary>
+    private void RemoveRun(SightingRun run)
+    {
+        _runs.Remove(run.Track);
+        var device = OwnerOfTrack(run.Track);
+        // No pattern variable before an early exit (ARV-069a): a mutant without the return would leave it unassigned.
+        var tracks = device is null ? null : _runsByDevice.GetValueOrDefault(device);
+        if (tracks is null)
+            return;
+        tracks.Remove(run.Track);
+        if (tracks.Count == 0)
+            _runsByDevice.Remove(device);
+    }
 
     /// <summary>Marks the minute of <paramref name="time"/> as one a full buffer may have shortened.</summary>
     private void Full(DateTime time)
@@ -1204,11 +1280,10 @@ public sealed partial class QueueStateEngine
             Buffer(seen, ahead, device, place);
             // The runs have their own bound (CWE-400), and each device its share of it (ARV-240): a track without a run is not
             // coalesced, its samples buffered as before.
-            if (_runs.Count < _settings.MaxSightingRuns && !RunsOverShare(seen.TrackKey))
+            if (!RunsOverShare(seen.TrackKey) && (_runs.Count < _settings.MaxSightingRuns || TakeBackRun(seen.TrackKey)))
             {
                 run = new SightingRun(seen.TrackKey, time);
-                _runs.Add(seen.TrackKey, run);
-                Count(_runsByDevice, OwnerOfTrack(seen.TrackKey), 1);
+                AddRun(run);
                 ScheduleEnd(run);
             }
 
@@ -1330,10 +1405,7 @@ public sealed partial class QueueStateEngine
             if (run.Pending is null && end <= _watermark)
             {
                 if (_runs.TryGetValue(run.Track, out var current) && ReferenceEquals(current, run))
-                {
-                    _runs.Remove(run.Track);
-                    Count(_runsByDevice, OwnerOfTrack(run.Track), -1);
-                }
+                    RemoveRun(run);
                 continue;
             }
 
