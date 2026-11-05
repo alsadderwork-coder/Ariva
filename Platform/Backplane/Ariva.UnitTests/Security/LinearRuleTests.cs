@@ -42,7 +42,35 @@ public class LinearRuleTests
         ["SecretText.Jwt"] = SecretText.Jwt
     };
 
-    public static TheoryData<string> RuleNames => [.. Rules.Keys];
+    /// <summary>ARV-293: the rules above that run on the backtracking engine, linear by their shape (each rule says why).</summary>
+    private static readonly HashSet<string> LinearByShape = new(StringComparer.Ordinal) { "EmailTemplates.Placeholder" };
+
+    public static TheoryData<string> RuleNames => [.. Rules.Keys.Where(name => !LinearByShape.Contains(name))];
+
+    /// <summary>
+    /// ARV-293: the template placeholder runs on the backtracking engine without a timeout, linear by its shape. Its own long
+    /// match, its long near misses and a run of opening braces are timed, and the rule finds and captures a placeholder right
+    /// after its own long match, where an instance on the linear engine matched <c>{{Zone}}.</c> without the name.
+    /// </summary>
+    [Fact]
+    public void Placeholder_Should_RunOnTheBacktrackingEngineAndKeepMatching_When_ItsOwnLongMatchCameFirst()
+    {
+        var rule = EmailTemplates.Placeholder();
+        rule.Options.Should().NotHaveFlag(RegexOptions.NonBacktracking, "the linear engine left it matching wrong after its own long match");
+        rule.MatchTimeout.Should().Be(Regex.InfiniteMatchTimeout, "a timeout could refuse a template on a loaded node");
+
+        var letters = new string('a', 1_000_000);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        rule.Replace("{{" + letters + "}}", "-").Should().Be("-");
+        rule.Matches("{{" + letters).Count.Should().Be(0);
+        rule.Matches(string.Concat(Enumerable.Repeat("{{", 500_000))).Count.Should().Be(0);
+        rule.Matches(string.Concat(Enumerable.Repeat("{{a", 300_000)) + "}}").Count.Should().Be(1);
+        watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10), "each letter is read once, by the attempt at the braces before its run");
+
+        var match = rule.Match("Queue alert at {{Zone}}.");
+        match.Value.Should().Be("{{Zone}}");
+        match.Groups[1].Value.Should().Be("Zone");
+    }
 
     [Theory]
     [MemberData(nameof(RuleNames))]
@@ -96,17 +124,25 @@ public class LinearRuleTests
         [.. typeof(SecretText).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
             .Where(m => m.ReturnType == typeof(Regex) && m.GetParameters().Length == 0).Select(m => m.Name).Order(StringComparer.Ordinal)];
 
-    /// <summary>Each rule's shortest match, and a fragment whose runs make the rule's long scans.</summary>
-    private static readonly Dictionary<string, (string Minimal, string Run)> LongScanCases = new(StringComparer.Ordinal)
+    private static readonly string Letters = new('a', 60_000);
+
+    /// <summary>
+    /// Each rule's shortest match, a fragment whose runs make the rule's long scans, and (ARV-293) a long match of its own, the
+    /// trigger the ARV-289 checkpoint fix named (a value or key followed by a long run it could take), or null for a rule
+    /// whose matches are short by its shape (a fixed length, an anchored scheme).
+    /// </summary>
+    private static readonly Dictionary<string, (string Minimal, string Run, string LongMatch)> LongScanCases = new(StringComparer.Ordinal)
     {
-        ["TokenQueryParameter"] = ("?token=x", "?token="), ["DeviceKey"] = ("ardk_01234567890123456789", "ardk_-"),
-        ["AuthorizationScheme"] = ("Bearer x", "Bearer "), ["Jwt"] = ("eyJabcde.abcde.", "eyJabcde."),
-        ["PrivateKeyBlock"] = (new string('-', 5) + "BEGIN PRIVATE KEY" + new string('-', 5), "a"), ["DerBase64"] = ("MII" + new string('A', 60), "MIIA"),
-        ["IntegrationClientSecret"] = ("ics_" + new string('a', 20), "ics_a"), ["TemporaryPassword"] = ("abcde-fghjk-mnpqr-stuvw", "abcde-"),
-        ["RecoveryCode"] = ("ABCDE-FGHJK", "ABCDE-"), ["Base32Seed"] = ("ABCDEFGHIJKLMNOP", "ABCDEFGH"),
-        ["CredentialHeader"] = ("Cookie: x", "Cookie:"), ["AuthorizationSchemeWord"] = ("Bearer ", "Bearer "),
-        ["JsonMember"] = ("\"a\":1", "\"a\":\""), ["Assignment"] = ("a=b", "a=b"), ["UnquotedAssignment"] = ("a=b", "a="),
-        ["PasswordAssignment"] = ("pwd=x", "pwd=a"), ["EmailAddress"] = ("a@b.c", "a@a.")
+        ["TokenQueryParameter"] = ("?token=x", "?token=", "?token=" + Letters), ["DeviceKey"] = ("ardk_01234567890123456789", "ardk_-", "ardk_" + Letters),
+        ["AuthorizationScheme"] = ("Bearer x", "Bearer ", "Bearer " + Letters), ["Jwt"] = ("eyJabcde.abcde.", "eyJabcde.", "eyJ" + Letters + "." + Letters + "."),
+        ["PrivateKeyBlock"] = (new string('-', 5) + "BEGIN PRIVATE KEY" + new string('-', 5), "a", new string('-', 5) + "BEGIN PRIVATE KEY" + new string('-', 5) + Letters),
+        ["DerBase64"] = ("MII" + new string('A', 60), "MIIA", "MII" + Letters),
+        ["IntegrationClientSecret"] = ("ics_" + new string('a', 20), "ics_a", "ics_" + Letters), ["TemporaryPassword"] = ("abcde-fghjk-mnpqr-stuvw", "abcde-", null),
+        ["RecoveryCode"] = ("ABCDE-FGHJK", "ABCDE-", null), ["Base32Seed"] = ("ABCDEFGHIJKLMNOP", "ABCDEFGH", new string('A', 60_000)),
+        ["CredentialHeader"] = ("Cookie: x", "Cookie:", "Cookie: " + Letters), ["AuthorizationSchemeWord"] = ("Bearer ", "Bearer ", null),
+        ["JsonMember"] = ("\"a\":1", "\"a\":\"", "\"a\":\"" + Letters + "\""), ["Assignment"] = ("a=b", "a=b", "a=\"" + Letters + "\""),
+        ["UnquotedAssignment"] = ("a=b", "a=", "a=" + Letters), ["PasswordAssignment"] = ("pwd=x", "pwd=a", "pwd=" + Letters),
+        ["EmailAddress"] = ("a@b.c", "a@a.", Letters + "@a.a")
     };
 
     /// <summary>
@@ -122,21 +158,22 @@ public class LinearRuleTests
     public void SecretTextRule_Should_MatchAsTheBacktrackingEngine_When_LongScansCameFirst(string name)
     {
         LongScanCases.Should().ContainKey(name, "every rule needs its shortest match and a run here");
-        var (minimal, run) = LongScanCases[name];
+        var (minimal, run, longMatch) = LongScanCases[name];
         var shape = (Regex)typeof(SecretText).GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, Type.EmptyTypes).Invoke(null, null);
 
-        LongScanDifferences(shape, minimal, run, captures: false).Should().BeEmpty();
+        LongScanDifferences(shape, minimal, run, longMatch, captures: false).Should().BeEmpty();
     }
 
     /// <summary>
-    /// ARV-293: the other shared rules on the linear engine that find match positions, each with its shortest match and a
-    /// fragment whose runs make its long scans. The template placeholder (Fill's Replace, the template check's Matches) and
-    /// the scanner's version line (its Match, whose groups give the signatures) are compared with their captures too.
+    /// ARV-293: the other shared rules on the linear engine that find match positions, each with its shortest match, a fragment
+    /// whose runs make its long scans and a long match of its own (null where its shape bounds a match). The scanner's version
+    /// line (its Match, whose groups give the signatures) is compared with its captures too; anchored, with fields of at most
+    /// 32, 9, 3 and 4 characters, it has no long match. The template placeholder failed this theory after its own long match
+    /// and moved to the backtracking engine (<see cref="Placeholder_Should_RunOnTheBacktrackingEngineAndKeepMatching_When_ItsOwnLongMatchCameFirst"/>).
     /// </summary>
-    private static readonly Dictionary<string, (Func<Regex> Rule, string Minimal, string Run)> SharedLongScanRules = new(StringComparer.Ordinal)
+    private static readonly Dictionary<string, (Func<Regex> Rule, string Minimal, string Run, string LongMatch)> SharedLongScanRules = new(StringComparer.Ordinal)
     {
-        ["EmailTemplates.Placeholder"] = (EmailTemplates.Placeholder, "{{a}}", "{{ab"),
-        ["ClamdScanner.VersionPattern"] = (ClamdScanner.VersionPattern, "ClamAV 1.4.6/28157/Sun Oct 18 06:24:14 2026", "ClamAV 1.4.6/")
+        ["ClamdScanner.VersionPattern"] = (ClamdScanner.VersionPattern, "ClamAV 1.4.6/28157/Sun Oct 18 06:24:14 2026", "ClamAV 1.4.6/", null)
     };
 
     public static TheoryData<string> SharedLongScanRuleNames => [.. SharedLongScanRules.Keys];
@@ -150,9 +187,9 @@ public class LinearRuleTests
     [MemberData(nameof(SharedLongScanRuleNames))]
     public void SharedRule_Should_MatchAndCaptureAsTheBacktrackingEngine_When_LongScansCameFirst(string name)
     {
-        var (rule, minimal, run) = SharedLongScanRules[name];
+        var (rule, minimal, run, longMatch) = SharedLongScanRules[name];
 
-        LongScanDifferences(rule(), minimal, run, captures: true).Should().BeEmpty();
+        LongScanDifferences(rule(), minimal, run, longMatch, captures: true).Should().BeEmpty();
     }
 
     /// <summary>
@@ -162,7 +199,7 @@ public class LinearRuleTests
     /// characters then a match, and the long call's own last match. Each instance is new (a long scan on the rule's shared
     /// instance would leave it wrong for the tests after this one), with and without the short texts first.
     /// </summary>
-    private static List<string> LongScanDifferences(Regex shape, string minimal, string run, bool captures)
+    private static List<string> LongScanDifferences(Regex shape, string minimal, string run, string longMatch, bool captures)
     {
         var reference = new Regex(shape.ToString(), shape.Options & ~RegexOptions.NonBacktracking);
         Regex Instance() => new(shape.ToString(), shape.Options, shape.MatchTimeout);
@@ -188,7 +225,10 @@ public class LinearRuleTests
             ("one run of 60,000", [Run(60_000)]),
             ("seven runs of about 8,000", [.. Enumerable.Range(0, 7).Select(k => Run(8_000) + run[..(k % run.Length)])]),
             ("a match then 60,000 a", [minimal + new string('a', 60_000)]),
-            ("60,000 a then a match", [new string('a', 60_000) + minimal])
+            ("60,000 a then a match", [new string('a', 60_000) + minimal]),
+            // ARV-293: a long match of the rule's own, then a long match and a run it could take.
+            ("a long match of its own", longMatch is null ? [] : [longMatch]),
+            ("a long match then a run", longMatch is null ? [] : [longMatch + Run(8_000)])
         };
         foreach (var shortTextsFirst in new[] { false, true })
             foreach (var (label, texts) in scans)
@@ -242,12 +282,20 @@ public class LinearRuleTests
     public void ProductionRules_Should_BeInTheLongScanTheoryOrBeNamedValidators_When_TheSourcesAreRead()
     {
         var projects = ProductionProjects();
-        var rules = projects
+        // Every GeneratedRegex member, a method or a property, static or not (review round 1: a partial property and an
+        // instance member are rules too).
+        const BindingFlags Every = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+        var members = projects
             .SelectMany(dir => Assembly.Load(new AssemblyName(Path.GetFileName(dir))).GetTypes())
-            .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly)
-                .Where(m => m.ReturnType == typeof(Regex) && m.GetParameters().Length == 0 && m.GetCustomAttribute<GeneratedRegexAttribute>() is not null)
-                .Where(m => ((Regex)m.Invoke(null, null)).Options.HasFlag(RegexOptions.NonBacktracking))
-                .Select(m => (Type: type.Name, m.Name)))
+            .SelectMany(type => type.GetMethods(Every).Cast<MemberInfo>().Concat(type.GetProperties(Every))
+                .Where(m => m.GetCustomAttribute<GeneratedRegexAttribute>() is not null)
+                .Select(m => (Type: type, Member: m)))
+            .ToList();
+        members.Where(m => m.Member is MethodInfo { IsStatic: false } || (m.Member is PropertyInfo p && p.GetMethod is { IsStatic: false }))
+            .Select(m => $"{m.Type.Name}.{m.Member.Name}").Should().BeEmpty("a rule is a static member, whose uses are read below");
+        var rules = members
+            .Where(m => (m.Member is MethodInfo method ? (Regex)method.Invoke(null, null) : (Regex)((PropertyInfo)m.Member).GetValue(null)).Options.HasFlag(RegexOptions.NonBacktracking))
+            .Select(m => (Type: m.Type.Name, m.Member.Name, Property: m.Member is PropertyInfo))
             .ToList();
         var separator = Path.DirectorySeparatorChar;
         // Whole-line comments out, so a rule named in a comment is not taken for a use.
@@ -257,20 +305,35 @@ public class LinearRuleTests
             .Select(f => string.Join('\n', File.ReadAllLines(f).Select(line => line.TrimStart().StartsWith("//", StringComparison.Ordinal) ? string.Empty : line)))
             .ToList();
         rules.Should().NotBeEmpty();
+        var attribute = new Regex(@"\[(?:System\.Text\.RegularExpressions\.)?GeneratedRegex(?:Attribute)?\(", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        sources.Sum(source => attribute.Matches(source).Count).Should().Be(members.Count, "every GeneratedRegex attribute in the sources is a member read above");
 
+        static Regex Rx(string pattern) => new(pattern, RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
         var finders = new List<string>();
         var validators = new List<string>();
-        foreach (var (type, name) in rules)
+        foreach (var (type, name, property) in rules)
         {
-            var declares = new Regex($@"\b(?:class|record|struct)\s+{type}\b", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-            // In a file that declares the type, a use is the name called alone or through the type; elsewhere through the type.
-            var inDeclaring = new Regex($@"(?<![\w.])(?<!\bRegex\s+){name}\(\)|\b{type}\.{name}\(\)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-            var elsewhere = new Regex($@"\b{type}\.{name}\(\)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-            var uses = sources.SelectMany(source => (declares.IsMatch(source) ? inDeclaring : elsewhere).Matches(source)
-                    .Select(m => source.AsSpan(m.Index + m.Length).StartsWith(".IsMatch(", StringComparison.Ordinal)))
-                .ToList();
+            var t = Regex.Escape(type);
+            var n = Regex.Escape(name);
+            var isMatch = property ? ".IsMatch(" : "().IsMatch(";
+            // A file can name the rule alone where it declares the type (a partial part included), imports it with using
+            // static, or declares a type that derives from it; anywhere, through the type or an alias of it.
+            var bare = Rx($@"\b(?:class|record|struct|interface)\s+{t}\b|\busing\s+static\s+[\w.]*\b{t}\s*;|:\s*(?:[\w.]+\.)?{t}\b");
+            var aliases = sources.SelectMany(source => Rx($@"\busing\s+(\w+)\s*=\s*[\w.]*\b{t}\s*;").Matches(source).Select(m => Regex.Escape(m.Groups[1].Value)));
+            var qualified = Rx($@"\b(?:{string.Join('|', aliases.Prepend(t).Distinct(StringComparer.Ordinal))})\.{n}\b");
+            // Alone: a call, a method group (after =, (, ',', => or return, before ;, ) or ','), or a property's member access.
+            var alone = Rx($@"(?<![\w.])(?<!\bRegex\s+)(?<!\bnameof\()(?:{n}(?=\s*\(\))|(?<=(?:[=(,]|=>|\breturn)\s*){n}(?=\s*[;),]){(property ? $"|{n}(?=\\.)" : string.Empty)})");
+            var uses = new List<bool>();
+            foreach (var source in sources.Where(source => source.Contains(name, StringComparison.Ordinal)))
+            {
+                var ends = qualified.Matches(source).Select(m => m.Index + m.Length).ToList();
+                if (bare.IsMatch(source))
+                    ends.AddRange(alone.Matches(source).Select(m => m.Index + m.Length));
+                uses.AddRange(ends.Distinct().Select(end => source.AsSpan(end).StartsWith(isMatch, StringComparison.Ordinal)));
+            }
+
             uses.Should().NotBeEmpty($"{type}.{name} is a production rule: some source uses it");
-            (uses.All(isMatch => isMatch) ? validators : finders).Add($"{type}.{name}");
+            (uses.All(direct => direct) ? validators : finders).Add($"{type}.{name}");
         }
 
         var theory = typeof(SecretText).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)

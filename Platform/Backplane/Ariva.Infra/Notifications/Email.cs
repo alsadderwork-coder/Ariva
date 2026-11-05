@@ -177,10 +177,14 @@ public sealed partial class EmailTemplates
     }
 
     /// <summary>
-    /// Linear in the template's length (NonBacktracking), so no timeout: unanchored, a backtracking matcher checked the
-    /// clock at every position (ARV-163).
+    /// A placeholder, <c>{{Name}}</c>. Without a timeout (ARV-163: a timeout could refuse a template on a loaded node) and, since
+    /// ARV-293, on the backtracking engine, linear by its shape: an attempt reads <c>{{</c>, then a run of letters that a
+    /// <c>}</c> cannot continue (so the run is atomic and never given back), then <c>}}</c>; a failed attempt reads at most the
+    /// two braces and its run, and only an attempt at a <c>{{</c> reads a run, so each letter is read once. On the linear engine
+    /// (NonBacktracking, .NET 10.0.13) an instance, after its own long match (a placeholder of about 48,000 letters), matched
+    /// <c>{{Zone}}.</c> with its name not captured (LinearRuleTests' long-scan theory, as ARV-289 found for two SecretText rules).
     /// </summary>
-    [GeneratedRegex(@"\{\{([A-Za-z]+)\}\}", RegexOptions.NonBacktracking | RegexOptions.CultureInvariant, Timeout.Infinite)]
+    [GeneratedRegex(@"\{\{([A-Za-z]+)\}\}", RegexOptions.CultureInvariant, Timeout.Infinite)]
     internal static partial Regex Placeholder();
 }
 

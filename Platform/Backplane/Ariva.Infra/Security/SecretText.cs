@@ -155,7 +155,8 @@ public static partial class SecretText
     /// <summary>
     /// ARV-293: whether a character can be part of a credential's shape: an ASCII letter or digit, one of <c>_-.+/=~%@</c>
     /// (base64 and base64url, a JWT's dots, an address, a scheme's credential), or a letter that matches an ASCII one without
-    /// case (the Kelvin sign and the long s, which the rules that ignore case take as k and s).
+    /// case (the Kelvin sign, which the rules that ignore case take as k; the long s is kept too, though .NET 10 takes it as no
+    /// ASCII letter).
     /// </summary>
     private static bool CanHoldCredential(char c) =>
         char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.' or '+' or '/' or '=' or '~' or '%' or '@' || c == (char)0x212A || c == (char)0x017F;
@@ -348,8 +349,11 @@ public static partial class SecretText
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Timeout.Infinite)]
     private static partial Regex AuthorizationSchemeWord();
 
-    /// <summary>A JSON member with a string or number value; the value goes when the name is a credential's.</summary>
-    [GeneratedRegex(@"""(?<name>[A-Za-z0-9_.:-]{1,64})""[ \t\r\n]*:[ \t\r\n]*(?<value>""(?:[^""\\\r\n]|\\.)*""?|[0-9]+)",
+    /// <summary>
+    /// A JSON member with a string or number value; the value goes when the name is a credential's. A string value runs to its
+    /// closing quote, a line's end or the text's end, a backslash that ends it included (ARV-293: a text cut inside an escape).
+    /// </summary>
+    [GeneratedRegex(@"""(?<name>[A-Za-z0-9_.:-]{1,64})""[ \t\r\n]*:[ \t\r\n]*(?<value>""(?:[^""\\\r\n]|\\.)*\\?""?|[0-9]+)",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Timeout.Infinite)]
     public static partial Regex JsonMember();
 

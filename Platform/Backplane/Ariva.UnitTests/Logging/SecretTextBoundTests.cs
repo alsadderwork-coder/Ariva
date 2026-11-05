@@ -93,6 +93,30 @@ public sealed class SecretTextBoundTests
         wrong.Should().BeEmpty();
     }
 
+    [Fact]
+    public void Protect_Should_KeepNoPartOfAnEscapedJsonValue_When_TheBoundCutsInsideAnEscape()
+    {
+        // Review round 1: a cut right after a backslash (an escaped quote, an escaped backslash, a \\u escape) left that
+        // backslash outside the member's value, which a backslash took only with the character after it. The secret is the
+        // digits, the backslashes, u and x, none of which the filler, the member's name, the mask or the note holds.
+        var credential = "\"password\":\"0123\\\"4567\\\\89\\" + "u0041x\"";
+        const string Secret = "0123456789\\ux";
+        var wrong = new List<string>();
+
+        for (var before = 1; before < credential.Length; before++)
+        {
+            var text = Filler(Max - before) + credential + " " + Filler(200);
+            var protectedText = SecretText.Protect(text);
+            var note = Note(text.Length - SecretText.KeptLength(text));
+            var part = protectedText[(Max - before)..^note.Length];
+            if (part.Any(Secret.Contains))
+                wrong.Add($"split {before}: the part kept holds some of the value ({part.Length} characters)");
+        }
+
+        wrong.Should().BeEmpty();
+        SecretText.Protect("| " + credential + " |").Should().Be("| \"password\":\"" + SecretText.Redacted + "\" |");
+    }
+
     [Theory]
     [MemberData(nameof(RuleNames))]
     public void Protect_Should_MaskTheCredential_When_ItEndsBeforeTheBound(string name)
