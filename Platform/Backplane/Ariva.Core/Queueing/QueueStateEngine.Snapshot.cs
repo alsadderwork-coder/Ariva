@@ -453,6 +453,11 @@ public sealed partial class QueueStateEngine
         {
             if (r is null || string.IsNullOrEmpty(r.TrackKey) || engine._runs.ContainsKey(r.TrackKey))
                 throw new InvalidDataException("The queue engine snapshot has an empty track run, or a track's run twice.");
+            // ARV-240: a run counts for the device its key names, which is a device code as a buffered event's device is, so a
+            // snapshot cannot hold runs of made-up devices for a run taken back to look through.
+            var owner = OwnerOfTrack(r.TrackKey);
+            if (owner is not null && !Sensing.DeviceCodes.IsValid(owner))
+                throw new InvalidDataException("The queue engine snapshot has a track run whose key names a device that is not a device code.");
             var anchor = QueueInputState.Utc(r.AnchorUtc);
             if (!ZoneProcessor.Plausible(anchor))
                 throw new InvalidDataException("The queue engine snapshot has a track run whose anchor is not a plausible time.");
@@ -487,7 +492,8 @@ public sealed partial class QueueStateEngine
                 run.FlushScheduled = true;
             }
 
-            engine._runs.Add(r.TrackKey, run);
+            // ARV-240: counted for the device its key names, as the engine that kept going counts it.
+            engine.AddRun(run);
             engine.ScheduleEnd(run);
         }
     }

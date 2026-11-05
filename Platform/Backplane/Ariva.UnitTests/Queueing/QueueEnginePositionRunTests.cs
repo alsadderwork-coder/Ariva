@@ -353,10 +353,10 @@ public sealed class QueueEnginePositionRunTests
     public void Runs_Should_StayWithinTheirBoundAndTheStateWithinItsBudget_When_ADeviceFloodsUniqueTracks()
     {
         // Security review (CWE-400, CWE-120): one device sends Ingest's largest push (3,000 samples) every second, each sample a
-        // track never seen again, with keys of 81 characters, for a minute at the default bounds. The runs stop at
-        // MaxSightingRuns, beyond which samples are buffered as before, so the zone's state is at most the runs' share above the
-        // engine that buffers every sample: both refuse the device past its share of the buffer (half of it, ARV-231) alike, and
-        // their steps are the same.
+        // track never seen again, with keys of 81 characters, for a minute at the default bounds. The runs stop at the device's
+        // share of MaxSightingRuns (half of them, alone in the zone: ARV-240), beyond which samples are buffered as before, so the
+        // zone's state is at most the runs' share above the engine that buffers every sample: both refuse the device past its share
+        // of the buffer (half of it, ARV-231) alike, and their steps are the same.
         var settings = new QueueEngineSettings();
         var runs = new QueueStateEngine(Hall, settings);
         var everySample = new QueueStateEngine(Hall, settings with { CoalescePositions = false });
@@ -387,7 +387,7 @@ public sealed class QueueEnginePositionRunTests
         }
 
         TestContext.Current.TestOutputHelper?.WriteLine($"runs at most {mostRuns}; largest engine state with runs {runsBytes} bytes, every sample buffered {everyBytes} bytes; refused {refused}");
-        mostRuns.Should().Be(settings.MaxSightingRuns, "the runs stop at their bound");
+        mostRuns.Should().Be(settings.MaxSightingRuns / 2, "the runs stop at the device's share of their bound");
         refused.Should().BeGreaterThan(0, "the flood is refused past the device's share of the buffer (ARV-231)");
         runsBytes.Should().BeLessThan(everyBytes + (settings.MaxSightingRuns * 200L), "the runs add at most their bound's share");
         runsBytes.Should().BeLessThan(StreamStore.MaxStateBytes / 2, "far within what a zone may save");

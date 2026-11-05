@@ -1255,7 +1255,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 310,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Low (it needs a flooding device, which ARV-231 already makes visible, and costs only the fast sensors' crossings ahead of the clock while the flood lasts; no worse than before ARV-239), so Phase 3.",
       "dependsOn": [
         "ARV-239"
