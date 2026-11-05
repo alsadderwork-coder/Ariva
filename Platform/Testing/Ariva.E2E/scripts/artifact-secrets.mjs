@@ -298,7 +298,7 @@ function blankQuotes(script) {
 		}
 		if (quote === "$'" || quote === '"') {
 			if (c === '\\' && i + 1 < script.length) {
-				out += '  ';
+				out += script[i + 1] === '\n' ? ' \n' : '  ';
 				i++;
 				continue;
 			}
@@ -308,7 +308,8 @@ function blankQuotes(script) {
 			continue;
 		}
 		if (c === '\\' && i + 1 < script.length) {
-			out += '  ';
+			// A line continued by a backslash keeps its line end, so the blanked text keeps the script's lines.
+			out += script[i + 1] === '\n' ? ' \n' : '  ';
 			i++;
 			continue;
 		}
@@ -510,19 +511,32 @@ function jobSteps(workflow, job) {
 function stripComments(text) {
 	const out = [];
 	let block = -1;
+	let pending = [];
+	// A run block's lines are read together, so a quote opened on one line is still open on the next (a # there is text).
+	const flush = () => {
+		if (pending.length === 0) return;
+		const blank = blankQuotes(pending.join('\n')).split('\n');
+		pending.forEach((line, i) => {
+			const hash = blank[i].search(/(?:^|\s)#/);
+			out.push(hash < 0 ? line : line.slice(0, hash).trimEnd());
+		});
+		pending = [];
+	};
 	for (const line of text.split('\n')) {
 		const level = line.search(/\S/);
-		if (block >= 0 && level >= 0 && level <= block) block = -1;
+		if (block >= 0 && level >= 0 && level <= block) {
+			flush();
+			block = -1;
+		}
 		if (block >= 0) {
-			const blank = blankQuotes(line);
-			const hash = blank.search(/(?:^|\s)#/);
-			out.push(hash < 0 ? line : line.slice(0, hash).trimEnd());
+			pending.push(line);
 			continue;
 		}
 		const opens = /^(\s*)(- )?[\w-]+: [|>][-+]?\s*(?:#.*)?$/.exec(line);
 		out.push(line.replace(/^\s*#.*$/, '').replace(/[ \t]+#.*$/, ''));
 		if (opens) block = opens[1].length + (opens[2] ? 2 : 0);
 	}
+	flush();
 	return out.join('\n');
 }
 
@@ -825,21 +839,31 @@ export function pullRequestCommentQuotes(workflows) {
 }
 
 // ARV-271a: the workflow text these checks guard, each pinned by a hash of its text (trailing blanks off each line, an action's
-// commit SHA and an image's digest as placeholders, so the bots' pin bumps pass). The checks above read the shell as text and
-// can be worded around (review remains the control for an edit made to pass them); a pin makes any edit of a guarded job or step
-// fail the self-test until its hash here is changed with it, so the change shows in this file's diff for review. Every route to a
-// pull request comment (gh pr|issue comment, review or edit, gh api on comments or reviews, a comment action, Claude's action)
-// must lie in a pinned job or step. `node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --pins` prints the hashes as
-// they are: update one only after reading the change against the checks.
+// commit SHA and an image's digest as placeholders, so the bots' pin bumps pass; an action's SHA is left to Dependabot and
+// review). The checks above read the shell as text and can be worded around (review remains the control for an edit made to
+// pass them); a pin makes any edit of a guarded text fail the self-test until its hash here is changed with it, so the change
+// shows in this file's diff for review. Pinned whole: every job whose token can write to pull requests or issues (pull-requests
+// or issues write, write-all, or no permissions at all, the repository's default), the backend and mutation jobs whose logs the
+// checks hold, and the security gate that runs this self-test; with each, its workflow's text outside jobs: (on, permissions,
+// env, defaults). A pinned job may use no local action (its file is not pinned), and a route to a pull request comment found in a
+// job that is not pinned fails as well. `node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --pins` prints the hashes
+// as they are: update one only after reading the change against the checks.
 const PINS = {
+	'ci.yml header': '40bc804bd779d6b746554a4a0f937149659408e3baa391b5a6ba5679dfcb97da',
+	'ci.yml security-gate': '18ce4674ef2e61fcc0b61fa17f57161c37a8e4aa613da2fdfc615de0e3a5a2ba',
 	'ci.yml backend': 'a5cf3245f76126255c0ad7a992ff66541555dda7112c4ab225a31bed2e225603',
-	'ci.yml e2e: Report failures on the pull request': 'e57e8156ead3f667a41417c46c585742fb430ee8e634b7947289260cb355fad9',
+	'ci.yml e2e': 'c9e4434457450db28e0da7c68ccdb04619f71ca9f100df0007ca210a5193ef82',
+	'mutation.yml header': 'b69f30202bc5fdb6671d666ea25d1e67a1c6fb61369debb46956e39c34f920c0',
 	'mutation.yml stryker': 'e3cc9251002ee66b4a7890adb95f0c0f312331cf339ad13cac3ab4741daa4096',
-	'images.yml build: Report findings on the pull request and fail on high or critical': 'fc6fe11a2bf8f3e383f1aafb0e11f223acd002e5a493e4342d81d4f2c3cc1700',
-	'security-scan.yml trivy: Report findings on the pull request and fail on high or critical': '33c29e294817009cac069319f05719317eb7df91c8ab04bc933ee63bffa527c2',
-	'base-images.yml resolve: Post the pinned lines on the pull request': 'a6eb12ea00f3a721819ad9e5b6bcd3369f334669a39a17127969331817fcccb9',
-	'claude-review.yml security-review: step 2': 'f2710a8eb7759dce09cb8295bc50a069805371d63d291d0bfe02a76228ed039d',
-	'claude-review.yml mention: step 2': '5096f3e2e8a58e1451ef45ca668b9d7953e6a93d1caf0432a201f3193f7cef53'
+	'images.yml header': 'e7b29c927fcb01d42bf67ba71ef7482976648e30f94e53cf65f3da4509d208e3',
+	'images.yml build': 'a19d75b6d67c6609fafa7518f3231a2d4bebdf8f817f592bff6f5dd83845827d',
+	'security-scan.yml header': '97cd4fc964ca55ae45806adebe649ccd20be5ed2ac094abf845c7aae6c566d45',
+	'security-scan.yml trivy': 'aebf0a04f54b80c5f9c03af2d6fc8c712317f83a1354b60b7df77de249c1f390',
+	'base-images.yml header': '77ad007ca3c2793c276beed353ca261a9dec88d112753682eba86b7d92f8542a',
+	'base-images.yml resolve': '598c797b653c2ac3cad336a945084bf584a0636f7900d50bd359ed45652ad846',
+	'claude-review.yml header': '5683c33c153fccd4d20efb015598d5f8e1966f9b7062b952c726c035c23cebbc',
+	'claude-review.yml security-review': '2de28037ae89c4c390cd5d45ea4c8a99cf35c9f520ce9f2ca0e56a8f0f9d1e1e',
+	'claude-review.yml mention': 'fcc7b2db7f23b61ca3d1f05da6b7ab8696f4105f50a7973c87dcf19506bf9161'
 };
 
 /** The jobs of a workflow (the two-space keys under jobs:), each with its raw text and its steps' raw text. */
@@ -864,34 +888,62 @@ function workflowJobs(text) {
 /** The text a pin hashes. */
 const pinText = (text) => text.split('\n').map((line) => line.trimEnd()).join('\n').replace(/@[0-9a-f]{40}(?: # v[\w.+-]+)?/g, '@<sha>').replace(/@sha256:[0-9a-f]{64}/g, '@sha256:<digest>').trim();
 
-// A step's route to a pull request comment, read with its comments out.
-const COMMENT_ROUTE = /\bgh\s+(?:pr|issue)\s+(?:comment|review|edit)\b|\bgh\s+api\b[^\n]*\b(?:comments|reviews)\b|^\s*uses:\s*[\w.-]+\/[\w.-]*(?:comment|github-script|claude-code-action)[\w.-]*@/im;
+// A step's route to a pull request comment, read with its comments out (a tripwire for a job without write permissions that
+// posts with a token of its own): gh pr|issue comment, review, edit or create, gh api on comments or reviews, GitHub's API by
+// URL or GraphQL mutation, a comment, script or Claude action, and a local action.
+const COMMENT_ROUTE = /\bgh"?\s+"?(?:pr|issue)"?\s+"?(?:comment|review|edit|create)\b|\bgh\s+api\b[^\n]*\b(?:comments|reviews|graphql)\b|api\.github\.com|\/(?:comments|reviews)\b|\b(?:addComment|addPullRequestReview)\b|^\s*uses:\s*(?:\.\/|[\w.-]+\/[\w.-]*(?:comment|github-script|claude-code-action)[\w.-]*@)/im;
+
+/** A permissions value (inline, or the block under the key) as text, or null when the key is absent. */
+function permissionsOf(text, indent) {
+	const key = new RegExp(`^ {${indent}}permissions:[ \\t]*(.*)$`, 'm').exec(text);
+	if (!key) return null;
+	if (key[1].trim() && !key[1].trim().startsWith('#')) return key[1].trim();
+	const lines = [];
+	for (const line of text.slice(key.index + key[0].length + 1).split('\n')) {
+		if (line.trim() === '' || line.trim().startsWith('#')) continue;
+		if (line.search(/\S/) <= indent) break;
+		lines.push(line.trim());
+	}
+	return lines.join('\n');
+}
+
+/** True when permissions (a job's, else its workflow's) let the token write to pull requests or issues; absent is the default. */
+const writesComments = (permissions) => permissions === null || /\bwrite-all\b|^(?:pull-requests|issues):\s*write\b/m.test(permissions);
 
 /**
- * The pins' current hashes from [file name, text] pairs (a target not found is null), and what is wrong: a route to a pull
- * request comment outside a pinned target, a job that declares steps none of which is read (its steps not at six spaces), and a
- * workflow with jobs: but no job read.
+ * The pins' current hashes from [file name, text] pairs (a target not found is null), and what is wrong: a job that can write to
+ * pull requests or issues and is not pinned, a pinned job using a local action, a route to a pull request comment in a job that
+ * is not pinned, a job that declares steps none of which is read (its steps not at six spaces), a workflow with jobs: but no
+ * job read, and a pinned job whose workflow's header is not pinned.
  */
 export function workflowPins(workflows) {
 	const hashes = Object.fromEntries(Object.keys(PINS).map((key) => [key, null]));
 	const problems = [];
+	const hash = (text) => crypto.createHash('sha256').update(pinText(text)).digest('hex');
 	for (const [file, text] of workflows) {
 		const jobs = workflowJobs(text);
-		if (/^jobs:\s*$/m.test(text) && jobs.length === 0) problems.push(`${file}: no job read under jobs: (jobs at two spaces)`);
+		const at = text.search(/^jobs:\s*$/m);
+		if (at >= 0 && jobs.length === 0) problems.push(`${file}: no job read under jobs: (jobs at two spaces)`);
+		if (`${file} header` in hashes && at >= 0) hashes[`${file} header`] = hash(text.slice(0, at));
+		const workflowPermissions = permissionsOf(at >= 0 ? text.slice(0, at) : text, 0);
 		for (const job of jobs) {
+			const key = `${file} ${job.name}`;
 			if (job.declaresSteps && job.steps.length === 0) problems.push(`${file}: the ${job.name} job's steps are not read (steps at six spaces)`);
-			const whole = `${file} ${job.name}`;
-			if (whole in hashes) hashes[whole] = crypto.createHash('sha256').update(pinText(job.raw)).digest('hex');
-			for (const step of job.steps) {
-				const key = `${file} ${job.name}: ${step.name}`;
-				if (key in hashes) hashes[key] = crypto.createHash('sha256').update(pinText(step.raw)).digest('hex');
-				if (COMMENT_ROUTE.test(step.text) && !(whole in PINS) && !(key in PINS)) problems.push(`${file}: "${job.name}: ${step.name}" posts to the pull request outside the pinned steps`);
+			const pinned = key in PINS;
+			if (pinned) {
+				hashes[key] = hash(job.raw);
+				if (!(`${file} header` in PINS)) problems.push(`${file}: the ${job.name} job is pinned but its workflow's header is not`);
+				if (job.steps.some((step) => /^\s*uses:\s*\.\//m.test(step.text))) problems.push(`${key}: uses a local action, whose file is not pinned`);
+				continue;
 			}
+			const permissions = permissionsOf(job.raw, 4) ?? workflowPermissions;
+			if (writesComments(permissions)) problems.push(`${key}: its token can write to pull requests or issues, and it is not pinned`);
+			for (const step of job.steps) if (COMMENT_ROUTE.test(step.text)) problems.push(`${file}: "${job.name}: ${step.name}" posts to the pull request outside the pinned jobs`);
 		}
 	}
-	for (const [key, hash] of Object.entries(hashes)) {
-		if (hash === null) problems.push(`${key}: the pinned job or step is no longer there`);
-		else if (hash !== PINS[key]) problems.push(`${key}: changed since it was pinned; read it against the checks, then update its hash in PINS (--pins prints them)`);
+	for (const [key, value] of Object.entries(hashes)) {
+		if (value === null) problems.push(`${key}: the pinned job or header is no longer there`);
+		else if (value !== PINS[key]) problems.push(`${key}: changed since it was pinned; read it against the checks, then update its hash in PINS (--pins prints them)`);
 	}
 	return { hashes, problems };
 }
@@ -1335,6 +1387,38 @@ function selfTest() {
 			'a comment action in a new workflow': ['lint.yml', 'on: pull_request\njobs:\n  lint:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: example/sticky-pull-request-comment@0123456789abcdef0123456789abcdef01234567\n']
 		};
 		for (const [label, entry] of Object.entries(added)) if (workflowPins([...workflows, entry]).problems.length === 0) problems.push(`the pins pass ${label}`);
+		// ARV-271a review round 2: the pins hold whole jobs and their workflows' headers, and every job that can write to a pull
+		// request; each of the round's bypasses fails (a same-named copy of a comment step, a PATH or environment change before
+		// it, a workflow-level variable, a step between the E2E check and its comment, the self-test's own step removed, a job
+		// that can write in a new workflow or one without permissions, a call to the API by URL, a local action in a pinned job).
+		const scanStep = '      - name: Report findings on the pull request and fail on high or critical\n';
+		const scan = workflows.find(([f]) => f === 'security-scan.yml')?.[1] ?? '';
+		const scanCopy = scan.slice(scan.indexOf(scanStep), scan.indexOf('\n      - ', scan.indexOf(scanStep) + 1) + 1);
+		const newWorkflow = (body) => ['lint.yml', `on: pull_request\n${body}`];
+		const round3 = {
+			'a same-named copy of a pinned comment step': ['security-scan.yml', scanStep, scanCopy + scanStep],
+			'a PATH change before a pinned comment step': ['images.yml', scanStep, '      - name: Tools\n        run: echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n' + scanStep],
+			'an environment file before a pinned comment step': ['images.yml', scanStep, '      - name: Shell setup\n        run: echo "BASH_ENV=$RUNNER_TEMP/setup.sh" >> "$GITHUB_ENV"\n' + scanStep],
+			'a workflow-level variable': ['mutation.yml', '\njobs:\n', '\nenv:\n  BASH_ENV: scripts/setup.sh\njobs:\n'],
+			'a step between the E2E artifact check and its comment': ['ci.yml', '      - name: Report failures on the pull request\n        if: failure() && steps.artifacts', '      - name: More log\n        run: printenv >> e2e.log\n      - name: Report failures on the pull request\n        if: failure() && steps.artifacts'],
+			"the self-test's own step removed": ['ci.yml', '      - name: E2E artifact secret check self-test\n        run: node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --self-test\n', ''],
+			'a local action in a pinned job': ['security-scan.yml', scanStep, '      - uses: ./.github/actions/post\n' + scanStep]
+		};
+		for (const [label, [file, from, to]] of Object.entries(round3)) {
+			const original = workflows.find(([f]) => f === file)?.[1] ?? '';
+			if (!original.includes(from) || from === to) problems.push(`${file} no longer has the text that the pin case ${label} changes: update it`);
+			else if (workflowPins(workflows.map(([f, text]) => [f, f === file ? text.replace(from, () => to) : text])).problems.length === 0) problems.push(`the pins pass ${label}`);
+		}
+		const round3New = {
+			'a job given pull-requests: write in a new workflow': newWorkflow('permissions:\n  contents: read\njobs:\n  lint:\n    runs-on: ubuntu-24.04\n    permissions:\n      pull-requests: write\n    steps:\n      - name: Lint\n        run: echo lint\n'),
+			'a workflow without permissions': newWorkflow('jobs:\n  lint:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Lint\n        run: echo lint\n'),
+			'a call to the API by URL from a job that cannot write': newWorkflow('permissions:\n  contents: read\njobs:\n  lint:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Lint\n        run: curl -X POST https://api.github.com/repos/o/r/issues/1/comments -d @lint.json\n')
+		};
+		for (const [label, entry] of Object.entries(round3New)) if (workflowPins([...workflows, entry]).problems.length === 0) problems.push(`the pins pass ${label}`);
+		// A quoted string over several lines keeps a # in it as text, so the exit after it is read (review round 2, advice 7).
+		const multiLine = replace(`${nodeLine}      # ARV-068`, `          echo "x\n          #"; exit 0; echo "\n          echo "\n${nodeLine}      # ARV-068`)(workflow);
+		if (multiLine === null) problems.push('ci.yml no longer has the text the multi-line quote case changes: update it');
+		else if (backendLogWiring(multiLine).length === 0) problems.push('the wiring check passes an exit hidden by a quote over several lines');
 		const bumped = workflows.map(([f, text]) => [f, text.replace(/upload-artifact@[0-9a-f]{40} # v7\.0\.1/g, 'upload-artifact@0123456789abcdef0123456789abcdef01234567 # v7.0.2')]);
 		if (workflowPins(bumped).problems.length) problems.push("the pins fail on an action's pin bump (the bots' updates must pass)");
 	} finally {
