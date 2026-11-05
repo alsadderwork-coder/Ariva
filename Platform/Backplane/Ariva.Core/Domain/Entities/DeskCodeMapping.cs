@@ -40,17 +40,22 @@ public partial class DeskCodeMapping : BaseSoftDeletableEntity<DeskCodeMapping>,
             throw new DomainRuleException("The desk is deleted.");
         if (SiteCode is not null && desk.SiteCode != SiteCode)
             throw new DomainRuleException("A mapping stays in its site.");
-        var allowed = System switch
-        {
-            ExternalSystem.Aman => desk.Kind is DeskKind.Desk or DeskKind.EGate,
-            ExternalSystem.Aodb => desk.Kind is DeskKind.Counter,
-            _ => false
-        };
-        if (!allowed)
+        if (!Fits(System, desk.Kind))
             throw new DomainRuleException($"A {System} code cannot map to a {desk.Kind}.");
         Desk = desk;
         SiteCode = desk.SiteCode;
     }
+
+    /// <summary>
+    /// Whether a system's code can map a desk of this kind: an AMAN code an immigration desk or e-gate, an AODB code a check-in
+    /// counter. ARV-287: the import checks it before it asks the mapping service, so it never matches the refusal's text.
+    /// </summary>
+    public static bool Fits(ExternalSystem system, DeskKind kind) => system switch
+    {
+        ExternalSystem.Aman => kind is DeskKind.Desk or DeskKind.EGate,
+        ExternalSystem.Aodb => kind is DeskKind.Counter,
+        _ => false
+    };
 
     /// <summary>Trimmed and upper case, or null when the code cannot be valid.</summary>
     public static string NormalizeCode(string code)

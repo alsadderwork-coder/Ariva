@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Reflection;
 using System.Reflection.Emit;
 
@@ -9,12 +10,12 @@ namespace Ariva.UnitTests.Architecture;
 /// text) and records, for every call, the flags of the values it takes. So a check can tell that a call formats or compares
 /// the caught exception or its text, whichever argument it is in and through whichever locals it went, and that a call merely
 /// given the exception (a logger) does not. A method the interpretation cannot follow (calli, jmp) is reported, not skipped.
-/// ARV-287: each value on the stack also knows its home (the local, argument or field it was loaded from or whose address it
-/// is, or the instruction that made the array), so a value stored into an array, through an address (a span's element, an
-/// inline array's, a ref a call returned) or by a call on a struct or builder taken by address adds its flags to that home;
-/// an address carries its value's flags; finally and fault handlers are interpreted; a handler starts with the locals of
-/// every instruction of its try block merged; and the fields' flags can be seeded from a caller's, so a lambda followed from a
-/// method starts with the flags of the closure fields that method set.
+/// ARV-287: each value also knows its homes (the locals, arguments, fields and made objects it may be, or whose address it
+/// is), so a value stored into an array, through an address (a span's element, a ref local, an out argument) or by a call
+/// into what it was given (an array, a span, a builder, a collection, a struct taken by address) adds its flags to every
+/// alias of that home; a call into the scope is summarised (what it returns, what it stores into its arguments and fields,
+/// through a delegate's target too) when it takes a flagged value; finally, fault and filter blocks are interpreted with the
+/// edges that reach and leave them; and the field iteration throws when it has not converged.
 /// </summary>
 internal static class IlFlow
 {
@@ -29,11 +30,15 @@ internal static class IlFlow
     /// <summary>The value is an exception's text (its message, a string it carries, the exception formatted), or text made from it.</summary>
     public const int ExceptionText = 4;
 
+    /// <summary>ARV-287: the value is something an exception hands out (a Kafka error, a driver's command, a validation result), whose text is the exception's.</summary>
+    public const int ExceptionPart = 8;
+
+    /// <summary>ARV-287: the value holds a rule's text (an array, a collection, a result or an object made from it); what is read out of it is the rule's text.</summary>
+    public const int RuleHeld = 16;
+
     /// <summary>The most passes over a method while its fields gain flags; more is a bug in the interpretation, reported.</summary>
     public const int MaxPasses = 64;
 
-    private const int NoHome = int.MinValue;
-    private const int NullHome = int.MinValue + 1;
     private const int MadeHomes = -1_000_000;
     private const int FieldHomes = -2_000_000;
 
@@ -41,34 +46,36 @@ internal static class IlFlow
 
     #region Methods
 
-    /// <summary>
-    /// For each call or newobj instruction (by index), the flags of the values it takes, the receiver first; null when the
-    /// method uses calli or jmp, whose stack effect the interpretation cannot know.
-    /// </summary>
-    public static Dictionary<int, int[]> Arguments(MethodBase method, IReadOnlyList<IlReader.Instruction> instructions, IReadOnlyList<IlReader.Region> regions,
-        Func<Type, int> typeFlags, Func<MethodBase, int[], int> callResult, int[] seed = null) =>
-        Follow(method, instructions, regions, typeFlags, callResult, seed)?.Arguments;
+    /// <summary>The flags of a value put into a container: a rule's text becomes a value holding it.</summary>
+    public static int Held(int flags) => (flags & ~RuleText) | ((flags & (RuleText | RuleHeld)) != 0 ? RuleHeld : 0);
+
+    /// <summary>The flags of a value read out of a container: what a holder of a rule's text gives back is that text.</summary>
+    public static int Read(int flags) => flags | ((flags & RuleHeld) != 0 ? RuleText : 0);
 
     /// <summary>
-    /// The method's flow: for each call or newobj instruction (by index) the flags of the values it takes, the receiver first,
-    /// and the flags each field gained; null when the method uses calli or jmp.
+    /// The method's flow: for each call or newobj instruction (by index) the flags of the values it takes, the receiver first;
+    /// the flags each field gained; the reference comparisons; the delegate targets invoked; and what the method returns and
+    /// stores into its arguments. Null when the method uses calli or jmp.
     /// </summary>
     /// <param name="typeFlags">The flags a value has because of its type (an exception type is <see cref="Exception"/>).</param>
     /// <param name="callResult">The flags of a call's result, from the call and the flags of the values it takes.</param>
     /// <param name="seed">The flags of the method's arguments (the receiver first), when a caller's are known.</param>
     /// <param name="fieldSeed">The fields' flags as a caller left them (the closure fields a lambda reads).</param>
+    /// <param name="summarize">What a call into the scope returns and stores, or null when it is not followed.</param>
+    /// <param name="maxPasses">The most passes before the iteration is reported as not converging.</param>
     public static Result Follow(MethodBase method, IReadOnlyList<IlReader.Instruction> instructions, IReadOnlyList<IlReader.Region> regions,
-        Func<Type, int> typeFlags, Func<MethodBase, int[], int> callResult, int[] seed = null, IReadOnlyDictionary<(Module, int), int> fieldSeed = null)
+        Func<Type, int> typeFlags, Func<MethodBase, int[], int> callResult, int[] seed = null, IReadOnlyDictionary<(Module, int), int> fieldSeed = null,
+        Summarizer summarize = null, int maxPasses = MaxPasses)
     {
         if (instructions.Any(i => i.OpCode == OpCodes.Calli || i.OpCode == OpCodes.Jmp))
             return null;
         var fields = fieldSeed is null ? new Dictionary<(Module, int), int>() : new Dictionary<(Module, int), int>(fieldSeed);
         var body = method.GetMethodBody();
+        var argTypes = (method.IsStatic ? [] : new[] { method.DeclaringType }).Concat(method.GetParameters().Select(p => p.ParameterType)).ToArray();
         if (body is null || instructions.Count == 0)
-            return new Result([], fields, []);
+            return new Result([], fields, [], [], 0, new int[argTypes.Length]);
         var byOffset = instructions.Select((ins, k) => (ins.Offset, k)).ToDictionary(x => x.Offset, x => x.k);
         var localTypes = body.LocalVariables.Select(l => l.LocalType).ToArray();
-        var argTypes = (method.IsStatic ? [] : new[] { method.DeclaringType }).Concat(method.GetParameters().Select(p => p.ParameterType)).ToArray();
         var returnsValue = method is MethodInfo info && info.ReturnType != typeof(void);
         var fieldKeys = new List<(Module, int)>();
         int FieldHome((Module, int) key)
@@ -83,16 +90,37 @@ internal static class IlFlow
             return FieldHomes - index;
         }
 
+        // A finally block, at its end, goes on to where each leave that crossed it was going.
+        var exits = regions.Where(r => r.Kind == IlReader.RegionKind.Finally).ToDictionary(r => r, r => instructions
+            .Where(i => (i.OpCode == OpCodes.Leave || i.OpCode == OpCodes.Leave_S) && r.InTry(i.Offset))
+            .SelectMany(i => i.Targets).Where(t => !r.InTry(t)).Distinct().ToArray());
+
         var arguments = new Dictionary<int, int[]>();
         var comparisons = new Dictionary<int, int>();
+        var invoked = new Dictionary<int, MethodBase>();
+        var fieldAliases = new Dictionary<(Module, int), ImmutableHashSet<int>>();
+        var fieldTargets = new Dictionary<(Module, int), MethodBase>();
+        var returned = 0;
+        var stored = new int[argTypes.Length];
         // Fields are followed across the whole method: the interpretation is run again until no field gains a flag.
         for (var pass = 0; ; pass++)
         {
-            if (pass == MaxPasses)
-                throw new InvalidOperationException($"The flow of {method.DeclaringType?.Name}.{method.Name} did not converge in {MaxPasses} passes.");
-            var fieldsBefore = fields.Values.Sum();
+            if (pass == maxPasses)
+                throw new InvalidOperationException($"The flow of {method.DeclaringType?.Name}.{method.Name} did not converge in {maxPasses} passes.");
+            var before = Signature();
             var states = new State[instructions.Count];
-            var work = new Queue<int>();
+            // The lowest instruction first: a try block is followed to its end before its handler, and a handler before what
+            // follows it, so each is interpreted about once rather than again for every change in the block before it.
+            var work = new PriorityQueue<int, int>();
+            var queued = new bool[instructions.Count];
+            void Queue(int k)
+            {
+                if (queued[k])
+                    return;
+                queued[k] = true;
+                work.Enqueue(k, k);
+            }
+
             void Enter(int k, State state)
             {
                 if (k < 0 || k >= instructions.Count)
@@ -100,164 +128,291 @@ internal static class IlFlow
                 if (states[k] is null)
                 {
                     states[k] = state;
-                    work.Enqueue(k);
+                    Queue(k);
                 }
                 else if (states[k].Merge(state))
                 {
-                    work.Enqueue(k);
+                    Queue(k);
                 }
+            }
+
+            void EnterAt(int offset, State state)
+            {
+                if (byOffset.TryGetValue(offset, out var at))
+                    Enter(at, state);
             }
 
             var seeded = new int[argTypes.Length];
             for (var a = 0; a < Math.Min(seeded.Length, seed?.Length ?? 0); a++)
                 seeded[a] = seed[a];
-            Enter(0, new State(new Stack<Slot>(), new int[localTypes.Length], seeded));
+            Enter(0, State.Start(localTypes.Length, seeded));
 
             while (work.Count > 0)
             {
                 var k = work.Dequeue();
+                queued[k] = false;
                 var ins = instructions[k];
                 // ARV-287: a handler can start from any instruction of its try block, with that instruction's locals and
                 // arguments: a catch or filter with the exception on its stack, a finally or fault with none.
-                foreach (var region in regions.Where(r => r.InTry(ins.Offset)))
+                foreach (var region in regions)
                 {
-                    var thrown = region.Kind is IlReader.RegionKind.Catch or IlReader.RegionKind.Filter ? new Stack<Slot>([new Slot(Exception, NoHome)]) : new Stack<Slot>();
-                    if (byOffset.TryGetValue(region.Start, out var handler))
-                        Enter(handler, new State(thrown, [.. states[k].Locals], [.. states[k].Arguments]));
+                    if (!region.InTry(ins.Offset) || !byOffset.TryGetValue(region.Start, out var handler))
+                        continue;
+                    if (states[handler] is null)
+                        Enter(handler, states[k].With(region.Catches ? [new Slot(Exception, [])] : []));
+                    else if (states[handler].MergeLocals(states[k]))
+                        Queue(handler);
                 }
 
                 var state = states[k].Copy();
                 var stack = state.Stack;
                 var name = ins.OpCode.Name ?? "";
-                Slot Pop() => stack.Count > 0 ? stack.Pop() : new Slot(0, NoHome);
-                void Store(int home, int flags)
+                Slot Pop() => stack.Count > 0 ? stack.Pop() : new Slot(0, []);
+
+                // Adds flags to every value that may be the one at these homes: the locals, arguments, fields and stack values
+                // that alias it, and the arguments it was given through (what the method stores into them).
+                void Store(ImmutableHashSet<int> homes, int flags)
                 {
-                    if (flags == 0 || home == NoHome)
+                    if (flags == 0 || homes.IsEmpty)
                         return;
-                    if (home >= 0 && home < state.Locals.Length)
-                        state.Locals[home] |= flags;
-                    else if (home < 0 && home > MadeHomes && -1 - home < state.Arguments.Length)
-                        state.Arguments[-1 - home] |= flags;
-                    else if (home <= FieldHomes && FieldHomes - home < fieldKeys.Count)
-                        fields[fieldKeys[FieldHomes - home]] = fields.GetValueOrDefault(fieldKeys[FieldHomes - home]) | flags;
-                    // The same home's other copies on the stack (an array or address duplicated before the store).
+                    foreach (var home in homes)
+                    {
+                        if (home >= 0 && home < state.Locals.Length)
+                        {
+                            state.Locals[home] |= flags;
+                        }
+                        else if (home < 0 && home > MadeHomes && -1 - home < state.Arguments.Length)
+                        {
+                            state.Arguments[-1 - home] |= flags;
+                            stored[-1 - home] |= flags;
+                        }
+                        else if (home <= FieldHomes && FieldHomes - home < fieldKeys.Count)
+                        {
+                            var key = fieldKeys[FieldHomes - home];
+                            fields[key] = fields.GetValueOrDefault(key) | flags;
+                        }
+                    }
+
+                    for (var i = 0; i < state.Locals.Length; i++)
+                        if (!state.LocalHomes[i].IsEmpty && (state.Locals[i] | flags) != state.Locals[i] && state.LocalHomes[i].Overlaps(homes))
+                            state.Locals[i] |= flags;
+                    for (var a = 0; a < state.Arguments.Length; a++)
+                        if ((state.Arguments[a] | flags) != state.Arguments[a] && state.ArgumentHomes[a].Overlaps(homes))
+                        {
+                            state.Arguments[a] |= flags;
+                            stored[a] |= flags;
+                        }
+
+                    foreach (var (key, aliases) in fieldAliases)
+                        if (aliases.Overlaps(homes))
+                            fields[key] = fields.GetValueOrDefault(key) | flags;
                     var slots = stack.ToArray();
                     stack.Clear();
                     foreach (var slot in slots.Reverse())
-                        stack.Push(slot.Home == home ? slot with { Flags = slot.Flags | flags } : slot);
+                        stack.Push(slot.Homes.Overlaps(homes) ? slot with { Flags = slot.Flags | flags } : slot);
+                }
+
+                // Makes the locals at these homes (a struct taken by address) alias what it was made from too.
+                void Alias(ImmutableHashSet<int> homes, ImmutableHashSet<int> more)
+                {
+                    if (more.IsEmpty)
+                        return;
+                    foreach (var home in homes.Where(h => h >= 0 && h < state.Locals.Length))
+                        state.LocalHomes[home] = state.LocalHomes[home].Union(more);
                 }
 
                 var falls = true;
+                var flaggedFields = fields.Count > 0 && fields.Values.Any(v => v != 0);
 
                 if (ins.Callee is { } callee && (ins.OpCode == OpCodes.Call || ins.OpCode == OpCodes.Callvirt || ins.OpCode == OpCodes.Newobj))
                 {
-                    var count = callee.GetParameters().Length + (ins.OpCode != OpCodes.Newobj && !callee.IsStatic ? 1 : 0);
+                    var created = ins.OpCode == OpCodes.Newobj;
+                    var instance = !created && !callee.IsStatic;
+                    var parameters = callee.GetParameters();
+                    var count = parameters.Length + (instance ? 1 : 0);
                     var slots = new Slot[count];
                     for (var a = count - 1; a >= 0; a--)
                         slots[a] = Pop();
                     var taken = slots.Select(s => s.Flags).ToArray();
                     arguments[k] = arguments.TryGetValue(k, out var seen) ? [.. seen.Zip(taken, (x, y) => x | y)] : taken;
-                    // A call on a struct taken by address (an interpolated string handler) or on a StringBuilder keeps what it is given.
-                    if (ins.OpCode != OpCodes.Newobj && !callee.IsStatic && count > 0 &&
-                        (callee.DeclaringType?.IsValueType == true || callee.DeclaringType == typeof(System.Text.StringBuilder)))
-                        Store(slots[0].Home, taken.Skip(1).Aggregate(0, (x, y) => x | y));
-                    var returns = ins.OpCode == OpCodes.Newobj ? callee.DeclaringType : (callee as MethodInfo)?.ReturnType;
+                    int Others(int except) => slots.Where((_, a) => a != except).Aggregate(0, (x, s) => x | s.Flags);
+                    // The async machinery (a builder, an awaiter, a task) moves the state machine and its awaiters by reference, not
+                    // values into each other.
+                    var containers = IsMachinery(callee.DeclaringType) ? [] : Enumerable.Range(0, count)
+                        .Where(a => instance && a == 0 ? IsContainer(callee.DeclaringType) : IsContainer(parameters[a - (instance ? 1 : 0)].ParameterType))
+                        .ToArray();
+
+                    Summary summary = null;
+                    var shift = 0;
+                    if (summarize is not null)
+                    {
+                        if (instance && callee.Name == "Invoke" && typeof(Delegate).IsAssignableFrom(callee.DeclaringType) && slots[0].Target is { } target)
+                        {
+                            // A delegate's call runs its target, given the delegate's receiver (a closure) unless the target is static.
+                            invoked[k] = target;
+                            shift = target.IsStatic ? 1 : 0;
+                            summary = summarize(target, false, taken[shift..], fields);
+                        }
+                        else if (taken.Any(t => t != 0) || flaggedFields)
+                        {
+                            summary = summarize(callee, created, taken, fields);
+                        }
+                    }
+
+                    if (summary is not null)
+                    {
+                        foreach (var (key, flags) in summary.Fields)
+                            fields[key] = fields.GetValueOrDefault(key) | flags;
+                        for (var a = 0; a < summary.ArgumentsOut.Length && a + shift < count; a++)
+                            Store(slots[a + shift].Homes, summary.ArgumentsOut[a]);
+                    }
+                    else
+                    {
+                        // A call outside the scope keeps what it is given in what it was given it with: an array, a span, a
+                        // builder, a collection, a by-ref argument or a struct taken by address.
+                        foreach (var a in containers)
+                            Store(slots[a].Homes, Held(Others(a)));
+                    }
+
+                    var bound = containers.Where(a => !(instance && a == 0)).Aggregate(ImmutableHashSet<int>.Empty, (h, a) => h.Union(slots[a].Homes));
+                    if (instance && callee is ConstructorInfo && callee.DeclaringType?.IsValueType == true)
+                        Alias(slots[0].Homes, bound);
+                    var returns = created ? callee.DeclaringType : (callee as MethodInfo)?.ReturnType;
                     if (returns is not null && returns != typeof(void))
                     {
-                        // A ref a call returns (a span's or an inline array's element) is the home of what it was taken from.
-                        var home = (returns.IsByRef || (!callee.IsStatic && returns == callee.DeclaringType && ins.OpCode != OpCodes.Newobj)) && count > 0 ? slots[0].Home
-                            : ins.OpCode == OpCodes.Newobj ? MadeHomes - k : NoHome;
-                        stack.Push(new Slot(callResult(callee, taken) | typeFlags(returns.IsByRef ? returns.GetElementType() : returns), home));
+                        var flags = callResult(callee, taken) | typeFlags(returns.IsByRef ? returns.GetElementType() : returns) | (summary?.Returned ?? 0);
+                        // A ref a call returns is into what it was given; a fluent call returns its receiver; a span or memory
+                        // made from an array is that array; a made object is its own.
+                        var homes = returns.IsByRef ? slots.Aggregate(ImmutableHashSet<int>.Empty, (h, s) => h.Union(s.Homes))
+                            : instance && returns == callee.DeclaringType ? slots[0].Homes
+                            : IsContainer(returns) ? bound.Union(instance ? slots[0].Homes : [])
+                            : [];
+                        if (created)
+                            homes = homes.Add(MadeHomes - k);
+                        var made = created && typeof(Delegate).IsAssignableFrom(callee.DeclaringType) && count > 1 ? slots[1].Target : null;
+                        stack.Push(new Slot(flags, homes, false, made));
                     }
+                }
+                else if (ins.OpCode == OpCodes.Ldftn || ins.OpCode == OpCodes.Ldvirtftn)
+                {
+                    if (ins.OpCode == OpCodes.Ldvirtftn)
+                        Pop();
+                    stack.Push(new Slot(0, [], false, ins.Callee));
                 }
                 else if (name.StartsWith("ldloca", StringComparison.Ordinal))
                 {
-                    stack.Push(new Slot(state.Locals.ElementAtOrDefault(ins.Index), ins.Index));
+                    var i = ins.Index;
+                    stack.Push(new Slot(state.Locals.ElementAtOrDefault(i) | typeFlags(localTypes.ElementAtOrDefault(i)),
+                        i >= 0 && i < state.Locals.Length ? state.LocalHomes[i].Add(i) : []));
                 }
                 else if (name.StartsWith("ldloc", StringComparison.Ordinal))
                 {
-                    stack.Push(new Slot(state.Locals.ElementAtOrDefault(ins.Index) | typeFlags(localTypes.ElementAtOrDefault(ins.Index)), ins.Index));
+                    var i = ins.Index;
+                    var known = i >= 0 && i < state.Locals.Length;
+                    stack.Push(new Slot(state.Locals.ElementAtOrDefault(i) | typeFlags(localTypes.ElementAtOrDefault(i)), known ? state.LocalHomes[i] : [],
+                        false, known ? state.LocalTargets[i] : null));
                 }
                 else if (name.StartsWith("stloc", StringComparison.Ordinal))
                 {
                     var value = Pop();
-                    if (ins.Index >= 0 && ins.Index < state.Locals.Length)
-                        state.Locals[ins.Index] = value.Flags;
+                    var i = ins.Index;
+                    if (i >= 0 && i < state.Locals.Length)
+                    {
+                        state.Locals[i] = value.Flags;
+                        // A value with no home of its own is the object this store made it.
+                        state.LocalHomes[i] = value.Homes.IsEmpty ? [MadeHomes - k] : value.Homes;
+                        state.LocalTargets[i] = value.Target;
+                    }
                 }
                 else if (name.StartsWith("ldarga", StringComparison.Ordinal))
                 {
-                    stack.Push(new Slot(state.Arguments.ElementAtOrDefault(ins.Index), -1 - ins.Index));
+                    var a = ins.Index;
+                    stack.Push(new Slot(state.Arguments.ElementAtOrDefault(a) | typeFlags(argTypes.ElementAtOrDefault(a)),
+                        a >= 0 && a < state.Arguments.Length ? state.ArgumentHomes[a].Add(-1 - a) : []));
                 }
                 else if (name.StartsWith("ldarg", StringComparison.Ordinal))
                 {
-                    stack.Push(new Slot(state.Arguments.ElementAtOrDefault(ins.Index) | typeFlags(argTypes.ElementAtOrDefault(ins.Index)), -1 - ins.Index));
+                    var a = ins.Index;
+                    stack.Push(new Slot(state.Arguments.ElementAtOrDefault(a) | typeFlags(argTypes.ElementAtOrDefault(a)),
+                        a >= 0 && a < state.Arguments.Length ? state.ArgumentHomes[a] : []));
                 }
                 else if (name.StartsWith("starg", StringComparison.Ordinal))
                 {
                     var value = Pop();
-                    if (ins.Index >= 0 && ins.Index < state.Arguments.Length)
-                        state.Arguments[ins.Index] = value.Flags;
+                    var a = ins.Index;
+                    if (a >= 0 && a < state.Arguments.Length)
+                    {
+                        state.Arguments[a] = value.Flags;
+                        state.ArgumentHomes[a] = value.Homes.IsEmpty ? [MadeHomes - k] : value.Homes;
+                    }
                 }
                 else if (ins.Member is FieldInfo field && name is "ldfld" or "ldsfld" or "ldflda" or "ldsflda")
                 {
                     if (name is "ldfld" or "ldflda")
                         Pop();
                     var key = (field.Module, field.MetadataToken);
-                    var flags = fields.GetValueOrDefault(key) | (name.EndsWith('a') ? 0 : typeFlags(field.FieldType));
-                    stack.Push(new Slot(flags, FieldHome(key)));
+                    var flags = fields.GetValueOrDefault(key) | typeFlags(field.FieldType);
+                    stack.Push(new Slot(flags, fieldAliases.GetValueOrDefault(key, ImmutableHashSet<int>.Empty).Add(FieldHome(key)), false, fieldTargets.GetValueOrDefault(key)));
                 }
-                else if (ins.Member is FieldInfo stored && name is "stfld" or "stsfld")
+                else if (ins.Member is FieldInfo written && name is "stfld" or "stsfld")
                 {
                     var value = Pop();
                     if (name == "stfld")
                         Pop();
-                    var key = (stored.Module, stored.MetadataToken);
+                    var key = (written.Module, written.MetadataToken);
                     fields[key] = fields.GetValueOrDefault(key) | value.Flags;
+                    if (!value.Homes.IsEmpty)
+                        fieldAliases[key] = fieldAliases.GetValueOrDefault(key, ImmutableHashSet<int>.Empty).Union(value.Homes);
+                    if (value.Target is not null)
+                        fieldTargets[key] = value.Target;
+                    Store([FieldHome(key)], value.Flags);
                 }
                 else if (ins.OpCode == OpCodes.Newarr)
                 {
                     Pop();
-                    stack.Push(new Slot(0, MadeHomes - k));
+                    stack.Push(new Slot(0, [MadeHomes - k]));
                 }
                 else if (name.StartsWith("stelem", StringComparison.Ordinal))
                 {
                     var value = Pop();
                     Pop();
-                    Store(Pop().Home, value.Flags);
+                    Store(Pop().Homes, Held(value.Flags));
                 }
                 else if (name.StartsWith("ldelema", StringComparison.Ordinal))
                 {
                     Pop();
                     var array = Pop();
-                    stack.Push(array);
+                    stack.Push(array with { Flags = Read(array.Flags), Target = null });
                 }
                 else if (name.StartsWith("ldelem", StringComparison.Ordinal))
                 {
                     Pop();
-                    stack.Push(new Slot(Pop().Flags | (ins.Member is Type element ? typeFlags(element) : 0), NoHome));
+                    stack.Push(new Slot(Read(Pop().Flags) | (ins.Member is Type element ? typeFlags(element) : 0), []));
                 }
                 else if (name.StartsWith("stind", StringComparison.Ordinal) || ins.OpCode == OpCodes.Stobj)
                 {
                     var value = Pop();
-                    Store(Pop().Home, value.Flags);
+                    Store(Pop().Homes, value.Flags);
                 }
                 else if (name.StartsWith("ldind", StringComparison.Ordinal) || ins.OpCode == OpCodes.Ldobj)
                 {
-                    stack.Push(new Slot(Pop().Flags | (ins.Member is Type loaded ? typeFlags(loaded) : 0), NoHome));
+                    var address = Pop();
+                    stack.Push(new Slot(address.Flags | (ins.Member is Type loaded ? typeFlags(loaded) : 0), [], false, address.Target));
                 }
                 else if (ins.OpCode == OpCodes.Ldnull)
                 {
-                    stack.Push(new Slot(0, NullHome));
+                    stack.Push(new Slot(0, [], true));
                 }
                 else if (ins.OpCode == OpCodes.Ceq || ins.OpCode == OpCodes.Beq || ins.OpCode == OpCodes.Beq_S || ins.OpCode == OpCodes.Bne_Un || ins.OpCode == OpCodes.Bne_Un_S)
                 {
-                    // ARV-287: two values compared by reference (the compiler writes ReferenceEquals so), a null check apart.
+                    // ARV-287: two values compared by reference (the compiler writes ReferenceEquals so), a null check apart; a
+                    // value that is null on one path only is not a null.
                     var right = Pop();
                     var left = Pop();
-                    if (left.Home != NullHome && right.Home != NullHome && (left.Flags | right.Flags) != 0)
+                    if (!left.IsNull && !right.IsNull && (left.Flags | right.Flags) != 0)
                         comparisons[k] = comparisons.GetValueOrDefault(k) | left.Flags | right.Flags;
                     if (ins.OpCode == OpCodes.Ceq)
-                        stack.Push(new Slot(0, NoHome));
+                        stack.Push(new Slot(0, []));
                 }
                 else if (ins.OpCode == OpCodes.Dup)
                 {
@@ -265,28 +420,47 @@ internal static class IlFlow
                     stack.Push(top);
                     stack.Push(top);
                 }
-                else if (ins.OpCode == OpCodes.Isinst || ins.OpCode == OpCodes.Castclass || ins.OpCode == OpCodes.Box || ins.OpCode == OpCodes.Unbox_Any)
+                else if (ins.OpCode == OpCodes.Isinst || ins.OpCode == OpCodes.Castclass || ins.OpCode == OpCodes.Box || ins.OpCode == OpCodes.Unbox_Any ||
+                         ins.OpCode == OpCodes.Unbox)
                 {
                     var value = Pop();
-                    stack.Push(new Slot(value.Flags | (ins.Member is Type type ? typeFlags(type) : 0), value.Home));
+                    stack.Push(value with { Flags = value.Flags | (ins.Member is Type type ? typeFlags(type) : 0) });
                 }
                 else if (ins.OpCode == OpCodes.Leave || ins.OpCode == OpCodes.Leave_S)
                 {
+                    // ARV-287: a leave runs each finally block it crosses before it reaches its target.
                     stack.Clear();
+                    foreach (var region in regions.Where(r => r.Kind == IlReader.RegionKind.Finally && r.InTry(ins.Offset) && ins.Targets.Any(t => !r.InTry(t))))
+                        EnterAt(region.Start, state.With([]));
+                    falls = false;
+                }
+                else if (ins.OpCode == OpCodes.Endfinally)
+                {
+                    foreach (var region in regions.Where(r => r.Kind == IlReader.RegionKind.Finally && r.Holds(ins.Offset)))
+                        foreach (var exit in exits[region])
+                            EnterAt(exit, state.With([]));
+                    falls = false;
+                }
+                else if (ins.OpCode == OpCodes.Endfilter)
+                {
+                    // ARV-287: a filter that accepts goes on to its handler, with the locals it set.
+                    Pop();
+                    foreach (var region in regions.Where(r => r.Kind == IlReader.RegionKind.Filter && r.Holds(ins.Offset)))
+                        EnterAt(region.End, state.With([new Slot(Exception, [])]));
                     falls = false;
                 }
                 else if (ins.OpCode == OpCodes.Ret)
                 {
                     if (returnsValue)
-                        Pop();
+                        returned |= Pop().Flags;
                     falls = false;
                 }
-                else if (ins.OpCode == OpCodes.Throw || ins.OpCode == OpCodes.Endfilter)
+                else if (ins.OpCode == OpCodes.Throw)
                 {
                     Pop();
                     falls = false;
                 }
-                else if (ins.OpCode == OpCodes.Rethrow || ins.OpCode == OpCodes.Endfinally)
+                else if (ins.OpCode == OpCodes.Rethrow)
                 {
                     falls = false;
                 }
@@ -297,24 +471,57 @@ internal static class IlFlow
                         Pop();
                     var pushes = Count(ins.OpCode.StackBehaviourPush);
                     for (var p = 0; p < pushes; p++)
-                        stack.Push(new Slot(0, NoHome));
+                        stack.Push(new Slot(0, []));
                     if (ins.OpCode == OpCodes.Br || ins.OpCode == OpCodes.Br_S)
                         falls = false;
                 }
 
                 foreach (var target in ins.Targets)
-                    if (byOffset.TryGetValue(target, out var next))
-                        Enter(next, state.Copy());
+                    EnterAt(target, state.Copy());
                 if (falls)
                     Enter(k + 1, state);
             }
 
-            if (fields.Values.Sum() == fieldsBefore)
+            if (Signature() == before)
                 break;
         }
 
-        return new Result(arguments, fields, comparisons);
+        return new Result(arguments, fields, comparisons, invoked, returned, stored);
+
+        // Everything the passes carry over only grows, so an unchanged signature means nothing was gained.
+        long Signature() => fields.Values.Sum(v => (long)v) + fieldAliases.Values.Sum(h => (long)h.Count) + fieldTargets.Count * 7L + returned + stored.Sum(v => (long)v);
     }
+
+    /// <summary>The compiler's async and iterator machinery and the tasks it awaits; the interpolated string handler is a builder, not machinery.</summary>
+    private static bool IsMachinery(Type type) =>
+        type is not null && ((type.Namespace == "System.Runtime.CompilerServices" && type.Name != "DefaultInterpolatedStringHandler") ||
+                             type == typeof(Task) || type == typeof(ValueTask) ||
+                             (type.IsGenericType && type.GetGenericTypeDefinition() is var open && (open == typeof(Task<>) || open == typeof(ValueTask<>))));
+
+    /// <summary>A type that keeps what it is given: a by-ref, an array, a span or memory, a builder, a collection, or a struct that is not a primitive.</summary>
+    private static bool IsContainer(Type type)
+    {
+        if (type is null || IsMachinery(type))
+            return false;
+        if (type.IsByRef)
+            return !IsPlain(type.GetElementType());
+        if (type.IsArray)
+            return !IsPlain(type.GetElementType());
+        if (type == typeof(Array) || type == typeof(System.Text.StringBuilder))
+            return true;
+        if (type.IsGenericType && type.GetGenericTypeDefinition() is var open &&
+            (open == typeof(Span<>) || open == typeof(ReadOnlySpan<>) || open == typeof(Memory<>) || open == typeof(ReadOnlyMemory<>)))
+            return !IsPlain(type.GetGenericArguments()[0]);
+        if (type.IsValueType)
+            return !IsPlain(type);
+        return type != typeof(string) && typeof(System.Collections.IEnumerable).IsAssignableFrom(type);
+    }
+
+    /// <summary>A value that holds no text: a number, a flag, a character, an enum, a time.</summary>
+    private static bool IsPlain(Type type) =>
+        type is null || type.IsPrimitive || type.IsEnum || type == typeof(decimal) || type == typeof(DateTime) || type == typeof(DateTimeOffset) ||
+        type == typeof(TimeSpan) || type == typeof(Guid) || type == typeof(CancellationToken) ||
+        (Nullable.GetUnderlyingType(type) is { } underlying && IsPlain(underlying));
 
     private static int Count(StackBehaviour behaviour) => behaviour switch
     {
@@ -327,26 +534,72 @@ internal static class IlFlow
     #region Types
 
     /// <summary>
-    /// A method's flow: the flags each call takes (by instruction index), the flags each field gained, and the flags of the
-    /// values each ceq, beq or bne.un compares by reference (by instruction index; none when either is a null).
+    /// What a call into the scope does, for a given seed: the flags of what it returns, the flags it stores into each argument it
+    /// takes (by stack position, the receiver first), and the fields' flags it leaves.
     /// </summary>
-    public sealed record Result(Dictionary<int, int[]> Arguments, Dictionary<(Module, int), int> Fields, Dictionary<int, int> Comparisons);
+    public delegate Summary Summarizer(MethodBase callee, bool created, int[] taken, IReadOnlyDictionary<(Module, int), int> fields);
 
-    /// <summary>A value on the stack: its flags and its home (a local, an argument, a field, the instruction that made it, or none).</summary>
-    private readonly record struct Slot(int Flags, int Home);
+    /// <summary>
+    /// A method's flow: the flags each call takes (by instruction index), the flags each field gained, the flags of the values
+    /// each ceq, beq or bne.un compares by reference (none when either is a null), the delegate targets invoked (by
+    /// instruction index), and the flags it returns and stores into each argument.
+    /// </summary>
+    public sealed record Result(Dictionary<int, int[]> Arguments, Dictionary<(Module, int), int> Fields, Dictionary<int, int> Comparisons,
+        Dictionary<int, MethodBase> Invoked, int Returned, int[] ArgumentsOut);
 
-    /// <summary>The flags on the stack and in the locals and arguments at one instruction.</summary>
-    private sealed class State(Stack<Slot> stack, int[] locals, int[] arguments)
+    /// <summary>What a call does: the flags it returns, stores into each argument, and leaves in the fields.</summary>
+    public sealed record Summary(int Returned, int[] ArgumentsOut, IReadOnlyDictionary<(Module, int), int> Fields);
+
+    /// <summary>
+    /// A value on the stack: its flags; its homes (the locals, arguments, fields and made objects it may be or point into); whether
+    /// it is a null on every path; and the method a delegate or method pointer runs, when known.
+    /// </summary>
+    private readonly record struct Slot(int Flags, ImmutableHashSet<int> Homes, bool IsNull = false, MethodBase Target = null);
+
+    /// <summary>The union of two sets of homes: the first itself when it holds every home of the second.</summary>
+    private static ImmutableHashSet<int> Union(ImmutableHashSet<int> mine, ImmutableHashSet<int> theirs) =>
+        ReferenceEquals(mine, theirs) || theirs.IsEmpty || mine.IsSupersetOf(theirs) ? mine : mine.Union(theirs);
+
+    /// <summary>The values on the stack and in the locals and arguments at one instruction, with their homes.</summary>
+    private sealed class State
     {
-        public Stack<Slot> Stack { get; } = stack;
+        public Stack<Slot> Stack { get; private init; }
 
-        public int[] Locals { get; } = locals;
+        public int[] Locals { get; private init; }
 
-        public int[] Arguments { get; } = arguments;
+        public ImmutableHashSet<int>[] LocalHomes { get; private init; }
 
-        public State Copy() => new(new Stack<Slot>(Stack.Reverse()), [.. Locals], [.. Arguments]);
+        public MethodBase[] LocalTargets { get; private init; }
 
-        /// <summary>Adds the other state's flags to this one's; true when any flag was added. A home that differs is kept as this one's.</summary>
+        public int[] Arguments { get; private init; }
+
+        public ImmutableHashSet<int>[] ArgumentHomes { get; private init; }
+
+        /// <summary>The state on entry: each argument its own home, each local none.</summary>
+        public static State Start(int locals, int[] arguments) => new()
+        {
+            Stack = new Stack<Slot>(),
+            Locals = new int[locals],
+            LocalHomes = Enumerable.Range(0, locals).Select(_ => ImmutableHashSet<int>.Empty).ToArray(),
+            LocalTargets = new MethodBase[locals],
+            Arguments = [.. arguments],
+            ArgumentHomes = Enumerable.Range(0, arguments.Length).Select(a => ImmutableHashSet.Create(-1 - a)).ToArray()
+        };
+
+        public State Copy() => With(Stack.Reverse());
+
+        /// <summary>This state's locals and arguments with another stack.</summary>
+        public State With(IEnumerable<Slot> stack) => new()
+        {
+            Stack = new Stack<Slot>(stack),
+            Locals = [.. Locals],
+            LocalHomes = [.. LocalHomes],
+            LocalTargets = [.. LocalTargets],
+            Arguments = [.. Arguments],
+            ArgumentHomes = [.. ArgumentHomes]
+        };
+
+        /// <summary>Adds the other state's flags and homes to this one's; true when anything was added.</summary>
         public bool Merge(State other)
         {
             var changed = false;
@@ -354,9 +607,11 @@ internal static class IlFlow
             var theirs = other.Stack.ToArray();
             for (var i = 0; i < Math.Min(mine.Length, theirs.Length); i++)
             {
-                if ((mine[i].Flags | theirs[i].Flags) == mine[i].Flags)
+                var merged = new Slot(mine[i].Flags | theirs[i].Flags, Union(mine[i].Homes, theirs[i].Homes), mine[i].IsNull && theirs[i].IsNull,
+                    mine[i].Target ?? theirs[i].Target);
+                if (merged.Flags == mine[i].Flags && ReferenceEquals(merged.Homes, mine[i].Homes) && merged.IsNull == mine[i].IsNull && merged.Target == mine[i].Target)
                     continue;
-                mine[i] = mine[i] with { Flags = mine[i].Flags | theirs[i].Flags };
+                mine[i] = merged;
                 changed = true;
             }
 
@@ -367,19 +622,50 @@ internal static class IlFlow
                     Stack.Push(value);
             }
 
+            return MergeLocals(other) || changed;
+        }
+
+        /// <summary>Adds the other state's locals and arguments to this one's, its stack apart; true when anything was added.</summary>
+        public bool MergeLocals(State other)
+        {
+            var changed = false;
             for (var i = 0; i < Locals.Length; i++)
+            {
                 if ((Locals[i] | other.Locals[i]) != Locals[i])
                 {
                     Locals[i] |= other.Locals[i];
                     changed = true;
                 }
 
+                var homes = Union(LocalHomes[i], other.LocalHomes[i]);
+                if (!ReferenceEquals(homes, LocalHomes[i]))
+                {
+                    LocalHomes[i] = homes;
+                    changed = true;
+                }
+
+                if (LocalTargets[i] is null && other.LocalTargets[i] is not null)
+                {
+                    LocalTargets[i] = other.LocalTargets[i];
+                    changed = true;
+                }
+            }
+
             for (var i = 0; i < Arguments.Length; i++)
+            {
                 if ((Arguments[i] | other.Arguments[i]) != Arguments[i])
                 {
                     Arguments[i] |= other.Arguments[i];
                     changed = true;
                 }
+
+                var homes = Union(ArgumentHomes[i], other.ArgumentHomes[i]);
+                if (!ReferenceEquals(homes, ArgumentHomes[i]))
+                {
+                    ArgumentHomes[i] = homes;
+                    changed = true;
+                }
+            }
 
             return changed;
         }

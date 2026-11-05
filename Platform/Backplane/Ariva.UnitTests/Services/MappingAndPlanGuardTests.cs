@@ -132,6 +132,19 @@ public sealed class MappingAndPlanGuardTests
 
     #region Entities
 
+    [Theory]
+    [InlineData(ExternalSystem.Aman, DeskKind.Desk, true)]
+    [InlineData(ExternalSystem.Aman, DeskKind.EGate, true)]
+    [InlineData(ExternalSystem.Aman, DeskKind.Counter, false)]
+    [InlineData(ExternalSystem.Aodb, DeskKind.Counter, true)]
+    [InlineData(ExternalSystem.Aodb, DeskKind.Desk, false)]
+    [InlineData(ExternalSystem.Aodb, DeskKind.SecurityLane, false)]
+    [InlineData((ExternalSystem)99, DeskKind.Desk, false)]
+    public void Fits_Should_AnswerWhetherASystemsCodeCanMapTheDeskKind_When_TheImportChecksARowBeforeTheService(ExternalSystem system, DeskKind kind, bool fits)
+    {
+        DeskCodeMapping.Fits(system, kind).Should().Be(fits);
+    }
+
     [Fact]
     public void DeskCodeMapping_Should_RefuseACallersValueWithTheRuleTypes_When_ItBreaksARule()
     {
