@@ -26,7 +26,10 @@
 #                                   migration login with SUPERUSER, CREATEROLE, REPLICATION or BYPASSRLS, and none holding
 #                                   such a role or one of PostgreSQL's server, data or signal roles; Ariva's group roles
 #                                   holding no role; no setting for a role's or the database's sessions but the runtime
-#                                   login's statement timeout; no ALTER SYSTEM setting; no rule but a view's; no function
+#                                   login's statement timeout and temporary file cap (ARV-290), and the migration login
+#                                   able to set that cap; no privilege on a parameter but its SET on temp_file_limit (the
+#                                   cluster's, its review), and with --runtime-login that login's own two caps in the
+#                                   database; no ALTER SYSTEM setting; no rule but a view's; no function
 #                                   outside the extensions but Ariva's own with a body its scripts ship (ARIVA_FUNCTIONS);
 #                                   nothing added to plpgsql; the system's functions as in template1; no publication or
 #                                   subscription; and no function or operator under a system name outside the extensions
@@ -62,6 +65,10 @@
 #   after-kafka-loss --confirm-stream-stopped [--dry-run]
 #                                   re-sends the newest event of every key of the compacted topics and clears the
 #                                   stream worker's saved positions, after Kafka's topics were recreated empty
+#   grant-settings                  grants the migration login SET on temp_file_limit, a superuser setting the migration job
+#                                   sets on the runtime login (ARV-290), on a server first started before it (the chart's
+#                                   init script grants it on a new volume), to ariva_migration, so after a first migration;
+#                                   then run the migration job again
 #   update-extensions               updates TimescaleDB's extensions in the database to the versions the image ships
 #                                   (ALTER EXTENSION ... UPDATE), after the pod restarted on a newer image and with the
 #                                   Ariva deployments scaled to 0 (ARV-236; wiki 04 section 6.8)
@@ -85,7 +92,9 @@
 # postgresql.auto.conf, a file an include names), in one statement that names nothing through the search path, and only
 # when planted_objects finds nothing. Every superuser session runs with the search path pinned to the
 # system catalog by a startup option, which no setting of the database owner overrides, and the restore mode functions are
-# named with their schema (ARV-183 review). Nothing else runs as the superuser. The runtime login is never in a backup: the
+# named with their schema (ARV-183 review). grant-settings is one more (ARV-290): one constant GRANT SET ON PARAMETER of
+# temp_file_limit to ariva_migration, the group role the migration login holds, which only a superuser may give. Nothing
+# else runs as the superuser. The runtime login is never in a backup: the
 # migration job
 # (api-main --migrate) creates it after a restore with the deployment's own password.
 #
@@ -126,6 +135,7 @@ ariva_ensure_runtime_login:6864027ae91766a330f29144c95cdaafbc7d7d277c67b93f1e0fd
 ariva_ensure_validation_reader_login:80844ccdbfee88483d1b2b8f3eb810b19c9886998d9ab90174ebfcaef9317acb,\
 ariva_retention_purge:535ad38b539587c302aa4ea85e1c3508d55e5d5df6bf4f0675bbadf0076f78d7,\
 ariva_set_runtime_statement_timeout:5a0d58d71b054d30960d5d9be54b37eca1f2c381bb2d46ffe1eaf580b762f3e7,\
+ariva_set_runtime_temp_file_limit:9ddecaa76797da4a42f181d899ba813a4e7f62e8a9c71b4573619f3cd5e9d259,\
 desk_observation_insert_check:2cec641a82b38ac75a04c2d5e2fa56bff709120a60ad43736e223e732a4e092d,\
 device_calibration_immutable:bf09d2d16ccc2c8a83249a30dab1326829c0e145d31a4abc0f979a8c06dde2b4,\
 display_advertising_allowed:0b9b9a687ec18357b07dcb499073d7895bb8fcf81d2c2ab28d832f5c7aa8e9b3,\
@@ -238,6 +248,15 @@ validation_result_revision=SELECT,INSERT;\
 zone_health_bin=SELECT,INSERT,UPDATE;\
 zone_outage=SELECT,INSERT,UPDATE(closed recorded_on to_utc)"
 
+# ARV-290 review: the bounds the hosts and the migration job hold the runtime login's caps to (DatabaseSettings'
+# MinStatementTimeoutSeconds to MaxStatementTimeoutSeconds and MinTempFileLimitMegabytes to MaxTempFileLimitMegabytes;
+# OpsScriptTests holds them equal), so check's "runtime caps" fails on a value the migration job would refuse, not only on
+# one it never writes.
+readonly RUNTIME_TIMEOUT_MIN_SECONDS=301
+readonly RUNTIME_TIMEOUT_MAX_SECONDS=3600
+readonly RUNTIME_TEMP_FILE_MIN_MEGABYTES=64
+readonly RUNTIME_TEMP_FILE_MAX_MEGABYTES=102400
+
 # ARV-189 review: the views of public as the scripts create them, as <view>=<what it reads> entries separated by ";": a
 # continuous aggregate its hypertable, a plain view the relations it names (separated by spaces). check compares them, as
 # it does the privileges, once the database is at ARIVA_RUNTIME_PRIVILEGES_AT: a view a forged dump adds takes the default
@@ -250,7 +269,7 @@ readonly ARIVA_VIEWS="line_minute_15m=line_minute;overflow_bin_15m=overflow_minu
 # ARIVA_SCHEMA_AT, the latest script (any script may change them), so a trigger, constraint, grant or function a forged dump
 # left out, changed or added is reported even where no other line looks. OpsScriptTests holds ARIVA_SCHEMA_AT at the
 # latest script; BackupRestoreTests holds the list equal to a database the release's migration job migrated (and prints it).
-readonly ARIVA_SCHEMA_AT="0068_outage_and_staffing_reads.sql"
+readonly ARIVA_SCHEMA_AT="0069_runtime_temp_file_limit.sql"
 readonly ARIVA_SCHEMA="advertising_media=2cb17c8c169d81de441d4192fdc21b0c;\
 advertising_media_guard()=0c14e39356e12f186a82b88895cc130a;\
 advertising_play=d5f1179d8cfaccdcc0d9c7d9c3634258;\
@@ -270,6 +289,7 @@ ariva_ensure_runtime_login(login_name text, login_password text)=a34b831ffc5ede6
 ariva_ensure_validation_reader_login(login_name text, login_verifier text)=a933282b920424704f9a04912201735e;\
 ariva_retention_purge(p_data_set text, p_limit integer)=a7ff57e7b5404c01e5cb1715f4416c2c;\
 ariva_set_runtime_statement_timeout(login_name text, timeout_seconds integer)=9e7119ef6c672f24c7f58833abdac5f9;\
+ariva_set_runtime_temp_file_limit(login_name text, limit_megabytes integer)=7bd37ec1510e5736eb101d351a794abc;\
 audit_entry=517f91f81aa4f05abee86733509a5cae;\
 availability_cursor=8e4b2ef670b3e952fe9b2d7d78c9ad63;\
 availability_minute=a0a7f3238150c745a520566b57e17da4;\
@@ -423,7 +443,7 @@ SOCKET_DIR=/var/run/postgresql
 
 say() { printf 'ariva-db: %s\n' "$*" >&2; }
 die() { say "error: $*"; exit 1; }
-usage() { say "usage: ariva-db.sh <backup|manifest|check-dump|restore|check|schema|keyring|after-kafka-loss|update-extensions> [options]; see the header of this file"; exit 2; }
+usage() { say "usage: ariva-db.sh <backup|manifest|check-dump|restore|check|schema|keyring|after-kafka-loss|update-extensions|grant-settings> [options]; see the header of this file"; exit 2; }
 
 valid_identifier() { [[ "$1" =~ ^[a-z_][a-z0-9_]{0,62}$ ]]; }
 valid_file() { [[ "$1" == "-" ]] || { [[ "$1" =~ ^/[A-Za-z0-9._/-]{1,255}$ ]] && [[ "$1" != *..* ]]; }; }
@@ -447,8 +467,8 @@ as_migration() {
 }
 
 # psql as the database superuser over the local socket (peer authentication; the restore's TimescaleDB steps, the
-# extensions' update and check's read of the ALTER SYSTEM settings only: OpsScriptTests holds every call to one of five
-# fixed statements). The search path is the system catalog's for the whole session, a startup option that wins over any
+# extensions' update, check's read of the ALTER SYSTEM settings and grant-settings' grant only: OpsScriptTests holds every
+# call to one of six fixed statements). The search path is the system catalog's for the whole session, a startup option that wins over any
 # setting the database owner made (ALTER DATABASE ... SET search_path), so no object the migration login can create in a
 # schema of its own is picked up by a name in these statements (ARV-183 review); a caller's startup options come first.
 as_superuser() {
@@ -776,7 +796,9 @@ cmd_check() {
   report="$(as_migration_catalog --tuples-only --no-align --set=runtime="$runtime" --set=reader="$reader" --set=allowed_extensions="$extensions" \
     --set=allowed_logins="$logins_allowed" --set=allowed_settings="$settings_allowed" --set=ariva_functions="$ARIVA_FUNCTIONS" \
     --set=runtime_privileges="$ARIVA_RUNTIME_PRIVILEGES" --set=runtime_privileges_at="$ARIVA_RUNTIME_PRIVILEGES_AT" \
-    --set=ariva_views="$ARIVA_VIEWS" --set=after_restore="$check_after_restore" <<'SQL'
+    --set=ariva_views="$ARIVA_VIEWS" --set=after_restore="$check_after_restore" \
+    --set=timeout_min="$RUNTIME_TIMEOUT_MIN_SECONDS" --set=timeout_max="$RUNTIME_TIMEOUT_MAX_SECONDS" \
+    --set=temp_min="$RUNTIME_TEMP_FILE_MIN_MEGABYTES" --set=temp_max="$RUNTIME_TEMP_FILE_MAX_MEGABYTES" <<'SQL'
 WITH RECURSIVE me AS (SELECT oid FROM pg_roles WHERE rolname = current_user),
 foreign_owned AS (
     SELECT n.nspname || '.' || c.relname AS name
@@ -1076,15 +1098,41 @@ held_by_ariva AS (
      WHERE r.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader')
         OR (:'reader' <> '' AND r.rolname = :'reader' AND g.rolname <> 'ariva_validation_reader')),
 -- ARV-183 review: settings made for a role's sessions (ALTER ROLE ... SET), in this database or in every one, but the
--- runtime login's statement timeout in this database (script 0063) and the names --allow-setting gives; settings for every
+-- runtime login's statement timeout (script 0063) and temporary file cap (script 0069, ARV-290) in this database and the
+-- names --allow-setting gives; settings for every
 -- session of the database are planted_objects' line.
 role_settings AS (
     SELECT coalesce(r.rolname, 'role ' || s.setrole) || ' ' || split_part(c, '=', 1) AS name
       FROM pg_db_role_setting s LEFT JOIN pg_roles r ON r.oid = s.setrole CROSS JOIN LATERAL unnest(s.setconfig) c
      WHERE s.setrole <> 0 AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
        AND NOT split_part(c, '=', 1) = ANY (string_to_array(:'allowed_settings', ','))
-       AND NOT (split_part(c, '=', 1) = 'statement_timeout' AND s.setdatabase <> 0
+       AND NOT (split_part(c, '=', 1) IN ('statement_timeout', 'temp_file_limit') AND s.setdatabase <> 0
                 AND s.setrole IN (SELECT m.member FROM pg_auth_members m WHERE m.roleid = 'ariva_runtime'::regrole))),
+-- ARV-290 review: privileges on parameters (GRANT SET or ALTER SYSTEM ON PARAMETER), which are the cluster's, not the
+-- database's: SET on temp_file_limit, without grant option, to the migration login or ariva_migration (the chart's init script,
+-- grant-settings), the bootstrap superuser's own, and what a login --allow-login names holds. SET on another superuser
+-- setting would let its holder change it for other roles' sessions (ALTER ROLE ... SET), so anything else is reported.
+parameter_grants AS (
+    SELECT p.parname || ' ' || a.privilege_type || CASE WHEN a.is_grantable THEN ' with grant option' ELSE '' END || ' to '
+           || CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE coalesce(r.rolname::text, 'role ' || a.grantee) END AS name
+      FROM pg_parameter_acl p CROSS JOIN LATERAL aclexplode(p.paracl) a LEFT JOIN pg_roles r ON r.oid = a.grantee
+     WHERE a.grantee <> 10
+       AND NOT (p.parname = 'temp_file_limit' AND a.privilege_type = 'SET' AND NOT a.is_grantable
+                AND r.rolname IN (current_user, 'ariva_migration'))
+       AND NOT coalesce(r.rolname = ANY (string_to_array(:'allowed_logins', ',')), false)),
+-- ARV-290 review (L3): the runtime login's own settings in this database, which role_settings allows by name: the migration job
+-- sets both on every release, and the migration login may change them in between (it may set temp_file_limit, to -1 or to
+-- terabytes too). Each is judged by its value, in the form the job writes and within the bounds the job holds it to; at most
+-- seven digits are read, so no text makes the cast fail.
+runtime_caps AS (
+    SELECT statement_timeout, temp_file_limit,
+           coalesce(substring(statement_timeout FROM '^([1-9][0-9]{0,6})s$')::int BETWEEN :'timeout_min'::int AND :'timeout_max'::int, false) AS timeout_ok,
+           coalesce(substring(temp_file_limit FROM '^([1-9][0-9]{0,6})MB$')::int BETWEEN :'temp_min'::int AND :'temp_max'::int, false) AS temp_ok
+      FROM (SELECT max(substr(c, length('statement_timeout=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'statement_timeout') AS statement_timeout,
+                   max(substr(c, length('temp_file_limit=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'temp_file_limit') AS temp_file_limit
+              FROM pg_db_role_setting s CROSS JOIN LATERAL unnest(s.setconfig) c
+             WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = :'runtime')
+               AND s.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database())) raw),
 -- ARV-183: a rule created after the server's own (pg_settings has two) that is not a view's (_RETURN), outside the extensions:
 -- it rewrites what its table's statements do.
 rules AS (
@@ -1173,9 +1221,23 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'plpgsql|its three handler function
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'logins|no role but the bootstrap superuser and the migration login is a superuser or has createrole, replication or bypassrls, and none holds such a role or one of the server, data or signal roles'
                                                 || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', but allowed: ' || replace(:'allowed_logins', ',', ', ') END
                       ELSE 'FAIL logins|' || string_agg(name, ', ' ORDER BY name) || ' (a DBA''s own login: name it with --allow-login)' END FROM privileged_roles
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'role settings|none but the runtime login''s statement timeout'
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'role settings|none but the runtime login''s statement timeout and temporary file cap'
                                                 || CASE WHEN :'allowed_settings' = '' THEN '' ELSE ', and allowed: ' || replace(:'allowed_settings', ',', ', ') END
                       ELSE 'FAIL role settings|' || string_agg(name, ', ' ORDER BY name) || ' (ALTER ROLE ... SET; a DBA''s own: name it with --allow-setting)' END FROM role_settings
+UNION ALL SELECT CASE WHEN has_parameter_privilege('temp_file_limit', 'SET') THEN 'temp file cap|the migration login may set temp_file_limit on the runtime login (ARV-290)'
+                      ELSE 'FAIL temp file cap|the migration login may not set temp_file_limit, so the migration job stops (ARV-290): run grant-settings' END
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'parameter privileges|SET on temp_file_limit to the migration login or ariva_migration only'
+                                                || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', and the allowed logins'' own' END
+                      ELSE 'FAIL parameter privileges|' || string_agg(name, ', ' ORDER BY name)
+                           || ' (GRANT ... ON PARAMETER, the cluster''s: find out who granted it, wiki 10 section 4.19)' END FROM parameter_grants
+UNION ALL SELECT CASE WHEN timeout_ok AND temp_ok
+                      THEN 'runtime caps|' || :'runtime' || ' in this database: statement_timeout ' || statement_timeout || ', temp_file_limit ' || temp_file_limit
+                      ELSE 'FAIL runtime caps|' || :'runtime' || ' in this database: '
+                           || concat_ws(', ', CASE WHEN timeout_ok THEN NULL ELSE 'statement_timeout ' || coalesce(statement_timeout, 'not set') END,
+                                              CASE WHEN temp_ok THEN NULL ELSE 'temp_file_limit ' || coalesce(temp_file_limit, 'not set') END)
+                           || ' (the migration job sets ' || :'timeout_min' || 's to ' || :'timeout_max' || 's and ' || :'temp_min' || 'MB to '
+                           || :'temp_max' || 'MB; ARV-096d, ARV-290): run the migration job' END
+                 FROM runtime_caps WHERE :'runtime' <> '' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'runtime')
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'rules|none but the views'' own'
                       ELSE 'FAIL rules|' || string_agg(name, ', ' ORDER BY name) END FROM rules
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'other functions|none outside the extensions but Ariva''s own, each with a body its scripts ship'
@@ -2014,6 +2076,35 @@ SQL
   say "done: TimescaleDB's extensions in $DATABASE are at the versions the image ships; scale the deployments back, run check, and take a new backup (a backup restores only into its own TimescaleDB version)"
 }
 
+# ARV-290: SET on temp_file_limit for the migration login, which the migration job needs to cap the runtime login's temporary
+# files (script 0069); the chart's init script grants it to the login on a new volume, this on a server first started before
+# ARV-290, to ariva_migration (script 0001), whose privileges the migration login holds: one constant statement as the
+# superuser over the local socket, then the migration login's own view of it. Unlike update-extensions it runs without
+# planted_objects first: GRANT ON PARAMETER names a server-wide parameter and a role, nothing it resolves through the
+# search path, and no event trigger fires for it (its review).
+cmd_grant_settings() {
+  (($# == 0)) || usage
+  check_settings
+  require_migration_login
+  local group
+  group="$(as_migration_catalog --tuples-only --no-align <<'SQL'
+SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ariva_migration');
+SQL
+)"
+  [[ "$group" == "t" ]] || die "ariva_migration does not exist: no migration has run on this server yet. On a new volume the chart's init script grants the migration login SET on temp_file_limit itself; on a server prepared another way, its superuser grants it to the migration login (wiki 04 section 6.10), then the migration job runs"
+  say "granting ariva_migration, and so $LOGIN, SET on temp_file_limit (superuser over the local socket)"
+  as_superuser <<'SQL' >/dev/null
+GRANT SET ON PARAMETER temp_file_limit TO ariva_migration;
+SQL
+  local may
+  may="$(as_migration_catalog --tuples-only --no-align <<'SQL'
+SELECT has_parameter_privilege('temp_file_limit', 'SET');
+SQL
+)"
+  [[ "$may" == "t" ]] || die "$LOGIN still may not set temp_file_limit: it does not hold ariva_migration's privileges (it must be a member that inherits them; check names the group's members)"
+  say "done: run the migration job again; it sets the runtime login's temporary file cap (ARV-290)"
+}
+
 main() {
   (($# >= 1)) || usage
   local command="$1"; shift
@@ -2038,6 +2129,7 @@ main() {
     keyring) cmd_keyring "${rest[@]}" ;;
     after-kafka-loss) cmd_after_kafka_loss "${rest[@]}" ;;
     update-extensions) cmd_update_extensions "${rest[@]}" ;;
+    grant-settings) cmd_grant_settings "${rest[@]}" ;;
     *) usage ;;
   esac
 }

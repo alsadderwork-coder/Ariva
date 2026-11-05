@@ -167,7 +167,9 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         PurgeAsDefiner,
         RuntimeColumnUpdates,
         PurgeGrantees,
-        PublicMayPurge
+        PublicMayPurge,
+        MaySetTempFileLimit,
+        TempFileLimit
     }
 
     // A switch over string literals keeps every command text constant (CA2100).
@@ -179,6 +181,8 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         Query.DatabaseOwner => "SELECT pg_get_userbyid(datdba)::text FROM pg_database WHERE datname = current_database()",
         Query.TimescaleExtension => "SELECT extname::text FROM pg_extension WHERE extname = 'timescaledb'",
         Query.Telemetry => "SHOW timescaledb.telemetry_level",
+        Query.MaySetTempFileLimit => "SELECT has_parameter_privilege('temp_file_limit', 'SET')",
+        Query.TempFileLimit => "SHOW temp_file_limit",
         Query.AppliedScripts => "SELECT count(*) FROM schema_version",
         Query.CreateTable => "CREATE TABLE it_not_allowed (id int)",
         // A value column: the runtime role may count rows by their key columns (the stream's upsert needs them), never read a value.
@@ -241,6 +245,8 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         (await ScalarAsync<string>(owner, Query.DatabaseOwner)).Should().Be(MigrationLogin);
         (await ScalarAsync<string>(owner, Query.TimescaleExtension)).Should().Be("timescaledb");
         (await ScalarAsync<string>(owner, Query.Telemetry)).Should().Be("off");
+        // ARV-290: the init script gave it SET on temp_file_limit, a superuser setting, so the job can cap the runtime login.
+        (await ScalarAsync<bool>(owner, Query.MaySetTempFileLimit)).Should().BeTrue();
 
         // The release's migration job, as that login.
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
@@ -264,6 +270,8 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
 
         var runtime = ConnectionString("ariva_app", RuntimePassword);
         (await ScalarAsync<long>(runtime, Query.AppliedScripts)).Should().BeGreaterThan(0);
+        (await ScalarAsync<string>(runtime, Query.TempFileLimit)).Should().Be("1GB", "ARV-290: the job capped the runtime login's temporary files (Database:TempFileLimitMegabytes, 1,024 by default)");
+        (await ScalarAsync<string>(owner, Query.TempFileLimit)).Should().Be("-1", "the migration login keeps no cap");
         var ddl = async () => await ScalarAsync<object>(runtime, Query.CreateTable);
         (await ddl.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
 

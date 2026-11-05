@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Ariva.Infra.Messaging;
+using Ariva.Infra.Settings;
 using Ariva.Infra.Timescale;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
@@ -21,6 +22,26 @@ public sealed partial class OpsScriptTests
     #endregion
 
     #region Tests
+
+    /// <summary>
+    /// ARV-290 review: check's "runtime caps" judges the runtime login's statement timeout and temporary file cap by the bounds
+    /// the hosts and the migration job hold the settings to, so a value the job would refuse fails it.
+    /// </summary>
+    [Fact]
+    public void RuntimeCapBounds_Should_BeTheDatabaseSettingsBounds_When_CheckJudgesTheRuntimeLogin()
+    {
+        int Constant(string name)
+        {
+            var match = Regex.Match(Script.Value, $"^readonly {name}=(?<value>[0-9]+)$", RegexOptions.Multiline | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
+            match.Success.Should().BeTrue($"the script declares {name}");
+            return int.Parse(match.Groups["value"].Value, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        Constant("RUNTIME_TIMEOUT_MIN_SECONDS").Should().Be(DatabaseSettings.MinStatementTimeoutSeconds);
+        Constant("RUNTIME_TIMEOUT_MAX_SECONDS").Should().Be(DatabaseSettings.MaxStatementTimeoutSeconds);
+        Constant("RUNTIME_TEMP_FILE_MIN_MEGABYTES").Should().Be(DatabaseSettings.MinTempFileLimitMegabytes);
+        Constant("RUNTIME_TEMP_FILE_MAX_MEGABYTES").Should().Be(DatabaseSettings.MaxTempFileLimitMegabytes);
+    }
 
     [Fact]
     public void CompactedTopics_Should_BeTheTopicsProvisionedWithCompaction_When_Listed()
@@ -314,7 +335,7 @@ public sealed partial class OpsScriptTests
     [Fact]
     public void Superuser_Should_RunOnlyTimescaleDbsFixedStatements_When_TheScriptIsRead()
     {
-        // ARV-126 and ARV-236 (CWE-269): the database superuser runs TimescaleDB's restore mode steps and the extensions' update,
+        // ARV-126, ARV-236 and ARV-290 (CWE-269): the database superuser runs TimescaleDB's restore mode steps, the extensions' update and one grant,
         // each a constant statement in a quoted heredoc with no psql variable, option or command string that could carry a value,
         // and pg_restore of a dump whose origin the signed manifest decides. Nothing else runs as the superuser.
         var text = Script.Value;
@@ -323,6 +344,8 @@ public sealed partial class OpsScriptTests
         calls.Select(call => call.Groups["sql"].Value.Trim()).Should().BeEquivalentTo(
             ["SELECT public.timescaledb_pre_restore();", "SELECT public.timescaledb_post_restore();", "ALTER EXTENSION timescaledb UPDATE;",
              "ALTER EXTENSION timescaledb_toolkit UPDATE;",
+             // ARV-290: SET on the temporary file cap for ariva_migration, the group role the migration login holds (grant-settings).
+             "GRANT SET ON PARAMETER temp_file_limit TO ariva_migration;",
              // ARV-183: check reads the settings files, views only the superuser may read; its review: with nothing named through
              // the search path (each operator and function qualified), and the restore mode functions with their schema. ARV-262:
              // every file but the server's postgresql.conf, what the files say and what the server applied from them.

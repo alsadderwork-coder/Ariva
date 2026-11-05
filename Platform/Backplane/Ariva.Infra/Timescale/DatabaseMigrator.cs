@@ -8,7 +8,8 @@ namespace Ariva.Infra.Timescale;
 /// The migration job (ARV-006): applies the versioned scripts with the migration login, sets the retention periods of this
 /// environment (ARV-111a, <see cref="RetentionPolicies"/>: the hypertables' TimescaleDB policies and the relational periods
 /// the Cronz retention job reads), then creates or updates the runtime login the hosts use, with the server's limit on one of its
-/// statements (ARV-096d, script 0063), and (ARV-104g1) the validation
+/// statements (ARV-096d, script 0063) and on a session's temporary files (ARV-290, script 0069; the job stops before the scripts
+/// when the migration login may not set that one), and (ARV-104g1) the validation
 /// reader login, the only login that reads the shadow nowcast. On a developer machine (Database:AllowSchemaUpdate) NHibernate
 /// SchemaUpdate then adds whatever the scripts do not cover yet, also with the migration login. ARV-180: the job records its
 /// environment in the database after the scripts (<see cref="DatabaseEnvironment"/>), and a vm-local migration refuses, before
@@ -45,6 +46,10 @@ internal sealed class DatabaseMigrator(
             await environment.EnsureMayUseAsync(connection, ct);
         }
 
+        // ARV-290: and a migration login that may not cap the runtime login's temporary files, before any script runs.
+        if (settings.UsesSeparateRuntimeLogin)
+            await EnsureMaySetTempFileLimitAsync(migrationConnection, ct);
+
         var runner = new SqlScriptRunner(migrationConnection, loggerFactory.CreateLogger<SqlScriptRunner>());
         var applied = await runner.ApplyAsync(SqlScriptCatalog.Embedded(), ct);
         _logger.LogInformation("Migration applied {Count} script(s)", applied.Count);
@@ -61,6 +66,25 @@ internal sealed class DatabaseMigrator(
             factoryProvider.UpdateSchema(migrationConnection);
 
         return applied;
+    }
+
+    /// <summary>
+    /// ARV-290: temp_file_limit is a superuser setting, so the migration login (never a superuser) sets it on the runtime login only
+    /// once a superuser has granted it SET on the parameter (the chart's init script on a new volume, <c>ariva-db.sh
+    /// grant-settings</c> on a server first started before). Checked before the scripts: without it the job stops before anything
+    /// changes, so the release's pre-upgrade hook fails and the hosts already running keep serving, and no host starts uncapped.
+    /// </summary>
+    private static async Task EnsureMaySetTempFileLimitAsync(string migrationConnection, CancellationToken ct)
+    {
+        await using var connection = PostgresConnections.Create(migrationConnection);
+        await connection.OpenAsync(ct);
+        await using var may = new NpgsqlCommand("SELECT has_parameter_privilege('temp_file_limit', 'SET') AS may, current_user::text AS login", connection);
+        await using var reader = await may.ExecuteReaderAsync(ct);
+        await reader.ReadAsync(ct);
+        if (!reader.GetBoolean(0))
+            throw new InvalidOperationException(
+                $"The migration login {reader.GetString(1)} may not set temp_file_limit, the runtime login's cap on temporary files (ARV-290): as the database's superuser run "
+                + "GRANT SET ON PARAMETER temp_file_limit TO the migration login (ariva-db.sh grant-settings in the database pod, wiki 04), then run the migration again.");
     }
 
     private async Task EnsureRuntimeLoginAsync(string migrationConnection, CancellationToken ct)
@@ -85,6 +109,13 @@ internal sealed class DatabaseMigrator(
         await timeout.ExecuteNonQueryAsync(ct);
         _logger.LogInformation("Runtime login {Login} is a member of ariva_runtime, its statements limited to {Seconds} s on the server",
             settings.Username, settings.StatementTimeoutSeconds);
+
+        // ARV-290: the job checked before the scripts that the migration login may set temp_file_limit (EnsureMaySetTempFileLimitAsync).
+        await using var tempFiles = new NpgsqlCommand("SELECT ariva_set_runtime_temp_file_limit(@name, @megabytes)", connection);
+        tempFiles.Parameters.AddWithValue("name", settings.Username);
+        tempFiles.Parameters.AddWithValue("megabytes", settings.TempFileLimitMegabytes);
+        await tempFiles.ExecuteNonQueryAsync(ct);
+        _logger.LogInformation("Runtime login {Login}: each of its server processes holds at most {Megabytes} MB of temporary files on the server", settings.Username, settings.TempFileLimitMegabytes);
     }
 
     /// <summary>

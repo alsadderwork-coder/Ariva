@@ -1,7 +1,9 @@
 ---
 #ConfigMap: run once by the image's entrypoint when the data volume is empty, after it has created the database and
 #the TimescaleDB extension as the superuser. Creates the migration login (CREATEROLE, not superuser) and gives it the
-#database; the migration job (api-main --migrate) then creates the Ariva roles, the schema and the runtime login.
+#database and SET on temp_file_limit (ARV-290: a superuser setting, which the migration job then sets on the runtime login
+#to cap its temporary files); the migration job (api-main --migrate) then creates the Ariva roles, the schema and the
+#runtime login. A server first started before ARV-290 takes the grant from ariva-db.sh grant-settings (wiki 04).
 #Identifiers and the password are quoted by format (%I, %L), never concatenated, and are read from the environment
 #inside psql (\getenv), so the password never appears on a command line.
 apiVersion: v1
@@ -21,4 +23,5 @@ data:
     \getenv db POSTGRES_DB
     SELECT format('CREATE ROLE %I LOGIN CREATEROLE NOSUPERUSER NOCREATEDB NOREPLICATION PASSWORD %L', :'login', :'password') \gexec
     SELECT format('ALTER DATABASE %I OWNER TO %I', :'db', :'login') \gexec
+    SELECT format('GRANT SET ON PARAMETER temp_file_limit TO %I', :'login') \gexec
     SQL

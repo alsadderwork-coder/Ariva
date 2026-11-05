@@ -2440,7 +2440,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 319,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Low: the report's statement writes no temporary file at its bounds; the limit caps any statement that would.",
       "dependsOn": [
         "ARV-234"

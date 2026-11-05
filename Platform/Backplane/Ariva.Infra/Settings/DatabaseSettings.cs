@@ -96,6 +96,24 @@ public sealed partial class DatabaseSettings
     /// </summary>
     public int StatementTimeoutSeconds { get; init; } = 360;
 
+    /// <summary>The bounds of <see cref="TempFileLimitMegabytes"/>.</summary>
+    public const int MinTempFileLimitMegabytes = 64;
+
+    /// <inheritdoc cref="MinTempFileLimitMegabytes"/>
+    public const int MaxTempFileLimitMegabytes = 102_400;
+
+    /// <summary>
+    /// ARV-290 (CWE-400): the most temporary files one session of the runtime login may hold at once, in megabytes
+    /// (<c>temp_file_limit</c>, set on the login by the migration job through script 0069): a sort or hash past work_mem spills to
+    /// the database's disk, and a statement past this cap is ended (SQLSTATE 53400) instead of filling it. 1,024 (Proposed,
+    /// docs/security/costly-operations.md): the daily report's statement at its bounds writes none. The cap is per server process:
+    /// a statement run in parallel holds up to it in each worker too (1 plus max_parallel_workers_per_gather, which a session may
+    /// raise up to the free worker slots of max_worker_processes), and explicit
+    /// temporary tables are not counted, so it bounds what one statement spills, not the disk. A host and the migration job refuse to start outside
+    /// <see cref="MinTempFileLimitMegabytes"/> to <see cref="MaxTempFileLimitMegabytes"/>.
+    /// </summary>
+    public int TempFileLimitMegabytes { get; init; } = 1_024;
+
     /// <summary>The bounds of <see cref="ConnectTimeoutSeconds"/>.</summary>
     public const int MinConnectTimeoutSeconds = 2;
 
@@ -200,10 +218,18 @@ public sealed partial class DatabaseSettings
             yield return string.Create(CultureInfo.InvariantCulture, $"{SectionName}:{nameof(MaxPoolSize)} is a whole number of connections from {MinMaxPoolSize:N0} to {MaxMaxPoolSize:N0} (ARV-232).");
     }
 
-    /// <summary>Stops a host or the migration job at start when a timeout or the pool is out of range.</summary>
+    /// <summary>What is out of range in the temporary file cap (ARV-290); empty when it may be used.</summary>
+    public IEnumerable<string> TempFileProblems()
+    {
+        if (TempFileLimitMegabytes is < MinTempFileLimitMegabytes or > MaxTempFileLimitMegabytes)
+            yield return string.Create(CultureInfo.InvariantCulture,
+                $"{SectionName}:{nameof(TempFileLimitMegabytes)} is a whole number of megabytes from {MinTempFileLimitMegabytes:N0} to {MaxTempFileLimitMegabytes:N0} (ARV-290).");
+    }
+
+    /// <summary>Stops a host or the migration job at start when a timeout, the pool or the temporary file cap is out of range.</summary>
     public void EnsureValidLimits()
     {
-        var problems = TimeoutProblems().Concat(PoolProblems()).ToList();
+        var problems = TimeoutProblems().Concat(PoolProblems()).Concat(TempFileProblems()).ToList();
         if (problems.Count > 0)
             throw new InvalidOperationException(string.Join(" ", problems));
     }

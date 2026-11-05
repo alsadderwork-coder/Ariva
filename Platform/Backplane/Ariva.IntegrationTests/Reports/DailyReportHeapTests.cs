@@ -15,7 +15,7 @@ namespace Ariva.IntegrationTests.Reports;
 /// ARV-234 (CWE-400, CWE-120, ASVS 5.0 V15.2.2) against PostgreSQL 17 with TimescaleDB: the daily report at its own bounds, the 500
 /// queue zones a profile can hold on a 25-hour day (12,500 zone hours), at six and at twenty pairs a minute and at 98 % of the
 /// histogram pairs bound, is built within the reports' request timeout and holds under 100 MB of live managed heap, its statement writing no
-/// temporary file; its time and peak written to the test output for <c>docs/security/costly-operations.md</c> section 4. The
+/// temporary file (and so running under the runtime login's default cap on them, ARV-290); its time and peak written to the test output for <c>docs/security/costly-operations.md</c> section 4. The
 /// collection runs alone, after every other, on a container of its own (<see cref="PostgresAloneCollection"/>): the heap sampled
 /// is the test process's, which tests running beside it would add to, and the seeds (750,000 minutes a row) stay off the suite's
 /// shared database. Each row first drops the minutes the rows before it left, so the disk holds one row's at a time.
@@ -102,10 +102,17 @@ public sealed class DailyReportHeapTests(PostgresFixture fixture, ITestOutputHel
 
         var report = live.Report;
 
-        // The statement's plan at the bound: it writes no temporary file (each zone hour merged in memory, nothing buffers every row).
+        // The statement's plan at the bound: it writes no temporary file (each zone hour merged in memory, nothing buffers every row),
+        // and runs under the runtime login's default cap on temporary files (ARV-290, Database:TempFileLimitMegabytes), set here.
         await using (var connection = new NpgsqlConnection(fixture.ConnectionString(await Host.DatabaseAsync())))
         {
             await connection.OpenAsync(Ct);
+            await using (var cap = new NpgsqlCommand("SELECT set_config('temp_file_limit', @limit, false)", connection))
+            {
+                cap.Parameters.AddWithValue("limit", new Ariva.Infra.Settings.DatabaseSettings().TempFileLimitMegabytes.ToString(System.Globalization.CultureInfo.InvariantCulture) + "MB");
+                (await cap.ExecuteScalarAsync(Ct)).Should().Be("1GB");
+            }
+
             await using var explain = new NpgsqlCommand(ExplainSql, connection) { CommandTimeout = 120 };
             var (from, to) = DailyReports.DayBounds(date, Berlin);
             explain.Parameters.AddWithValue("first", 1);

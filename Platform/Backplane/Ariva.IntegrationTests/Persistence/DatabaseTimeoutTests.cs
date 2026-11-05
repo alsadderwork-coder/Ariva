@@ -73,7 +73,7 @@ public sealed class DatabaseTimeoutTests(PostgresFixture postgres)
             JOIN pg_database d ON d.oid = s.setdatabase
             WHERE d.datname = current_database()
             """);
-        settings.Should().Be("it_st_migrated:statement_timeout=420s", "on the runtime login, in this database, and on no other role");
+        settings.Should().Be("it_st_migrated:statement_timeout=420s,temp_file_limit=1024MB", "on the runtime login, in this database, and on no other role (ARV-290: its temporary file cap too)");
 
         // Out of range, the job stops at start, before anything changes (as an unpinned production database does).
         var outOfRange = () => DatabaseMigration.RunAsync(Configuration(database, login, password, statementSeconds: 60), Ct);

@@ -346,6 +346,10 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         var check = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         check.ExitCode.Should().Be(0, check.Stdout + check.Stderr);
         check.Stdout.Should().Contain("ariva_app holds ariva_runtime only (DML)");
+        // ARV-290 review: the runtime login's own caps as the migration job set them, and no parameter privilege but the one the
+        // chart's init script gave the migration login.
+        check.Stdout.Should().Contain("ok    runtime caps|ariva_app in this database: statement_timeout ").And.Contain(", temp_file_limit 1024MB")
+            .And.Contain("ok    parameter privileges|SET on temp_file_limit to the migration login or ariva_migration only");
         // ARV-189: the runtime role's privileges as ARIVA_RUNTIME_PRIVILEGES lists them, compared since the database is at the
         // list's script (a script that changes them without the list fails here; the line above it names each difference).
         check.Stdout.Should().Contain("ok    runtime privileges|ariva_runtime's grants on public as the scripts leave them")
@@ -470,7 +474,15 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             .And.Contain("it_repl (replication)").And.Contain("it_bypass (bypassrls)").And.Contain("ariva_runtime (holds pg_execute_server_program)")
             .And.Contain($"{RuntimeLogin} (holds pg_execute_server_program)", "the runtime login reaches the server role through ariva_runtime");
         check.Stdout.Should().Contain("FAIL  held roles|ariva_runtime holds pg_execute_server_program");
-        check.Stdout.Should().Contain("FAIL  role settings|it_back work_mem");
+        check.Stdout.Should().Contain("FAIL  role settings|it_back temp_file_limit, it_back work_mem (");
+        // ARV-290 review: privileges on parameters beside the migration login's SET on temp_file_limit, and the runtime login's
+        // cap lifted by the migration login, which may set it (role settings allows the runtime login's own by name).
+        // Its round 2: the migration login's own grants widened too (another parameter, another privilege, a grant option).
+        Line(check, "FAIL  parameter privileges|").Should().Contain("session_preload_libraries SET to ariva_runtime")
+            .And.Contain("temp_file_limit SET with grant option to it_back").And.Contain("work_mem ALTER SYSTEM to PUBLIC")
+            .And.Contain("session_preload_libraries SET to ariva, ").And.Contain("temp_file_limit ALTER SYSTEM to ariva_migration")
+            .And.Contain("temp_file_limit SET with grant option to ariva, ");
+        check.Stdout.Should().Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit -1 (the migration job sets 301s to 3600s and 64MB to 102400MB; ARV-096d, ARV-290): run the migration job");
         // ARV-262: every file but the server's postgresql.conf: ALTER SYSTEM's and the one an include line names.
         Line(check, "FAIL  settings|").Should().Contain("set outside the server's postgresql.conf: maintenance_work_mem (")
             .And.Contain("/ariva-planted.conf), work_mem (").And.Contain("/postgresql.auto.conf): find out who");
@@ -557,11 +569,11 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         check.Stdout.Should().Contain("ok    planted|", "nothing under a system name outside the extensions yet");
         check.Stdout.Should().Contain("FAIL  extensions|pg_stat_statements (a DBA-provided server's own: name it with --allow-extension)");
         var allowed = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--allow-extension", "pg_stat_statements", "--allow-login", "it_repl",
-            "--allow-setting", "work_mem", "--allow-setting", "maintenance_work_mem");
+            "--allow-setting", "work_mem", "--allow-setting", "maintenance_work_mem", "--allow-setting", "temp_file_limit");
         allowed.Stdout.Should().Contain("ok    extensions|plpgsql, timescaledb and timescaledb_toolkit, and allowed: pg_stat_statements")
             .And.Contain("ok    settings|no setting from a file but the server's postgresql.conf (postgresql.auto.conf, a file an include names) but the allowed: maintenance_work_mem (")
             .And.Contain("/ariva-planted.conf), work_mem (")
-            .And.Contain("ok    role settings|none but the runtime login's statement timeout, and allowed: work_mem, maintenance_work_mem");
+            .And.Contain("ok    role settings|none but the runtime login's statement timeout and temporary file cap, and allowed: work_mem, maintenance_work_mem, temp_file_limit");
         Line(allowed, "FAIL  logins|").Should().NotContain("it_repl").And.Contain("it_bypass (bypassrls)");
         foreach (var (option, value) in new[] { ("--allow-extension", "pg-stat"), ("--allow-login", "It_Repl"), ("--allow-setting", "work-mem") })
         {
@@ -805,6 +817,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             GRANT SELECT ON public.audit_entry TO ariva_runtime WITH GRANT OPTION;
             GRANT SELECT ON public.site TO PUBLIC;
             GRANT CREATE ON DATABASE ariva TO ariva_runtime;
+            ALTER ROLE ariva_app IN DATABASE ariva SET temp_file_limit = '-1';
             ALTER DEFAULT PRIVILEGES GRANT TRIGGER ON TABLES TO ariva_runtime;
             ALTER DEFAULT PRIVILEGES IN SCHEMA _timescaledb_internal GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ariva_runtime;
             ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT TRUNCATE ON TABLES TO ariva_runtime;
@@ -823,6 +836,13 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             CREATE ROLE it_bypass LOGIN BYPASSRLS;
             GRANT pg_execute_server_program TO ariva_runtime;
             ALTER ROLE it_back SET work_mem = '16MB';
+            ALTER ROLE it_back SET temp_file_limit = '1MB';
+            GRANT SET ON PARAMETER session_preload_libraries TO ariva_runtime;
+            GRANT SET ON PARAMETER temp_file_limit TO it_back WITH GRANT OPTION;
+            GRANT ALTER SYSTEM ON PARAMETER work_mem TO PUBLIC;
+            GRANT SET ON PARAMETER session_preload_libraries TO ariva;
+            GRANT ALTER SYSTEM ON PARAMETER temp_file_limit TO ariva_migration;
+            GRANT SET ON PARAMETER temp_file_limit TO ariva WITH GRANT OPTION;
             CREATE FUNCTION public.zone_profile_immutable(integer) RETURNS int LANGUAGE sql AS 'SELECT 1';
             CREATE FUNCTION pg_catalog.it_hidden() RETURNS int LANGUAGE sql AS 'SELECT 1';
             ALTER EXTENSION plpgsql ADD FUNCTION pg_catalog.it_hidden();

@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-290: a temporary file cap on the runtime login (2026-11-04)
+
+- Behaviour: the migration job caps the temporary files each server process of the runtime login may hold (`Database:TempFileLimitMegabytes`, 1,024 MB, Proposed; a parallel worker has its own); a statement past it is ended with SQLSTATE 53400 instead of filling the database's disk (wiki 10 section 4.19). The migration job stops before its first script, with the grant to run, when its login may not set this superuser setting, so the upgrade's hook fails and the running hosts keep serving.
+- Before the upgrade, on every server first started before this release: run `node scripts/ops/ariva-ops.mjs grant-settings --namespace <ns>` once (wiki 04 section 6.10), or the migration job stops and the upgrade waits; a server the chart starts afterwards needs nothing. With your own PostgreSQL, the administrator runs `GRANT SET ON PARAMETER temp_file_limit TO ariva;` once.
+- After the upgrade: `ariva-db.sh check` passes "temp file cap" and "parameter privileges", lists the cap among the runtime login's settings, and with `--runtime-login` passes "runtime caps". A "FAIL parameter privileges" names a privilege on a parameter someone else granted (wiki 10 section 4.19).
+
 ### ARV-289 (checkpoint fix): the token parameter and device key masks no longer go wrong after a long log text (2026-11-04)
 
 - Behaviour: the rules that mask a token-bearing query parameter (`?access_token=...`) and a device or display key (`ardk_`, `ardp_`) in log text, dead letters, the outbox's errors and job failures run on .NET's backtracking regular expression engine again. On .NET 10.0.13's linear engine, once a host had logged a long text of a certain shape (tens of thousands of characters of query parameters or key characters), those rules could miss a one-character token value at the end of a text, or miss a key of exactly 20 characters at the end of a text or take one character past it, until the host restarted. What the rules mask is unchanged, and so is the cost.

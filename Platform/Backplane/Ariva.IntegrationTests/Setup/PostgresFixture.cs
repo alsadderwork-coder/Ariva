@@ -154,6 +154,9 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.ReportReadTimeout => "CREATE DATABASE it_report_read_timeout",
             TestDatabase.ReportReadLost => "CREATE DATABASE it_report_read_lost",
             TestDatabase.ReportReadCommand => "CREATE DATABASE it_report_read_command",
+            TestDatabase.TempFileLimit => "CREATE DATABASE it_temp_file_limit",
+            TestDatabase.TempFileLimitRefusals => "CREATE DATABASE it_temp_file_limit_refusals",
+            TestDatabase.TempFileLimitMigration => "CREATE DATABASE it_temp_file_limit_migration",
             TestDatabase.EnvironmentDeployed => "CREATE DATABASE it_environment_deployed",
             TestDatabase.EnvironmentLocal => "CREATE DATABASE it_environment_local",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
@@ -331,6 +334,9 @@ public enum TestDatabase
     ReportReadTimeout,
     ReportReadLost,
     ReportReadCommand,
+    TempFileLimit,
+    TempFileLimitRefusals,
+    TempFileLimitMigration,
     EnvironmentDeployed,
     EnvironmentLocal
 }
