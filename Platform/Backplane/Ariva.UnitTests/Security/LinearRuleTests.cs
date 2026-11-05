@@ -124,9 +124,52 @@ public class LinearRuleTests
         LongScanCases.Should().ContainKey(name, "every rule needs its shortest match and a run here");
         var (minimal, run) = LongScanCases[name];
         var shape = (Regex)typeof(SecretText).GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, Type.EmptyTypes).Invoke(null, null);
+
+        LongScanDifferences(shape, minimal, run, captures: false).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// ARV-293: the other shared rules on the linear engine that find match positions, each with its shortest match and a
+    /// fragment whose runs make its long scans. The template placeholder (Fill's Replace, the template check's Matches) and
+    /// the scanner's version line (its Match, whose groups give the signatures) are compared with their captures too.
+    /// </summary>
+    private static readonly Dictionary<string, (Func<Regex> Rule, string Minimal, string Run)> SharedLongScanRules = new(StringComparer.Ordinal)
+    {
+        ["EmailTemplates.Placeholder"] = (EmailTemplates.Placeholder, "{{a}}", "{{ab"),
+        ["ClamdScanner.VersionPattern"] = (ClamdScanner.VersionPattern, "ClamAV 1.4.6/28157/Sun Oct 18 06:24:14 2026", "ClamAV 1.4.6/")
+    };
+
+    public static TheoryData<string> SharedLongScanRuleNames => [.. SharedLongScanRules.Keys];
+
+    /// <summary>
+    /// ARV-293: the long-scan theory above on the shared rules outside SecretText that find match positions: after each long
+    /// scan, new and after the short texts first, an instance of the rule's own engine and options matches, and captures,
+    /// what the backtracking engine does.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(SharedLongScanRuleNames))]
+    public void SharedRule_Should_MatchAndCaptureAsTheBacktrackingEngine_When_LongScansCameFirst(string name)
+    {
+        var (rule, minimal, run) = SharedLongScanRules[name];
+
+        LongScanDifferences(rule(), minimal, run, captures: true).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// What an instance of <paramref name="shape"/>'s engine and options gives that the backtracking engine does not, on texts
+    /// that end at the rule's shortest match (or one character past it), after the long scans the ARV-289 checkpoint found:
+    /// one run of 60,000 characters, seven runs of about 8,000, a match followed by 60,000 characters it could take, 60,000
+    /// characters then a match, and the long call's own last match. Each instance is new (a long scan on the rule's shared
+    /// instance would leave it wrong for the tests after this one), with and without the short texts first.
+    /// </summary>
+    private static List<string> LongScanDifferences(Regex shape, string minimal, string run, bool captures)
+    {
         var reference = new Regex(shape.ToString(), shape.Options & ~RegexOptions.NonBacktracking);
         Regex Instance() => new(shape.ToString(), shape.Options, shape.MatchTimeout);
         string Run(int length) => string.Concat(Enumerable.Repeat(run, Math.Max(1, length / run.Length)));
+        string Outcome(Regex rule, string text) => captures
+            ? rule.Replace(text, m => "<" + string.Join("|", m.Groups.Cast<Group>().Select(g => g.Success ? $"{g.Name}={g.Value}" : g.Name)) + ">")
+            : rule.Replace(text, "<$0>");
         string[] leads = ["", " ", "\n", "x", "?", "#", "&", "-", "_", ".", "\u212a"];
         string[] tails = ["", "x", ".", " ", "\n", "\u00e9", "\u212a", "\u017f", "=", "-", "_", "1", "A", "\"", ";"];
         var probes = leads.SelectMany(lead => tails.Select(tail => lead + minimal + tail)).ToArray();
@@ -136,7 +179,7 @@ public class LinearRuleTests
         foreach (var probe in probes.Where((_, i) => i % 15 == 0))
         {
             var text = minimal + new string('a', 30_000) + "\n" + probe;
-            if (last.Replace(text, "<$0>") != reference.Replace(text, "<$0>"))
+            if (Outcome(last, text) != Outcome(reference, text))
                 wrong.Add($"the last match of a long call ending {Escaped(probe)}");
         }
 
@@ -153,14 +196,103 @@ public class LinearRuleTests
                 var instance = Instance();
                 if (shortTextsFirst)
                     foreach (var probe in probes)
-                        instance.Replace(probe, "<$0>");
+                        Outcome(instance, probe);
                 foreach (var text in texts)
-                    instance.Replace(text, "<$0>");
-                wrong.AddRange(probes.Where(probe => instance.Replace(probe, "<$0>") != reference.Replace(probe, "<$0>"))
+                    Outcome(instance, text);
+                wrong.AddRange(probes.Where(probe => Outcome(instance, probe) != Outcome(reference, probe))
                     .Select(probe => $"{Escaped(probe)} after {label}{(shortTextsFirst ? ", short texts first" : string.Empty)}"));
             }
 
-        wrong.Should().BeEmpty();
+        return wrong;
+    }
+
+    /// <summary>The production projects (the hosts and libraries, the contracts and the simulator), test projects left out.</summary>
+    private static List<string> ProductionProjects() =>
+        new[] { "Backplane", "Business", "Simulation" }
+            .SelectMany(folder => Directory.EnumerateDirectories(Path.Combine(RepositoryPaths.Platform, folder)))
+            .Where(dir => Directory.EnumerateFiles(dir, "*.csproj").Any() && !dir.EndsWith("Tests", StringComparison.Ordinal))
+            .Order(StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// ARV-293: the rules on the linear engine that only IsMatch uses. IsMatch on long texts never left an instance wrong,
+    /// though a poisoned instance's IsMatch is wrong too, so each must stay an instance that only IsMatch uses.
+    /// </summary>
+    private static readonly string[] Validators =
+    [
+        "ArivaTargetSettings.NamespaceLabel", "CsvImportReader.Number", "EmailAddresses.Rule", "EmailAttachment.FileNameRule", "FlightRules.Carrier",
+        "FlightRules.Codeshare", "LocalDiskFileStorage.KeyPattern", "OutboundRules.PathAndQuery", "OutboundRules.Scope", "Site.CodePattern", "TopologyCodes.Code"
+    ];
+
+    /// <summary>ARV-293: the rules on the linear engine that find matches and are not in the long-scan theory, each with its reason.</summary>
+    private static readonly Dictionary<string, string> LongScanExemptions = new(StringComparer.Ordinal)
+    {
+        ["JobsDashboardGuard.BaseElement"] = "in the sign-in freeze with the dashboard's other rules; it follows when the freeze lifts (ARV-163a)"
+    };
+
+    /// <summary>
+    /// ARV-293: every rule on the linear engine in the production assemblies (a <see cref="GeneratedRegexAttribute"/> method
+    /// whose instance holds <see cref="RegexOptions.NonBacktracking"/>) is found in the production sources and named: a rule
+    /// that any use other than a direct IsMatch reaches (Replace, Match, Matches, EnumerateMatches, Split, Count, or an
+    /// instance handed on) is in the long-scan theory or listed with its reason, and a rule that only IsMatch uses is one of
+    /// the named validators. A rule on the linear engine made any other way (a Regex constructed or a static call with the
+    /// option) is refused.
+    /// </summary>
+    [Fact]
+    public void ProductionRules_Should_BeInTheLongScanTheoryOrBeNamedValidators_When_TheSourcesAreRead()
+    {
+        var projects = ProductionProjects();
+        var rules = projects
+            .SelectMany(dir => Assembly.Load(new AssemblyName(Path.GetFileName(dir))).GetTypes())
+            .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly)
+                .Where(m => m.ReturnType == typeof(Regex) && m.GetParameters().Length == 0 && m.GetCustomAttribute<GeneratedRegexAttribute>() is not null)
+                .Where(m => ((Regex)m.Invoke(null, null)).Options.HasFlag(RegexOptions.NonBacktracking))
+                .Select(m => (Type: type.Name, m.Name)))
+            .ToList();
+        var separator = Path.DirectorySeparatorChar;
+        // Whole-line comments out, so a rule named in a comment is not taken for a use.
+        var sources = projects
+            .SelectMany(dir => Directory.EnumerateFiles(dir, "*.cs", SearchOption.AllDirectories))
+            .Where(f => !f.Contains($"{separator}bin{separator}", StringComparison.Ordinal) && !f.Contains($"{separator}obj{separator}", StringComparison.Ordinal))
+            .Select(f => string.Join('\n', File.ReadAllLines(f).Select(line => line.TrimStart().StartsWith("//", StringComparison.Ordinal) ? string.Empty : line)))
+            .ToList();
+        rules.Should().NotBeEmpty();
+
+        var finders = new List<string>();
+        var validators = new List<string>();
+        foreach (var (type, name) in rules)
+        {
+            var declares = new Regex($@"\b(?:class|record|struct)\s+{type}\b", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+            // In a file that declares the type, a use is the name called alone or through the type; elsewhere through the type.
+            var inDeclaring = new Regex($@"(?<![\w.])(?<!\bRegex\s+){name}\(\)|\b{type}\.{name}\(\)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+            var elsewhere = new Regex($@"\b{type}\.{name}\(\)", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+            var uses = sources.SelectMany(source => (declares.IsMatch(source) ? inDeclaring : elsewhere).Matches(source)
+                    .Select(m => source.AsSpan(m.Index + m.Length).StartsWith(".IsMatch(", StringComparison.Ordinal)))
+                .ToList();
+            uses.Should().NotBeEmpty($"{type}.{name} is a production rule: some source uses it");
+            (uses.All(isMatch => isMatch) ? validators : finders).Add($"{type}.{name}");
+        }
+
+        var theory = typeof(SecretText).GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            .Where(m => m.ReturnType == typeof(Regex) && m.GetParameters().Length == 0).Select(m => $"SecretText.{m.Name}").Concat(SharedLongScanRules.Keys);
+        finders.Except(theory.Concat(LongScanExemptions.Keys)).Should().BeEmpty("a rule that finds matches must pass the long-scan theory");
+        LongScanExemptions.Keys.Concat(SharedLongScanRules.Keys).Except(finders).Should().BeEmpty("each listed rule is one that finds matches");
+        validators.Should().BeEquivalentTo(Validators, "a rule that only IsMatch uses is a named validator");
+
+        // The option only ever in a GeneratedRegex attribute (on its line or the line before it), so the rules above are all.
+        var made = projects
+            .SelectMany(dir => Directory.EnumerateFiles(dir, "*.cs", SearchOption.AllDirectories))
+            .Where(f => !f.Contains($"{separator}bin{separator}", StringComparison.Ordinal) && !f.Contains($"{separator}obj{separator}", StringComparison.Ordinal))
+            .SelectMany(f =>
+            {
+                var lines = File.ReadAllLines(f);
+                return lines.Select((line, i) => (Line: line, Before: i > 0 ? lines[i - 1] : string.Empty, File: Path.GetFileName(f)));
+            })
+            .Where(x => x.Line.Contains("RegexOptions.NonBacktracking", StringComparison.Ordinal) && !x.Line.TrimStart().StartsWith("//", StringComparison.Ordinal)
+                && !x.Line.Contains("GeneratedRegex(", StringComparison.Ordinal) && !x.Before.Contains("GeneratedRegex(", StringComparison.Ordinal))
+            .Select(x => $"{x.File}: {x.Line.Trim()}")
+            .ToList();
+        made.Should().BeEmpty("a rule on the linear engine is a GeneratedRegex the test above reads");
     }
 
     private static string Escaped(string text) => System.Text.Json.JsonSerializer.Serialize(text);

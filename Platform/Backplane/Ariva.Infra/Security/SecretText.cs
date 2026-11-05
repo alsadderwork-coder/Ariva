@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace Ariva.Infra.Security;
@@ -48,15 +49,28 @@ public static partial class SecretText
     /// </summary>
     public static readonly IReadOnlyList<string> SensitiveSuffixes = ["Password", "Secret", "Headers"];
 
+    /// <summary>
+    /// ARV-293 (CWE-400): the most characters of one text the rules read. Nothing else bounds a text the logs protect: the
+    /// enricher protects every string property of every event and the exception sink every exception's text, and a text of
+    /// 1,000,000 characters took about a third of a second. A longer text is cut (<see cref="KeptLength"/>), the part kept
+    /// protected and <see cref="CutNote"/> added, so one text costs at most what this many characters cost
+    /// (docs/security/costly-operations.md, section 2).
+    /// </summary>
+    public const int MaxProtectedLength = 65_536;
+
+    /// <summary>What follows the protected part of a text cut at <see cref="MaxProtectedLength"/>: the characters left out and the bound.</summary>
+    public const string CutNote = " [{0} more characters left out: protection reads {1} at most]";
+
     #endregion
 
     #region Methods
 
     /// <summary>
     /// The protection the logs give a string of no level of its own: <see cref="Redact"/>, then every email address masked
-    /// (<see cref="MaskAddressesIn"/>). Returns the same instance when nothing changed; null and empty stay as they are.
+    /// (<see cref="MaskAddressesIn"/>). Returns the same instance when nothing changed; null and empty stay as they are. A
+    /// text longer than <see cref="MaxProtectedLength"/> is cut once, first (ARV-293, <see cref="Bounded"/>).
     /// </summary>
-    public static string Protect(string text) => MaskAddressesIn(Redact(text));
+    public static string Protect(string text) => Bounded(text, kept => MaskAddressesInWhole(RedactWhole(kept)));
 
     /// <summary>
     /// ARV-285: <see cref="Protect"/>, then cut at <paramref name="maxLength"/> characters. Protected first, so a credential the
@@ -100,9 +114,54 @@ public static partial class SecretText
     /// Masks credentials inside free text: Bearer and Basic credentials, token query parameters, JWTs, device and display keys,
     /// then (ARV-212) the other credentials Ariva issues or stores by their shapes and any value under a credential's name
     /// (<see cref="IsSensitiveName"/>) as a JSON member, a <c>name=value</c> pair or a credential header line. Returns the same
-    /// instance when nothing changed; null and empty stay as they are.
+    /// instance when nothing changed; null and empty stay as they are. A text longer than <see cref="MaxProtectedLength"/> is
+    /// cut first (ARV-293, <see cref="Bounded"/>).
     /// </summary>
-    public static string Redact(string text)
+    public static string Redact(string text) => Bounded(text, RedactWhole);
+
+    /// <summary>
+    /// ARV-293: <paramref name="protect"/> on a text of at most <see cref="MaxProtectedLength"/> characters as it is; a longer
+    /// one is cut at <see cref="KeptLength"/>, the part kept protected and <see cref="CutNote"/> added.
+    /// </summary>
+    private static string Bounded(string text, Func<string, string> protect)
+    {
+        if (text is null || text.Length <= MaxProtectedLength)
+            return protect(text);
+
+        var kept = KeptLength(text);
+        return protect(text[..kept]) + string.Format(CultureInfo.InvariantCulture, CutNote, text.Length - kept, MaxProtectedLength);
+    }
+
+    /// <summary>
+    /// ARV-293: how much of a text longer than <see cref="MaxProtectedLength"/> is kept, so that no credential is kept in
+    /// part. The cut is at the bound (one character before it when a surrogate pair would be split). When the characters on
+    /// both sides of it could belong to a credential's shape (<see cref="CanHoldCredential"/>), the run of them the cut falls
+    /// in goes too: every rule whose match needs a length, a separator or an ending to match at all (a JWT, a key, a seed, a
+    /// code, an address, a DER structure, a scheme's credential) holds only such characters, so a shape cut in two is dropped
+    /// whole, never kept in part. Every rule that takes other characters (a header line, a JSON member's or a pair's value,
+    /// a password's value, a token parameter's value, a private key block) takes them to the end of the part kept, so the part
+    /// of it kept is masked. A rule ending in a word boundary matches at the part's end at least where it matched in the whole.
+    /// </summary>
+    internal static int KeptLength(string text)
+    {
+        var cut = char.IsHighSurrogate(text[MaxProtectedLength - 1]) ? MaxProtectedLength - 1 : MaxProtectedLength;
+        if (!CanHoldCredential(text[cut]))
+            return cut;
+        while (cut > 0 && CanHoldCredential(text[cut - 1]))
+            cut--;
+        return cut;
+    }
+
+    /// <summary>
+    /// ARV-293: whether a character can be part of a credential's shape: an ASCII letter or digit, one of <c>_-.+/=~%@</c>
+    /// (base64 and base64url, a JWT's dots, an address, a scheme's credential), or a letter that matches an ASCII one without
+    /// case (the Kelvin sign and the long s, which the rules that ignore case take as k and s).
+    /// </summary>
+    private static bool CanHoldCredential(char c) =>
+        char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.' or '+' or '/' or '=' or '~' or '%' or '@' || c == (char)0x212A || c == (char)0x017F;
+
+    /// <summary><see cref="Redact"/> on the whole text, whatever its length.</summary>
+    private static string RedactWhole(string text)
     {
         if (string.IsNullOrEmpty(text))
             return text;
@@ -149,10 +208,16 @@ public static partial class SecretText
         return string.Concat(trimmed.AsSpan(0, Math.Min(1, trimmed.Length)), MaskText);
     }
 
-    /// <summary>Masks every email address inside free text. Returns the same instance when nothing changed.</summary>
+    /// <summary>
+    /// Masks every email address inside free text. Returns the same instance when nothing changed. A text longer than
+    /// <see cref="MaxProtectedLength"/> is cut first (ARV-293, <see cref="Bounded"/>).
+    /// </summary>
     /// <param name="text">The text.</param>
     /// <returns>The text with each address masked as <see cref="Mask"/> does.</returns>
-    public static string MaskAddressesIn(string text)
+    public static string MaskAddressesIn(string text) => Bounded(text, MaskAddressesInWhole);
+
+    /// <summary><see cref="MaskAddressesIn"/> on the whole text, whatever its length.</summary>
+    private static string MaskAddressesInWhole(string text)
     {
         if (string.IsNullOrEmpty(text) || !text.Contains('@', StringComparison.Ordinal))
             return text;
