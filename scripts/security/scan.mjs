@@ -631,16 +631,20 @@ export function declaredEncoding(text, file = '') {
   // ARV-225b: SQL, fail closed: a client encoding named only as SET client_encoding to UTF8 or psql's \encoding UTF8, on a line
   // of its own; any other mention (SET NAMES, set_config, PGCLIENTENCODING, a value of another encoding) is refused.
   if (ext === '.sql') {
-    // psql's meta-commands end at their line; the rest is read with its comments out and its whitespace folded, newlines
-    // included, so a comment or a line break between SET and NAMES hides nothing. set_config and a U&" identifier (which can
-    // spell any name) are refused outright: no script needs them.
-    const lines = text.split(/\r?\n/);
-    if (lines.some(l => /\\encoding\b/i.test(l) && !/^\s*\\encoding\s+'?utf-?8'?\s*$/i.test(l))) return 'a client encoding other than UTF8';
-    const sql = lines.filter(l => !/^\s*\\/.test(l)).join('\n').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ');
-    if (/\bset_config\b|\bU&"/i.test(sql)) return 'a client encoding set by set_config or a U&" identifier';
-    for (const statement of sql.split(';'))
-      if (/client_encoding|pgclientencoding|\bset (?:session |local )?names\b/i.test(statement) && !/^\s*set (?:session |local )?client_encoding ?(?:=|to) ?'?utf-?8'?\s*$/i.test(statement))
+    // Read as PostgreSQL and psql read it (sqlStatements): a comment, a line break, a string or a dollar-quoted body between
+    // SET and NAMES hides nothing, and a comment mark inside a string hides nothing after it. The file is read six ways, and
+    // any reading refuses: block comments nested (as PostgreSQL) or not (a reader that splits statements otherwise), and
+    // backslash escapes in no string, in E'' strings only (standard_conforming_strings on) or in every one (off). set_config,
+    // pg_settings, standard_conforming_strings and a U&" identifier (which can spell any name) are refused anywhere in the
+    // text: no script needs them. A psql meta-command other than \encoding UTF8 is refused (the migration runner sends no
+    // meta-command; one could include a file of another type).
+    if (/\bset_config\b|\bpg_settings\b|standard_conforming_strings|\bU&"/i.test(text)) return 'a client encoding set by set_config or pg_settings, standard_conforming_strings, or a U&" identifier';
+    for (const reading of ['none', 'e', 'all'].flatMap(escapes => [{ escapes, nested: true }, { escapes, nested: false }])) {
+      const { statements, commands } = sqlStatements(text, reading);
+      if (commands.some(c => !/^\\encoding\s+'?utf-?8'?\s*$/i.test(c))) return 'a psql meta-command other than \\encoding UTF8';
+      if (statements.some(st => /client_encoding|pgclientencoding|\bset (?:session |local )?names\b/i.test(st) && !/^\s*set (?:session |local )?client_encoding ?(?:=|to) ?'?utf-?8'?\s*$/i.test(st)))
         return 'a client encoding other than UTF8';
+    }
   }
   // ARV-225b: batch, fail closed: chcp 65001 alone on its line (its output sent to nul or not); any other chcp, and mode's code
   // page selection, are refused. The batch rule's ASCII-only text assumes the console's code page is ASCII-compatible, which
@@ -695,6 +699,65 @@ export function declaredEncoding(text, file = '') {
       if (!/^["']?\s*(?:[:=]|\s)\s*["']?65001(?!\d)/.test(text.slice(m.index + m[0].length))) return 'a code page set outside a project file (an environment variable or a build command line) other than 65001';
   }
   return null;
+}
+
+/**
+ * ARV-225b (review round 2): a SQL file's statements as PostgreSQL and psql read them, each with its comments out and its
+ * whitespace folded. A block comment nests when reading.nested is set, as PostgreSQL's does. Strings ('' doubled; a backslash
+ * escapes the next character in no string when reading.escapes is 'none', in E'' strings when 'e', in every one when 'all',
+ * as with standard_conforming_strings off), dollar-quoted bodies and quoted identifiers are kept as they are, so a statement a
+ * string or a body holds is read too, and a ';' inside one splits there too, which only reads more. A backslash outside them
+ * starts a psql meta-command, returned to its line's end.
+ */
+function sqlStatements(text, { escapes: escaping, nested }) {
+  const statements = [], commands = [];
+  const word = /[A-Za-z0-9_$]|[^\x00-\x7f]/;
+  const dollar = /\$(?:(?:[A-Za-z_]|[^\x00-\x7f])(?:[A-Za-z0-9_]|[^\x00-\x7f])*)?\$/y;
+  let current = '';
+  for (let i = 0; i < text.length;) {
+    const c = text[i], next = text[i + 1];
+    if (c === '-' && next === '-') {
+      const end = text.indexOf('\n', i);
+      i = end < 0 ? text.length : end;
+      current += ' ';
+    } else if (c === '/' && next === '*') {
+      let depth = 0;
+      do {
+        if (text.startsWith('/*', i) && (nested || depth === 0)) { depth++; i += 2; } else if (text.startsWith('*/', i)) { depth--; i += 2; } else i++;
+      } while (depth > 0 && i < text.length);
+      current += ' ';
+    } else if (c === "'" || c === '"') {
+      const escapes = c === "'" && (escaping === 'all' || (escaping === 'e' && /^[eE]$/.test(text[i - 1] ?? '') && !word.test(text[i - 2] ?? '')));
+      let j = i + 1;
+      for (; j < text.length; j++) {
+        if (escapes && text[j] === '\\') j++;
+        else if (text[j] === c) { if (text[j + 1] === c) j++; else break; }
+      }
+      current += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (c === '$' && !word.test(text[i - 1] ?? '') && ((dollar.lastIndex = i), dollar.test(text))) {
+      const tag = text.slice(i, dollar.lastIndex);
+      const end = text.indexOf(tag, dollar.lastIndex);
+      const stop = end < 0 ? text.length : end + tag.length;
+      current += text.slice(i, stop);
+      i = stop;
+    } else if (c === '\\') {
+      const end = text.indexOf('\n', i);
+      const stop = end < 0 ? text.length : end;
+      commands.push(text.slice(i, stop));
+      current += ' ';
+      i = stop;
+    } else if (c === ';') {
+      statements.push(current);
+      current = '';
+      i++;
+    } else {
+      current += c;
+      i++;
+    }
+  }
+  statements.push(current);
+  return { statements: statements.map(st => st.replace(/\s+/g, ' ')), commands };
 }
 
 /** The scanner and its build probe, which name what they refuse. */
@@ -1151,7 +1214,12 @@ function selfTest() {
       // reference in a meta tag and an upper case one, and a caret inside chcp.
       'custom-after.csproj', 'notes-project.md', 'import-condition.targets', 'import-list.targets', 'replaced-check.targets', 'import-off.yml',
       'profile.pubxml', 'set-session-names.sql', 'set-comment-names.sql', 'set-names-lines.sql', 'set-config.sql', 'unicode-identifier.sql',
-      'meta-gt-quot.html', 'meta-upper-quot.html', 'chcp-caret.cmd']],
+      'meta-gt-quot.html', 'meta-upper-quot.html', 'chcp-caret.cmd',
+      // Review round 2: SQL read as PostgreSQL reads it: a comment mark inside a string or a dollar-quoted body, a nested
+      // block comment and one a reader that does not nest them reads otherwise, an escape string, pg_settings,
+      // standard_conforming_strings, a psql include and a dynamic statement.
+      'set-names-after-string.sql', 'set-names-after-dollar.sql', 'set-names-nested-comment.sql', 'set-names-escape-string.sql',
+      'set-names-unnested-comment.sql', 'pg-settings.sql', 'conforming-strings.sql', 'psql-include.sql', 'dynamic-set.sql']],
     // ARV-225b: a leading byte order mark in a type whose tool keeps it.
     [LEADING_MARK, ['bom-shebang', 'bom.env', 'bom.yml', 'bom.sh', 'bom-codeowners/CODEOWNERS']]];
   for (const [msg, names] of wholeFile) {
