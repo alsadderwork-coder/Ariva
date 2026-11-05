@@ -1,0 +1,1 @@
+DO $$ BEGIN SET/**/NAMES 'SJIS'; END $$;

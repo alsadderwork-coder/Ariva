@@ -640,7 +640,8 @@ export function declaredEncoding(text, file = '') {
     // meta-command; one could include a file of another type).
     if (/\bset_config\b|\bpg_settings\b|standard_conforming_strings|\bU&"/i.test(text)) return 'a client encoding set by set_config or pg_settings, standard_conforming_strings, or a U&" identifier';
     for (const reading of ['none', 'e', 'all'].flatMap(escapes => [{ escapes, nested: true }, { escapes, nested: false }])) {
-      const { statements, commands } = sqlStatements(text, reading);
+      const { statements, commands, tooDeep } = sqlStatements(text, reading);
+      if (tooDeep) return 'SQL strings or bodies nested deeper than this scanner reads';
       if (commands.some(c => !/^\\encoding\s+'?utf-?8'?\s*$/i.test(c))) return 'a psql meta-command other than \\encoding UTF8';
       if (statements.some(st => /client_encoding|pgclientencoding|\bset (?:session |local )?names\b/i.test(st) && !/^\s*set (?:session |local )?client_encoding ?(?:=|to) ?'?utf-?8'?\s*$/i.test(st)))
         return 'a client encoding other than UTF8';
@@ -702,15 +703,25 @@ export function declaredEncoding(text, file = '') {
 }
 
 /**
- * ARV-225b (review round 2): a SQL file's statements as PostgreSQL and psql read them, each with its comments out and its
- * whitespace folded. A block comment nests when reading.nested is set, as PostgreSQL's does. Strings ('' doubled; a backslash
- * escapes the next character in no string when reading.escapes is 'none', in E'' strings when 'e', in every one when 'all',
- * as with standard_conforming_strings off), dollar-quoted bodies and quoted identifiers are kept as they are, so a statement a
- * string or a body holds is read too, and a ';' inside one splits there too, which only reads more. A backslash outside them
- * starts a psql meta-command, returned to its line's end.
+ * ARV-225b (review rounds 2 and 3): a SQL file's statements as PostgreSQL and psql read them, each with its comments out and
+ * its whitespace folded. A block comment nests when reading.nested is set, as PostgreSQL's does. Strings ('' doubled; a
+ * backslash escapes the next character in no string when reading.escapes is 'none', in E'' strings when 'e', in every one when
+ * 'all', as with standard_conforming_strings off), dollar-quoted bodies and quoted identifiers are kept whole in their
+ * statement (a ';' inside one does not end it), and the content of each string and body is also read as SQL of its own, the
+ * same way, its statements added: a function's or a DO block's body, or an EXECUTE's text, with a comment between SET and
+ * NAMES hides nothing either. Reading only adds statements, so it fails closed. A backslash outside them starts a psql
+ * meta-command, returned to its line's end (in a file only, not in a string's or a body's content). Contents nested deeper
+ * than eight levels set tooDeep.
  */
-function sqlStatements(text, { escapes: escaping, nested }) {
-  const statements = [], commands = [];
+function sqlStatements(text, { escapes: escaping, nested }, depth = 0) {
+  const statements = [], commands = [], inner = [];
+  let tooDeep = false;
+  const readInner = (content) => {
+    if (depth >= 8) { tooDeep = true; return; }
+    const read = sqlStatements(content, { escapes: escaping, nested }, depth + 1);
+    inner.push(...read.statements);
+    tooDeep ||= read.tooDeep;
+  };
   const word = /[A-Za-z0-9_$]|[^\x00-\x7f]/;
   const dollar = /\$(?:(?:[A-Za-z_]|[^\x00-\x7f])(?:[A-Za-z0-9_]|[^\x00-\x7f])*)?\$/y;
   let current = '';
@@ -734,14 +745,16 @@ function sqlStatements(text, { escapes: escaping, nested }) {
         else if (text[j] === c) { if (text[j + 1] === c) j++; else break; }
       }
       current += text.slice(i, j + 1);
+      if (c === "'") readInner(text.slice(i + 1, j).replace(escapes ? /''|\\'/g : /''/g, () => "'"));
       i = j + 1;
     } else if (c === '$' && !word.test(text[i - 1] ?? '') && ((dollar.lastIndex = i), dollar.test(text))) {
       const tag = text.slice(i, dollar.lastIndex);
       const end = text.indexOf(tag, dollar.lastIndex);
       const stop = end < 0 ? text.length : end + tag.length;
       current += text.slice(i, stop);
+      readInner(text.slice(dollar.lastIndex, end < 0 ? text.length : end));
       i = stop;
-    } else if (c === '\\') {
+    } else if (c === '\\' && depth === 0) {
       const end = text.indexOf('\n', i);
       const stop = end < 0 ? text.length : end;
       commands.push(text.slice(i, stop));
@@ -757,7 +770,7 @@ function sqlStatements(text, { escapes: escaping, nested }) {
     }
   }
   statements.push(current);
-  return { statements: statements.map(st => st.replace(/\s+/g, ' ')), commands };
+  return { statements: [...statements.map(st => st.replace(/\s+/g, ' ')), ...inner], commands, tooDeep };
 }
 
 /** The scanner and its build probe, which name what they refuse. */
@@ -1219,7 +1232,9 @@ function selfTest() {
       // block comment and one a reader that does not nest them reads otherwise, an escape string, pg_settings,
       // standard_conforming_strings, a psql include and a dynamic statement.
       'set-names-after-string.sql', 'set-names-after-dollar.sql', 'set-names-nested-comment.sql', 'set-names-escape-string.sql',
-      'set-names-unnested-comment.sql', 'pg-settings.sql', 'conforming-strings.sql', 'psql-include.sql', 'dynamic-set.sql']],
+      'set-names-unnested-comment.sql', 'pg-settings.sql', 'conforming-strings.sql', 'psql-include.sql', 'dynamic-set.sql',
+      // Review round 3: a comment between SET and NAMES inside a body, and inside an EXECUTE's text.
+      'set-names-body-comment.sql', 'set-names-execute-comment.sql']],
     // ARV-225b: a leading byte order mark in a type whose tool keeps it.
     [LEADING_MARK, ['bom-shebang', 'bom.env', 'bom.yml', 'bom.sh', 'bom-codeowners/CODEOWNERS']]];
   for (const [msg, names] of wholeFile) {
