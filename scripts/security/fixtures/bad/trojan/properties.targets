@@ -1,0 +1,1 @@
+<Project><Target Name="B"><MSBuild Projects="a.csproj" Properties="$(Extra)" /></Target></Project>

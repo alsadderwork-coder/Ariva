@@ -25,6 +25,14 @@
         <!-- CWE-120: no unsafe code anywhere; scripts/security/scan.mjs also fails the build gate on the unsafe keyword -->
         <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     </PropertyGroup>
+    <!-- ARV-225b (CWE-94): the compiler decodes a source file without a byte order mark in the code page MSBuild gives it, so it
+         gets none but UTF-8. A code page set anywhere MSBuild takes a property from (an environment variable, a command line or
+         its response file, a project, a task) is judged here as MSBuild evaluated it, and a compiler response file, which can
+         give the compiler a code page of its own, is refused. scripts/security/scan.mjs refuses the text forms as well. -->
+    <Target Name="ArivaSourceEncodingCheck" BeforeTargets="CoreCompile">
+        <Error Condition="'$(CodePage)' != '' And '$(CodePage)' != '65001'" Text="A code page other than 65001 is set for the compiler (ARV-225b): the sources are UTF-8." />
+        <Error Condition="'$(CompilerResponseFile)' != ''" Text="A compiler response file is set (ARV-225b): it can give the compiler a code page of its own." />
+    </Target>
     <!-- ARV-096 (ASVS 5.0 V15.1.2, supply chain): every project records its resolved package graph in packages.lock.json,
          committed with the change that moves it (dotnet restore Ariva.slnx updates them; add force-evaluate to re-resolve).
          CI restores in locked mode: GitHub Actions sets CI=true and GITHUB_ACTIONS=true (which a step cannot override) and Azure

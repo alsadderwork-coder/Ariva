@@ -192,9 +192,11 @@ const RULES = [
   // the last two code points of every plane). Also refused (scanFiles): a tracked symbolic
   // link, a listed name that is not valid UTF-8, a file git converts at checkout (a filter or a working-tree-encoding other
   // than UTF-8, read by git from the index, and the same written in a .gitattributes file), and a PowerShell file that is
-  // neither ASCII nor marked, or a batch file that is not ASCII. Not read yet (ARV-225b): the further
-  // declared encodings (an .editorconfig charset, an Emacs coding line, SQL client_encoding, chcp), code pages set outside
-  // project and response files, and settings written with character references, escapes or evaluated names.
+  // neither ASCII nor marked, or a batch file that is not ASCII. ARV-225b: the further declared encodings (an .editorconfig
+  // charset, an Emacs or Vim coding line, a SQL client encoding, a batch console code page), code pages set in any project
+  // file, outside one (an environment variable, a build command line) or with character references, escapes or evaluated
+  // names (and an evaluated check in Directory.Build.props), a leading byte order mark in a type whose tool keeps it, a
+  // gitlink, an untracked repository, and a link checked out as a file.
   { id: 'SEC-130', cwe: ['CWE-94'], anyText: true, severity: 'error', raw: true,
     re: /[\x00-\x08\x0B-\x1F\x7F-\x9F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u2028-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFDD0-\uFDEF\uFFF9-\uFFFB\uFFFE\uFFFF\u{1BCA0}-\u{1BCA3}\u{1D173}-\u{1D17A}\u{13430}-\u{1343F}\u{E0000}-\u{E007F}\u{1FFFE}\u{1FFFF}\u{2FFFE}\u{2FFFF}\u{3FFFE}\u{3FFFF}\u{4FFFE}\u{4FFFF}\u{5FFFE}\u{5FFFF}\u{6FFFE}\u{6FFFF}\u{7FFFE}\u{7FFFF}\u{8FFFE}\u{8FFFF}\u{9FFFE}\u{9FFFF}\u{AFFFE}\u{AFFFF}\u{BFFFE}\u{BFFFF}\u{CFFFE}\u{CFFFF}\u{DFFFE}\u{DFFFF}\u{EFFFE}\u{EFFFF}\u{FFFFE}\u{FFFFF}\u{10FFFE}\u{10FFFF}\u{E0100}-\u{E01EF}]/u,
     msg: 'Invisible, bidirectional, control or line-separating character (Trojan Source, hidden text): the file can read differently from how it runs or what a reader is shown. Write it as an escape: \\u202E in C#, JavaScript, JSON and YAML strings, `u{202E} in PowerShell, &#x202E; in HTML, XML, .resx, SVG and Markdown, \\202E in CSS, U&\'\\202E\' in SQL.' },
@@ -450,14 +452,40 @@ export function isolatedGitEnv(env, repo) {
  */
 function fullScan(root = ROOT, env = process.env) {
   const invalid = [];
-  const tracked = gitFiles(root, env, invalid).filter(f => !f.startsWith(SECURITY_FIXTURES)
-    && !path.relative(root, f).split(path.sep).includes('.private') && (fs.lstatSync(f).isFile() || fs.lstatSync(f).isSymbolicLink()));
-  const known = new Set(tracked);
-  const files = listFiles(root).filter(f => known.has(f));
+  const keep = f => !f.startsWith(SECURITY_FIXTURES) && !path.relative(root, f).split(path.sep).includes('.private');
+  const tracked = gitFiles(root, env, invalid).filter(f => keep(f) && (fs.lstatSync(f).isFile() || fs.lstatSync(f).isSymbolicLink()));
+  // ARV-225b: the mapped set from git's own list (a mapped type, in no folder the other rules skip), not from a second walk of
+  // the disk matched by exact path, so a name a case-insensitive or normalising file system spells otherwise is still mapped.
+  const files = tracked.filter(f => langOf(f) && !path.relative(root, path.dirname(f)).split(path.sep).some(d => SKIP_DIRS.has(d)));
   const listed = new Set(files);
   const textOnly = new Set(tracked.filter(f => !listed.has(f)));
   const all = [...files, ...textOnly];
-  return { files: all, textOnly, invalid, converted: checkoutConversions(all, root, env) };
+  const { gitlinks, links, nested } = gitSpecials(root, env);
+  return { files: all, textOnly, invalid, converted: checkoutConversions(all, root, env), gitlinks: gitlinks.filter(keep), nested: nested.filter(keep), links };
+}
+
+/**
+ * ARV-225b: what git's lists hold that is not a file here: a gitlink (mode 160000, a submodule's commit), a link by its mode
+ * (120000; a checkout with core.symlinks=false writes it as a file holding its target, which lstat calls a file), and an
+ * untracked repository (git lists its folder, with a trailing slash, not its files). Read from the index and the untracked
+ * list. The scan reads the working tree, as it is built and run here; CI checks out the commit, so what it reads there is the
+ * blob reviewed (a file deleted or changed after staging is read as it is on disk, which is what this checkout runs).
+ */
+function gitSpecials(root = ROOT, env = process.env) {
+  const staged = execFileSync('git', ['ls-files', '-z', '-s'], { cwd: root, env, maxBuffer: 256 * 1024 * 1024 });
+  const gitlinks = [];
+  const links = new Set();
+  for (const r of nulRecords(staged)) {
+    const tab = r.indexOf(0x09);
+    const name = tab < 0 ? null : decodeName(r.subarray(tab + 1), []);
+    if (name === null) continue;
+    const mode = r.subarray(0, 6).toString('latin1');
+    if (mode === '160000') gitlinks.push(path.join(root, name));
+    else if (mode === '120000') links.add(path.join(root, name));
+  }
+  const others = execFileSync('git', ['ls-files', '-z', '--others', '--exclude-standard'], { cwd: root, env, maxBuffer: 256 * 1024 * 1024 });
+  const nested = nulRecords(others).map(r => decodeName(r, [])).filter(n => n !== null && n.endsWith('/')).map(n => path.join(root, n));
+  return { gitlinks: [...new Set(gitlinks)], links, nested };
 }
 
 /**
@@ -556,46 +584,142 @@ export function decodeText(buf, binaryType = false) {
 /**
  * The encoding a text file declares for its own tool, when it is not UTF-8 (ARV-157): a Python coding line (PEP 263, lines
  * 1 and 2), an XML prolog, a CSS @charset or an HTML meta charset. Such a tool decodes ASCII bytes into characters this
- * scanner never sees: in UTF-7, +AAo- is a line feed, so a comment can end and code run.
+ * scanner never sees: in UTF-7, +AAo- is a line feed, so a comment can end and code run. ARV-225b: also an .editorconfig
+ * charset, an Emacs coding line (in any comment of the first two lines, or a Local Variables block at the end) or a Vim
+ * modeline's fileencoding, a SQL client encoding (SET client_encoding, SET NAMES, psql's \encoding), a batch file's console
+ * code page (chcp, mode con cp select), and a C# code page set in any project file, by an environment variable or on a build
+ * command line, or written with character references, escapes or evaluated names.
  */
 export function declaredEncoding(text, file = '') {
   const ext = path.extname(file).toLowerCase();
+  const base = path.basename(file);
   const labels = [];
-  const python = text.split(/\r?\n/, 2).join('\n').match(/^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)/m);
+  const head = text.split(/\r?\n/, 2).join('\n');
+  const python = head.match(/^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)/m);
   const xml = text.match(/^\uFEFF?<\?xml[^>]*\bencoding\s*=\s*["']([^"']+)/);
   const css = text.match(/^\uFEFF?@charset\s+["']([^"']+)/i);
-  for (const m of [python, xml, css]) if (m) labels.push(m[1]);
+  // ARV-225b: Emacs reads a coding: in a -*- line (the first, or the second after a shebang) whatever comment holds it, and a
+  // PEP 263 style coding line in a // or /* */ comment is read as one; its Local Variables block in the last 3,000 characters;
+  // Vim a modeline's fileencoding in the first or last five lines.
+  const emacsLine = head.match(/-\*-[^\n]*?\bcoding:[ \t]*([-\w.]+)/i);
+  const slashCoding = head.match(/^[ \t]*(?:\/\/|\/\*).*?coding[:=][ \t]*([-\w.]+)/m);
+  const tail = text.slice(-3000);
+  const local = /Local Variables:/i.test(tail) ? tail.slice(tail.search(/Local Variables:/i)).match(/^.*?\bcoding:[ \t]*([-\w.]+)/im) : null;
+  const edges = text.split(/\r?\n/);
+  const modeline = [...edges.slice(0, 5), ...edges.slice(-5)].join('\n').match(/\b(?:vim?|ex):.*?\b(?:fenc|fileencoding)=([-\w.]+)/i);
+  for (const m of [python, xml, css, emacsLine, slashCoding, local, modeline]) if (m) labels.push(m[1]);
   // HTML, fail closed: every charset= from the first meta tag to the end of the file, whatever the quoting, a commented-out
   // tag included. A browser trims the label and finds charset anywhere in content, its tokenizer takes a quote as a quote
   // only at a value's start, and Chromium reads the head past 1,024 bytes: no pattern for a tag follows all of that.
+  // ARV-225b: character references decoded first (a browser decodes them in an attribute's value), and one this scanner does
+  // not decode refused inside a meta tag.
   const meta = text.search(/<meta[\s/>]/i);
-  if (meta >= 0) for (const m of text.slice(meta).matchAll(/charset\s*=\s*["']?\s*([-\w.:]*)/gi)) labels.push(m[1]);
+  if (meta >= 0) {
+    const region = decodeHtmlReferences(text.slice(meta));
+    for (const m of region.matchAll(/charset\s*=\s*["']?\s*([-\w.:]*)/gi)) labels.push(m[1]);
+    if (/<meta\b[^>]*&[#A-Za-z]/i.test(region)) return 'a character reference this scanner does not decode in a meta tag';
+  }
   // An empty label declares nothing (a browser ignores it; bundled scripts in a report write charset= before an expression).
-  const other = labels.find(label => label !== '' && !/^utf[-_]?8(-sig)?$/i.test(label));
+  const other = labels.find(label => label !== '' && !/^utf[-_]?8(-sig|-unix|-dos|-mac|-emacs(-unix|-dos|-mac)?|-with-signature(-unix|-dos|-mac)?)?$/i.test(label));
   if (other !== undefined) return other;
+  // ARV-225b: an .editorconfig charset (its keys are read without case): utf-8 or utf-8-bom only.
+  if (base === '.editorconfig') {
+    const charset = [...text.matchAll(/^[ \t]*charset[ \t]*[=:][ \t]*(.*?)[ \t]*$/gim)].map(m => m[1].toLowerCase()).find(v => v !== 'utf-8' && v !== 'utf-8-bom');
+    if (charset !== undefined) return `an .editorconfig charset of ${charset}`;
+  }
+  // ARV-225b: SQL, fail closed: a client encoding named only as SET client_encoding to UTF8 or psql's \encoding UTF8, on a line
+  // of its own; any other mention (SET NAMES, set_config, PGCLIENTENCODING, a value of another encoding) is refused.
+  if (ext === '.sql') {
+    const allowed = /^\s*set\s+(?:session\s+|local\s+)?client_encoding\s*(?:=|to)\s*'?utf-?8'?\s*;?\s*$|^\s*\\encoding\s+'?utf-?8'?\s*$/i;
+    if (text.split(/\r?\n/).some(l => /client_encoding|pgclientencoding|\\encoding\b|\bset\s+names\b/i.test(l) && !allowed.test(l))) return 'a client encoding other than UTF8';
+  }
+  // ARV-225b: batch, fail closed: chcp 65001 alone on its line (its output sent to nul or not); any other chcp, and mode's code
+  // page selection, are refused. The batch rule's ASCII-only text assumes the console's code page is ASCII-compatible, which
+  // every code page chcp can select is (cmd.exe refuses UTF-16 and EBCDIC ones as a console code page).
+  if (BATCH.has(ext)) {
+    if (text.split(/\r?\n/).some(l => /\bchcp\b/i.test(l) && !/^\s*@?chcp(?:\.com)?\s+65001\s*(?:>\s*nul(?:\s+2>&1)?\s*)?$/i.test(l)) || /\bmode\b[^\n]*\bcp\b[^\n]*\bselect\b/i.test(text))
+      return 'a console code page other than 65001';
+  }
   // C#, fail closed: the compiler decodes every source file without a byte order mark in the code page MSBuild gives it. A
   // project file may name a code page only as <CodePage>65001</CodePage>, and a response file only as CodePage=65001 or
   // codepage:65001 once its quotes are dropped (MSBuild and the compiler drop them); any other mention (a condition, a task
   // output, a Csc attribute, a second value, a quoted name) is refused, since its value cannot be judged from the text.
-  if (['.csproj', '.props', '.targets'].includes(ext) && /codepage/i.test(text.replace(/<CodePage>\s*65001\s*<\/CodePage>/g, '')))
-    return 'a code page other than <CodePage>65001</CodePage>';
+  // ARV-225b: every project type MSBuild imports (.proj, .projitems, .csproj.user and the like), read as MSBuild reads it (XML
+  // character references and %XX escapes decoded; a document type or an entity refused, since it can spell any name); a
+  // compiler response file named in a project, an import of a file of another type, and a property named by evaluation (a
+  // PropertyName that is not a plain name, Properties or AdditionalProperties given to a project) are refused too. The one
+  // evaluated check of Directory.Build.props is the exception (its exact conditions).
+  if (MSBUILD_TYPES.has(ext)) {
+    const decoded = decodeMsbuild(text);
+    if (/<!DOCTYPE|<!ENTITY/i.test(decoded)) return 'a document type or an entity in a project file';
+    const rest = EVALUATED_CHECKS.reduce((t, check) => t.split(check).join(''), decoded).replace(/<CodePage>\s*65001\s*<\/CodePage>/g, '');
+    if (CODEPAGE_WORD.test(rest)) return 'a code page other than <CodePage>65001</CodePage>';
+    if (/compilerresponsefile|responsefiles/i.test(rest)) return 'a compiler response file named in a project file';
+    for (const m of decoded.matchAll(/<Import\b[^>]*?\bProject\s*=\s*(["'])(.*?)\1/gi))
+      if (!MSBUILD_TYPES.has(path.extname(m[2].replace(/\$\([^)]*\)$/, 'x.unknown')).toLowerCase())) return `an import of ${m[2]}, a file of a type this scanner does not read as a project`;
+    for (const m of decoded.matchAll(/\bPropertyName\s*=\s*(["'])(.*?)\1/gi)) if (!/^[A-Za-z_][\w.-]*$/.test(m[2])) return 'a property named by evaluation (PropertyName)';
+    if (/\b(?:Additional)?Properties\s*=\s*["']/i.test(decoded)) return 'properties given to another project (Properties, AdditionalProperties)';
+  }
   if (ext === '.rsp' && /codepage/i.test(text.replace(/"/g, '').replace(/codepage\s*[:=]\s*65001(?![^;,\s])/gi, '')))
     return 'a code page other than 65001';
+  // ARV-225b: a code page set for the compiler outside a project file (MSBuild takes every environment variable as a property):
+  // an environment variable in a Dockerfile, a workflow, a script or a settings file, or a build command line (-p:, /p:,
+  // -property:), fail closed: every mention of the word in any other text file is followed by 65001 (after a quote, :, = or a
+  // space). Not the documentation (Markdown, docs, wiki, backlog) or this scanner, whose rules name it.
+  const rel = path.relative(ROOT, file).split(path.sep).join('/');
+  const documentation = ext === '.md' || /^(?:docs|wiki|backlog)\//.test(rel) || rel === 'scripts/security/scan.mjs';
+  if (!MSBUILD_TYPES.has(ext) && ext !== '.rsp' && !documentation) {
+    for (const m of text.matchAll(new RegExp(CODEPAGE_WORD.source, 'gi')))
+      if (!/^["']?\s*(?:[:=]|\s)\s*["']?65001(?!\d)/.test(text.slice(m.index + m[0].length))) return 'a code page set outside a project file (an environment variable or a build command line) other than 65001';
+  }
   return null;
 }
 
+/** The word a code page property, variable or switch is named by, not part of another word (StatusCodePages). */
+const CODEPAGE_WORD = /(?<![A-Za-z0-9_])codepage(?![A-Za-z0-9_])/i;
+
+/** The project types MSBuild imports or evaluates. */
+const MSBUILD_TYPES = new Set(['.csproj', '.vbproj', '.fsproj', '.props', '.targets', '.proj', '.projitems', '.shproj', '.user']);
+
+/**
+ * ARV-225b: the evaluated check in Directory.Build.props, which names the code page and the compiler response file to refuse
+ * them: these exact conditions are the only mentions a project file may hold besides <CodePage>65001</CodePage>.
+ */
+const EVALUATED_CHECKS = [`Condition="'$(CodePage)' != '' And '$(CodePage)' != '65001'"`, `Condition="'$(CompilerResponseFile)' != ''"`];
+
+/** XML character references and MSBuild %XX escapes decoded, as MSBuild reads a project's names and values (ARV-225b). */
+function decodeMsbuild(text) {
+  const named = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
+  return text.replace(/&#x([0-9a-f]+);/gi, (_, h) => safeCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => safeCodePoint(Number(d)))
+    .replace(/&(lt|gt|amp|quot|apos);/g, (_, n) => named[n]).replace(/%([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
+}
+
+/** HTML character references decoded (numeric ones, with or without their semicolon, and the named ones that spell a setting). */
+function decodeHtmlReferences(text) {
+  const named = { quot: '"', apos: "'", amp: '&', lt: '<', gt: '>', equals: '=', colon: ':', semi: ';', sol: '/', Tab: '\t', NewLine: '\n', nbsp: ' ', hyphen: '-', dash: '-', lowbar: '_', period: '.' };
+  return text.replace(/&#x([0-9a-f]+);?/gi, (_, h) => safeCodePoint(parseInt(h, 16))).replace(/&#(\d+);?/g, (_, d) => safeCodePoint(Number(d)))
+    .replace(/&([A-Za-z]+);/g, (whole, n) => named[n] ?? whole);
+}
+
+const safeCodePoint = (cp) => (cp >= 0 && cp <= 0x10FFFF ? String.fromCodePoint(cp) : '\uFFFD');
+
 const WIDE = 'Text file in UTF-16 or UTF-32 (a byte order mark at its start): git shows it as binary, so a reviewer sees none of it, and a false mark hides UTF-8 text from this scanner. Save it as UTF-8.';
 const NOT_UTF8 = 'File that is not valid UTF-8 and not of a binary type: a tool that reads it in another encoding sees characters this scanner does not, and git may show it as binary. Save it as UTF-8.';
-const DECLARED = 'File that declares an encoding other than UTF-8 (a Python coding line, an XML prolog, a CSS @charset, an HTML meta charset, or a C# code page in a project or response file): its tool decodes the bytes into characters this scanner does not see (in UTF-7, +AAo- is a line feed). Declare UTF-8.';
+const DECLARED = 'File that declares an encoding other than UTF-8 (a Python, Emacs or Vim coding line, an XML prolog, a CSS @charset, an HTML meta charset, an .editorconfig charset, a SQL client encoding, a batch console code page, or a C# code page in any project file, a response file, an environment variable or a build command line, or written with references, escapes or evaluated names): its tool decodes the bytes into characters this scanner does not see (in UTF-7, +AAo- is a line feed). Declare UTF-8.';
 const IN_PATH = 'Invisible, bidirectional or control character in a file path (Trojan Source): a name can read as another file or type than it is. Rename it.';
 const NAME_NOT_UTF8 = 'File name that is not valid UTF-8 (shown with \\x{HH} escapes): a tool that reads names in another encoding sees another name than this scanner, and git keeps the bytes as they are. Rename it.';
 const LINK = 'Symbolic link git tracks or would add (its target follows, quoted): git keeps the target path, not a file, so what a tool reads through it is not what a reviewer sees here, and a link can point outside the repository. Replace it with the file, or allowlist the link with its exact quoted target as "line".';
 const GITATTRIBUTES = 'A .gitattributes filter, or a working-tree-encoding other than UTF-8: git converts the file at checkout, so the text built and run differs from the blob reviewed and scanned. Remove it.';
 const CONVERTED = 'File git converts at checkout (git check-attr from the index: a filter, or a working-tree-encoding other than UTF-8, follows): the text this scanner reads, built and run is the converted one, not the blob reviewed, and a working-tree-encoding of UTF-7 turns a hidden character into plain ASCII here. Remove the attribute.';
+const LEADING_MARK = 'A byte order mark at the start of a file whose tool keeps it (any type but the .NET and PowerShell ones, whose tools drop it): a shell reading a shebang, git reading CODEOWNERS, a dotenv or EditorConfig reader outside .NET take it as part of the first line, so that line means something else to them than it shows. Remove it.';
+const GITLINK = 'A gitlink (a submodule) git tracks: its files are another repository at a commit, which this scanner does not read, and a checkout of it brings them in unread. Vendor the files, or remove the gitlink.';
+const NESTED = 'An untracked repository inside this one: git lists its folder, not its files, so this scanner does not read them. Remove it, or ignore its folder.';
 const WINDOWS_SCRIPT = 'A PowerShell file with text beyond ASCII and no UTF-8 byte order mark, or a batch file with text beyond ASCII or a mark: Windows PowerShell 5.1 reads a file without a mark in the system code page, and cmd.exe reads every batch file in the console code page (a mark becomes part of its first command), so the text run differs from the text reviewed. Keep it ASCII (or, for PowerShell, save it with a byte order mark).';
 
 /** PowerShell types, which a UTF-8 byte order mark makes safe; batch types, which only ASCII does. */
-const POWERSHELL = new Set(['.ps1', '.psm1', '.psd1', '.pssc', '.psrc']);
+const POWERSHELL = new Set(['.ps1', '.psm1', '.psd1', '.pssc', '.psrc', '.ps1xml', '.cdxml']);
+/** ARV-225b: the types whose tools drop a leading byte order mark (.NET's and PowerShell's); a leading mark in any other is refused. */
+const MARK_TYPES = new Set(['.cs', '.csproj', '.vbproj', '.fsproj', '.props', '.targets', '.proj', '.projitems', '.user', '.sln', '.slnx', '.resx', '.config', '.xml', '.xaml', '.razor', '.cshtml', ...POWERSHELL]);
 const BATCH = new Set(['.cmd', '.bat']);
 
 /**
@@ -647,7 +771,7 @@ function utf32(b, littleEndian) {
  * Scans the files: SEC-130 (anyText) on every path and every file that is text, the other rules on the mapped types not in
  * textOnly. stats.read counts the files read as text.
  */
-export function scanFiles(files, { allow = [], root = ROOT, textOnly = new Set(), stats = {} } = {}) {
+export function scanFiles(files, { allow = [], root = ROOT, textOnly = new Set(), stats = {}, links = new Set() } = {}) {
   const findings = [];
   const sec130 = RULES.find(r => r.id === 'SEC-130');
   stats.read ??= 0;
@@ -659,6 +783,8 @@ export function scanFiles(files, { allow = [], root = ROOT, textOnly = new Set()
     // ARV-225: a link is reported with its target, which an allowlist entry names as its exact line.
     // Quoted, so the trimming an allowlist entry's line match does cannot make a target with a trailing space or tab match.
     if (kind.isSymbolicLink()) { record(findings, allow, { ...sec130, msg: LINK }, rel, 0, `-> ${JSON.stringify(fs.readlinkSync(file))}`); continue; }
+    // ARV-225b: a link git tracks (mode 120000) that this checkout holds as a file (core.symlinks=false: the file holds the target).
+    if (links.has(file) && kind.isFile()) { record(findings, allow, { ...sec130, msg: LINK }, rel, 0, `-> ${JSON.stringify(fs.readFileSync(file, 'utf8'))}`); continue; }
     if (!kind.isFile()) continue;
     const bytes = fs.readFileSync(file);
     const decoded = decodeText(bytes, binaryFile(file, bytes));
@@ -671,6 +797,7 @@ export function scanFiles(files, { allow = [], root = ROOT, textOnly = new Set()
     const lines = text.split(/\r?\n/);
     // ARV-225: a byte order mark is allowed as a file's first character only (SEC-130 refuses U+FEFF anywhere else).
     const leadingMark = decoded.utf8 && text.startsWith('\uFEFF');
+    if (leadingMark && !MARK_TYPES.has(path.extname(file).toLowerCase())) record(findings, allow, { ...sec130, msg: LEADING_MARK }, rel, 1, lines[0]);
     if (path.basename(file) === '.gitattributes') for (const ln of gitAttributeLines(lines)) record(findings, allow, { ...sec130, msg: GITATTRIBUTES }, rel, ln, lines[ln - 1]);
     const ext = path.extname(file).toLowerCase();
     if ((POWERSHELL.has(ext) && !leadingMark) || BATCH.has(ext)) {
@@ -718,12 +845,15 @@ export function checkoutConversions(files, root = ROOT, env = process.env) {
 }
 
 /** Every finding of a scan's selection (ARV-225): the names that are not valid UTF-8, the files git converts, then the files. */
-export function scanSelection({ files, textOnly, invalid = [], converted = [] }, options = {}) {
+export function scanSelection({ files, textOnly, invalid = [], converted = [], gitlinks = [], nested = [], links = new Set() }, options = {}) {
   const root = options.root ?? ROOT;
   const sec130 = RULES.find(r => r.id === 'SEC-130');
   const findings = invalidNameFindings(invalid);
   for (const c of converted) record(findings, options.allow ?? [], { ...sec130, msg: CONVERTED }, path.relative(root, c.file), 0, c.text);
-  return [...findings, ...scanFiles(files, { ...options, textOnly })];
+  // ARV-225b: a gitlink and an untracked repository, whose files this scanner does not read.
+  for (const g of gitlinks) record(findings, options.allow ?? [], { ...sec130, msg: GITLINK }, path.relative(root, g), 0, '');
+  for (const n of nested) record(findings, options.allow ?? [], { ...sec130, msg: NESTED }, `${path.relative(root, n)}/`, 0, '');
+  return [...findings, ...scanFiles(files, { ...options, textOnly, links })];
 }
 
 function checklist(findings) {
@@ -829,6 +959,25 @@ function scratchGitLists(baseEnv) {
     if ((links && !['link.md', 'dangling.md'].every(name => found.some(f => f.msg === LINK && f.file === name))) || (latin && !found.some(f => f.msg === NAME_NOT_UTF8 && f.file === latinName))
       || !found.some(f => f.msg === IN_PATH && f.file === shown(marked)) || found.some(f => f.file.startsWith('out')))
       fail('The full scan of a scratch repository does not report the links (one dangling), the name that is not UTF-8 and the marked name, or reads ignored output.');
+
+    // ARV-225b: a gitlink (a submodule at a commit), an untracked repository inside this one, and a link git tracks that this
+    // checkout holds as a file (core.symlinks=false writes the target into it) are reported; the mapped set is git's own list.
+    git('commit', '-q', '-m', 'self-test 2');
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, env, encoding: 'utf8' }).trim();
+    git('update-index', '--add', '--cacheinfo', `160000,${head},sub`);
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: repo, env, input: 'kept.md', encoding: 'utf8' }).trim();
+    git('update-index', '--add', '--cacheinfo', `120000,${blob},textlink.md`);
+    put('textlink.md', 'kept.md');
+    put('nested/inner.md', 'h\u{202E}\n');
+    execFileSync('git', ['init', '-q', 'nested'], { cwd: repo, env, stdio: 'pipe' });
+    const special = fullScan(repo, env);
+    const specialFound = scanSelection(special, { root: repo });
+    if (!specialFound.some(f => f.msg === GITLINK && f.file === 'sub') || !specialFound.some(f => f.msg === NESTED && f.file === 'nested/')
+      || !specialFound.some(f => f.msg === LINK && f.file === 'textlink.md' && f.text === '-> "kept.md"'))
+      fail('The full scan does not report a gitlink, an untracked repository, or a tracked link this checkout holds as a file.');
+    const mapped = special.files.filter(f => !special.textOnly.has(f)).map(f => path.relative(repo, f)).sort().join('|');
+    const expectMapped = gitFiles(repo, env).filter(f => langOf(f) && fs.lstatSync(f).isFile() || langOf(f) && fs.lstatSync(f).isSymbolicLink()).map(f => path.relative(repo, f)).sort().join('|');
+    if (mapped !== expectMapped) fail(`The full scan's mapped set is not git's own list by type (${mapped} against ${expectMapped}).`);
   } catch (e) { fail(`The git lists could not be checked in a scratch repository: ${e.message}`); }
   finally { fs.rmSync(repo, { recursive: true, force: true }); }
   return problems;
@@ -928,6 +1077,12 @@ function selfTest() {
   const refused = each(VISIBLE_CHARS, c => sec130.test(String.fromCodePoint(c)));
   if (refused.length) fail(`SEC-130 refuses visible text: ${refused.slice(0, 20).map(hex).join(', ')}`);
 
+  // ARV-225b: the evaluated check in Directory.Build.props is there, before the compiler runs, with its exact conditions (the
+  // only mentions of the code page and the response file a project may hold besides <CodePage>65001</CodePage>).
+  const props = fs.readFileSync(path.join(ROOT, 'Directory.Build.props'), 'utf8');
+  if (!/<Target Name="ArivaSourceEncodingCheck" BeforeTargets="CoreCompile">/.test(props) || !EVALUATED_CHECKS.every(check => props.includes(`<Error ${check}`)))
+    fail('Directory.Build.props no longer holds the evaluated check of the code page and the compiler response file (ARV-225b).');
+
   // ARV-157: a finding's text and path show hidden characters as escapes.
   const unescaped = [...badFindings, ...goodFindings].filter(f => sec130.test(f.text) || sec130.test(f.file));
   if (unescaped.length) fail(`Findings that print a hidden character: ${unescaped.slice(0, 5).map(f => `${f.rule} line ${f.line}`).join(', ')}`);
@@ -943,7 +1098,18 @@ function selfTest() {
       'meta-comment.html', 'meta-quoted.html', 'meta-xcharset.html', 'meta-name-quote.html', 'meta-value-quote.html', 'meta-late.html',
       'codepage.csproj', 'codepage-condition.targets', 'codepage-twice.props', 'codepage-gt.targets', 'codepage-output.targets',
       'codepage-csc.targets', 'build.rsp', 'property.rsp', 'csc.rsp', 'rsp-quoted.rsp', 'rsp-quoted-name.rsp', 'rsp-split.rsp', 'rsp-twice.rsp',
-      'rsp-prefix.rsp']]];
+      'rsp-prefix.rsp',
+      // ARV-225b: the further declared encodings, the other project types, a response file named, an import of another type,
+      // references, escapes, a document type and evaluated names in a project, code pages outside a project file, and
+      // character references in a meta tag.
+      'editorconfig/.editorconfig', 'emacs-line.cs', 'emacs-slash.js', 'emacs-local.ts', 'vim-modeline.cs', 'client-encoding.sql',
+      'psql-encoding.sql', 'set-names.sql', 'chcp.cmd', 'mode-cp.bat', 'codepage.proj', 'codepage.projitems', 'codepage.csproj.user',
+      'response.targets', 'response-csc.targets', 'import-xml.targets', 'import-evaluated.targets', 'codepage-reference.targets',
+      'codepage-escape.targets', 'doctype.targets', 'property-evaluated.targets', 'properties.targets', 'additional-properties.targets',
+      'Dockerfile.codepage', 'codepage-workflow.yml', 'codepage-cli.sh', 'codepage-env.ps1', 'codepage-launch.json',
+      'meta-reference.html', 'meta-named-reference.html', 'meta-unknown-reference.html']],
+    // ARV-225b: a leading byte order mark in a type whose tool keeps it.
+    [LEADING_MARK, ['bom-shebang', 'bom.env', 'bom.yml', 'bom.sh', 'bom-codeowners/CODEOWNERS']]];
   for (const [msg, names] of wholeFile) {
     const missed = names.filter(name => !badFindings.some(x => x.rule === 'SEC-130' && x.msg === msg && x.line === 1 && path.join(fx, x.file) === path.join(trojanDir, name)));
     if (missed.length) fail(`Not refused as a whole for their own reason (${msg.slice(0, 40)}...): ${missed.join(', ')}`);
@@ -952,7 +1118,7 @@ function selfTest() {
   // ARV-225: the Windows script rule fires for its own reason on fixtures that hold nothing else (Arabic text without a mark in
   // PowerShell, a mark in a batch file); a second byte order mark at a file's start, one in a line and a variation selector are
   // refused on their line, while a first mark is not (fixtures/good/trojan/bom-lead.cs, arabic-bom.ps1).
-  for (const [msg, names] of [[WINDOWS_SCRIPT, ['arabic.ps1', 'bom.cmd']], [RULES.find(r => r.id === 'SEC-130').msg, ['bom-twice.txt', 'bom-mid.ts', 'selector.md']]]) {
+  for (const [msg, names] of [[WINDOWS_SCRIPT, ['arabic.ps1', 'bom.cmd', 'arabic.ps1xml']], [RULES.find(r => r.id === 'SEC-130').msg, ['bom-twice.txt', 'bom-mid.ts', 'selector.md']]]) {
     const missed = names.filter(name => !badFindings.some(x => x.rule === 'SEC-130' && x.msg === msg && x.line === 1 && path.join(fx, x.file) === path.join(trojanDir, name)));
     if (missed.length) fail(`Not refused on line 1 for their own reason (${msg.slice(0, 40)}...): ${missed.join(', ')}`);
   }

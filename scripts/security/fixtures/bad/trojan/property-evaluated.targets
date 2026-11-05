@@ -1,0 +1,1 @@
+<Project><Target Name="B"><CreateProperty Value="1252"><Output TaskParameter="Value" PropertyName="Code$(Rest)" /></CreateProperty></Target></Project>

@@ -1,0 +1,1 @@
+<Project><ItemGroup><ProjectReference Include="a.csproj" AdditionalProperties="$(Extra)" /></ItemGroup></Project>
