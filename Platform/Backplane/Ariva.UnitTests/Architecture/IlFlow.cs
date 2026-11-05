@@ -58,14 +58,15 @@ internal static class IlFlow
     /// stores into its arguments. Null when the method uses calli or jmp.
     /// </summary>
     /// <param name="typeFlags">The flags a value has because of its type (an exception type is <see cref="Exception"/>).</param>
-    /// <param name="callResult">The flags of a call's result, from the call and the flags of the values it takes.</param>
+    /// <param name="callResult">The flags of a call's result, from the call, the flags of the values it takes, and whether its body was followed (summarised).</param>
     /// <param name="seed">The flags of the method's arguments (the receiver first), when a caller's are known.</param>
     /// <param name="fieldSeed">The fields' flags as a caller left them (the closure fields a lambda reads).</param>
     /// <param name="summarize">What a call into the scope returns and stores, or null when it is not followed.</param>
     /// <param name="maxPasses">The most passes before the iteration is reported as not converging.</param>
+    /// <param name="seedRuns">ARV-287a: the methods each argument's delegate may run, when a caller's are known (a lambda it passes).</param>
     public static Result Follow(MethodBase method, IReadOnlyList<IlReader.Instruction> instructions, IReadOnlyList<IlReader.Region> regions,
-        Func<Type, int> typeFlags, Func<MethodBase, int[], int> callResult, int[] seed = null, IReadOnlyDictionary<(Module, int), int> fieldSeed = null,
-        Summarizer summarize = null, int maxPasses = MaxPasses)
+        Func<Type, int> typeFlags, Func<MethodBase, int[], bool, int> callResult, int[] seed = null, IReadOnlyDictionary<(Module, int), int> fieldSeed = null,
+        Summarizer summarize = null, int maxPasses = MaxPasses, IReadOnlyList<IReadOnlyCollection<MethodBase>> seedRuns = null)
     {
         if (instructions.Any(i => i.OpCode == OpCodes.Calli || i.OpCode == OpCodes.Jmp))
             return null;
@@ -75,6 +76,8 @@ internal static class IlFlow
         if (body is null || instructions.Count == 0)
             return new Result([], fields, [], [], [], 0, new int[argTypes.Length]);
         var byOffset = instructions.Select((ins, k) => (ins.Offset, k)).ToDictionary(x => x.Offset, x => x.k);
+        var argumentRuns = Enumerable.Range(0, argTypes.Length)
+            .Select(a => seedRuns is not null && a < seedRuns.Count && seedRuns[a] is { Count: > 0 } given ? given.ToImmutableHashSet() : null).ToArray();
         var localTypes = body.LocalVariables.Select(l => l.LocalType).ToArray();
         var returnsValue = method is MethodInfo info && info.ReturnType != typeof(void);
         var fieldKeys = new List<(Module, int)>();
@@ -239,6 +242,8 @@ internal static class IlFlow
                     if (!(created && typeof(Delegate).IsAssignableFrom(callee.DeclaringType)))
                         foreach (var given in slots.Where(s => s.Runs is { IsEmpty: false }).SelectMany(s => s.Runs))
                             (passed.TryGetValue(k, out var those) ? those : passed[k] = []).Add(given);
+                    // ARV-287a: the delegates each argument holds, from this stack position on, for the callee's summary.
+                    IReadOnlyCollection<MethodBase>[] Runs(int from) => [.. slots.Skip(from).Select(s => (IReadOnlyCollection<MethodBase>)s.Runs ?? [])];
                     int Others(int except) => slots.Where((_, a) => a != except).Aggregate(0, (x, s) => x | s.Flags);
                     // The async machinery (a builder, an awaiter, a task) moves the state machine and its awaiters by reference, not
                     // values into each other.
@@ -256,10 +261,10 @@ internal static class IlFlow
                             // method is static.
                             (invoked.TryGetValue(k, out var those) ? those : invoked[k] = []).UnionWith(runs);
                             foreach (var target in runs)
-                                if (summarize(target, false, taken[(target.IsStatic ? 1 : 0)..], fields) is { } one)
+                                if (summarize(target, false, taken[(target.IsStatic ? 1 : 0)..], fields, Runs(target.IsStatic ? 1 : 0)) is { } one)
                                     summaries.Add((one, target.IsStatic ? 1 : 0));
                         }
-                        else if (summarize(callee, created, taken, fields) is { } one)
+                        else if (summarize(callee, created, taken, fields, Runs(0)) is { } one)
                         {
                             summaries.Add((one, 0));
                         }
@@ -301,7 +306,9 @@ internal static class IlFlow
                     var returns = created ? callee.DeclaringType : (callee as MethodInfo)?.ReturnType;
                     if (returns is not null && returns != typeof(void))
                     {
-                        var flags = callResult(callee, taken) | typeFlags(returns.IsByRef ? returns.GetElementType() : returns) | (summary?.Returned ?? 0);
+                        // ARV-287a: a call whose body was followed returns what its summary says, beside what a specific rule
+                        // gives its result (a rule's text read, an exception's text); a call outside the scope keeps what it takes.
+                        var flags = callResult(callee, taken, summary is not null) | typeFlags(returns.IsByRef ? returns.GetElementType() : returns) | (summary?.Returned ?? 0);
                         // A ref a call returns is into what it was given; a fluent call returns its receiver; a span or memory
                         // made from an array is that array; a made object is its own.
                         var homes = returns.IsByRef ? slots.Aggregate(ImmutableHashSet<int>.Empty, (h, s) => h.Union(s.Homes))
@@ -355,7 +362,7 @@ internal static class IlFlow
                 {
                     var a = ins.Index;
                     stack.Push(new Slot(state.Arguments.ElementAtOrDefault(a) | typeFlags(argTypes.ElementAtOrDefault(a)),
-                        a >= 0 && a < state.Arguments.Length ? state.ArgumentHomes[a] : []));
+                        a >= 0 && a < state.Arguments.Length ? state.ArgumentHomes[a] : [], false, a >= 0 && a < argumentRuns.Length ? argumentRuns[a] : null));
                 }
                 else if (name.StartsWith("starg", StringComparison.Ordinal))
                 {
@@ -535,7 +542,7 @@ internal static class IlFlow
     });
 
     /// <summary>The compiler's async and iterator machinery and the tasks it awaits; the interpolated string handler is a builder, not machinery.</summary>
-    private static bool IsMachinery(Type type) =>
+    internal static bool IsMachinery(Type type) =>
         type is not null && ((type.Namespace == "System.Runtime.CompilerServices" && type.Name != "DefaultInterpolatedStringHandler") ||
                              type == typeof(Task) || type == typeof(ValueTask) ||
                              (type.IsGenericType && type.GetGenericTypeDefinition() is var open && (open == typeof(Task<>) || open == typeof(ValueTask<>))));
@@ -579,7 +586,8 @@ internal static class IlFlow
     /// What a call into the scope does, for a given seed: the flags of what it returns, the flags it stores into each argument it
     /// takes (by stack position, the receiver first), and the fields' flags it leaves.
     /// </summary>
-    public delegate Summary Summarizer(MethodBase callee, bool created, int[] taken, IReadOnlyDictionary<(Module, int), int> fields);
+    public delegate Summary Summarizer(MethodBase callee, bool created, int[] taken, IReadOnlyDictionary<(Module, int), int> fields,
+        IReadOnlyList<IReadOnlyCollection<MethodBase>> runs);
 
     /// <summary>
     /// A method's flow: the flags each call takes (by instruction index), the flags each field gained, the flags of the values
