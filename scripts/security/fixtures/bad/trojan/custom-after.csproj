@@ -1,0 +1,1 @@
+<Project><PropertyGroup><CustomAfterMicrosoftCommonTargets>$(MSBuildThisFileDirectory)notes.md</CustomAfterMicrosoftCommonTargets></PropertyGroup></Project>

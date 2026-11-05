@@ -607,7 +607,7 @@ export function declaredEncoding(text, file = '') {
   const local = /Local Variables:/i.test(tail) ? tail.slice(tail.search(/Local Variables:/i)).match(/^.*?\bcoding:[ \t]*([-\w.]+)/im) : null;
   const edges = text.split(/\r?\n/);
   const modeline = [...edges.slice(0, 5), ...edges.slice(-5)].join('\n').match(/\b(?:vim?|ex):.*?\b(?:fenc|fileencoding)=([-\w.]+)/i);
-  for (const m of [python, xml, css, emacsLine, slashCoding, local, modeline]) if (m) labels.push(m[1]);
+  for (const m of [python, xml, css, emacsLine, slashCoding, local, modeline]) if (m) labels.push(m[1].replace(/-+$/, ''));
   // HTML, fail closed: every charset= from the first meta tag to the end of the file, whatever the quoting, a commented-out
   // tag included. A browser trims the label and finds charset anywhere in content, its tokenizer takes a quote as a quote
   // only at a value's start, and Chromium reads the head past 1,024 bytes: no pattern for a tag follows all of that.
@@ -617,7 +617,8 @@ export function declaredEncoding(text, file = '') {
   if (meta >= 0) {
     const region = decodeHtmlReferences(text.slice(meta));
     for (const m of region.matchAll(/charset\s*=\s*["']?\s*([-\w.:]*)/gi)) labels.push(m[1]);
-    if (/<meta\b[^>]*&[#A-Za-z]/i.test(region)) return 'a character reference this scanner does not decode in a meta tag';
+    // A reference left after a charset, or in a meta tag up to the next < (a > is text inside a quoted value), is refused.
+    if (/charset\s*=?\s*["']?\s*&/i.test(region) || /<meta\b[^<]*&[#A-Za-z]/i.test(region)) return 'a character reference this scanner does not decode in a meta tag';
   }
   // An empty label declares nothing (a browser ignores it; bundled scripts in a report write charset= before an expression).
   const other = labels.find(label => label !== '' && !/^utf[-_]?8(-sig|-unix|-dos|-mac|-emacs(-unix|-dos|-mac)?|-with-signature(-unix|-dos|-mac)?)?$/i.test(label));
@@ -630,14 +631,23 @@ export function declaredEncoding(text, file = '') {
   // ARV-225b: SQL, fail closed: a client encoding named only as SET client_encoding to UTF8 or psql's \encoding UTF8, on a line
   // of its own; any other mention (SET NAMES, set_config, PGCLIENTENCODING, a value of another encoding) is refused.
   if (ext === '.sql') {
-    const allowed = /^\s*set\s+(?:session\s+|local\s+)?client_encoding\s*(?:=|to)\s*'?utf-?8'?\s*;?\s*$|^\s*\\encoding\s+'?utf-?8'?\s*$/i;
-    if (text.split(/\r?\n/).some(l => /client_encoding|pgclientencoding|\\encoding\b|\bset\s+names\b/i.test(l) && !allowed.test(l))) return 'a client encoding other than UTF8';
+    // psql's meta-commands end at their line; the rest is read with its comments out and its whitespace folded, newlines
+    // included, so a comment or a line break between SET and NAMES hides nothing. set_config and a U&" identifier (which can
+    // spell any name) are refused outright: no script needs them.
+    const lines = text.split(/\r?\n/);
+    if (lines.some(l => /\\encoding\b/i.test(l) && !/^\s*\\encoding\s+'?utf-?8'?\s*$/i.test(l))) return 'a client encoding other than UTF8';
+    const sql = lines.filter(l => !/^\s*\\/.test(l)).join('\n').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ');
+    if (/\bset_config\b|\bU&"/i.test(sql)) return 'a client encoding set by set_config or a U&" identifier';
+    for (const statement of sql.split(';'))
+      if (/client_encoding|pgclientencoding|\bset (?:session |local )?names\b/i.test(statement) && !/^\s*set (?:session |local )?client_encoding ?(?:=|to) ?'?utf-?8'?\s*$/i.test(statement))
+        return 'a client encoding other than UTF8';
   }
   // ARV-225b: batch, fail closed: chcp 65001 alone on its line (its output sent to nul or not); any other chcp, and mode's code
   // page selection, are refused. The batch rule's ASCII-only text assumes the console's code page is ASCII-compatible, which
   // every code page chcp can select is (cmd.exe refuses UTF-16 and EBCDIC ones as a console code page).
   if (BATCH.has(ext)) {
-    if (text.split(/\r?\n/).some(l => /\bchcp\b/i.test(l) && !/^\s*@?chcp(?:\.com)?\s+65001\s*(?:>\s*nul(?:\s+2>&1)?\s*)?$/i.test(l)) || /\bmode\b[^\n]*\bcp\b[^\n]*\bselect\b/i.test(text))
+    const unescaped = text.replace(/\^/g, '');
+    if (unescaped.split(/\r?\n/).some(l => /\bchcp\b/i.test(l) && !/^\s*@?chcp(?:\.com)?\s+65001\s*(?:>\s*nul(?:\s+2>&1)?\s*)?$/i.test(l)) || /\bmode\b[^\n]*\bcp\b[^\n]*\bselect\b/i.test(unescaped))
       return 'a console code page other than 65001';
   }
   // C#, fail closed: the compiler decodes every source file without a byte order mark in the code page MSBuild gives it. A
@@ -649,14 +659,19 @@ export function declaredEncoding(text, file = '') {
   // compiler response file named in a project, an import of a file of another type, and a property named by evaluation (a
   // PropertyName that is not a plain name, Properties or AdditionalProperties given to a project) are refused too. The one
   // evaluated check of Directory.Build.props is the exception (its exact conditions).
-  if (MSBUILD_TYPES.has(ext)) {
+  if (MSBUILD_TYPES.has(ext) || isMsbuildProject(text)) {
     const decoded = decodeMsbuild(text);
     if (/<!DOCTYPE|<!ENTITY/i.test(decoded)) return 'a document type or an entity in a project file';
     const rest = EVALUATED_CHECKS.reduce((t, check) => t.split(check).join(''), decoded).replace(/<CodePage>\s*65001\s*<\/CodePage>/g, '');
     if (CODEPAGE_WORD.test(rest)) return 'a code page other than <CodePage>65001</CodePage>';
     if (/compilerresponsefile|responsefiles/i.test(rest)) return 'a compiler response file named in a project file';
-    for (const m of decoded.matchAll(/<Import\b[^>]*?\bProject\s*=\s*(["'])(.*?)\1/gi))
-      if (!MSBUILD_TYPES.has(path.extname(m[2].replace(/\$\([^)]*\)$/, 'x.unknown')).toLowerCase())) return `an import of ${m[2]}, a file of a type this scanner does not read as a project`;
+    // An Import read with XML's quoting (a > inside a quoted Condition is text), every part of a ; list judged.
+    for (const m of decoded.matchAll(/<Import\b((?:[^>"']|"[^"]*"|'[^']*')*)\/?>/gi)) {
+      const project = /\bProject\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(m[1]);
+      if (!project) return 'an import whose project this scanner cannot read';
+      for (const part of (project[1] ?? project[2]).split(';').map(p => p.trim()).filter(Boolean))
+        if (!MSBUILD_TYPES.has(path.extname(part.replace(/\$\([^)]*\)$/, 'x.unknown')).toLowerCase())) return `an import of ${part}, a file of a type this scanner does not read as a project`;
+    }
     for (const m of decoded.matchAll(/\bPropertyName\s*=\s*(["'])(.*?)\1/gi)) if (!/^[A-Za-z_][\w.-]*$/.test(m[2])) return 'a property named by evaluation (PropertyName)';
     if (/\b(?:Additional)?Properties\s*=\s*["']/i.test(decoded)) return 'properties given to another project (Properties, AdditionalProperties)';
   }
@@ -667,13 +682,29 @@ export function declaredEncoding(text, file = '') {
   // -property:), fail closed: every mention of the word in any other text file is followed by 65001 (after a quote, :, = or a
   // space). Not the documentation (Markdown, docs, wiki, backlog) or this scanner, whose rules name it.
   const rel = path.relative(ROOT, file).split(path.sep).join('/');
-  const documentation = ext === '.md' || /^(?:docs|wiki|backlog)\//.test(rel) || rel === 'scripts/security/scan.mjs';
+  const documentation = ext === '.md' || /^(?:docs|wiki|backlog)\//.test(rel) || SELF.has(rel);
+  // ARV-225b: MSBuild's extension points (a file imported before or after the SDK's own, Directory.Build.props and its
+  // imports switched off or moved, files imported by wildcard) and the checks' own names (a target of the same name replaces
+  // a check) are refused in every text file but the documentation, Directory.Build.props and the scanner with its build probe.
+  if (!documentation && rel !== 'Directory.Build.props') {
+    const point = text.match(EXTENSION_POINTS);
+    if (point) return `MSBuild's ${point[0]}, which can import a project file this scanner does not read or switch off Directory.Build.props`;
+  }
   if (!MSBUILD_TYPES.has(ext) && ext !== '.rsp' && !documentation) {
     for (const m of text.matchAll(new RegExp(CODEPAGE_WORD.source, 'gi')))
       if (!/^["']?\s*(?:[:=]|\s)\s*["']?65001(?!\d)/.test(text.slice(m.index + m[0].length))) return 'a code page set outside a project file (an environment variable or a build command line) other than 65001';
   }
   return null;
 }
+
+/** The scanner and its build probe, which name what they refuse. */
+const SELF = new Set(['scripts/security/scan.mjs', 'scripts/security/source-encoding-check.mjs']);
+
+/** ARV-225b: MSBuild's extension points and the source encoding checks' own names (see declaredEncoding). */
+const EXTENSION_POINTS = /\b(?:Custom(?:Before|After)Microsoft\w*|DirectoryBuild(?:Props|Targets)Path|ImportDirectoryBuild(?:Props|Targets)|ImportDirectoryPackagesProps|DirectoryPackagesPropsPath|ImportByWildcard\w*|ImportUserLocationsByWildcard\w*|ImportProjectExtension(?:Props|Targets)|MSBuildProjectExtensionsPath|ArivaSourceEncodingCheck|ArivaCompilerArgumentsCheck|ArivaRefusedCompilerArgument|ProvideCommandLineArgs)\b/i;
+
+/** True when a text file is an MSBuild project by its content: its first element is Project, whatever its name (ARV-225b). */
+const isMsbuildProject = (text) => /^\uFEFF?\s*(?:<\?xml\b[^>]*\?>\s*)?(?:<!--[\s\S]*?-->\s*)*<Project[\s>/]/.test(text);
 
 /** The word a code page property, variable or switch is named by, not part of another word (StatusCodePages). */
 const CODEPAGE_WORD = /(?<![A-Za-z0-9_])codepage(?![A-Za-z0-9_])/i;
@@ -685,7 +716,9 @@ const MSBUILD_TYPES = new Set(['.csproj', '.vbproj', '.fsproj', '.props', '.targ
  * ARV-225b: the evaluated check in Directory.Build.props, which names the code page and the compiler response file to refuse
  * them: these exact conditions are the only mentions a project file may hold besides <CodePage>65001</CodePage>.
  */
-const EVALUATED_CHECKS = [`Condition="'$(CodePage)' != '' And '$(CodePage)' != '65001'"`, `Condition="'$(CompilerResponseFile)' != ''"`];
+const EVALUATED_CHECKS = [`Condition="'$(CodePage)' != '' And '$(CodePage)' != '65001'"`, `Condition="'$(CompilerResponseFile)' != ''"`,
+  `Condition="$([System.String]::Copy('%(Identity)').ToLowerInvariant().StartsWith('/codepage:')) And '%(Identity)' != '/codepage:65001'"`,
+  `Condition="$([System.String]::Copy('%(Identity)').ToLowerInvariant().StartsWith('-codepage:')) And '%(Identity)' != '-codepage:65001'"`];
 
 /** XML character references and MSBuild %XX escapes decoded, as MSBuild reads a project's names and values (ARV-225b). */
 function decodeMsbuild(text) {
@@ -696,9 +729,11 @@ function decodeMsbuild(text) {
 
 /** HTML character references decoded (numeric ones, with or without their semicolon, and the named ones that spell a setting). */
 function decodeHtmlReferences(text) {
-  const named = { quot: '"', apos: "'", amp: '&', lt: '<', gt: '>', equals: '=', colon: ':', semi: ';', sol: '/', Tab: '\t', NewLine: '\n', nbsp: ' ', hyphen: '-', dash: '-', lowbar: '_', period: '.' };
+  const named = { quot: '"', QUOT: '"', apos: "'", amp: '&', AMP: '&', lt: '<', LT: '<', gt: '>', GT: '>', equals: '=', colon: ':', semi: ';', sol: '/', Tab: '\t', NewLine: '\n', nbsp: ' ', hyphen: '\u2010', dash: '\u2010', lowbar: '_', period: '.' };
+  // A browser also takes quot, amp, lt, gt and nbsp (and their upper case forms) without their semicolon.
+  const bare = { quot: '"', QUOT: '"', amp: '&', AMP: '&', lt: '<', LT: '<', gt: '>', GT: '>', nbsp: ' ' };
   return text.replace(/&#x([0-9a-f]+);?/gi, (_, h) => safeCodePoint(parseInt(h, 16))).replace(/&#(\d+);?/g, (_, d) => safeCodePoint(Number(d)))
-    .replace(/&([A-Za-z]+);/g, (whole, n) => named[n] ?? whole);
+    .replace(/&([A-Za-z]+);/g, (whole, n) => named[n] ?? whole).replace(/&(quot|QUOT|amp|AMP|lt|LT|gt|GT|nbsp)(?![A-Za-z0-9;])/g, (_, n) => bare[n]);
 }
 
 const safeCodePoint = (cp) => (cp >= 0 && cp <= 0x10FFFF ? String.fromCodePoint(cp) : '\uFFFD');
@@ -1080,8 +1115,10 @@ function selfTest() {
   // ARV-225b: the evaluated check in Directory.Build.props is there, before the compiler runs, with its exact conditions (the
   // only mentions of the code page and the response file a project may hold besides <CodePage>65001</CodePage>).
   const props = fs.readFileSync(path.join(ROOT, 'Directory.Build.props'), 'utf8');
-  if (!/<Target Name="ArivaSourceEncodingCheck" BeforeTargets="CoreCompile">/.test(props) || !EVALUATED_CHECKS.every(check => props.includes(`<Error ${check}`)))
-    fail('Directory.Build.props no longer holds the evaluated check of the code page and the compiler response file (ARV-225b).');
+  if (!/<Target Name="ArivaSourceEncodingCheck" BeforeTargets="CoreCompile">/.test(props) || !EVALUATED_CHECKS.slice(0, 2).every(check => props.includes(`<Error ${check}`))
+    || !/<Target Name="ArivaCompilerArgumentsCheck" AfterTargets="CoreCompile" Condition="'@\(CscCommandLineArgs\)' != ''">/.test(props) || !EVALUATED_CHECKS.slice(2).every(check => props.includes(` ${check} />`))
+    || !props.includes('<ProvideCommandLineArgs>true</ProvideCommandLineArgs>'))
+    fail('Directory.Build.props no longer holds the two source encoding checks (the evaluated properties before the compiler, its arguments after it; ARV-225b).');
 
   // ARV-157: a finding's text and path show hidden characters as escapes.
   const unescaped = [...badFindings, ...goodFindings].filter(f => sec130.test(f.text) || sec130.test(f.file));
@@ -1107,7 +1144,14 @@ function selfTest() {
       'response.targets', 'response-csc.targets', 'import-xml.targets', 'import-evaluated.targets', 'codepage-reference.targets',
       'codepage-escape.targets', 'doctype.targets', 'property-evaluated.targets', 'properties.targets', 'additional-properties.targets',
       'Dockerfile.codepage', 'codepage-workflow.yml', 'codepage-cli.sh', 'codepage-env.ps1', 'codepage-launch.json',
-      'meta-reference.html', 'meta-named-reference.html', 'meta-unknown-reference.html']],
+      'meta-reference.html', 'meta-named-reference.html', 'meta-unknown-reference.html',
+      // Review round 1: an extension point, a Markdown file that is a project by its content, an import with a > in its
+      // Condition and one of a list, a check replaced by name, Directory.Build.props switched off, a publish profile, the SQL
+      // forms (SESSION NAMES, a comment or a line break inside SET NAMES, set_config, a U&" identifier), a > before a
+      // reference in a meta tag and an upper case one, and a caret inside chcp.
+      'custom-after.csproj', 'notes-project.md', 'import-condition.targets', 'import-list.targets', 'replaced-check.targets', 'import-off.yml',
+      'profile.pubxml', 'set-session-names.sql', 'set-comment-names.sql', 'set-names-lines.sql', 'set-config.sql', 'unicode-identifier.sql',
+      'meta-gt-quot.html', 'meta-upper-quot.html', 'chcp-caret.cmd']],
     // ARV-225b: a leading byte order mark in a type whose tool keeps it.
     [LEADING_MARK, ['bom-shebang', 'bom.env', 'bom.yml', 'bom.sh', 'bom-codeowners/CODEOWNERS']]];
   for (const [msg, names] of wholeFile) {

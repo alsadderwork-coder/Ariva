@@ -1,0 +1,1 @@
+<Project><Import Condition="2 > 1" Project="../docs/notes.md" /></Project>
