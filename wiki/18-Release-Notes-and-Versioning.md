@@ -146,6 +146,11 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-240: a share of the runs of position samples per device (2026-11-05)
+
+- Behaviour: each device of a zone holds at most its share of the runs of position samples (ARV-230), as it does of the buffer: the runs' bound (`MaxSightingRuns`, 20,000) over the devices holding runs, the zone's devices heard recently and at least two, never below 2,000 (the bound times `DeviceShareFloor` over `MaxBufferedEvents`). A device flooding unique tracks into a quiet zone holds at most half the runs, so a sensor whose clock runs within Ingest's 500 ms tolerance fast keeps its tracks coalesced and its crossings counted while the flood lasts, where before the flood used the runs up and the sensor's samples ahead of the clock took a place each until its share of the ahead tenth refused them (`DeviceShareFull`).
+- No outcome changes (a sample buffered instead of coalesced is applied to the same effect), no snapshot version (a restore counts each device's runs from their track keys), nothing to configure.
+
 ### ARV-290: a temporary file cap on the runtime login (2026-11-04)
 
 - Behaviour: the migration job caps the temporary files each server process of the runtime login may hold (`Database:TempFileLimitMegabytes`, 1,024 MB, Proposed; a parallel worker has its own); a statement past it is ended with SQLSTATE 53400 instead of filling the database's disk (wiki 10 section 4.19). The migration job stops before its first script, with the grant to run, when its login may not set this superuser setting, so the upgrade's hook fails and the running hosts keep serving.

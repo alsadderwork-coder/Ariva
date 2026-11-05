@@ -66,7 +66,9 @@ public sealed record QueueEngineSettings
 
     /// <summary>
     /// ARV-230: tracks whose position samples are coalesced at most (the engine's remarks); the samples of further tracks are
-    /// buffered one place each. The pilot hall's busiest zone (20 T3 sensors at 30 people) holds about 850.
+    /// buffered one place each. The pilot hall's busiest zone (20 T3 sensors at 30 people) holds about 850. Each device holds at
+    /// most its share of them (ARV-240): the bound over the devices holding runs (the zone's devices, at least two), never less than
+    /// <see cref="DeviceShareFloor"/>'s part of the buffer of it (2,000 at the defaults) and one.
     /// </summary>
     public int MaxSightingRuns { get; init; } = 20_000;
 
@@ -223,6 +225,8 @@ public sealed partial class QueueStateEngine
     private readonly Dictionary<string, SightingRun> _runs = new(StringComparer.Ordinal);
     private readonly PriorityQueue<SightingRun, DateTime> _flushes = new();
     private readonly PriorityQueue<SightingRun, DateTime> _runEnds = new();
+    // ARV-240: the runs each device holds (only devices holding any), its track's key naming it, for its share of the runs.
+    private readonly Dictionary<string, int> _runsByDevice = new(StringComparer.Ordinal);
     private int _pending;
     // ARV-231: the events each device holds, buffered or pending (only devices holding any), for its share of the buffer.
     private readonly Dictionary<string, int> _heldByDevice = new(StringComparer.Ordinal);
@@ -1077,17 +1081,52 @@ public sealed partial class QueueStateEngine
     private int ShareOf(string device) => Math.Max(_settings.DeviceShareFloor, _settings.MaxBufferedEvents / Sharing(device));
 
     /// <summary>The device a tracked event names (its key is namespaced "device/track"), or null.</summary>
-    private static string OwnerOf(QueueInput input)
+    private static string OwnerOf(QueueInput input) => OwnerOfTrack(input switch
     {
-        var key = input switch
-        {
-            QueueTrackSeen seen => seen.TrackKey,
-            QueueCrossing crossing => crossing.TrackKey,
-            _ => null
-        };
+        QueueTrackSeen seen => seen.TrackKey,
+        QueueCrossing crossing => crossing.TrackKey,
+        _ => null
+    });
+
+    /// <summary>The device a track's key names ("device/track"), or null.</summary>
+    private static string OwnerOfTrack(string key)
+    {
         var slash = key?.IndexOf('/', StringComparison.Ordinal) ?? -1;
         return slash > 0 ? key[..slash] : null;
     }
+
+    // ARV-240 (CWE-400): each device holds at most its share of the runs of position samples, as of the buffer: the runs' bound
+    // over the devices sharing them (those holding runs, the zone's devices heard recently, at least two), never less than the runs'
+    // part of DeviceShareFloor (the floor over the buffer's bound, of the runs' bound: 2,000 at the defaults, and one run at least; a
+    // floor at the buffer's bound turns both shares off). A run counts for the device its track's key names, so a restore counts
+    // them from the keys alone; a track of no device (a key without one) is held to the runs' bound alone. A track of a device past
+    // its share gets no run: its samples are buffered one place each, as for a track past the runs' bound, and since applying an extra
+    // sample changes no outcome, the share changes none either. A device flooding unique tracks (each a new run) so takes at most its
+    // share and leaves the others' tracks coalesced, among them a fast sensor's samples ahead of the clock, which would otherwise
+    // take a place each of its share of the ahead tenth. Many devices at the floor can still use the runs up together (bound over
+    // floor: 10 at the defaults), their further tracks then buffered as before.
+
+    /// <summary>True when the device <paramref name="track"/> names holds its share of the runs already.</summary>
+    private bool RunsOverShare(string track)
+    {
+        var device = OwnerOfTrack(track);
+        return device is not null && _runsByDevice.GetValueOrDefault(device) >= RunShareOf;
+    }
+
+    private int RunShareOf => Math.Max(RunShareFloor, _settings.MaxSightingRuns / RunSharing);
+
+    /// <summary>
+    /// The devices the runs' share divides by: those holding runs, the zone's devices, at least two. A device holding none is not
+    /// added as the buffer's share adds it: its share is at least one run, so its first is never refused for the share, and from
+    /// then on it is among those holding runs.
+    /// </summary>
+    private int RunSharing => Math.Max(2, Math.Max(_runsByDevice.Count, ZoneDevices));
+
+    /// <summary>
+    /// The runs' part of <see cref="QueueEngineSettings.DeviceShareFloor"/> (in proportion to the buffer's bound), and one run at
+    /// least, as the ahead tenth's share keeps one place.
+    /// </summary>
+    private int RunShareFloor => (int)Math.Max(1, (long)_settings.MaxSightingRuns * _settings.DeviceShareFloor / _settings.MaxBufferedEvents);
 
     /// <summary>Marks the minute of <paramref name="time"/> as one a full buffer may have shortened.</summary>
     private void Full(DateTime time)
@@ -1163,11 +1202,13 @@ public sealed partial class QueueStateEngine
         if (!_runs.TryGetValue(seen.TrackKey, out var run))
         {
             Buffer(seen, ahead, device, place);
-            // The runs have their own bound (CWE-400): a track without one is not coalesced, its samples buffered as before.
-            if (_runs.Count < _settings.MaxSightingRuns)
+            // The runs have their own bound (CWE-400), and each device its share of it (ARV-240): a track without a run is not
+            // coalesced, its samples buffered as before.
+            if (_runs.Count < _settings.MaxSightingRuns && !RunsOverShare(seen.TrackKey))
             {
                 run = new SightingRun(seen.TrackKey, time);
                 _runs.Add(seen.TrackKey, run);
+                Count(_runsByDevice, OwnerOfTrack(seen.TrackKey), 1);
                 ScheduleEnd(run);
             }
 
@@ -1289,7 +1330,10 @@ public sealed partial class QueueStateEngine
             if (run.Pending is null && end <= _watermark)
             {
                 if (_runs.TryGetValue(run.Track, out var current) && ReferenceEquals(current, run))
+                {
                     _runs.Remove(run.Track);
+                    Count(_runsByDevice, OwnerOfTrack(run.Track), -1);
+                }
                 continue;
             }
 
