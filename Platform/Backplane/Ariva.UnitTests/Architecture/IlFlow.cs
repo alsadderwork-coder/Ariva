@@ -282,6 +282,19 @@ internal static class IlFlow
                             Store(slots[a].Homes, Held(Others(a)));
                     }
 
+                    // ARV-287: a setter keeps its value in its object (an answer body's member, a result's value), and so does a
+                    // helper of the scope whose summary flags a field its receiver's type declares; an exception kept so makes the
+                    // object a part of it.
+                    if (instance && !IsMachinery(callee.DeclaringType) && callee.DeclaringType?.IsPrimitive == false)
+                    {
+                        var kept = callee.Name.StartsWith("set_", StringComparison.Ordinal) ? Others(0) : 0;
+                        foreach (var (one, _) in summaries)
+                            foreach (var key in FieldsOf(callee.DeclaringType))
+                                kept |= one.Fields.GetValueOrDefault(key);
+                        if (kept != 0)
+                            Store(slots[0].Homes, (Held(kept) & ~Exception) | ((kept & (Exception | ExceptionPart)) != 0 ? ExceptionPart : 0));
+                    }
+
                     var bound = containers.Where(a => !(instance && a == 0)).Aggregate(ImmutableHashSet<int>.Empty, (h, a) => h.Union(slots[a].Homes));
                     if (instance && callee is ConstructorInfo && callee.DeclaringType?.IsValueType == true)
                         Alias(slots[0].Homes, bound);
@@ -504,6 +517,18 @@ internal static class IlFlow
         // Everything the passes carry over only grows, so an unchanged signature means nothing was gained.
         long Signature() => fields.Values.Sum(v => (long)v) + fieldAliases.Values.Sum(h => (long)h.Count) + fieldTargets.Values.Sum(t => 7L * t.Count) + returned + stored.Sum(v => (long)v);
     }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, (Module, int)[]> InstanceFields = new();
+
+    /// <summary>The instance fields a type and its bases declare, by their keys.</summary>
+    private static (Module, int)[] FieldsOf(Type type) => InstanceFields.GetOrAdd(type, t =>
+    {
+        var keys = new List<(Module, int)>();
+        for (var current = t.IsGenericType && !t.IsGenericTypeDefinition ? t.GetGenericTypeDefinition() : t; current is not null; current = current.BaseType)
+            keys.AddRange(current.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                .Select(f => (f.Module, f.MetadataToken)));
+        return [.. keys];
+    });
 
     /// <summary>The compiler's async and iterator machinery and the tasks it awaits; the interpolated string handler is a builder, not machinery.</summary>
     private static bool IsMachinery(Type type) =>
