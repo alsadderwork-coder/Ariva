@@ -850,65 +850,131 @@ export function pullRequestCommentQuotes(workflows) {
 // as they are: update one only after reading the change against the checks.
 const PINS = {
 	'ci.yml header': '40bc804bd779d6b746554a4a0f937149659408e3baa391b5a6ba5679dfcb97da',
-	'ci.yml security-gate': '18ce4674ef2e61fcc0b61fa17f57161c37a8e4aa613da2fdfc615de0e3a5a2ba',
-	'ci.yml backend': 'a5cf3245f76126255c0ad7a992ff66541555dda7112c4ab225a31bed2e225603',
-	'ci.yml e2e': 'c9e4434457450db28e0da7c68ccdb04619f71ca9f100df0007ca210a5193ef82',
+	'ci.yml security-gate': 'e49b3c293c8f4af57a5f2558b615a2a1527ec30ab465c4ae0dde071a61247837',
+	'ci.yml backend': 'b29c38001541aea9952d991b6ce22cf58f759b4b6ef5cee16468226c37b0c7d8',
+	'ci.yml e2e': '2216433c743748719f49fa257d0dd388959887523015d5d3be18a8d85bce445a',
 	'mutation.yml header': 'b69f30202bc5fdb6671d666ea25d1e67a1c6fb61369debb46956e39c34f920c0',
-	'mutation.yml stryker': 'e3cc9251002ee66b4a7890adb95f0c0f312331cf339ad13cac3ab4741daa4096',
+	'mutation.yml stryker': 'd0831436cd7a735a5148e512b12225cce4f9c92ecd948469714e5133a4a083aa',
 	'images.yml header': 'e7b29c927fcb01d42bf67ba71ef7482976648e30f94e53cf65f3da4509d208e3',
-	'images.yml build': 'a19d75b6d67c6609fafa7518f3231a2d4bebdf8f817f592bff6f5dd83845827d',
+	'images.yml build': '592a3c41fc076bfa9b57c929b70f241c062289b4644e3778e34a8b786ce1627a',
 	'security-scan.yml header': '97cd4fc964ca55ae45806adebe649ccd20be5ed2ac094abf845c7aae6c566d45',
-	'security-scan.yml trivy': 'aebf0a04f54b80c5f9c03af2d6fc8c712317f83a1354b60b7df77de249c1f390',
+	'security-scan.yml trivy': 'ae43f83e31412f90e7fe6b03753116927ae9b267a6527adb14d2d9330989189d',
 	'base-images.yml header': '77ad007ca3c2793c276beed353ca261a9dec88d112753682eba86b7d92f8542a',
-	'base-images.yml resolve': '598c797b653c2ac3cad336a945084bf584a0636f7900d50bd359ed45652ad846',
+	'base-images.yml resolve': '988d3b5e430cbfa6e954fc37806452097dd7a2d9373dd03625aa33a159e214c7',
 	'claude-review.yml header': '5683c33c153fccd4d20efb015598d5f8e1966f9b7062b952c726c035c23cebbc',
-	'claude-review.yml security-review': '2de28037ae89c4c390cd5d45ea4c8a99cf35c9f520ce9f2ca0e56a8f0f9d1e1e',
-	'claude-review.yml mention': 'fcc7b2db7f23b61ca3d1f05da6b7ab8696f4105f50a7973c87dcf19506bf9161'
+	'claude-review.yml security-review': '0a4eba8290e1bdd926961bbba0d64fbc7dfe4e80691ae7117104e659386f228e',
+	'claude-review.yml mention': '9e40b9e79dd04d068aa3fc13f89f3ce8bd48679e7a3f7b0a7490da8418b597a5'
 };
 
-/** The jobs of a workflow (the two-space keys under jobs:), each with its raw text and its steps' raw text. */
-function workflowJobs(text) {
+/**
+ * ARV-271a: a workflow read as the pins need it, failing closed on what this reader cannot read (it is not a YAML parser): its
+ * header (the text before jobs:), and each job (a plain key at two spaces under jobs:, a comment after it allowed) with its raw
+ * text and its steps' raw text. What is wrong: no plain jobs: key, a line under jobs: at two spaces that is not a plain job key (a
+ * quoted key, a flow mapping, an anchor or a merge), a key at column 0 or 1 after jobs: (top-level settings go before it, in the
+ * pinned header), a job twice, a YAML anchor, alias or merge key outside a run block, a steps: that is not a plain block, and a
+ * job that calls a reusable workflow (whose jobs this reader does not follow).
+ */
+function readWorkflow(text) {
+	const lines = text.replace(/\r\n/g, '\n').split('\n');
+	const problems = [];
+	const jobsAt = lines.findIndex((line) => /^jobs:\s*(?:#.*)?$/.test(line));
+	if (jobsAt < 0) return { header: text, jobs: [], problems: ['no jobs: key this reader can read (a plain jobs: at column 0)'] };
 	const jobs = [];
-	const at = text.search(/^jobs:\s*$/m);
-	if (at < 0) return jobs;
-	const body = text.slice(at);
-	const keys = [...body.matchAll(/^ {2}([A-Za-z][\w-]*):\s*$/gm)];
-	keys.forEach((key, k) => {
-		const raw = body.slice(key.index, k + 1 < keys.length ? keys[k + 1].index : body.length);
-		const parts = raw.split(/^(?= {6}- )/m);
-		const steps = parts.slice(1).map((part, i) => {
-			const stripped = stripComments(part).replace(/^ {6}- /, '');
-			return { name: nameOf(stripped, i), raw: part, text: stripped };
-		});
-		jobs.push({ name: key[1], raw, steps, declaresSteps: /^ {4}steps:\s*$/m.test(raw) });
+	let current = null;
+	let block = -1;
+	lines.forEach((line, i) => {
+		const level = line.search(/\S/);
+		if (block >= 0 && level >= 0 && level <= block) block = -1;
+		const note = level < 0 || /^\s*#/.test(line);
+		if (block < 0 && !note) {
+			if (/:\s+[&*][\w-]|^\s*-\s+[&*][\w-]|^\s*<<\s*:/.test(line)) problems.push(`line ${i + 1}: a YAML anchor, alias or merge key, which this reader does not follow`);
+			const opens = /^(\s*)(- )?[\w-]+: [|>][-+]?\s*(?:#.*)?$/.exec(line);
+			if (opens) block = opens[1].length + (opens[2] ? 2 : 0);
+		}
+		if (i <= jobsAt) return;
+		if (note) {
+			if (current) current.lines.push(line);
+			return;
+		}
+		if (level < 2) {
+			problems.push(`line ${i + 1}: a key at column ${level} after jobs: (a workflow's settings go before jobs:, where its header is pinned)`);
+			current = null;
+			return;
+		}
+		if (level === 2) {
+			const key = /^ {2}([A-Za-z_][\w-]*):\s*(?:#.*)?$/.exec(line);
+			if (!key) {
+				problems.push(`line ${i + 1}: under jobs:, not a plain job key (a quoted key, a flow mapping and the like are not read)`);
+				current = null;
+				return;
+			}
+			if (jobs.some((job) => job.name === key[1])) problems.push(`the job ${key[1]} twice`);
+			current = { name: key[1], lines: [line] };
+			jobs.push(current);
+			return;
+		}
+		if (current) current.lines.push(line);
 	});
-	return jobs;
+	return {
+		header: lines.slice(0, jobsAt).join('\n'),
+		problems,
+		jobs: jobs.map((job) => {
+			const raw = `${job.lines.join('\n')}\n`;
+			const parts = raw.split(/^(?= {6}- )/m);
+			const steps = parts.slice(1).map((part, i) => {
+				const stripped = stripComments(part).replace(/^ {6}- /, '');
+				return { name: nameOf(stripped, i), raw: part, text: stripped };
+			});
+			for (const line of job.lines) {
+				if (/^ {4}steps:/.test(line) && !/^ {4}steps:\s*(?:#.*)?$/.test(line)) problems.push(`the ${job.name} job's steps: is not a plain block`);
+				if (/^ {4}uses:/.test(line)) problems.push(`the ${job.name} job calls a reusable workflow, which this reader does not follow`);
+			}
+			return { name: job.name, raw, steps, declaresSteps: job.lines.some((line) => /^ {4}steps:/.test(line)) };
+		})
+	};
 }
 
-/** The text a pin hashes. */
-const pinText = (text) => text.split('\n').map((line) => line.trimEnd()).join('\n').replace(/@[0-9a-f]{40}(?: # v[\w.+-]+)?/g, '@<sha>').replace(/@sha256:[0-9a-f]{64}/g, '@sha256:<digest>').trim();
+/** The jobs of a workflow (see readWorkflow). */
+const workflowJobs = (text) => readWorkflow(text).jobs;
+
+/** The text a pin hashes: its lines as they are (a blank after a line's \ changes what the shell runs), an action's commit SHA and an image's digest as placeholders. */
+const pinText = (text) => text.replace(/\r\n/g, '\n').replace(/\n+$/, '').replace(/@[0-9a-f]{40}(?: # v[\w.+-]+)?/g, '@<sha>').replace(/@sha256:[0-9a-f]{64}/g, '@sha256:<digest>');
 
 // A step's route to a pull request comment, read with its comments out (a tripwire for a job without write permissions that
 // posts with a token of its own): gh pr|issue comment, review, edit or create, gh api on comments or reviews, GitHub's API by
 // URL or GraphQL mutation, a comment, script or Claude action, and a local action.
 const COMMENT_ROUTE = /\bgh"?\s+"?(?:pr|issue)"?\s+"?(?:comment|review|edit|create)\b|\bgh\s+api\b[^\n]*\b(?:comments|reviews|graphql)\b|api\.github\.com|\/(?:comments|reviews)\b|\b(?:addComment|addPullRequestReview)\b|^\s*uses:\s*(?:\.\/|[\w.-]+\/[\w.-]*(?:comment|github-script|claude-code-action)[\w.-]*@)/im;
 
-/** A permissions value (inline, or the block under the key) as text, or null when the key is absent. */
+// The scopes whose write lets a token post where people read it: pull request and issue comments, commit comments (contents),
+// discussions.
+const WRITER_SCOPES = new Set(['pull-requests', 'issues', 'contents', 'discussions']);
+
+/**
+ * ARV-271a: what permissions at an indentation (0 for the workflow's, 4 for a job's) let the token do, read failing closed:
+ * null when the key is absent; true when it can write to a writer scope, or is spelled otherwise than this reader reads
+ * (read-all, write-all, {} or a block of `<scope>: read|write|none` lines, a comment after each allowed), or appears twice.
+ */
 function permissionsOf(text, indent) {
-	const key = new RegExp(`^ {${indent}}permissions:[ \\t]*(.*)$`, 'm').exec(text);
-	if (!key) return null;
-	if (key[1].trim() && !key[1].trim().startsWith('#')) return key[1].trim();
-	const lines = [];
-	for (const line of text.slice(key.index + key[0].length + 1).split('\n')) {
-		if (line.trim() === '' || line.trim().startsWith('#')) continue;
+	const lines = text.split('\n');
+	const keys = lines.map((line, i) => (new RegExp(`^ {${indent}}permissions:`).test(line) ? i : -1)).filter((i) => i >= 0);
+	if (keys.length === 0) return null;
+	if (keys.length > 1) return true;
+	const value = lines[keys[0]].slice(indent + 'permissions:'.length).replace(/\s+#.*$/, '').trim();
+	if (value === 'read-all' || value === '{}') return false;
+	if (value !== '') return true;
+	let writes = false;
+	for (const line of lines.slice(keys[0] + 1)) {
+		if (line.trim() === '' || /^\s*#/.test(line)) continue;
 		if (line.search(/\S/) <= indent) break;
-		lines.push(line.trim());
+		const scope = /^\s*([a-z-]+): (read|write|none)\s*(?:#.*)?$/.exec(line);
+		if (!scope) return true;
+		if (scope[2] === 'write' && WRITER_SCOPES.has(scope[1])) writes = true;
 	}
-	return lines.join('\n');
+	return writes;
 }
 
-/** True when permissions (a job's, else its workflow's) let the token write to pull requests or issues; absent is the default. */
-const writesComments = (permissions) => permissions === null || /\bwrite-all\b|^(?:pull-requests|issues):\s*write\b/m.test(permissions);
+/** True when permissions (a job's, else its workflow's) let the token post; absent at both levels is the default, so it may. */
+const writesComments = (permissions) => permissions !== false;
 
 /**
  * The pins' current hashes from [file name, text] pairs (a target not found is null), and what is wrong: a job that can write to
@@ -921,11 +987,11 @@ export function workflowPins(workflows) {
 	const problems = [];
 	const hash = (text) => crypto.createHash('sha256').update(pinText(text)).digest('hex');
 	for (const [file, text] of workflows) {
-		const jobs = workflowJobs(text);
-		const at = text.search(/^jobs:\s*$/m);
-		if (at >= 0 && jobs.length === 0) problems.push(`${file}: no job read under jobs: (jobs at two spaces)`);
-		if (`${file} header` in hashes && at >= 0) hashes[`${file} header`] = hash(text.slice(0, at));
-		const workflowPermissions = permissionsOf(at >= 0 ? text.slice(0, at) : text, 0);
+		const { header, jobs, problems: unread } = readWorkflow(text);
+		for (const problem of unread) problems.push(`${file}: ${problem}`);
+		if (jobs.length === 0) problems.push(`${file}: no job read under jobs: (jobs at two spaces)`);
+		if (`${file} header` in hashes) hashes[`${file} header`] = hash(header);
+		const workflowPermissions = permissionsOf(header, 0);
 		for (const job of jobs) {
 			const key = `${file} ${job.name}`;
 			if (job.declaresSteps && job.steps.length === 0) problems.push(`${file}: the ${job.name} job's steps are not read (steps at six spaces)`);
@@ -1419,6 +1485,41 @@ function selfTest() {
 		const multiLine = replace(`${nodeLine}      # ARV-068`, `          echo "x\n          #"; exit 0; echo "\n          echo "\n${nodeLine}      # ARV-068`)(workflow);
 		if (multiLine === null) problems.push('ci.yml no longer has the text the multi-line quote case changes: update it');
 		else if (backendLogWiring(multiLine).length === 0) problems.push('the wiring check passes an exit hidden by a quote over several lines');
+		// ARV-271a review round 3: the workflow is read failing closed, so the YAML spellings that hid a job that can write, or a
+		// setting from the pinned header, each fail (jobs: with a comment, a job key with a comment, a job id starting with _, a
+		// quoted job key, flow-style or quoted permissions, contents: write, a setting after jobs:, a job twice, an anchor, a
+		// reusable workflow, steps not in a block), and a blank after a line's \ in a pinned job changes its hash.
+		const postJob = '    runs-on: ubuntu-24.04\n    steps:\n      - name: Post\n        run: node scripts/post-summary.mjs\n';
+		const readOnly = 'permissions:\n  contents: read\n';
+		const writes = '    permissions:\n      pull-requests: write\n';
+		const post = (text) => ['post.yml', `on: pull_request\n${text}`];
+		const round4New = {
+			'jobs: with a comment after it': post(`${readOnly}jobs: # the jobs\n  post:\n${writes}${postJob}`),
+			'a job key with a comment after it': post(`${readOnly}jobs:\n  lint:\n${postJob}  post: # posts the summary\n${writes}${postJob}`),
+			'a job id starting with _': post(`${readOnly}jobs:\n  lint:\n${postJob}  _post:\n${writes}${postJob}`),
+			'a quoted job key': post(`${readOnly}jobs:\n  lint:\n${postJob}  "post":\n${writes}${postJob}`),
+			'flow-style job permissions': post(`${readOnly}jobs:\n  post:\n    permissions: { pull-requests: write }\n${postJob}`),
+			'flow-style workflow permissions': post(`permissions: { issues: write, contents: read }\njobs:\n  post:\n${postJob}`),
+			'a quoted permission value': post(`${readOnly}jobs:\n  post:\n    permissions:\n      pull-requests: 'write'\n${postJob}`),
+			'a quoted permission scope': post(`${readOnly}jobs:\n  post:\n    permissions:\n      "pull-requests": write\n${postJob}`),
+			'contents: write': post(`${readOnly}jobs:\n  post:\n    permissions:\n      contents: write\n${postJob}`),
+			'an anchor and an alias': post(`${readOnly}jobs:\n  lint:\n    runs-on: ubuntu-24.04\n    env: &shared\n      A: b\n    steps:\n      - name: Lint\n        run: echo lint\n  post:\n    env: *shared\n${postJob}`),
+			'a reusable workflow called': post(`${readOnly}jobs:\n  post:\n    uses: ./.github/workflows/poster.yml\n`),
+			'steps not in a block': post(`${readOnly}jobs:\n  post:\n    runs-on: ubuntu-24.04\n    steps: [{ run: echo }]\n`)
+		};
+		for (const [label, entry] of Object.entries(round4New)) if (workflowPins([...workflows, entry]).problems.length === 0) problems.push(`the pins pass ${label}`);
+		const round4 = {
+			'a setting after jobs: (env)': ['images.yml', null, '\nenv:\n  BASH_ENV: scripts/setup.sh\n'],
+			'a setting after jobs: (defaults)': ['security-scan.yml', null, '\ndefaults:\n  run:\n    shell: bash --noprofile --norc {0}\n'],
+			'a pinned job twice': ['base-images.yml', null, '\n  resolve:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Again\n        run: echo again\n'],
+			"a blank after a line's \\ in a pinned job": ['images.yml', ' \\\n', ' \\ \n']
+		};
+		for (const [label, [file, from, to]] of Object.entries(round4)) {
+			const original = workflows.find(([f]) => f === file)?.[1] ?? '';
+			const changed = from === null ? original.replace(/\n*$/, '\n') + to : original.includes(from) ? original.replace(from, () => to) : null;
+			if (changed === null) problems.push(`${file} no longer has the text that the pin case ${label} changes: update it`);
+			else if (workflowPins(workflows.map(([f, text]) => [f, f === file ? changed : text])).problems.length === 0) problems.push(`the pins pass ${label}`);
+		}
 		const bumped = workflows.map(([f, text]) => [f, text.replace(/upload-artifact@[0-9a-f]{40} # v7\.0\.1/g, 'upload-artifact@0123456789abcdef0123456789abcdef01234567 # v7.0.2')]);
 		if (workflowPins(bumped).problems.length) problems.push("the pins fail on an action's pin bump (the bots' updates must pass)");
 	} finally {
