@@ -26,7 +26,8 @@
 #                                   migration login with SUPERUSER, CREATEROLE, REPLICATION or BYPASSRLS, and none holding
 #                                   such a role or one of PostgreSQL's server, data or signal roles; Ariva's group roles
 #                                   holding no role; no setting for a role's or the database's sessions but the runtime
-#                                   login's statement timeout and temporary file cap (ARV-290), and the migration login
+#                                   login's statement timeout, temporary file cap (ARV-290), idle transaction limit and
+#                                   keepalives (ARV-292), and the migration login
 #                                   able to set that cap; no privilege on a parameter but its SET on temp_file_limit (the
 #                                   cluster's, its review), and with --runtime-login that login's own two caps in the
 #                                   database; no ALTER SYSTEM setting; no rule but a view's; no function
@@ -134,6 +135,7 @@ alert_rule_identity:b1bbde2c3162fc34a948fb06dca87e4334b5dcec9c474a7f387f52dfdf9e
 ariva_ensure_runtime_login:6864027ae91766a330f29144c95cdaafbc7d7d277c67b93f1e0fd38587aadd03,\
 ariva_ensure_validation_reader_login:80844ccdbfee88483d1b2b8f3eb810b19c9886998d9ab90174ebfcaef9317acb,\
 ariva_retention_purge:535ad38b539587c302aa4ea85e1c3508d55e5d5df6bf4f0675bbadf0076f78d7,\
+ariva_set_runtime_session_limits:0daf78aa688125e5d360e03297e123142bbbd45ce3fb207d33f849393ef7b0a7,\
 ariva_set_runtime_statement_timeout:5a0d58d71b054d30960d5d9be54b37eca1f2c381bb2d46ffe1eaf580b762f3e7,\
 ariva_set_runtime_temp_file_limit:9ddecaa76797da4a42f181d899ba813a4e7f62e8a9c71b4573619f3cd5e9d259,\
 desk_observation_insert_check:2cec641a82b38ac75a04c2d5e2fa56bff709120a60ad43736e223e732a4e092d,\
@@ -256,6 +258,14 @@ readonly RUNTIME_TIMEOUT_MIN_SECONDS=301
 readonly RUNTIME_TIMEOUT_MAX_SECONDS=3600
 readonly RUNTIME_TEMP_FILE_MIN_MEGABYTES=64
 readonly RUNTIME_TEMP_FILE_MAX_MEGABYTES=102400
+# ARV-292: and its idle transaction limit (MinIdleInTransactionTimeoutSeconds to MaxIdleInTransactionTimeoutSeconds) and TCP
+# keepalives, which the migration job sets to DatabaseSettings' fixed values (KeepaliveIdleSeconds, KeepaliveIntervalSeconds,
+# KeepaliveCount); OpsScriptTests holds these equal too.
+readonly RUNTIME_IDLE_MIN_SECONDS=300
+readonly RUNTIME_IDLE_MAX_SECONDS=3600
+readonly RUNTIME_KEEPALIVE_IDLE_SECONDS=60
+readonly RUNTIME_KEEPALIVE_INTERVAL_SECONDS=10
+readonly RUNTIME_KEEPALIVE_COUNT=6
 
 # ARV-189 review: the views of public as the scripts create them, as <view>=<what it reads> entries separated by ";": a
 # continuous aggregate its hypertable, a plain view the relations it names (separated by spaces). check compares them, as
@@ -269,7 +279,7 @@ readonly ARIVA_VIEWS="line_minute_15m=line_minute;overflow_bin_15m=overflow_minu
 # ARIVA_SCHEMA_AT, the latest script (any script may change them), so a trigger, constraint, grant or function a forged dump
 # left out, changed or added is reported even where no other line looks. OpsScriptTests holds ARIVA_SCHEMA_AT at the
 # latest script; BackupRestoreTests holds the list equal to a database the release's migration job migrated (and prints it).
-readonly ARIVA_SCHEMA_AT="0069_runtime_temp_file_limit.sql"
+readonly ARIVA_SCHEMA_AT="0070_runtime_session_limits.sql"
 readonly ARIVA_SCHEMA="advertising_media=2cb17c8c169d81de441d4192fdc21b0c;\
 advertising_media_guard()=0c14e39356e12f186a82b88895cc130a;\
 advertising_play=d5f1179d8cfaccdcc0d9c7d9c3634258;\
@@ -288,6 +298,7 @@ aman_pull_cursor=2b1f0d463807d44bf7e9550223bb1bf9;\
 ariva_ensure_runtime_login(login_name text, login_password text)=a34b831ffc5ede64cdd0f70840744ab4;\
 ariva_ensure_validation_reader_login(login_name text, login_verifier text)=a933282b920424704f9a04912201735e;\
 ariva_retention_purge(p_data_set text, p_limit integer)=a7ff57e7b5404c01e5cb1715f4416c2c;\
+ariva_set_runtime_session_limits(login_name text, idle_in_transaction_seconds integer, keepalive_idle_seconds integer, keepalive_interval_seconds integer, keepalive_count integer)=00000000000000000000000000000000;\
 ariva_set_runtime_statement_timeout(login_name text, timeout_seconds integer)=9e7119ef6c672f24c7f58833abdac5f9;\
 ariva_set_runtime_temp_file_limit(login_name text, limit_megabytes integer)=7bd37ec1510e5736eb101d351a794abc;\
 audit_entry=517f91f81aa4f05abee86733509a5cae;\
@@ -798,7 +809,10 @@ cmd_check() {
     --set=runtime_privileges="$ARIVA_RUNTIME_PRIVILEGES" --set=runtime_privileges_at="$ARIVA_RUNTIME_PRIVILEGES_AT" \
     --set=ariva_views="$ARIVA_VIEWS" --set=after_restore="$check_after_restore" \
     --set=timeout_min="$RUNTIME_TIMEOUT_MIN_SECONDS" --set=timeout_max="$RUNTIME_TIMEOUT_MAX_SECONDS" \
-    --set=temp_min="$RUNTIME_TEMP_FILE_MIN_MEGABYTES" --set=temp_max="$RUNTIME_TEMP_FILE_MAX_MEGABYTES" <<'SQL'
+    --set=temp_min="$RUNTIME_TEMP_FILE_MIN_MEGABYTES" --set=temp_max="$RUNTIME_TEMP_FILE_MAX_MEGABYTES" \
+    --set=idle_min="$RUNTIME_IDLE_MIN_SECONDS" --set=idle_max="$RUNTIME_IDLE_MAX_SECONDS" \
+    --set=keepalive_idle="$RUNTIME_KEEPALIVE_IDLE_SECONDS" --set=keepalive_interval="$RUNTIME_KEEPALIVE_INTERVAL_SECONDS" \
+    --set=keepalive_count="$RUNTIME_KEEPALIVE_COUNT" <<'SQL'
 WITH RECURSIVE me AS (SELECT oid FROM pg_roles WHERE rolname = current_user),
 foreign_owned AS (
     SELECT n.nspname || '.' || c.relname AS name
@@ -1098,7 +1112,8 @@ held_by_ariva AS (
      WHERE r.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader')
         OR (:'reader' <> '' AND r.rolname = :'reader' AND g.rolname <> 'ariva_validation_reader')),
 -- ARV-183 review: settings made for a role's sessions (ALTER ROLE ... SET), in this database or in every one, but the
--- runtime login's statement timeout (script 0063) and temporary file cap (script 0069, ARV-290) in this database and the
+-- runtime login's statement timeout (script 0063), temporary file cap (script 0069, ARV-290), idle transaction limit and TCP
+-- keepalives (script 0070, ARV-292) in this database and the
 -- names --allow-setting gives; settings for every
 -- session of the database are planted_objects' line.
 role_settings AS (
@@ -1106,7 +1121,8 @@ role_settings AS (
       FROM pg_db_role_setting s LEFT JOIN pg_roles r ON r.oid = s.setrole CROSS JOIN LATERAL unnest(s.setconfig) c
      WHERE s.setrole <> 0 AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
        AND NOT split_part(c, '=', 1) = ANY (string_to_array(:'allowed_settings', ','))
-       AND NOT (split_part(c, '=', 1) IN ('statement_timeout', 'temp_file_limit') AND s.setdatabase <> 0
+       AND NOT (split_part(c, '=', 1) IN ('statement_timeout', 'temp_file_limit', 'idle_in_transaction_session_timeout', 'tcp_keepalives_idle',
+                                          'tcp_keepalives_interval', 'tcp_keepalives_count') AND s.setdatabase <> 0
                 AND s.setrole IN (SELECT m.member FROM pg_auth_members m WHERE m.roleid = 'ariva_runtime'::regrole))),
 -- ARV-290 review: privileges on parameters (GRANT SET or ALTER SYSTEM ON PARAMETER), which are the cluster's, not the
 -- database's: SET on temp_file_limit, without grant option, to the migration login or ariva_migration (the chart's init script,
@@ -1125,11 +1141,17 @@ parameter_grants AS (
 -- terabytes too). Each is judged by its value, in the form the job writes and within the bounds the job holds it to; at most
 -- seven digits are read, so no text makes the cast fail.
 runtime_caps AS (
-    SELECT statement_timeout, temp_file_limit,
+    SELECT statement_timeout, temp_file_limit, idle_limit, keepalives,
            coalesce(substring(statement_timeout FROM '^([1-9][0-9]{0,6})s$')::int BETWEEN :'timeout_min'::int AND :'timeout_max'::int, false) AS timeout_ok,
-           coalesce(substring(temp_file_limit FROM '^([1-9][0-9]{0,6})MB$')::int BETWEEN :'temp_min'::int AND :'temp_max'::int, false) AS temp_ok
+           coalesce(substring(temp_file_limit FROM '^([1-9][0-9]{0,6})MB$')::int BETWEEN :'temp_min'::int AND :'temp_max'::int, false) AS temp_ok,
+           coalesce(substring(idle_limit FROM '^([1-9][0-9]{0,6})s$')::int BETWEEN :'idle_min'::int AND :'idle_max'::int, false) AS idle_ok,
+           keepalives IS NOT DISTINCT FROM (:'keepalive_idle' || '/' || :'keepalive_interval' || '/' || :'keepalive_count') AS keepalives_ok
       FROM (SELECT max(substr(c, length('statement_timeout=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'statement_timeout') AS statement_timeout,
-                   max(substr(c, length('temp_file_limit=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'temp_file_limit') AS temp_file_limit
+                   max(substr(c, length('temp_file_limit=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'temp_file_limit') AS temp_file_limit,
+                   max(substr(c, length('idle_in_transaction_session_timeout=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'idle_in_transaction_session_timeout') AS idle_limit,
+                   concat_ws('/', max(substr(c, length('tcp_keepalives_idle=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'tcp_keepalives_idle'),
+                                  max(substr(c, length('tcp_keepalives_interval=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'tcp_keepalives_interval'),
+                                  max(substr(c, length('tcp_keepalives_count=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'tcp_keepalives_count')) AS keepalives
               FROM pg_db_role_setting s CROSS JOIN LATERAL unnest(s.setconfig) c
              WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = :'runtime')
                AND s.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database())) raw),
@@ -1221,7 +1243,7 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'plpgsql|its three handler function
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'logins|no role but the bootstrap superuser and the migration login is a superuser or has createrole, replication or bypassrls, and none holds such a role or one of the server, data or signal roles'
                                                 || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', but allowed: ' || replace(:'allowed_logins', ',', ', ') END
                       ELSE 'FAIL logins|' || string_agg(name, ', ' ORDER BY name) || ' (a DBA''s own login: name it with --allow-login)' END FROM privileged_roles
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'role settings|none but the runtime login''s statement timeout and temporary file cap'
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'role settings|none but the runtime login''s statement timeout, temporary file cap, idle transaction limit and keepalives'
                                                 || CASE WHEN :'allowed_settings' = '' THEN '' ELSE ', and allowed: ' || replace(:'allowed_settings', ',', ', ') END
                       ELSE 'FAIL role settings|' || string_agg(name, ', ' ORDER BY name) || ' (ALTER ROLE ... SET; a DBA''s own: name it with --allow-setting)' END FROM role_settings
 UNION ALL SELECT CASE WHEN has_parameter_privilege('temp_file_limit', 'SET') THEN 'temp file cap|the migration login may set temp_file_limit on the runtime login (ARV-290)'
@@ -1230,13 +1252,17 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'parameter privileges|SET on temp_f
                                                 || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', and the allowed logins'' own' END
                       ELSE 'FAIL parameter privileges|' || string_agg(name, ', ' ORDER BY name)
                            || ' (GRANT ... ON PARAMETER, the cluster''s: find out who granted it, wiki 10 section 4.19)' END FROM parameter_grants
-UNION ALL SELECT CASE WHEN timeout_ok AND temp_ok
+UNION ALL SELECT CASE WHEN timeout_ok AND temp_ok AND idle_ok AND keepalives_ok
                       THEN 'runtime caps|' || :'runtime' || ' in this database: statement_timeout ' || statement_timeout || ', temp_file_limit ' || temp_file_limit
+                           || ', idle_in_transaction_session_timeout ' || idle_limit || ', tcp_keepalives ' || keepalives
                       ELSE 'FAIL runtime caps|' || :'runtime' || ' in this database: '
                            || concat_ws(', ', CASE WHEN timeout_ok THEN NULL ELSE 'statement_timeout ' || coalesce(statement_timeout, 'not set') END,
-                                              CASE WHEN temp_ok THEN NULL ELSE 'temp_file_limit ' || coalesce(temp_file_limit, 'not set') END)
-                           || ' (the migration job sets ' || :'timeout_min' || 's to ' || :'timeout_max' || 's and ' || :'temp_min' || 'MB to '
-                           || :'temp_max' || 'MB; ARV-096d, ARV-290): run the migration job' END
+                                              CASE WHEN temp_ok THEN NULL ELSE 'temp_file_limit ' || coalesce(temp_file_limit, 'not set') END,
+                                              CASE WHEN idle_ok THEN NULL ELSE 'idle_in_transaction_session_timeout ' || coalesce(idle_limit, 'not set') END,
+                                              CASE WHEN keepalives_ok THEN NULL ELSE 'tcp_keepalives ' || coalesce(nullif(keepalives, ''), 'not set') END)
+                           || ' (the migration job sets ' || :'timeout_min' || 's to ' || :'timeout_max' || 's, ' || :'temp_min' || 'MB to '
+                           || :'temp_max' || 'MB, ' || :'idle_min' || 's to ' || :'idle_max' || 's and keepalives ' || :'keepalive_idle' || '/'
+                           || :'keepalive_interval' || '/' || :'keepalive_count' || '; ARV-096d, ARV-290, ARV-292): run the migration job' END
                  FROM runtime_caps WHERE :'runtime' <> '' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'runtime')
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'rules|none but the views'' own'
                       ELSE 'FAIL rules|' || string_agg(name, ', ' ORDER BY name) END FROM rules

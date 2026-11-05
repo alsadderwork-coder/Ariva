@@ -41,6 +41,12 @@ public sealed partial class OpsScriptTests
         Constant("RUNTIME_TIMEOUT_MAX_SECONDS").Should().Be(DatabaseSettings.MaxStatementTimeoutSeconds);
         Constant("RUNTIME_TEMP_FILE_MIN_MEGABYTES").Should().Be(DatabaseSettings.MinTempFileLimitMegabytes);
         Constant("RUNTIME_TEMP_FILE_MAX_MEGABYTES").Should().Be(DatabaseSettings.MaxTempFileLimitMegabytes);
+        // ARV-292: the idle transaction limit's bounds and the keepalives the migration job sets.
+        Constant("RUNTIME_IDLE_MIN_SECONDS").Should().Be(DatabaseSettings.MinIdleInTransactionTimeoutSeconds);
+        Constant("RUNTIME_IDLE_MAX_SECONDS").Should().Be(DatabaseSettings.MaxIdleInTransactionTimeoutSeconds);
+        Constant("RUNTIME_KEEPALIVE_IDLE_SECONDS").Should().Be(DatabaseSettings.KeepaliveIdleSeconds);
+        Constant("RUNTIME_KEEPALIVE_INTERVAL_SECONDS").Should().Be(DatabaseSettings.KeepaliveIntervalSeconds);
+        Constant("RUNTIME_KEEPALIVE_COUNT").Should().Be(DatabaseSettings.KeepaliveCount);
     }
 
     [Fact]

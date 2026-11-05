@@ -157,6 +157,10 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.TempFileLimit => "CREATE DATABASE it_temp_file_limit",
             TestDatabase.TempFileLimitRefusals => "CREATE DATABASE it_temp_file_limit_refusals",
             TestDatabase.TempFileLimitMigration => "CREATE DATABASE it_temp_file_limit_migration",
+            TestDatabase.SessionLimits => "CREATE DATABASE it_session_limits",
+            TestDatabase.SessionLimitRefusals => "CREATE DATABASE it_session_limit_refusals",
+            TestDatabase.SessionLimitLong => "CREATE DATABASE it_session_limit_long",
+            TestDatabase.SessionLimitMigration => "CREATE DATABASE it_session_limit_migration",
             TestDatabase.EnvironmentDeployed => "CREATE DATABASE it_environment_deployed",
             TestDatabase.EnvironmentLocal => "CREATE DATABASE it_environment_local",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
@@ -337,6 +341,10 @@ public enum TestDatabase
     TempFileLimit,
     TempFileLimitRefusals,
     TempFileLimitMigration,
+    SessionLimits,
+    SessionLimitRefusals,
+    SessionLimitLong,
+    SessionLimitMigration,
     EnvironmentDeployed,
     EnvironmentLocal
 }

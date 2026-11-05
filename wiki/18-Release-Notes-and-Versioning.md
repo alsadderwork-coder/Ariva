@@ -146,6 +146,12 @@ Known issues and To confirm items:
 
 Changes since the last release that an operator must act on when upgrading, newest first. Each moves into the release's notes (section 4) when the release is cut.
 
+### ARV-292: an idle transaction limit and TCP keepalives on the runtime login (2026-11-05)
+
+- Behaviour: the migration job ends a runtime login session left idle inside a transaction for longer than `Database:IdleInTransactionTimeoutSeconds` (960 s, Proposed) and sets TCP keepalives on the login (about two minutes to notice a vanished client), so a host whose connection was lost on the network no longer holds a report delivery, the report slot or a lock until the server notices; nothing of an ended transaction commits (wiki 10 section 4.19).
+- Behaviour: a host refuses to start when its own settings allow a wait inside a transaction at or above that limit, naming the wait and its setting (wiki 04 section 6.11). The shipped settings start.
+- After the upgrade: nothing to do before it (all four are user settings the migration job sets); afterwards `ariva-db.sh check --runtime-login` passes "runtime caps" with the idle limit and the keepalives.
+
 ### ARV-290: a temporary file cap on the runtime login (2026-11-04)
 
 - Behaviour: the migration job caps the temporary files each server process of the runtime login may hold (`Database:TempFileLimitMegabytes`, 1,024 MB, Proposed; a parallel worker has its own); a statement past it is ended with SQLSTATE 53400 instead of filling the database's disk (wiki 10 section 4.19). The migration job stops before its first script, with the grant to run, when its login may not set this superuser setting, so the upgrade's hook fails and the running hosts keep serving.

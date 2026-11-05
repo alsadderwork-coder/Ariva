@@ -51,7 +51,7 @@ public sealed class GrantSettingsTests : IAsyncLifetime
         (await RuntimeScalarAsync("SHOW temp_file_limit")).Should().Be("1GB");
         var granted = await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         granted.Stdout.Should().Contain("temp file cap|the migration login may set temp_file_limit on the runtime login (ARV-290)")
-            .And.Contain("role settings|none but the runtime login's statement timeout and temporary file cap")
+            .And.Contain("role settings|none but the runtime login's statement timeout, temporary file cap, idle transaction limit and keepalives")
             .And.Contain("ok    parameter privileges|SET on temp_file_limit to the migration login or ariva_migration only")
             .And.Contain($"ok    runtime caps|{RuntimeLogin} in this database: statement_timeout ").And.Contain(", temp_file_limit 1024MB").And.NotContain("FAIL", granted.Stdout);
 
@@ -63,7 +63,7 @@ public sealed class GrantSettingsTests : IAsyncLifetime
 
         var before = await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         before.Stdout.Should().Contain("FAIL  temp file cap|the migration login may not set temp_file_limit, so the migration job stops (ARV-290): run grant-settings")
-            .And.Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit not set (the migration job sets 301s to 3600s and 64MB to 102400MB; ARV-096d, ARV-290): run the migration job");
+            .And.Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit not set (the migration job sets 301s to 3600s, 64MB to 102400MB, 300s to 3600s and keepalives 60/10/6; ARV-096d, ARV-290, ARV-292): run the migration job");
         // The job logs "The migration login ariva may not set temp_file_limit ... GRANT SET ON PARAMETER ... grant-settings" (Critical)
         // and exits 1, as for any failure, so the release's hook fails before a host starts.
         (await MigrateAsync()).Should().Be(1, "the job stops when its login may not set the cap");

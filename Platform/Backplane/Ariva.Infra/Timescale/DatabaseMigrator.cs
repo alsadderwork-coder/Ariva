@@ -8,8 +8,9 @@ namespace Ariva.Infra.Timescale;
 /// The migration job (ARV-006): applies the versioned scripts with the migration login, sets the retention periods of this
 /// environment (ARV-111a, <see cref="RetentionPolicies"/>: the hypertables' TimescaleDB policies and the relational periods
 /// the Cronz retention job reads), then creates or updates the runtime login the hosts use, with the server's limit on one of its
-/// statements (ARV-096d, script 0063) and on a session's temporary files (ARV-290, script 0069; the job stops before the scripts
-/// when the migration login may not set that one), and (ARV-104g1) the validation
+/// statements (ARV-096d, script 0063), on a session's temporary files (ARV-290, script 0069; the job stops before the scripts
+/// when the migration login may not set that one) and on a session idle in a transaction or whose client is gone (ARV-292,
+/// script 0070), and (ARV-104g1) the validation
 /// reader login, the only login that reads the shadow nowcast. On a developer machine (Database:AllowSchemaUpdate) NHibernate
 /// SchemaUpdate then adds whatever the scripts do not cover yet, also with the migration login. ARV-180: the job records its
 /// environment in the database after the scripts (<see cref="DatabaseEnvironment"/>), and a vm-local migration refuses, before
@@ -116,6 +117,17 @@ internal sealed class DatabaseMigrator(
         tempFiles.Parameters.AddWithValue("megabytes", settings.TempFileLimitMegabytes);
         await tempFiles.ExecuteNonQueryAsync(ct);
         _logger.LogInformation("Runtime login {Login}: each of its server processes holds at most {Megabytes} MB of temporary files on the server", settings.Username, settings.TempFileLimitMegabytes);
+
+        // ARV-292: a session idle in a transaction past the limit is ended with its locks, and one whose client is gone sooner.
+        await using var session = new NpgsqlCommand("SELECT ariva_set_runtime_session_limits(@name, @idle, @keepIdle, @keepInterval, @keepCount)", connection);
+        session.Parameters.AddWithValue("name", settings.Username);
+        session.Parameters.AddWithValue("idle", settings.IdleInTransactionTimeoutSeconds);
+        session.Parameters.AddWithValue("keepIdle", DatabaseSettings.KeepaliveIdleSeconds);
+        session.Parameters.AddWithValue("keepInterval", DatabaseSettings.KeepaliveIntervalSeconds);
+        session.Parameters.AddWithValue("keepCount", DatabaseSettings.KeepaliveCount);
+        await session.ExecuteNonQueryAsync(ct);
+        _logger.LogInformation("Runtime login {Login}: a session idle in a transaction for {Seconds} s is ended, and one whose client answers no TCP keepalive",
+            settings.Username, settings.IdleInTransactionTimeoutSeconds);
     }
 
     /// <summary>

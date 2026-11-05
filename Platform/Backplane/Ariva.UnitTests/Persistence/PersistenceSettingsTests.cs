@@ -311,6 +311,71 @@ public sealed class PersistenceSettingsTests
         add.Should().Throw<InvalidOperationException>().WithMessage("*Database:TempFileLimitMegabytes is a whole number of megabytes from 64*");
     }
 
+    [Theory]
+    [InlineData(299, false)]
+    [InlineData(300, true)]
+    [InlineData(3_600, true)]
+    [InlineData(3_601, false)]
+    [InlineData(0, false)]
+    public void IdleInTransactionTimeout_Should_BeRefusedOutsideItsBounds_When_Configured(int seconds, bool valid)
+    {
+        // ARV-292: the runtime login's limit on a session idle in a transaction, set on the login by the migration job; 960 s by default.
+        var check = new DatabaseSettings { IdleInTransactionTimeoutSeconds = seconds }.EnsureValidLimits;
+
+        if (valid)
+            check.Should().NotThrow();
+        else
+            check.Should().Throw<InvalidOperationException>().WithMessage("Database:IdleInTransactionTimeoutSeconds is a whole number of seconds from 300 to 3,600 (ARV-292).");
+        new DatabaseSettings().IdleInTransactionTimeoutSeconds.Should().Be(960);
+    }
+
+    [Fact]
+    public void IdleTransactionBudget_Should_StayBelowTheDefaultLimit_When_EveryWaitTakesItsDefault()
+    {
+        // ARV-292: the inventory's waits at their settings' defaults, the longest a request on a transfer endpoint (900 s) and an
+        // alert email round sending its batch inside its claim (600 + 6 x 30 = 780 s); the default limit is above every one.
+        var budget = IdleTransactionBudget.FromConfiguration(new ConfigurationBuilder().Build(), new DatabaseSettings());
+
+        budget.Waits.Select(wait => wait.Seconds).Should().Equal(900, 780, 300, 255, 141, 64, 70);
+        budget.Longest.Seconds.Should().Be(900);
+        budget.ProblemWith(new DatabaseSettings().IdleInTransactionTimeoutSeconds).Should().BeNull();
+        IdleTransactionBudget.DefaultTransferSeconds.Should().Be(new Ariva.Api.Common.Settings.RequestTimeoutsSettings().TransferSeconds, "the budget reads the same default");
+        IdleTransactionBudget.TransferSecondsKey.Should().Be(Ariva.Api.Common.Settings.RequestTimeoutsSettings.SectionName + ":TransferSeconds");
+    }
+
+    [Theory]
+    [InlineData("Email:Smtp:TimeoutSeconds", "60", "an alert email round, its batch sent inside its claim, 960 s from Email:Smtp:TimeoutSeconds")]
+    [InlineData("Security:RequestTimeouts:TransferSeconds", "1200", "a request on a transfer endpoint (an upload, a site configuration import or export), 1,200 s from Security:RequestTimeouts:TransferSeconds")]
+    [InlineData("Kafka:Outbox:PassSeconds", "120", null)]
+    [InlineData("Kafka:Consumers:HandlerTimeoutSeconds", "120", null)]
+    public void AddArivaPersistence_Should_RefuseToStart_When_AWaitOfTheHostCouldPassTheIdleLimit(string key, string value, string named)
+    {
+        // ARV-292: a host whose own settings allow a transaction to wait longer than the server would let it stay idle stops at start,
+        // naming the wait and its setting; the Kafka bounds' maxima (124 s, 120 s) stay below the lowest limit (300 s).
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string> { [key] = value }).Build();
+
+        var add = () => new ServiceCollection().AddArivaPersistence(configuration);
+
+        if (named is null)
+            add.Should().NotThrow();
+        else
+            add.Should().Throw<InvalidOperationException>().WithMessage($"Database:IdleInTransactionTimeoutSeconds (960 s) must be above the longest a transaction of this host may wait on other work: {named} (ARV-292).*");
+    }
+
+    [Fact]
+    public void AddArivaPersistence_Should_Start_When_TheLimitIsRaisedAboveALongerWait()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        {
+            ["Email:Smtp:TimeoutSeconds"] = "300",
+            ["Database:IdleInTransactionTimeoutSeconds"] = "3600"
+        }).Build();
+
+        var add = () => new ServiceCollection().AddArivaPersistence(configuration);
+
+        add.Should().NotThrow("600 + 6 x 300 = 2,400 s and a report's 10 x 300 = 3,000 s stay below 3,600 s");
+    }
+
     [Fact]
     public void StatementTimeout_Should_StayAboveEveryClientTimeoutOfTheRuntimeLogin_When_Bounded()
     {

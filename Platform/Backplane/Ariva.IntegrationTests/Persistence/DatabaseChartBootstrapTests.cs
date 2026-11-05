@@ -169,7 +169,8 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         PurgeGrantees,
         PublicMayPurge,
         MaySetTempFileLimit,
-        TempFileLimit
+        TempFileLimit,
+        IdleLimit
     }
 
     // A switch over string literals keeps every command text constant (CA2100).
@@ -183,6 +184,7 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         Query.Telemetry => "SHOW timescaledb.telemetry_level",
         Query.MaySetTempFileLimit => "SELECT has_parameter_privilege('temp_file_limit', 'SET')",
         Query.TempFileLimit => "SHOW temp_file_limit",
+        Query.IdleLimit => "SHOW idle_in_transaction_session_timeout",
         Query.AppliedScripts => "SELECT count(*) FROM schema_version",
         Query.CreateTable => "CREATE TABLE it_not_allowed (id int)",
         // A value column: the runtime role may count rows by their key columns (the stream's upsert needs them), never read a value.
@@ -272,6 +274,8 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         (await ScalarAsync<long>(runtime, Query.AppliedScripts)).Should().BeGreaterThan(0);
         (await ScalarAsync<string>(runtime, Query.TempFileLimit)).Should().Be("1GB", "ARV-290: the job capped the runtime login's temporary files (Database:TempFileLimitMegabytes, 1,024 by default)");
         (await ScalarAsync<string>(owner, Query.TempFileLimit)).Should().Be("-1", "the migration login keeps no cap");
+        (await ScalarAsync<string>(runtime, Query.IdleLimit)).Should().Be("16min", "ARV-292: the job limited the runtime login's idle transactions");
+        (await ScalarAsync<string>(owner, Query.IdleLimit)).Should().Be("0", "the migration login keeps no limit");
         var ddl = async () => await ScalarAsync<object>(runtime, Query.CreateTable);
         (await ddl.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
 
