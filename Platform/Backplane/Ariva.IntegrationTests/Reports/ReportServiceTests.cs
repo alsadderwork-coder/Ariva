@@ -378,6 +378,7 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
         var cut = () => Ariva.Infra.Resilience.RunBound.RunAsync("Report deliveries", TimeSpan.FromSeconds(3), TimeProvider.System, round.RunAsync, Ct);
 
         await cut.Should().ThrowAsync<Ariva.Infra.Resilience.RunTimeoutException>();
+        _transport.NeverBeganEntered.Task.IsCompleted.Should().BeTrue("the cut came while the send waited to begin, not in the report's build");
         _transport.SentTo("never.begins@ariva.test").Should().Be(0);
         (await Host.ReadAsync<string>("SELECT status || ':' || attempts FROM report_delivery d JOIN \"user\" u ON u.id = d.recipient_id WHERE d.schedule_id = @id AND u.email = @secret",
             schedule.Id, "never.begins@ariva.test")).Should().Be("Pending:0", "a delivery the round was cut before is not tried: no attempt counted");
@@ -418,6 +419,9 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
         /// </summary>
         public string NeverBegins { get; set; }
 
+        /// <summary>Completed when a send to <see cref="NeverBegins"/> started waiting (so the cut came there, not in the report's build).</summary>
+        public TaskCompletionSource NeverBeganEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public Task FirstSendEntered => _entered.Task;
 
         public bool ReleasedBySend { get; private set; }
@@ -441,6 +445,7 @@ public sealed class ReportServiceTests(PostgresFixture fixture) : IAsyncDisposab
         {
             if (NeverBegins is { } stalled && emails.Any(e => string.Equals(e.Recipient, stalled, StringComparison.OrdinalIgnoreCase)))
             {
+                NeverBeganEntered.TrySetResult();
                 await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
                 return new EmailBatch(new Dictionary<Guid, string>(), emails.Select(e => e.Id).ToHashSet());
             }
