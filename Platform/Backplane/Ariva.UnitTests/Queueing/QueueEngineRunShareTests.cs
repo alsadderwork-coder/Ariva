@@ -406,6 +406,29 @@ public sealed class QueueEngineRunShareTests
     }
 
     [Fact]
+    public void Restore_Should_RefuseARun_When_ItsKeyNamesADeviceThatIsNotADeviceCode()
+    {
+        // A run's anchor applied and its window still open, so only its key is wrong.
+        var settings = new QueueEngineSettings { Lateness = TimeSpan.Zero, PushInterval = TimeSpan.Zero };
+        var engine = new QueueStateEngine(Hall, settings);
+        var now = Midnight.AddHours(10);
+        engine.Offer(new QueueTrackSeen("S-1/7", now), now, "S-1");
+        engine.Advance(now.AddSeconds(1));
+        var state = RoundTrip(engine.Capture());
+        state.Runs.Should().ContainSingle().Which.TrackKey.Should().Be("S-1/7");
+        QueueStateEngine.Restore(Hall, settings, state).Capture().Runs.Should().ContainSingle();
+        foreach (var key in new[] { "s-1/7", "S--1/7", "S-1-OF-A-LONG-NAME/7", "-S/7" })
+        {
+            var forged = state with { Runs = [state.Runs[0] with { TrackKey = key }] };
+            FluentActions.Invoking(() => QueueStateEngine.Restore(Hall, settings, forged)).Should().Throw<InvalidDataException>()
+                .WithMessage("*names a device that is not a device code*", key);
+        }
+
+        var anonymous = state with { Runs = [state.Runs[0] with { TrackKey = "loose" }] };
+        QueueStateEngine.Restore(Hall, settings, anonymous).Capture().Runs.Should().ContainSingle("a key that names no device is held to the bound alone");
+    }
+
+    [Fact]
     public void RunShareFloor_Should_StayWithinOneAndTheRunsBound_When_TheSettingsAreAtTheirExtremes()
     {
         // ARV-240 review (L3): the product fits a long, its quotient may not fit an int.

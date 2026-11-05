@@ -1117,8 +1117,9 @@ public sealed partial class QueueStateEngine
     // the choice depends on the runs held alone, so a restored engine takes back the same runs. A device flooding unique tracks so
     // leaves the others' tracks coalesced, among them a fast sensor's samples ahead of the clock, which would otherwise take a place
     // each of its share of the ahead tenth. Devices that each hold the floor can still use the runs up together (bound over floor:
-    // ten at the defaults) and keep them while they see their tracks again; the other devices' further tracks are then buffered a
-    // sample a place, and a sensor whose clock runs fast can be refused its events ahead of the clock at its share of the tenth.
+    // ten at the defaults) and keep them while they see their tracks again; the other devices' samples are then buffered a place
+    // each, so a sensor at the pilot rate (30 tracks at 5 Hz) passes its share of the buffer within the lateness and is refused its
+    // events, on time or fast (a fast one sooner, at its share of the ahead tenth).
 
     /// <summary>True when the device <paramref name="track"/> names holds its share of the runs already.</summary>
     private bool RunsOverShare(string track)
