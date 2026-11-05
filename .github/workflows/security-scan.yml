@@ -52,7 +52,8 @@ jobs:
         run: |
           if grep -Eq 'Total: [1-9]|(HIGH|CRITICAL): [1-9]' trivy-report.txt; then
             if [ -n "$PR" ] && [ "$SAME_REPO" = "true" ]; then
-              { echo '### Trivy found high or critical issues'; echo '```'; head -c 60000 trivy-report.txt; echo '```'; } > comment.md
+              # ARV-271a: Trivy's table loses its backticks (a finding's text is third-party), held by pullRequestCommentQuotes.
+              { echo '### Trivy found high or critical issues'; echo '```'; head -c 60000 trivy-report.txt | tr -d '\140'; echo '```'; } > comment.md
               gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file comment.md
             fi
             cat trivy-report.txt
