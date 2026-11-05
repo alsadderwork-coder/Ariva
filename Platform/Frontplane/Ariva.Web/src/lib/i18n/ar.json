@@ -1179,7 +1179,8 @@
 		"messages": {
 			"saved": "حُفظت سياسة الإعلانات",
 			"savedFor": "حُفظت سياسة الإعلانات للموقع {site}",
-			"notSavedFor": "لم تُحفظ سياسة الإعلانات للموقع {site}: {reason}"
+			"notSavedFor": "لم تُحفظ سياسة الإعلانات للموقع {site}: {reason}",
+			"notSavedForUnknown": "لم تُحفظ سياسة الإعلانات للموقع {site}"
 		}
 	},
 	"advertisingMedia": {

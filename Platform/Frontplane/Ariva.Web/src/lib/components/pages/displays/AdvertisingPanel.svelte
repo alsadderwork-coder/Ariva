@@ -102,14 +102,18 @@
 			policyChangedOn: from
 		});
 		busy = false;
+		/** ARV-273: a refusal told for the site it was for, once the screen moved on. */
+		const notSaved = (): void => {
+			const why = (result.errorMessages ?? []).join(' ').trim();
+			toast.error(
+				why
+					? format('advertising.messages.notSavedFor', { values: { site, reason: why } })
+					: format('advertising.messages.notSavedForUnknown', { values: { site } })
+			);
+		};
 		if (gone || siteCode !== site) {
 			// ARV-273: the screen moved on before the answer came; say what became of the save, for the site it was for.
-			if (result.hasErrors || !result.data)
-				toast.error(
-					format('advertising.messages.notSavedFor', {
-						values: { site, reason: result.errorMessages.join(' ') }
-					})
-				);
+			if (result.hasErrors || !result.data) notSaved();
 			else toast.success(format('advertising.messages.savedFor', { values: { site } }));
 			return;
 		}
@@ -118,7 +122,10 @@
 			// Another zone profile may have been published since the review, or another change saved since the form opened: the
 			// notices show them, and the form keeps what it reviews until the administrator reviews or reloads.
 			const fresh = await advertising.get(site);
-			if (gone || siteCode !== site) return;
+			if (gone || siteCode !== site) {
+				notSaved();
+				return;
+			}
 			if (
 				fresh.data &&
 				(fresh.data.publishedProfileId !== reviewed || fresh.data.changedOn !== from)

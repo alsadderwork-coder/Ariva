@@ -450,7 +450,8 @@ test('a save refused after the screen moved to another site is told in a toast w
 	const held = new Promise<void>((resolve) => (release = resolve));
 	let dmoReads = 0;
 	let siteReads = 0;
-	const refusal = "This site's advertising policy was changed since you opened it; reload it to see that change, then make yours again.";
+	// The refusal carries markup, which the toast shows as text.
+	const refusal = `This site's advertising policy was changed since you opened it; reload it to see that change, then make yours again. ${xssPayloads[1]}`;
 	await emptyLibrary(page);
 	await page.route('**/api/v1/admin/sites/DMO/advertising-policy', async (route) => {
 		if (route.request().method() === 'GET') {
@@ -496,6 +497,7 @@ test('a save refused after the screen moved to another site is told in a toast w
 	await answered;
 
 	await expect(page.locator('[data-sonner-toast]').filter({ hasText: `Advertising policy of DMO not saved: ${refusal}` })).toBeVisible();
+	await expect(page.locator(injected)).toHaveCount(0);
 	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 	const shown = page.getByTestId('advertising-policy');
 	await expect(shown).toHaveAttribute('data-allowed', 'false');

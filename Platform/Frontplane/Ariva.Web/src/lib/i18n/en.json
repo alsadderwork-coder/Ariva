@@ -1179,7 +1179,8 @@
 		"messages": {
 			"saved": "Advertising policy saved",
 			"savedFor": "Advertising policy of {site} saved",
-			"notSavedFor": "Advertising policy of {site} not saved: {reason}"
+			"notSavedFor": "Advertising policy of {site} not saved: {reason}",
+			"notSavedForUnknown": "Advertising policy of {site} not saved"
 		}
 	},
 	"advertisingMedia": {

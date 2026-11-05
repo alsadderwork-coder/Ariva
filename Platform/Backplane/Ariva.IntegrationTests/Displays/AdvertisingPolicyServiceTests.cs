@@ -613,6 +613,35 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
     }
 
     [Fact]
+    public async Task Change_Should_BeRefused_When_ItWasMadeFromTheCreationVersionAndAPodWithAClockBehindChangedThePolicy()
+    {
+        // ARV-273 review: a pod whose clock is behind the one that created the policy stamps its change after the creation
+        // (AuditInterceptor.After), so a second change made from the creation version is still refused.
+        var admin = await AdminAsync("it.ad.skew.admin");
+        (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcSites>().CreateAsync(new CreateSiteRequest("ADV6", "Advertising clock test site"), Ct)))
+            .HasErrors.Should().BeFalse();
+        var created = await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV6", Off("Border authority asked for no advertising, ref BA-273s"), Ct));
+        created.HasErrors.Should().BeFalse(string.Join(", ", created.ErrorMessages ?? []));
+        (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("ADV6", Ct))).Data.ChangedOn
+            .Should().Be(created.Data.ChangedOn, "the answer to a site's first change names the version a later read gives");
+
+        _host.Clock.Advance(TimeSpan.FromSeconds(-5));
+        var first = await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV6",
+            Off("Border authority asked for no advertising, ref BA-273t") with { PolicyChangedOn = created.Data.ChangedOn }, Ct));
+        var second = await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV6",
+            Off("Border authority asked for no advertising, ref BA-273u") with { PolicyChangedOn = created.Data.ChangedOn }, Ct));
+        var third = await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV6",
+            Off("Border authority asked for no advertising, ref BA-273v") with { PolicyChangedOn = first.Data?.ChangedOn }, Ct));
+
+        first.HasErrors.Should().BeFalse(string.Join(", ", first.ErrorMessages ?? []));
+        first.Data.ChangedOn.Should().BeAfter(created.Data.ChangedOn.Value, "stamped after the creation, whatever this pod's clock says");
+        second.ErrorMessages.Should().Equal(AdvertisingPolicyErrors.ChangedSinceLoaded);
+        third.HasErrors.Should().BeFalse(string.Join(", ", third.ErrorMessages ?? []));
+        third.Data.ChangedOn.Should().BeAfter(first.Data.ChangedOn.Value);
+        (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("ADV6", Ct))).Data.Reason.Should().Be("Border authority asked for no advertising, ref BA-273v");
+    }
+
+    [Fact]
     public async Task Change_Should_BeRefusedAndKeepThePolicy_When_ItWasMadeFromAnotherVersionThanTheStoredOne()
     {
         // ARV-273: two administrators opened the same policy; the second save, made from the version the first replaced, is
