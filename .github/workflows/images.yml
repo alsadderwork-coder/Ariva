@@ -90,7 +90,8 @@ jobs:
         run: |
           if grep -Eq 'Total: [1-9]' trivy-image.txt; then
             if [ -n "$PR" ] && [ "$SAME_REPO" = "true" ]; then
-              { echo "### Trivy image scan: $IMAGE_NAME has high or critical findings"; echo '```'; grep -A400 'Total: [1-9]' trivy-image.txt | head -c 50000; echo '```'; } > comment.md
+              # ARV-271a: Trivy's table loses its backticks (a finding's text is third-party), held by pullRequestCommentQuotes.
+              { echo "### Trivy image scan: $IMAGE_NAME has high or critical findings"; echo '```'; grep -A400 'Total: [1-9]' trivy-image.txt | head -c 50000 | tr -d '\140'; echo '```'; } > comment.md
               gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file comment.md
             fi
             cat trivy-image.txt

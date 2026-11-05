@@ -48,6 +48,7 @@ const ACCOUNTS = path.join(E2E, 'tests', 'support', 'accounts.ts');
 const KEYS = path.join(E2E, '.e2e-keys');
 const CI_WORKFLOW = path.resolve(E2E, '..', '..', '..', '.github', 'workflows', 'ci.yml');
 const MUTATION_WORKFLOW = path.resolve(E2E, '..', '..', '..', '.github', 'workflows', 'mutation.yml');
+const WORKFLOWS = path.resolve(E2E, '..', '..', '..', '.github', 'workflows');
 export const DEFAULT_PATHS = ['playwright-report', 'test-results'].map((folder) => path.join(E2E, folder));
 
 export { SHAPES };
@@ -281,6 +282,50 @@ export function checkArtifacts(paths, { requireSeed = false, env = process.env, 
 // `shell: bash {0}` drops the default's -e).
 const ERREXIT_OFF = /\bset\s+(?:\+[A-Za-z]*e[A-Za-z]*\b|\+o\s+errexit\b)|^\s*shell:/m;
 
+// ARV-271a: a check step's script that can leave its check line unrun: an exit, exec or return, a here-document (whose text
+// is never run), or a function defined (whose body runs only if called).
+const CHECK_SKIPPED = /\b(?:exit|exec|return)\b|<<|^\s*(?:function\s+[\w-]+|[\w-]+\s*\(\s*\))/m;
+
+// ARV-271a: a command that writes into checked/ (a redirection or tee into it, or a copy, move, link or unpack naming it).
+const WRITES_CHECKED = /(?:>{1,2}|\btee\b[^|;&\n]*?)\s*["']?(?:\.\/)?checked\b|\b(?:cp|mv|ln|rsync|install|tar|unzip|touch|mkdir|dd)\b[^|;&\n]*["'\s=]-?(?:C\s*)?["']?(?:\.\/)?checked\b/;
+
+/** A step's name, or its place when it has none. */
+const nameOf = (step, i) => /^(?:name: |\s*name: )(.*)$/m.exec(step)?.[1] ?? `step ${i + 1}`;
+
+/** The lines of a step's run script (a block's lines, or the one line of a plain run). */
+function scriptOf(step) {
+	// Spaces only: a \s would take the blank lines a removed comment leaves into the run key's indentation.
+	const block = /^([ \t]*)run: [|>][-+]?[ \t]*\n/m.exec(step);
+	if (block) {
+		const lines = [];
+		for (const line of step.slice(block.index + block[0].length).split('\n')) {
+			if (line.trim() === '') continue;
+			if (line.search(/\S/) <= block[1].length) break;
+			lines.push(line);
+		}
+		return lines;
+	}
+	const plain = /^[ \t]*run: (.+)$/m.exec(step);
+	return plain ? [plain[1]] : [];
+}
+
+/**
+ * ARV-271a: what is wrong with a check step's check line: it must be the script's last line, at the script's own indentation (in
+ * no loop, test or group), in a script without a function, an exit, exec or return, or a here-document, so the check always runs.
+ */
+function checkLineProblems(step, what) {
+	const lines = scriptOf(step);
+	const last = lines.at(-1) ?? '';
+	const base = lines[0]?.search(/\S/) ?? -1;
+	const problems = [];
+	if (!/^\s*node \S*artifact-secrets\.mjs checked\s*$/.test(last) || last.search(/\S/) !== base) problems.push(`the ${what} does not end with its check of checked/, at the script's own level`);
+	if (CHECK_SKIPPED.test(lines.join('\n'))) problems.push(`the ${what} can leave its check unrun (an exit, exec or return, a here-document or a function)`);
+	return problems;
+}
+
+/** An upload or read path that leaves the folder it starts with (a .. segment). */
+const climbs = (p) => /(?:^|\/)\.\.(?:\/|$)/.test(p);
+
 /**
  * ARV-252: the backend job's wiring in a CI workflow's text (.github/workflows/ci.yml), read step by step with comments left
  * out (whole lines and a comment after a value), so a step is read by what it runs:
@@ -288,24 +333,20 @@ const ERREXIT_OFF = /\bset\s+(?:\+[A-Za-z]*e[A-Za-z]*\b|\+o\s+errexit\b)|^\s*she
  *   executable, writes its output to unit.log or integration.log alone (never teed to the public job log), has a timeout of
  *   its own (so a hung suite still leaves the check its time) and comes before the check;
  * - the test log check (id test-logs, one step) runs after a failed suite too, cannot be told to continue on an error,
- *   copies unit.log, integration.log and TestResults to checked/ and checks that copy, so nothing a suite writes later
- *   reaches the steps after it;
- * - before it no other step reads a log or uploads anything; after it every log or result a step names is the checked copy
- *   (restore.log and build.log, the compiler's, aside), every upload's path is under checked/, a step that names the copy
- *   waits for the check's success (in its if, or by LOGS_CHECKED taken from the check's outcome and tested in its script),
- *   and a step that prints with cat stops workflow commands around it with a random token and resumes on a line of its own.
+ *   copies unit.log, integration.log and TestResults to checked/ and checks that copy, its check the script's last line at
+ *   its own level, so nothing a suite writes later reaches the steps after it (ARV-271a);
+ * - before it no other step reads a log (by name, through a variable or a glob) or the test results (the count guards' --trx
+ *   aside) or uploads anything; after it every log or result a step names is the checked copy (restore.log and build.log,
+ *   the compiler's, aside), no step writes into checked/, every upload's path is under checked/ without a .. segment, a step
+ *   that names the copy waits for the check's success (in its if, exactly `!cancelled() && steps.test-logs.outcome ==
+ *   'success'`, or by LOGS_CHECKED taken from the check's outcome, every line naming a checked log inside its `if [
+ *   "$LOGS_CHECKED" = success ]` block), and a step that prints with cat stops workflow commands around it with a random
+ *   token and resumes on a line of its own.
  * Returns what is wrong, empty when the wiring holds.
  */
 export function backendLogWiring(workflow) {
-	const start = workflow.search(/^ {2}backend:\s*$/m);
-	if (start < 0) return ['no backend job'];
-	const rest = workflow.slice(start + 1);
-	const end = rest.search(/^ {2}[A-Za-z][\w-]*:\s*$/m);
-	const steps = (end < 0 ? rest : rest.slice(0, end))
-		.split(/^ {6}- /m)
-		.slice(1)
-		.map((step) => step.replace(/^\s*#.*$/gm, '').replace(/[ \t]+#.*$/gm, ''));
-	const nameOf = (step, i) => /^(?:name: |\s*name: )(.*)$/m.exec(step)?.[1] ?? `step ${i + 1}`;
+	const steps = jobSteps(workflow, 'backend');
+	if (!steps) return ['no backend job'];
 	const problems = [];
 	const check = steps.findIndex((s) => /^\s*id: test-logs\s*$/m.test(s));
 	if (check < 0 || steps.filter((s) => /^\s*id: test-logs\s*$/m.test(s)).length > 1) return ['not one test log check (id: test-logs)'];
@@ -332,31 +373,55 @@ export function backendLogWiring(workflow) {
 	if (/^\s*continue-on-error:/m.test(checkStep)) problems.push('the test log check may continue on an error');
 	if (ERREXIT_OFF.test(checkStep)) problems.push('the test log check turns off stopping on an error (set +e or the like, or a shell of its own)');
 	if (!/^\s*for item in unit\.log integration\.log TestResults\b[^\n]*; do\s*$/m.test(checkStep) || !/cp -RL "\$item" checked\//.test(checkStep)) problems.push('the test log check does not copy unit.log, integration.log and TestResults to checked/ with links followed (cp -RL)');
-	if (!/^\s*node \S*artifact-secrets\.mjs checked\s*$/m.test(checkStep)) problems.push('the test log check does not check the copy in checked/ (and that alone)');
+	for (const problem of checkLineProblems(checkStep, 'test log check')) problems.push(problem);
 	const allowed = new Set(['checked/unit.log', 'checked/integration.log', 'restore.log', 'build.log']);
 	steps.forEach((step, i) => {
 		if (i === check || /\bdotnet\s+\S*Tests\.dll\b/.test(step)) return;
 		const name = nameOf(step, i);
 		const named = [...step.matchAll(/(?<![\w%])[\w./*$-]*[\w*]\.log\b/g)].map((m) => m[0]);
-		const results = [...step.matchAll(/[\w./*${}-]*TestResults[\w./*-]*/g)].map((m) => m[0]);
+		// The count guards read the TRX files by --trx before the check (test-count-guard.mjs prints case names only).
+		const guard = /\bnode scripts\/test-count-guard\.mjs\b/.test(step);
+		const results = [...step.replace(guard ? /--trx TestResults\/[\w.-]+\.trx\b/g : /$^/, '').matchAll(/[\w./*${}-]*TestResults[\w./*-]*/g)].map((m) => m[0]);
 		const uploads = /^\s*uses: actions\/upload-artifact@/m.test(step);
 		if (i < check) {
-			if (named.some((log) => /^(?:unit|integration)\.log$|\*/.test(log))) problems.push(`"${name}" reads a test log before the test log check`);
+			if (named.some((log) => /^(?:unit|integration)\.log$|[*$]/.test(log))) problems.push(`"${name}" reads a test log before the test log check`);
+			if (results.length) problems.push(`"${name}" reads the test results before the test log check`);
 			if (uploads) problems.push(`"${name}" uploads before the test log check`);
 			return;
 		}
 		for (const log of named) if (!allowed.has(log)) problems.push(`"${name}" reads ${log}, not the checked copy`);
-		for (const result of results) if (!result.startsWith('checked/TestResults')) problems.push(`"${name}" reads ${result}, not the checked copy`);
-		if (uploads) for (const [, path] of step.matchAll(/^\s*path: (.*)$/gm)) if (!path.trim().startsWith('checked/')) problems.push(`"${name}" uploads ${path.trim()}, not the checked copy`);
+		for (const result of results) if (!result.startsWith('checked/TestResults') || climbs(result)) problems.push(`"${name}" reads ${result}, not the checked copy`);
+		if (uploads) for (const [, path] of step.matchAll(/^\s*path: (.*)$/gm)) if (!path.trim().startsWith('checked/') || climbs(path.trim())) problems.push(`"${name}" uploads ${path.trim()}, not the checked copy`);
+		if (WRITES_CHECKED.test(step)) problems.push(`"${name}" writes into checked/ after the check`);
 		if (!step.includes('checked/')) return;
-		// ARV-271: a gate joined to anything by || (always() || ...) does not wait for the check.
-		const inIf = /^\s*if: [^\n]*steps\.test-logs\.outcome == 'success'/m.test(step) && !/^\s*if: [^\n]*\|\|/m.test(step);
+		// ARV-271a: the gate exactly as the workflow writes it (a negated or or-ed one does not wait for the check).
+		const inIf = /^\s*if: \$\{\{ !cancelled\(\) && steps\.test-logs\.outcome == 'success' \}\}\s*$/m.test(step);
 		const inScript = /^\s*LOGS_CHECKED: \$\{\{ steps\.test-logs\.outcome \}\}\s*$/m.test(step) && /\[ "\$LOGS_CHECKED" = success \]/.test(step);
 		if (!inIf && !inScript) problems.push(`"${name}" reads the checked copy without waiting for the check's success`);
+		if (!inIf && inScript && outsideGate(step).length) problems.push(`"${name}" reads a checked log outside its LOGS_CHECKED block`);
 		if (/\bcat\b/.test(step) && !(/token=\$\(openssl rand -hex (?:1[6-9]|[2-9]\d)\)/.test(step) && step.includes('echo "::stop-commands::$token"') && step.includes(`printf '\\n::%s::\\n' "$token"`)))
 			problems.push(`"${name}" prints with workflow commands live (a random token, stopped before and resumed on a line of its own after)`);
 	});
 	return problems;
+}
+
+/**
+ * ARV-271a: the lines of a step's script that name a checked log (checked/<name>.log, a glob among them) outside an `if [
+ * "$LOGS_CHECKED" = success ]; then` block, which ends at the first else, elif or fi at its own level or above.
+ */
+function outsideGate(step) {
+	const outside = [];
+	let gate = -1;
+	for (const line of scriptOf(step)) {
+		const level = line.search(/\S/);
+		if (gate >= 0 && level <= gate && /^\s*(?:else|elif|fi)\b/.test(line)) gate = -1;
+		if (gate < 0 && /^\s*if \[ "\$LOGS_CHECKED" = success \]; then\s*$/.test(line)) {
+			gate = level;
+			continue;
+		}
+		if (gate < 0 && /\bchecked\/[\w*?[\]$.{}-]*\.log\b/.test(line)) outside.push(line.trim());
+	}
+	return outside;
 }
 
 /** The steps of one job of a workflow, comments taken out, as backendLogWiring reads them. */
@@ -375,8 +440,11 @@ function jobSteps(workflow, job) {
  * ARV-271 (CWE-532): the mutation workflow (.github/workflows/mutation.yml, public artifacts) checks Stryker's log and report before
  * it uploads them, as backendLogWiring holds CI's backend job: one check (id mutation-logs) that runs after a failed run, cannot be
  * told to go on after an error, copies .verify/mutation.log and .verify/stryker/reports to checked/ with links followed and checks
- * that copy alone; no upload before it; and every upload after it waits for its success (an if no || can open) and takes its
- * paths from checked/ only. Returns what is wrong, empty when the wiring holds.
+ * that copy alone, its check the script's last line at its own level (ARV-271a); no upload before it; every upload after it waits
+ * for its success (an if no || can open) and takes its paths from checked/ only, without a .. segment. The run is the one command
+ * of its step (node mutation-run.mjs --log, nothing before or after it on the line, so no inline variable overrides its quiet
+ * setting and no read rides on it), and no other step names .verify (a glob read included) or checked/, so nothing reads the log
+ * or the report in place and nothing writes into the copy after the check. Returns what is wrong, empty when the wiring holds.
  */
 export function mutationLogWiring(workflow) {
 	const steps = jobSteps(workflow, 'stryker');
@@ -391,54 +459,246 @@ export function mutationLogWiring(workflow) {
 	if (ERREXIT_OFF.test(checkStep)) problems.push('the mutation log check turns off stopping on an error (set +e or the like, or a shell of its own)');
 	if (!/^\s*for item in \.verify\/mutation\.log \.verify\/stryker\/reports; do\s*$/m.test(checkStep) || !/cp -RL "\$item" checked\//.test(checkStep))
 		problems.push('the mutation log check does not copy the log and the report to checked/ with links followed (cp -RL)');
-	if (!/^\s*node \S*artifact-secrets\.mjs checked\s*$/m.test(checkStep)) problems.push('the mutation log check does not check the copy in checked/ (and that alone)');
+	for (const problem of checkLineProblems(checkStep, 'mutation log check')) problems.push(problem);
 	let uploads = 0;
+	const uploadSteps = new Set();
 	steps.forEach((step, i) => {
 		if (!/^\s*uses: actions\/upload-artifact@/m.test(step)) return;
 		uploads++;
-		const name = /^(?:name: |\s*name: )(.*)$/m.exec(step)?.[1] ?? `step ${i + 1}`;
+		uploadSteps.add(i);
+		const name = nameOf(step, i);
 		if (i < check) problems.push(`"${name}" uploads before the mutation log check`);
 		if (!/^\s*if: \$\{\{ !cancelled\(\) && steps\.mutation-logs\.outcome == 'success' \}\}\s*$/m.test(step)) problems.push(`"${name}" uploads without waiting for the mutation log check's success`);
 		const block = /^\s*path: \|\s*\n((?:\s{12,}\S[^\n]*\n?)+)/m.exec(step);
 		const paths = block ? block[1].split('\n').map((line) => line.trim()).filter(Boolean) : [...step.matchAll(/^\s*path: (.+)$/gm)].map((m) => m[1].trim());
 		if (paths.length === 0) problems.push(`"${name}" names no path`);
-		for (const p of paths) if (!p.startsWith('checked/')) problems.push(`"${name}" uploads ${p}, not the checked copy`);
+		for (const p of paths) if (!p.startsWith('checked/') || climbs(p)) problems.push(`"${name}" uploads ${p}, not the checked copy`);
 	});
 	if (uploads === 0) problems.push('no step uploads the checked report');
-	// Stryker's output stays out of the public job log: the run writes it to the log file only, and no other step reads the log or
-	// the report where the run wrote them (the check reads its copy in checked/).
-	const runs = steps.filter((s) => /mutation-run\.mjs" --log /.test(s) || /mutation-run\.mjs --log /.test(s));
+	// Stryker's output stays out of the public job log: the run writes it to the log file only, and is the one command of its
+	// step; no other step names the log, the report or .verify at all.
+	const runs = steps.filter((s) => /mutation-run\.mjs"? --log /.test(s));
 	if (runs.length !== 1) problems.push('not one mutation run (mutation-run.mjs --log)');
-	else if (!/^\s*ARIVA_MUTATION_QUIET: 'true'\s*$/m.test(runs[0]) || /\btee\b/.test(runs[0])) problems.push("the mutation run prints Stryker's output to the job log (ARIVA_MUTATION_QUIET: 'true', no tee)");
+	else {
+		const lines = scriptOf(runs[0]);
+		const command = (lines[0] ?? '').trim().replaceAll('"$GITHUB_WORKSPACE/', '"');
+		if (!/^\s*ARIVA_MUTATION_QUIET: 'true'\s*$/m.test(runs[0]) || /\btee\b/.test(runs[0])) problems.push("the mutation run prints Stryker's output to the job log (ARIVA_MUTATION_QUIET: 'true', no tee)");
+		if (lines.length !== 1 || !/^node "scripts\/mutation-run\.mjs" --log /.test(command) || /[;&|<>`]|\$[({\w]/.test(command))
+			problems.push('the mutation run is not the one command of its step (node mutation-run.mjs --log, nothing before or after it)');
+	}
 	steps.forEach((step, i) => {
 		if (i === check || runs.includes(step)) return;
-		const name = /^(?:name: |\s*name: )(.*)$/m.exec(step)?.[1] ?? `step ${i + 1}`;
-		if (/\.verify\/(?:mutation\.log|stryker)/.test(step)) problems.push(`"${name}" reads the mutation log or report in place, not the checked copy`);
+		const name = nameOf(step, i);
+		if (/\.verify\b/.test(step)) problems.push(`"${name}" reads the mutation log or report in place (it names .verify), not the checked copy`);
+		if (!uploadSteps.has(i) && /\bchecked\b/.test(step)) problems.push(`"${name}" names checked/ outside the check and the uploads (a write into the copy after the check)`);
 	});
 	return problems;
 }
 
+/** A shell script's pipelines: split at ;, &, &&, || and line ends outside quotes (a pipe's | keeps them together). */
+function pipelinesOf(script) {
+	const pipelines = [];
+	let current = '';
+	let quote = null;
+	for (let i = 0; i < script.length; i++) {
+		const c = script[i];
+		if (quote === "'") {
+			current += c;
+			if (c === "'") quote = null;
+			continue;
+		}
+		if (c === '\\' && i + 1 < script.length) {
+			current += c + script[++i];
+			continue;
+		}
+		if (quote === '"') {
+			current += c;
+			if (c === '"') quote = null;
+			continue;
+		}
+		if (c === "'" || c === '"') {
+			quote = c;
+			current += c;
+			continue;
+		}
+		const pair = script.slice(i, i + 2);
+		if (c === '\n' || c === ';' || pair === '&&' || pair === '||' || c === '&') {
+			pipelines.push(current);
+			current = '';
+			if (pair === '&&' || pair === '||') i++;
+			continue;
+		}
+		current += c;
+	}
+	pipelines.push(current);
+	return pipelines.map((p) => p.trim()).filter(Boolean);
+}
+
+/** The parts of a pipeline between its pipes, outside quotes. */
+function segmentsOf(pipeline) {
+	const segments = [];
+	let current = '';
+	let quote = null;
+	for (let i = 0; i < pipeline.length; i++) {
+		const c = pipeline[i];
+		if (quote) {
+			current += c;
+			if (c === '\\' && quote === '"' && i + 1 < pipeline.length) current += pipeline[++i];
+			else if (c === quote) quote = null;
+			continue;
+		}
+		if (c === "'" || c === '"') quote = c;
+		if (c === '|') {
+			segments.push(current.trim());
+			current = '';
+			continue;
+		}
+		current += c;
+	}
+	segments.push(current.trim());
+	return segments;
+}
+
+/** True when a script substitutes a command (a $( or a backtick outside single quotes): its output would escape the rule. */
+function substitutes(script) {
+	let quote = null;
+	for (let i = 0; i < script.length; i++) {
+		const c = script[i];
+		if (quote === "'") {
+			if (c === "'") quote = null;
+			continue;
+		}
+		if (c === '\\') {
+			i++;
+			continue;
+		}
+		if (c === '`' || (c === '$' && script[i + 1] === '(')) return true;
+		if (c === '"') quote = quote ? null : '"';
+		else if (c === "'" && !quote) quote = "'";
+	}
+	return false;
+}
+
+// Words that only open or close a shell construct, and commands that print nothing a file holds (echo and printf print their own
+// arguments; a grep -q tests; gh posts the comment).
+const KEYWORDS = new Set(['{', '}', '(', ')', '!', 'if', 'then', 'else', 'elif', 'do', 'while', 'until']);
+const QUIET = new Set(['echo', 'printf', '[', '[[', 'test', 'true', 'false', 'continue', 'break', 'exit', 'set', 'shift', 'fi', 'done', 'esac', 'for', 'gh']);
+
 /**
- * ARV-271: the E2E job's failure comment (its "Report failures on the pull request" step) quotes no backtick from a log line:
- * every line of its script that reads a log with grep, sed or tail (a grep -q test aside) ends its pipe with tr -d '\140', so a
- * line holding three backticks cannot end the code block and have the rest read as Markdown (an @mention among it). Returns what
- * is wrong, empty when the comment holds it.
+ * ARV-271 and ARV-271a (CWE-532 and Markdown injection): what is wrong with a step that writes a pull request comment from text it
+ * did not write (a log, a scanner's table, a registry's answer): every pipeline of its script that prints anything but its own
+ * words (any command but echo, printf, a test, a grep -q, an assignment, a loop's head or gh) ends with tr -d '\140', so a line
+ * holding three backticks cannot end the code block and have the rest read as Markdown (an @mention among it); and the script
+ * substitutes no command ($( or a backtick), whose output would reach an echo unfiltered. Inline variables before a command (LC_ALL=C
+ * grep) and the words of if, while and the like are looked through. Returns what is wrong, empty when the step holds it.
+ */
+export function commentQuotes(step, file) {
+	const script = commentScript(step, file);
+	if (script === null) return ['the comment posts a file its step does not write (the check cannot read it)'];
+	const problems = [];
+	if (substitutes(script)) problems.push('the comment substitutes a command ($( or a backtick), whose output it could quote unfiltered');
+	let quoted = 0;
+	for (const pipeline of pipelinesOf(script)) {
+		const segments = segmentsOf(pipeline);
+		const words = segments[0].split(/\s+/);
+		while (words.length && (KEYWORDS.has(words[0]) || /^[A-Za-z_]\w*=/.test(words[0]))) {
+			if (/^[A-Za-z_]\w*=/.test(words[0]) && words.length === 1 && segments.length === 1) words.length = 0;
+			else words.shift();
+		}
+		const command = words[0];
+		if (command === undefined || command.startsWith('>')) continue;
+		const grepTest = command === 'grep' && /^-[A-Za-z]*q[A-Za-z]*$/.test(words[1] ?? '');
+		if ((QUIET.has(command) || grepTest) && segments.length === 1) continue;
+		quoted++;
+		if (segments.length < 2 || segments.at(-1) !== "tr -d '\\140'") problems.push(`the comment quotes "${pipeline.slice(0, 60)}" with its backticks`);
+	}
+	if (quoted === 0) problems.push('the comment quotes nothing (the check reads nothing)');
+	return problems;
+}
+
+/**
+ * The part of a comment step's script that writes the comment's body file (gh's --body-file): the commands of each { ... } group
+ * redirected into it, on one line or many, and each command redirected into it on its own. What the step prints to its job log
+ * (a cat after the comment) is not part of it. The file is gh's --body-file in the step, or the one given (a comment another step
+ * posts). Null when the step writes no part of the file.
+ */
+function commentScript(step, given) {
+	const file = given ?? /--body-file\s+"?([\w./-]+)"?/.exec(step)?.[1];
+	if (!file) return null;
+	const into = `>{1,2}\\s*"?${file.replace(/[.]/g, '\\.')}"?\\s*$`;
+	const lines = scriptOf(step);
+	const parts = [];
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i].trim();
+		const oneLine = new RegExp(`^\\{(.*)\\}\\s*${into}`).exec(line);
+		if (oneLine) {
+			parts.push(oneLine[1]);
+			continue;
+		}
+		if (line.startsWith('{')) {
+			const end = lines.findIndex((l, j) => j > i && new RegExp(`^\\s*\\}\\s*${into}`).test(l));
+			if (end < 0) continue;
+			parts.push(line.slice(1), ...lines.slice(i + 1, end));
+			i = end;
+			continue;
+		}
+		const single = new RegExp(`^(.*?)\\s*${into}`).exec(line);
+		if (single) parts.push(single[1]);
+	}
+	return parts.length ? parts.join('\n') : null;
+}
+
+/**
+ * ARV-271: the E2E job's failure comment (its "Report failures on the pull request" step) quotes no backtick from a log line, by
+ * commentQuotes (ARV-271a: every reader, not only the lines starting with grep, sed or tail). Returns what is wrong, empty when
+ * the comment holds it.
  */
 export function e2eCommentQuotes(workflow) {
-	const steps = jobSteps(workflow, 'e2e');
-	if (!steps) return ['no e2e job'];
+	return failureCommentQuotes(workflow, 'e2e');
+}
+
+/** ARV-271a: a job's "Report failures on the pull request" step, by commentQuotes (the backend job's as the E2E job's). */
+export function failureCommentQuotes(workflow, job) {
+	const steps = jobSteps(workflow, job);
+	if (!steps) return [`no ${job} job`];
 	const step = steps.find((s) => /^(?:name: |\s*name: )Report failures on the pull request\s*$/m.test(s));
-	if (!step) return ['no "Report failures on the pull request" step in the e2e job'];
+	if (!step) return [`no "Report failures on the pull request" step in the ${job} job`];
+	return commentQuotes(step);
+}
+
+/**
+ * ARV-271a: the backend job's test counts comment: its "Post test counts on the pull request" step posts test-summary.md, which the
+ * "Test counts" step writes, so that step's lines into the file are read by commentQuotes (the counts and the suite's name come
+ * from fixed patterns of the TRX's own attributes, read by grep -o). Returns what is wrong, empty when it holds.
+ */
+export function summaryCommentQuotes(workflow) {
+	const steps = jobSteps(workflow, 'backend');
+	if (!steps) return ['no backend job'];
+	const post = steps.find((s) => /--body-file test-summary\.md\b/.test(s));
+	const write = steps.find((s) => /^(?:name: |\s*name: )Test counts \(fails when a suite ran no tests\)\s*$/m.test(s));
+	if (!post || !write) return ['no test counts comment (a step writing test-summary.md and one posting it)'];
+	return commentQuotes(write, 'test-summary.md');
+}
+
+/**
+ * ARV-271a: every other workflow's pull request comments (a step that runs gh pr comment or gh issue comment) quote what they did
+ * not write by commentQuotes. CI's own are held apart: its failure comments by failureCommentQuotes and its test counts comment by
+ * summaryCommentQuotes. Takes [file name, text] pairs; returns what is wrong, each naming the file and the step.
+ */
+export function pullRequestCommentQuotes(workflows) {
 	const problems = [];
-	let quoted = 0;
-	for (const raw of step.split('\n')) {
-		const line = raw.trim();
-		if (!/^(?:grep|sed|tail)\b/.test(line) || /^grep -q/.test(line)) continue;
-		quoted++;
-		const pipe = line.split('; echo')[0];
-		if (!/\| tr -d '\\140'$/.test(pipe)) problems.push(`the failure comment quotes "${line.slice(0, 60)}" with its backticks`);
+	let comments = 0;
+	for (const [file, text] of workflows) {
+		if (file === 'ci.yml') continue;
+		for (const [, job] of text.matchAll(/^ {2}([A-Za-z][\w-]*):\s*$/gm)) {
+			(jobSteps(text, job) ?? []).forEach((step, i) => {
+				if (!/\bgh (?:pr|issue) comment\b/.test(scriptOf(step).join('\n'))) return;
+				comments++;
+				for (const problem of commentQuotes(step)) problems.push(`${file}: "${nameOf(step, i)}": ${problem}`);
+			});
+		}
 	}
-	if (quoted === 0) problems.push('the failure comment quotes no log line (the check reads nothing)');
+	if (comments === 0) problems.push('no workflow but ci.yml posts a pull request comment (the check reads nothing)');
 	return problems;
 }
 
@@ -726,6 +986,85 @@ function selfTest() {
 			if (changed === null || changed === mutation) problems.push(`mutation.yml no longer has the text that ${label} changes: update the wiring cases`);
 			else if (mutationLogWiring(changed).length === 0) problems.push(`the mutation wiring check passes ${label}`);
 		}
+		// ARV-271a: the edits that passed the wiring checks before: the test results read before the check, a log read outside a
+		// step's LOGS_CHECKED block (before it, or in its else), a log named through a variable, a negated gate, the check line
+		// in a function, after an exit or in a here-document, an upload through checked/../ and a write into checked/ after the
+		// check.
+		const backendMore = {
+			'the test results read before the check': replace('      - name: Test logs hold no secret (CWE-532)\n', '      - name: Peek at the results\n        run: head -c 200 TestResults/unit-tests.trx\n      - name: Test logs hold no secret (CWE-532)\n'),
+			'a log read before its LOGS_CHECKED block': replace('          if [ "$LOGS_CHECKED" = success ]; then\n            for log in', '          tail -n 3 checked/unit.log >> test-summary.md\n          if [ "$LOGS_CHECKED" = success ]; then\n            for log in'),
+			"a log read in its LOGS_CHECKED block's else": replace('              echo "#### Test logs: not quoted', '              tail -n 3 checked/unit.log\n              echo "#### Test logs: not quoted'),
+			'a log named through a variable before the check': replace('      - name: Test logs hold no secret (CWE-532)\n', '      - name: Peek at a log\n        run: suite=unit; tail -n 3 "$suite.log"\n      - name: Test logs hold no secret (CWE-532)\n'),
+			'a negated gate': replace("if: ${{ !cancelled() && steps.test-logs.outcome == 'success' }}\n        uses: actions/upload-artifact", "if: ${{ !cancelled() && !(steps.test-logs.outcome == 'success') }}\n        uses: actions/upload-artifact"),
+			'the check in a function never called': replace('          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068', '          check() {\n            node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n          }\n      # ARV-068'),
+			'the check after an exit': replace('          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068', '          exit 0\n          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068'),
+			'the check in a here-document': replace('          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068', "          cat > /dev/null <<'END'\n          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      # ARV-068"),
+			'an upload through checked/../': replace('path: checked/TestResults\n', 'path: checked/../TestResults\n'),
+			'a write into checked/ after the check': replace('          token=$(openssl rand -hex 16)\n          for log in checked/unit.log', '          cp unit.log checked/unit.log\n          token=$(openssl rand -hex 16)\n          for log in checked/unit.log')
+		};
+		for (const [label, change] of Object.entries(backendMore)) {
+			const changed = change(workflow);
+			if (changed === null || changed === workflow) problems.push(`ci.yml no longer has the text that ${label} changes: update the wiring cases`);
+			else if (backendLogWiring(changed).length === 0) problems.push(`the wiring check passes ${label}`);
+		}
+		const mutationMore = {
+			'an upload through checked/../': replace('            checked/mutation.log\n', '            checked/../mutation.log\n'),
+			'a write into the copy after the check, in the check step': replace('          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      - name: Mutation report', '          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n          cp .verify/mutation.log checked/late.log\n      - name: Mutation report'),
+			'a write into the copy in a step before the upload': replace('      - name: Mutation report\n', '      - name: Late copy\n        run: date > checked/late.txt\n      - name: Mutation report\n'),
+			'a read on the run line': replace('--output "$GITHUB_WORKSPACE/.verify/stryker"\n', '--output "$GITHUB_WORKSPACE/.verify/stryker"; tail -n 5 .verify/mutation.log\n'),
+			'an inline quiet setting before the run': replace('run: node "$GITHUB_WORKSPACE/scripts/mutation-run.mjs"', 'run: ARIVA_MUTATION_QUIET=false node "$GITHUB_WORKSPACE/scripts/mutation-run.mjs"'),
+			'a glob read of the log': replace('      - name: Mutation report\n', '      - name: Print the logs\n        run: cat .verify/*.log\n      - name: Mutation report\n'),
+			'the check in a function never called': replace('          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n      - name: Mutation report', '          check() {\n            node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n          }\n      - name: Mutation report')
+		};
+		for (const [label, change] of Object.entries(mutationMore)) {
+			const changed = change(mutation);
+			if (changed === null || changed === mutation) problems.push(`mutation.yml no longer has the text that ${label} changes: update the wiring cases`);
+			else if (mutationLogWiring(changed).length === 0) problems.push(`the mutation wiring check passes ${label}`);
+		}
+		// Every reader of a failure comment, not only grep, sed or tail lines: head, cat, awk, a grep behind an inline variable, a
+		// grep joined by && or after a grep -q, and a substitution in an echo; and the backend job's failure comment as the E2E one.
+		const webServer = "              grep '\\[WebServer\\]' e2e.log | tail -n 40 | cut -c1-300 | tr -d '\\140'\n";
+		const e2eMore = {
+			'a head line': replace(webServer, '              head -n 40 e2e.log\n'),
+			'a cat line': replace(webServer, '              cat e2e.log\n'),
+			'an awk line': replace(webServer, "              awk 'NR < 40' e2e.log\n"),
+			'a grep behind an inline variable': replace(webServer, "              LC_ALL=C grep '\\[WebServer\\]' e2e.log | tail -n 40\n"),
+			'a grep joined by && to a filtered echo': replace(webServer, "              grep '\\[WebServer\\]' e2e.log && echo done | tr -d '\\140'\n"),
+			'a grep after a grep -q': replace(webServer, "              grep -q x e2e.log; grep '\\[WebServer\\]' e2e.log | tail -n 40\n"),
+			'a substitution in an echo': replace(webServer, '              echo "$(tail -n 40 e2e.log)"\n')
+		};
+		for (const [label, change] of Object.entries(e2eMore)) {
+			const changed = change(workflow);
+			if (changed === null || changed === workflow) problems.push(`ci.yml no longer has the text that ${label} changes: update the comment cases`);
+			else if (e2eCommentQuotes(changed).length === 0) problems.push(`the comment check passes ${label}`);
+		}
+		for (const problem of failureCommentQuotes(workflow, 'backend')) problems.push(`ci.yml: the backend failure comment: ${problem}`);
+		for (const problem of summaryCommentQuotes(workflow)) problems.push(`ci.yml: the test counts comment: ${problem}`);
+		const summaryUnfiltered = replace("| tail -n 8 | cut -c1-300 | tr -d '\\140'", '| tail -n 8 | cut -c1-300')(workflow);
+		if (summaryUnfiltered === null) problems.push('ci.yml no longer has the text the test counts comment case changes: update it');
+		else if (summaryCommentQuotes(summaryUnfiltered).length === 0) problems.push('the test counts comment check passes a log quoted with its backticks');
+		const backendQuotes = {
+			'a failing test quoted with its backticks': replace("| sort -u | head -100 | cut -c1-300 | tr -d '\\140'\n", '| sort -u | head -100 | cut -c1-300\n'),
+			'a restore error quoted with its backticks': replace("grep ' error ' restore.log | sort -u | head -40 | cut -c1-400 | tr -d '\\140'", "grep ' error ' restore.log | sort -u | head -40 | cut -c1-400")
+		};
+		for (const [label, change] of Object.entries(backendQuotes)) {
+			const changed = change(workflow);
+			if (changed === null || changed === workflow) problems.push(`ci.yml no longer has the text that ${label} changes: update the backend comment cases`);
+			else if (failureCommentQuotes(changed, 'backend').length === 0) problems.push(`the backend comment check passes ${label}`);
+		}
+		// The other workflows' pull request comments (Trivy's tables, the registries' answers), each with its filter taken out.
+		const workflows = fs.readdirSync(WORKFLOWS).filter((f) => f.endsWith('.yml')).sort().map((f) => [f, fs.readFileSync(path.join(WORKFLOWS, f), 'utf8')]);
+		for (const problem of pullRequestCommentQuotes(workflows)) problems.push(problem);
+		const unfiltered = {
+			'images.yml': ["head -c 50000 | tr -d '\\140';", 'head -c 50000;'],
+			'security-scan.yml': ["head -c 60000 trivy-report.txt | tr -d '\\140';", 'head -c 60000 trivy-report.txt;'],
+			'base-images.yml': ["cat resolved.txt | tr -d '\\140'\n", 'cat resolved.txt\n']
+		};
+		for (const [file, [from, to]] of Object.entries(unfiltered)) {
+			const changed = workflows.map(([f, text]) => [f, f === file ? text.replace(from, to) : text]);
+			if (!workflows.find(([f]) => f === file)?.[1].includes(from)) problems.push(`${file} no longer has the text the comment case changes: update it`);
+			else if (pullRequestCommentQuotes(changed).length === 0) problems.push(`the pull request comment check passes ${file}'s comment unfiltered`);
+		}
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
@@ -733,7 +1072,7 @@ function selfTest() {
 		console.error(`artifact secret check self-test FAILED:\n${problems.join('\n')}`);
 		return false;
 	}
-	console.log(`artifact secret check self-test: ${samples.length} samples of ${new Set(samples.map(([kind]) => kind)).size} kinds found in a plain file, a report's embedded zip, a trace zip, a nested zip and an error context; the clean set passes; an unreadable zip fails; no value printed; every derived value masked; redactSecrets clears ${REDACTION_SAMPLES.cleared.length} samples and keeps ${REDACTION_SAMPLES.kept.length}; a credential planted in a host log line fails the backend logs' check; CI's backend job checks its test logs before it prints, quotes or uploads them; the mutation workflow checks its log and report before it uploads them; the E2E failure comment quotes no backtick.`);
+	console.log(`artifact secret check self-test: ${samples.length} samples of ${new Set(samples.map(([kind]) => kind)).size} kinds found in a plain file, a report's embedded zip, a trace zip, a nested zip and an error context; the clean set passes; an unreadable zip fails; no value printed; every derived value masked; redactSecrets clears ${REDACTION_SAMPLES.cleared.length} samples and keeps ${REDACTION_SAMPLES.kept.length}; a credential planted in a host log line fails the backend logs' check; CI's backend job checks its test logs before it prints, quotes or uploads them; the mutation workflow checks its log and report before it uploads them; the E2E and backend failure comments and the other workflows' pull request comments quote no backtick; each way to break that wiring is refused.`);
 	return true;
 }
 

@@ -305,7 +305,8 @@ jobs:
             fi
             # Both test suites' output is Microsoft Testing Platform's ("failed <name> (<time>)", the error on the next lines;
             # ARV-164a, ARV-164b). ARV-252: quoted from the checked copy only once the test log check has passed it, without
-            # backticks (they could end the code block).
+            # backticks (they could end the code block); failureCommentQuotes in artifact-secrets.mjs holds every quoted line
+            # (ARV-271a).
             if [ "$LOGS_CHECKED" = success ]; then
               for log in checked/unit.log checked/integration.log; do
                 suite=${log#checked/}; suite=${suite%.log}

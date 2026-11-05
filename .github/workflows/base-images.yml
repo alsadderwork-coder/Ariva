@@ -53,11 +53,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+        # ARV-271a: the registries' answers lose their backticks, so a line cannot end the code block and be read as Markdown (an
+        # @mention among it); pullRequestCommentQuotes in Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs holds it.
         run: |
           {
             echo '### Pinned base images (base-images workflow)'
             echo '```'
-            cat resolved.txt
+            cat resolved.txt | tr -d '\140'
             echo '```'
           } > comment.md
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file comment.md
