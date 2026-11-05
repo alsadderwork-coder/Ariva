@@ -282,12 +282,60 @@ export function checkArtifacts(paths, { requireSeed = false, env = process.env, 
 // `shell: bash {0}` drops the default's -e).
 const ERREXIT_OFF = /\bset\s+(?:\+[A-Za-z]*e[A-Za-z]*\b|\+o\s+errexit\b)|^\s*shell:/m;
 
-// ARV-271a: a check step's script that can leave its check line unrun: an exit, exec or return, a here-document (whose text
-// is never run), or a function defined (whose body runs only if called).
-const CHECK_SKIPPED = /\b(?:exit|exec|return)\b|<<|^\s*(?:function\s+[\w-]+|[\w-]+\s*\(\s*\))/m;
+/**
+ * ARV-271a: a shell script with what its quotes hold blanked out (single, double and $'...' quotes, and escaped characters), so a
+ * rule reads only what the shell runs: a # or a > inside a quote is text, not a comment or a redirection.
+ */
+function blankQuotes(script) {
+	let out = '';
+	let quote = null;
+	for (let i = 0; i < script.length; i++) {
+		const c = script[i];
+		if (quote === "'") {
+			out += c === "'" ? c : c === '\n' ? c : ' ';
+			if (c === "'") quote = null;
+			continue;
+		}
+		if (quote === "$'" || quote === '"') {
+			if (c === '\\' && i + 1 < script.length) {
+				out += '  ';
+				i++;
+				continue;
+			}
+			const end = quote === '"' ? '"' : "'";
+			out += c === end ? c : c === '\n' ? c : ' ';
+			if (c === end) quote = null;
+			continue;
+		}
+		if (c === '\\' && i + 1 < script.length) {
+			out += '  ';
+			i++;
+			continue;
+		}
+		if (c === '$' && script[i + 1] === "'") {
+			quote = "$'";
+			out += "$'";
+			i++;
+			continue;
+		}
+		if (c === "'" || c === '"') quote = c;
+		out += c;
+	}
+	return out;
+}
 
-// ARV-271a: a command that writes into checked/ (a redirection or tee into it, or a copy, move, link or unpack naming it).
-const WRITES_CHECKED = /(?:>{1,2}|\btee\b[^|;&\n]*?)\s*["']?(?:\.\/)?checked\b|\b(?:cp|mv|ln|rsync|install|tar|unzip|touch|mkdir|dd)\b[^|;&\n]*["'\s=]-?(?:C\s*)?["']?(?:\.\/)?checked\b/;
+// ARV-271a: a check step's script that can leave its check line unrun (read with its quotes blanked): an exit, exec or return; a
+// here-document (whose text is never run); a function defined (whose body runs only if called); an alias, hash, enable, shopt or
+// PATH that can turn node into something else; a trap or kill that ends the script first; or a job left in the background (nohup, setsid, disown, coproc or a lone &), which
+// goes on writing after the check.
+const CHECK_SKIPPED = /\b(?:exit|exec|return|trap|kill|alias|hash|enable|shopt|nohup|setsid|disown|coproc)\b|<<|\bPATH=|^\s*(?:function\s+[\w-]+|[\w-]+\s*\(\s*\))/m;
+
+/** True when a script (its quotes blanked) leaves a job in the background: a & that is not && nor part of a redirection. */
+const backgrounds = (blank) => /&/.test(blank.replace(/&&|[0-9]?>&[0-9-]?|&>>?/g, ''));
+
+// ARV-271a: a command that writes into checked/, read with its quotes blanked: a redirection into a path ending in it (>, >>, >|,
+// &>), a tee, copy, move, link, unpack, in-place edit, truncation or mode change naming it, or a cd or pushd into it.
+const WRITES_CHECKED = /(?:>{1,2}|>\||&>>?)\s*\S*checked\b|\b(?:tee|cp|mv|ln|rsync|install|tar|unzip|touch|mkdir|dd|truncate|chmod|cd|pushd)\b[^|;&\n]*checked\b|\b(?:sed|perl)\s+-[A-Za-z]*i[^|;&\n]*checked\b/;
 
 /** A step's name, or its place when it has none. */
 const nameOf = (step, i) => /^(?:name: |\s*name: )(.*)$/m.exec(step)?.[1] ?? `step ${i + 1}`;
@@ -319,7 +367,9 @@ function checkLineProblems(step, what) {
 	const base = lines[0]?.search(/\S/) ?? -1;
 	const problems = [];
 	if (!/^\s*node \S*artifact-secrets\.mjs checked\s*$/.test(last) || last.search(/\S/) !== base) problems.push(`the ${what} does not end with its check of checked/, at the script's own level`);
-	if (CHECK_SKIPPED.test(lines.join('\n'))) problems.push(`the ${what} can leave its check unrun (an exit, exec or return, a here-document or a function)`);
+	const blank = blankQuotes(lines.join('\n'));
+	if (CHECK_SKIPPED.test(blank) || backgrounds(blank))
+		problems.push(`the ${what} can leave its check unrun (an exit, exec or return, a here-document, a function, an alias or the like, or a job in the background)`);
 	return problems;
 }
 
@@ -369,7 +419,7 @@ export function backendLogWiring(workflow) {
 	});
 	for (const dll of Object.keys(logs)) if (!ran.has(dll)) problems.push(`no step runs ${dll}`);
 	const checkStep = steps[check];
-	if (!/^\s*if: \$\{\{ !cancelled\(\) \}\}\s*$/m.test(checkStep)) problems.push('the test log check does not run after a failed suite');
+	if (!gatedBy(checkStep, '${{ !cancelled() }}')) problems.push('the test log check does not run after a failed suite');
 	if (/^\s*continue-on-error:/m.test(checkStep)) problems.push('the test log check may continue on an error');
 	if (ERREXIT_OFF.test(checkStep)) problems.push('the test log check turns off stopping on an error (set +e or the like, or a shell of its own)');
 	if (!/^\s*for item in unit\.log integration\.log TestResults\b[^\n]*; do\s*$/m.test(checkStep) || !/cp -RL "\$item" checked\//.test(checkStep)) problems.push('the test log check does not copy unit.log, integration.log and TestResults to checked/ with links followed (cp -RL)');
@@ -392,13 +442,20 @@ export function backendLogWiring(workflow) {
 		for (const log of named) if (!allowed.has(log)) problems.push(`"${name}" reads ${log}, not the checked copy`);
 		for (const result of results) if (!result.startsWith('checked/TestResults') || climbs(result)) problems.push(`"${name}" reads ${result}, not the checked copy`);
 		if (uploads) for (const [, path] of step.matchAll(/^\s*path: (.*)$/gm)) if (!path.trim().startsWith('checked/') || climbs(path.trim())) problems.push(`"${name}" uploads ${path.trim()}, not the checked copy`);
-		if (WRITES_CHECKED.test(step)) problems.push(`"${name}" writes into checked/ after the check`);
+		if (WRITES_CHECKED.test(scriptOf(step).join('\n').replace(/["']/g, ''))) problems.push(`"${name}" writes into checked/ after the check`);
+		if (nestedIf(step)) problems.push(`"${name}" has an if: under with: or env:, which is not its gate`);
 		if (!step.includes('checked/')) return;
 		// ARV-271a: the gate exactly as the workflow writes it (a negated or or-ed one does not wait for the check).
-		const inIf = /^\s*if: \$\{\{ !cancelled\(\) && steps\.test-logs\.outcome == 'success' \}\}\s*$/m.test(step);
-		const inScript = /^\s*LOGS_CHECKED: \$\{\{ steps\.test-logs\.outcome \}\}\s*$/m.test(step) && /\[ "\$LOGS_CHECKED" = success \]/.test(step);
+		const inIf = gatedBy(step, "${{ !cancelled() && steps.test-logs.outcome == 'success' }}");
+		const inScript = /^ {10}LOGS_CHECKED: \$\{\{ steps\.test-logs\.outcome \}\}\s*$/m.test(step) && /\[ "\$LOGS_CHECKED" = success \]/.test(step);
 		if (!inIf && !inScript) problems.push(`"${name}" reads the checked copy without waiting for the check's success`);
-		if (!inIf && inScript && outsideGate(step).length) problems.push(`"${name}" reads a checked log outside its LOGS_CHECKED block`);
+		if (!inIf && inScript) {
+			const blank = blankQuotes(scriptOf(step).join('\n'));
+			if (outsideGate(step).length) problems.push(`"${name}" reads the checked copy outside its LOGS_CHECKED block`);
+			if (/\bLOGS_CHECKED\s*\+?=|\b(?:export|read|declare|local|typeset|readonly|unset)\b[^\n;|&]*\bLOGS_CHECKED\b|\bprintf\s+-v\s*LOGS_CHECKED\b/.test(blank))
+				problems.push(`"${name}" sets LOGS_CHECKED itself`);
+			if (/<</.test(blank)) problems.push(`"${name}" has a here-document, whose text the LOGS_CHECKED block cannot be read in`);
+		}
 		if (/\bcat\b/.test(step) && !(/token=\$\(openssl rand -hex (?:1[6-9]|[2-9]\d)\)/.test(step) && step.includes('echo "::stop-commands::$token"') && step.includes(`printf '\\n::%s::\\n' "$token"`)))
 			problems.push(`"${name}" prints with workflow commands live (a random token, stopped before and resumed on a line of its own after)`);
 	});
@@ -406,20 +463,30 @@ export function backendLogWiring(workflow) {
 }
 
 /**
- * ARV-271a: the lines of a step's script that name a checked log (checked/<name>.log, a glob among them) outside an `if [
- * "$LOGS_CHECKED" = success ]; then` block, which ends at the first else, elif or fi at its own level or above.
+ * ARV-271a: the pipelines of a step's script that name checked/ outside an `if [ "$LOGS_CHECKED" = success ]; then` block, its
+ * nesting followed by the if and fi keywords as the shell reads them (not by indentation); the block ends at its own fi, else or
+ * elif. Only the test results' counts (checked/TestResults/*.trx) are read outside it.
  */
 function outsideGate(step) {
 	const outside = [];
+	let depth = 0;
 	let gate = -1;
-	for (const line of scriptOf(step)) {
-		const level = line.search(/\S/);
-		if (gate >= 0 && level <= gate && /^\s*(?:else|elif|fi)\b/.test(line)) gate = -1;
-		if (gate < 0 && /^\s*if \[ "\$LOGS_CHECKED" = success \]; then\s*$/.test(line)) {
-			gate = level;
+	for (const pipeline of pipelinesOf(scriptOf(step).join('\n'))) {
+		const first = pipeline.split(/\s+/)[0];
+		if (first === 'fi') {
+			if (depth === gate) gate = -1;
+			depth = Math.max(0, depth - 1);
 			continue;
 		}
-		if (gate < 0 && /\bchecked\/[\w*?[\]$.{}-]*\.log\b/.test(line)) outside.push(line.trim());
+		if ((first === 'else' || first === 'elif') && depth === gate) gate = -1;
+		if (first === 'if' || first === 'elif') {
+			if (first === 'if') depth++;
+			if (gate < 0 && first === 'if' && /^if \[ "\$LOGS_CHECKED" = success \]$/.test(pipeline)) {
+				gate = depth;
+				continue;
+			}
+		}
+		if (gate < 0 && /checked/.test(blankQuotes(pipeline).replace(/checked\/TestResults\/\*\.trx/g, ''))) outside.push(pipeline);
 	}
 	return outside;
 }
@@ -430,11 +497,43 @@ function jobSteps(workflow, job) {
 	if (start < 0) return null;
 	const rest = workflow.slice(start + 1);
 	const end = rest.search(/^ {2}[A-Za-z][\w-]*:\s*$/m);
-	return (end < 0 ? rest : rest.slice(0, end))
+	return stripComments(end < 0 ? rest : rest.slice(0, end))
 		.split(/^ {6}- /m)
-		.slice(1)
-		.map((step) => step.replace(/^\s*#.*$/gm, '').replace(/[ \t]+#.*$/gm, ''));
+		.slice(1);
 }
+
+/**
+ * ARV-271a: a job's text with its comments taken out as YAML and the shell read them: outside a block scalar a whole-line comment
+ * and a comment after a value; inside a run block (a key's | or > text) a whole-line comment and a # that starts a word outside
+ * quotes, so a # inside a quoted string (echo "step #1") stays and what follows it is still read.
+ */
+function stripComments(text) {
+	const out = [];
+	let block = -1;
+	for (const line of text.split('\n')) {
+		const level = line.search(/\S/);
+		if (block >= 0 && level >= 0 && level <= block) block = -1;
+		if (block >= 0) {
+			const blank = blankQuotes(line);
+			const hash = blank.search(/(?:^|\s)#/);
+			out.push(hash < 0 ? line : line.slice(0, hash).trimEnd());
+			continue;
+		}
+		const opens = /^(\s*)(- )?[\w-]+: [|>][-+]?\s*(?:#.*)?$/.exec(line);
+		out.push(line.replace(/^\s*#.*$/, '').replace(/[ \t]+#.*$/, ''));
+		if (opens) block = opens[1].length + (opens[2] ? 2 : 0);
+	}
+	return out.join('\n');
+}
+
+/** A step's own if (at its keys' level, or on its first line), as many as it has; an if under with: or env: is not one. */
+const stepIfs = (step) => step.split('\n').filter((line, i) => (i === 0 ? /^if: / : /^ {8}if: /).test(line)).map((line) => line.trim().slice(4));
+
+/** True when a step has an if: under one of its keys (with:, env:), which Actions takes for an input or a variable, not a gate. */
+const nestedIf = (step) => step.split('\n').some((line) => /^ {9,}if:/.test(line));
+
+/** True when a step's gate is exactly the one given (one step-level if, none nested). */
+const gatedBy = (step, gate) => stepIfs(step).length === 1 && stepIfs(step)[0] === gate && !nestedIf(step);
 
 /**
  * ARV-271 (CWE-532): the mutation workflow (.github/workflows/mutation.yml, public artifacts) checks Stryker's log and report before
@@ -454,7 +553,7 @@ export function mutationLogWiring(workflow) {
 	if (ids.length !== 1) return ['not one mutation log check (id: mutation-logs)'];
 	const check = ids[0];
 	const checkStep = steps[check];
-	if (!/^\s*if: \$\{\{ !cancelled\(\) \}\}\s*$/m.test(checkStep)) problems.push('the mutation log check does not run after a failed run');
+	if (!gatedBy(checkStep, '${{ !cancelled() }}')) problems.push('the mutation log check does not run after a failed run');
 	if (/^\s*continue-on-error:/m.test(checkStep)) problems.push('the mutation log check may continue on an error');
 	if (ERREXIT_OFF.test(checkStep)) problems.push('the mutation log check turns off stopping on an error (set +e or the like, or a shell of its own)');
 	if (!/^\s*for item in \.verify\/mutation\.log \.verify\/stryker\/reports; do\s*$/m.test(checkStep) || !/cp -RL "\$item" checked\//.test(checkStep))
@@ -468,7 +567,7 @@ export function mutationLogWiring(workflow) {
 		uploadSteps.add(i);
 		const name = nameOf(step, i);
 		if (i < check) problems.push(`"${name}" uploads before the mutation log check`);
-		if (!/^\s*if: \$\{\{ !cancelled\(\) && steps\.mutation-logs\.outcome == 'success' \}\}\s*$/m.test(step)) problems.push(`"${name}" uploads without waiting for the mutation log check's success`);
+		if (!gatedBy(step, "${{ !cancelled() && steps.mutation-logs.outcome == 'success' }}")) problems.push(`"${name}" uploads without waiting for the mutation log check's success (exactly its gate, at the step's own level)`);
 		const block = /^\s*path: \|\s*\n((?:\s{12,}\S[^\n]*\n?)+)/m.exec(step);
 		const paths = block ? block[1].split('\n').map((line) => line.trim()).filter(Boolean) : [...step.matchAll(/^\s*path: (.+)$/gm)].map((m) => m[1].trim());
 		if (paths.length === 0) problems.push(`"${name}" names no path`);
@@ -477,7 +576,8 @@ export function mutationLogWiring(workflow) {
 	if (uploads === 0) problems.push('no step uploads the checked report');
 	// Stryker's output stays out of the public job log: the run writes it to the log file only, and is the one command of its
 	// step; no other step names the log, the report or .verify at all.
-	const runs = steps.filter((s) => /mutation-run\.mjs"? --log /.test(s));
+	// Every step that runs the gate or Stryker counts, with --log or without (its self-test aside).
+	const runs = steps.filter((s) => scriptOf(s).some((line) => /\bdotnet[- ]stryker\b/.test(line) || (/mutation-run\.mjs/.test(line) && !/--self-test/.test(line))));
 	if (runs.length !== 1) problems.push('not one mutation run (mutation-run.mjs --log)');
 	else {
 		const lines = scriptOf(runs[0]);
@@ -495,71 +595,45 @@ export function mutationLogWiring(workflow) {
 	return problems;
 }
 
-/** A shell script's pipelines: split at ;, &, &&, || and line ends outside quotes (a pipe's | keeps them together). */
+/** A shell script's pipelines: split at ;, &, &&, || and line ends outside quotes and escapes (a pipe's | keeps them together). */
 function pipelinesOf(script) {
+	const blank = blankQuotes(script);
 	const pipelines = [];
-	let current = '';
-	let quote = null;
-	for (let i = 0; i < script.length; i++) {
-		const c = script[i];
-		if (quote === "'") {
-			current += c;
-			if (c === "'") quote = null;
-			continue;
-		}
-		if (c === '\\' && i + 1 < script.length) {
-			current += c + script[++i];
-			continue;
-		}
-		if (quote === '"') {
-			current += c;
-			if (c === '"') quote = null;
-			continue;
-		}
-		if (c === "'" || c === '"') {
-			quote = c;
-			current += c;
-			continue;
-		}
-		const pair = script.slice(i, i + 2);
-		if (c === '\n' || c === ';' || pair === '&&' || pair === '||' || c === '&') {
-			pipelines.push(current);
-			current = '';
+	let from = 0;
+	for (let i = 0; i < blank.length; i++) {
+		const pair = blank.slice(i, i + 2);
+		const c = blank[i];
+		// A & of a redirection (2>&1, &>) joins nothing.
+		const redirect = c === '&' && (blank[i - 1] === '>' || blank[i + 1] === '>');
+		if (c === '\n' || c === ';' || pair === '&&' || pair === '||' || (c === '&' && !redirect)) {
+			pipelines.push(script.slice(from, i));
 			if (pair === '&&' || pair === '||') i++;
-			continue;
+			from = i + 1;
 		}
-		current += c;
 	}
-	pipelines.push(current);
+	pipelines.push(script.slice(from));
 	return pipelines.map((p) => p.trim()).filter(Boolean);
 }
 
-/** The parts of a pipeline between its pipes, outside quotes. */
+/** The parts of a pipeline between its pipes, outside quotes and escapes (an escaped \| is text, as the shell reads it). */
 function segmentsOf(pipeline) {
+	const blank = blankQuotes(pipeline);
 	const segments = [];
-	let current = '';
-	let quote = null;
-	for (let i = 0; i < pipeline.length; i++) {
-		const c = pipeline[i];
-		if (quote) {
-			current += c;
-			if (c === '\\' && quote === '"' && i + 1 < pipeline.length) current += pipeline[++i];
-			else if (c === quote) quote = null;
-			continue;
+	let from = 0;
+	for (let i = 0; i < blank.length; i++) {
+		if (blank[i] === '|' && blank[i - 1] !== '>') {
+			segments.push(pipeline.slice(from, i).trim());
+			from = i + 1;
 		}
-		if (c === "'" || c === '"') quote = c;
-		if (c === '|') {
-			segments.push(current.trim());
-			current = '';
-			continue;
-		}
-		current += c;
 	}
-	segments.push(current.trim());
+	segments.push(pipeline.slice(from).trim());
 	return segments;
 }
 
-/** True when a script substitutes a command (a $( or a backtick outside single quotes): its output would escape the rule. */
+/**
+ * True when a script substitutes a command: a $( or a backtick outside single quotes and $'...' quotes (inside double quotes the
+ * shell still substitutes), whose output would escape the rule.
+ */
 function substitutes(script) {
 	let quote = null;
 	for (let i = 0; i < script.length; i++) {
@@ -568,12 +642,20 @@ function substitutes(script) {
 			if (c === "'") quote = null;
 			continue;
 		}
+		if (quote === "$'") {
+			if (c === '\\') i++;
+			else if (c === "'") quote = null;
+			continue;
+		}
 		if (c === '\\') {
 			i++;
 			continue;
 		}
 		if (c === '`' || (c === '$' && script[i + 1] === '(')) return true;
-		if (c === '"') quote = quote ? null : '"';
+		if (!quote && c === '$' && script[i + 1] === "'") {
+			quote = "$'";
+			i++;
+		} else if (c === '"') quote = quote ? null : '"';
 		else if (c === "'" && !quote) quote = "'";
 	}
 	return false;
@@ -582,7 +664,14 @@ function substitutes(script) {
 // Words that only open or close a shell construct, and commands that print nothing a file holds (echo and printf print their own
 // arguments; a grep -q tests; gh posts the comment).
 const KEYWORDS = new Set(['{', '}', '(', ')', '!', 'if', 'then', 'else', 'elif', 'do', 'while', 'until']);
-const QUIET = new Set(['echo', 'printf', '[', '[[', 'test', 'true', 'false', 'continue', 'break', 'exit', 'set', 'shift', 'fi', 'done', 'esac', 'for', 'gh']);
+const QUIET = new Set(['echo', 'printf', '[', '[[', 'test', 'true', 'false', 'continue', 'break', 'exit', 'shift', 'fi', 'done', 'esac', 'for']);
+
+// ARV-271a: what a comment step's whole script must not hold: a function, an alias or the like (each can turn tr or echo into
+// something else), a PATH change, a tee (a second copy of a log into the comment), or a here-document.
+const COMMENT_FORBIDDEN = /^\s*(?:function\s+[\w-]+|[\w-]+\s*\(\s*\))|\b(?:alias|hash|enable|shopt|tee|exec)\b|\bPATH=|<</m;
+
+// The workflow values a comment step may take into its environment (a pull request's title or body is the author's text).
+const COMMENT_ENV = new Set(['${{ github.token }}', '${{ github.event.pull_request.number }}', '${{ github.event.pull_request.head.repo.full_name == github.repository }}', '${{ matrix.image }}', '${{ steps.test-logs.outcome }}']);
 
 /**
  * ARV-271 and ARV-271a (CWE-532 and Markdown injection): what is wrong with a step that writes a pull request comment from text it
@@ -597,6 +686,20 @@ export function commentQuotes(step, file) {
 	if (script === null) return ['the comment posts a file its step does not write (the check cannot read it)'];
 	const problems = [];
 	if (substitutes(script)) problems.push('the comment substitutes a command ($( or a backtick), whose output it could quote unfiltered');
+	// A step that posts the comment is read whole: what it runs before the comment's group can change what the group runs.
+	const whole = scriptOf(step).join('\n');
+	if (/\bgh\s+(?:pr|issue)\s+comment\b/.test(whole)) {
+		const blank = blankQuotes(whole);
+		if (COMMENT_FORBIDDEN.test(blank)) problems.push('the comment step defines a function, an alias or the like, changes PATH, tees, redirects the whole script or has a here-document');
+		const file = /--body-file\s+"?([\w./-]+)"?/.exec(whole)?.[1];
+		if (file && new RegExp(`\\b(?:cp|mv|ln|install|dd|rsync|sed\\s+-[A-Za-z]*i|perl\\s+-[A-Za-z]*i)\\b[^\\n;|&]*${file.replace(/[.]/g, '\\.')}`).test(whole.replace(/["']/g, '')))
+			problems.push(`the comment step copies, moves or edits into ${file} (only its groups and redirections write it)`);
+		if (substitutes(whole)) problems.push('the comment step substitutes a command ($( or a backtick)');
+		const posts = [...whole.matchAll(/\bgh\s+(?:pr|issue)\s+comment\b[^\n;|&]*/g)].map((m) => m[0]);
+		if (posts.length !== 1 || !/--body-file\s+"?[\w./-]+"?\s*$/.test(posts[0]) || /--body-file\s+-\s|\s(?:--body|-b|-F|--editor|-e)\s/.test(` ${posts[0]} `))
+			problems.push('the comment step does not post exactly one comment from its body file (gh ... comment --body-file <file>, no --body, -b, -F or stdin)');
+		for (const [, value] of step.matchAll(/^ {10}[A-Za-z_]\w*: (.*\$\{\{.*)$/gm)) if (!COMMENT_ENV.has(value.trim())) problems.push(`the comment step takes ${value.trim()} into its environment (only the token, the number, the repository check, the image and the check's outcome)`);
+	}
 	let quoted = 0;
 	for (const pipeline of pipelinesOf(script)) {
 		const segments = segmentsOf(pipeline);
@@ -608,9 +711,17 @@ export function commentQuotes(step, file) {
 		const command = words[0];
 		if (command === undefined || command.startsWith('>')) continue;
 		const grepTest = command === 'grep' && /^-[A-Za-z]*q[A-Za-z]*$/.test(words[1] ?? '');
-		if ((QUIET.has(command) || grepTest) && segments.length === 1) continue;
+		// set prints every variable (the token among them) without an option.
+		const setOption = command === 'set' && /^[+-]/.test(words[1] ?? '');
+		if ((QUIET.has(command) || grepTest || setOption) && segments.length === 1) continue;
+		if (command === 'gh') {
+			problems.push(`the comment runs "${pipeline.slice(0, 60)}" (gh reads what no check has read)`);
+			continue;
+		}
 		quoted++;
 		if (segments.length < 2 || segments.at(-1) !== "tr -d '\\140'") problems.push(`the comment quotes "${pipeline.slice(0, 60)}" with its backticks`);
+		// A copy into a file from inside the pipe (a redirection before the filter) bypasses it.
+		if (/>/.test(blankQuotes(segments.slice(0, -1).join(' | ')).replace(/[0-9]?>\s*\/dev\/null|[0-9]?>&[0-9]/g, ''))) problems.push(`the comment writes "${pipeline.slice(0, 60)}" to a file before its filter`);
 	}
 	if (quoted === 0) problems.push('the comment quotes nothing (the check reads nothing)');
 	return problems;
@@ -625,26 +736,34 @@ export function commentQuotes(step, file) {
 function commentScript(step, given) {
 	const file = given ?? /--body-file\s+"?([\w./-]+)"?/.exec(step)?.[1];
 	if (!file) return null;
-	const into = `>{1,2}\\s*"?${file.replace(/[.]/g, '\\.')}"?\\s*$`;
+	// The file as a path may name it: ./file, "$GITHUB_WORKSPACE/file".
+	const into = `>{1,2}\\s*"?(?:\\./|\\$GITHUB_WORKSPACE/)?${file.replace(/[.]/g, '\\.')}"?\\s*$`;
 	const lines = scriptOf(step);
 	const parts = [];
-	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i].trim();
+	const taken = new Set();
+	// A construct over many lines redirected into the file at its close (a group, a subshell, an if, a loop, a case): its lines
+	// from the opener at the closer's level.
+	lines.forEach((line, end) => {
+		if (!new RegExp(`^\\s*(?:\\}|\\)|fi|done|esac)\\s*${into}`).test(line)) return;
+		const level = line.search(/\S/);
+		for (let start = end - 1; start >= 0; start--) {
+			if (lines[start].search(/\S/) !== level || !/^\s*(?:\{|\(|if\b|for\b|while\b|until\b|case\b)/.test(lines[start])) continue;
+			parts.push(lines[start].trim().replace(/^[{(]/, ''), ...lines.slice(start + 1, end));
+			for (let i = start; i <= end; i++) taken.add(i);
+			break;
+		}
+	});
+	lines.forEach((raw, i) => {
+		if (taken.has(i)) return;
+		const line = raw.trim();
 		const oneLine = new RegExp(`^\\{(.*)\\}\\s*${into}`).exec(line);
 		if (oneLine) {
 			parts.push(oneLine[1]);
-			continue;
-		}
-		if (line.startsWith('{')) {
-			const end = lines.findIndex((l, j) => j > i && new RegExp(`^\\s*\\}\\s*${into}`).test(l));
-			if (end < 0) continue;
-			parts.push(line.slice(1), ...lines.slice(i + 1, end));
-			i = end;
-			continue;
+			return;
 		}
 		const single = new RegExp(`^(.*?)\\s*${into}`).exec(line);
 		if (single) parts.push(single[1]);
-	}
+	});
 	return parts.length ? parts.join('\n') : null;
 }
 
@@ -663,7 +782,8 @@ export function failureCommentQuotes(workflow, job) {
 	if (!steps) return [`no ${job} job`];
 	const step = steps.find((s) => /^(?:name: |\s*name: )Report failures on the pull request\s*$/m.test(s));
 	if (!step) return [`no "Report failures on the pull request" step in the ${job} job`];
-	return commentQuotes(step);
+	const others = steps.filter((s) => s !== step && /\bfailure\.md\b/.test(s)).map((s, i) => `"${nameOf(s, i)}" names failure.md (only the failure comment's step writes and posts it)`);
+	return [...commentQuotes(step), ...others];
 }
 
 /**
@@ -677,7 +797,9 @@ export function summaryCommentQuotes(workflow) {
 	const post = steps.find((s) => /--body-file test-summary\.md\b/.test(s));
 	const write = steps.find((s) => /^(?:name: |\s*name: )Test counts \(fails when a suite ran no tests\)\s*$/m.test(s));
 	if (!post || !write) return ['no test counts comment (a step writing test-summary.md and one posting it)'];
-	return commentQuotes(write, 'test-summary.md');
+	const others = steps.filter((s) => s !== post && s !== write && /\btest-summary\.md\b/.test(s)).map((s, i) => `"${nameOf(s, i)}" names test-summary.md (only Test counts writes it)`);
+	const posting = scriptOf(post).join('\n').trim() === "'[ -f test-summary.md ] && gh pr comment \"$PR\" --repo \"$GITHUB_REPOSITORY\" --body-file test-summary.md || true'" ? [] : ['the test counts comment\'s post step does more than post test-summary.md'];
+	return [...commentQuotes(write, 'test-summary.md'), ...others, ...posting];
 }
 
 /**
@@ -690,17 +812,92 @@ export function pullRequestCommentQuotes(workflows) {
 	let comments = 0;
 	for (const [file, text] of workflows) {
 		if (file === 'ci.yml') continue;
-		for (const [, job] of text.matchAll(/^ {2}([A-Za-z][\w-]*):\s*$/gm)) {
-			(jobSteps(text, job) ?? []).forEach((step, i) => {
-				if (!/\bgh (?:pr|issue) comment\b/.test(scriptOf(step).join('\n'))) return;
+		for (const job of workflowJobs(text)) {
+			for (const step of job.steps) {
+				if (!/\bgh\s+(?:pr|issue)\s+comment\b/.test(scriptOf(step.text).join('\n'))) continue;
 				comments++;
-				for (const problem of commentQuotes(step)) problems.push(`${file}: "${nameOf(step, i)}": ${problem}`);
-			});
+				for (const problem of commentQuotes(step.text)) problems.push(`${file}: "${step.name}": ${problem}`);
+			}
 		}
 	}
 	if (comments === 0) problems.push('no workflow but ci.yml posts a pull request comment (the check reads nothing)');
 	return problems;
 }
+
+// ARV-271a: the workflow text these checks guard, each pinned by a hash of its text (trailing blanks off each line, an action's
+// commit SHA and an image's digest as placeholders, so the bots' pin bumps pass). The checks above read the shell as text and
+// can be worded around (review remains the control for an edit made to pass them); a pin makes any edit of a guarded job or step
+// fail the self-test until its hash here is changed with it, so the change shows in this file's diff for review. Every route to a
+// pull request comment (gh pr|issue comment, review or edit, gh api on comments or reviews, a comment action, Claude's action)
+// must lie in a pinned job or step. `node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --pins` prints the hashes as
+// they are: update one only after reading the change against the checks.
+const PINS = {
+	'ci.yml backend': 'a5cf3245f76126255c0ad7a992ff66541555dda7112c4ab225a31bed2e225603',
+	'ci.yml e2e: Report failures on the pull request': 'e57e8156ead3f667a41417c46c585742fb430ee8e634b7947289260cb355fad9',
+	'mutation.yml stryker': 'e3cc9251002ee66b4a7890adb95f0c0f312331cf339ad13cac3ab4741daa4096',
+	'images.yml build: Report findings on the pull request and fail on high or critical': 'fc6fe11a2bf8f3e383f1aafb0e11f223acd002e5a493e4342d81d4f2c3cc1700',
+	'security-scan.yml trivy: Report findings on the pull request and fail on high or critical': '33c29e294817009cac069319f05719317eb7df91c8ab04bc933ee63bffa527c2',
+	'base-images.yml resolve: Post the pinned lines on the pull request': 'a6eb12ea00f3a721819ad9e5b6bcd3369f334669a39a17127969331817fcccb9',
+	'claude-review.yml security-review: step 2': 'f2710a8eb7759dce09cb8295bc50a069805371d63d291d0bfe02a76228ed039d',
+	'claude-review.yml mention: step 2': '5096f3e2e8a58e1451ef45ca668b9d7953e6a93d1caf0432a201f3193f7cef53'
+};
+
+/** The jobs of a workflow (the two-space keys under jobs:), each with its raw text and its steps' raw text. */
+function workflowJobs(text) {
+	const jobs = [];
+	const at = text.search(/^jobs:\s*$/m);
+	if (at < 0) return jobs;
+	const body = text.slice(at);
+	const keys = [...body.matchAll(/^ {2}([A-Za-z][\w-]*):\s*$/gm)];
+	keys.forEach((key, k) => {
+		const raw = body.slice(key.index, k + 1 < keys.length ? keys[k + 1].index : body.length);
+		const parts = raw.split(/^(?= {6}- )/m);
+		const steps = parts.slice(1).map((part, i) => {
+			const stripped = stripComments(part).replace(/^ {6}- /, '');
+			return { name: nameOf(stripped, i), raw: part, text: stripped };
+		});
+		jobs.push({ name: key[1], raw, steps, declaresSteps: /^ {4}steps:\s*$/m.test(raw) });
+	});
+	return jobs;
+}
+
+/** The text a pin hashes. */
+const pinText = (text) => text.split('\n').map((line) => line.trimEnd()).join('\n').replace(/@[0-9a-f]{40}(?: # v[\w.+-]+)?/g, '@<sha>').replace(/@sha256:[0-9a-f]{64}/g, '@sha256:<digest>').trim();
+
+// A step's route to a pull request comment, read with its comments out.
+const COMMENT_ROUTE = /\bgh\s+(?:pr|issue)\s+(?:comment|review|edit)\b|\bgh\s+api\b[^\n]*\b(?:comments|reviews)\b|^\s*uses:\s*[\w.-]+\/[\w.-]*(?:comment|github-script|claude-code-action)[\w.-]*@/im;
+
+/**
+ * The pins' current hashes from [file name, text] pairs (a target not found is null), and what is wrong: a route to a pull
+ * request comment outside a pinned target, a job that declares steps none of which is read (its steps not at six spaces), and a
+ * workflow with jobs: but no job read.
+ */
+export function workflowPins(workflows) {
+	const hashes = Object.fromEntries(Object.keys(PINS).map((key) => [key, null]));
+	const problems = [];
+	for (const [file, text] of workflows) {
+		const jobs = workflowJobs(text);
+		if (/^jobs:\s*$/m.test(text) && jobs.length === 0) problems.push(`${file}: no job read under jobs: (jobs at two spaces)`);
+		for (const job of jobs) {
+			if (job.declaresSteps && job.steps.length === 0) problems.push(`${file}: the ${job.name} job's steps are not read (steps at six spaces)`);
+			const whole = `${file} ${job.name}`;
+			if (whole in hashes) hashes[whole] = crypto.createHash('sha256').update(pinText(job.raw)).digest('hex');
+			for (const step of job.steps) {
+				const key = `${file} ${job.name}: ${step.name}`;
+				if (key in hashes) hashes[key] = crypto.createHash('sha256').update(pinText(step.raw)).digest('hex');
+				if (COMMENT_ROUTE.test(step.text) && !(whole in PINS) && !(key in PINS)) problems.push(`${file}: "${job.name}: ${step.name}" posts to the pull request outside the pinned steps`);
+			}
+		}
+	}
+	for (const [key, hash] of Object.entries(hashes)) {
+		if (hash === null) problems.push(`${key}: the pinned job or step is no longer there`);
+		else if (hash !== PINS[key]) problems.push(`${key}: changed since it was pinned; read it against the checks, then update its hash in PINS (--pins prints them)`);
+	}
+	return { hashes, problems };
+}
+
+/** The repository's workflows as [file name, text] pairs (.yml and .yaml). */
+const readWorkflows = () => fs.readdirSync(WORKFLOWS).filter((f) => /\.ya?ml$/.test(f)).sort().map((f) => [f, fs.readFileSync(path.join(WORKFLOWS, f), 'utf8')]);
 
 /** The commands that mask the seed and every value derived from it in a CI log (GitHub Actions or Azure DevOps). */
 export function maskCommands(system, env = process.env) {
@@ -924,7 +1121,8 @@ function selfTest() {
 		const checkStep = stepAt(workflow, 'Test logs hold no secret (CWE-532)');
 		const integrationStep = stepAt(workflow, 'Integration tests (Testcontainers, Docker on the runner)');
 		const unitStep = stepAt(workflow, 'Unit, architecture and security tests');
-		const replace = (from, to) => (text) => (text.includes(from) ? text.replace(from, to) : null);
+		// The replacement as a function: in a string, $' and the like are replacement patterns, not text.
+		const replace = (from, to) => (text) => (text.includes(from) ? text.replace(from, () => to) : null);
 		const miswired = {
 			'a suite teed to the job log': replace('> unit.log 2>&1', '2>&1 | tee unit.log'),
 			'a suite run again after the check': (text) => (checkStep && unitStep ? text.replace(checkStep, checkStep + unitStep.replace('> unit.log 2>&1', '2>&1 | tee unit.log')) : null),
@@ -1053,7 +1251,7 @@ function selfTest() {
 			else if (failureCommentQuotes(changed, 'backend').length === 0) problems.push(`the backend comment check passes ${label}`);
 		}
 		// The other workflows' pull request comments (Trivy's tables, the registries' answers), each with its filter taken out.
-		const workflows = fs.readdirSync(WORKFLOWS).filter((f) => f.endsWith('.yml')).sort().map((f) => [f, fs.readFileSync(path.join(WORKFLOWS, f), 'utf8')]);
+		const workflows = readWorkflows();
 		for (const problem of pullRequestCommentQuotes(workflows)) problems.push(problem);
 		const unfiltered = {
 			'images.yml': ["head -c 50000 | tr -d '\\140';", 'head -c 50000;'],
@@ -1061,10 +1259,84 @@ function selfTest() {
 			'base-images.yml': ["cat resolved.txt | tr -d '\\140'\n", 'cat resolved.txt\n']
 		};
 		for (const [file, [from, to]] of Object.entries(unfiltered)) {
-			const changed = workflows.map(([f, text]) => [f, f === file ? text.replace(from, to) : text]);
+			const changed = workflows.map(([f, text]) => [f, f === file ? text.replace(from, () => to) : text]);
 			if (!workflows.find(([f]) => f === file)?.[1].includes(from)) problems.push(`${file} no longer has the text the comment case changes: update it`);
 			else if (pullRequestCommentQuotes(changed).length === 0) problems.push(`the pull request comment check passes ${file}'s comment unfiltered`);
 		}
+		// ARV-271a review round 1: the variants that passed the round's own cases, each refused now (a # in a quoted string, a
+		// gate under with:, a writer left in the background, LOGS_CHECKED set in the step, a fi closing the block early, a write by
+		// a quoted path or an in-place edit; a second run without --log; an escaped pipe, a $'...' quote, a tee or a redirection
+		// inside a filtered pipe, gh reading the run's log, a bare set, tr redefined, a pull request title in the environment, a
+		// second comment by --body).
+		const nodeLine = '          node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs checked\n';
+		const uploadGate = "if: ${{ !cancelled() && steps.test-logs.outcome == 'success' }}\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n";
+		const gateAnchor = '          if [ "$LOGS_CHECKED" = success ]; then\n            for log in';
+		const testLogsAnchor = '          token=$(openssl rand -hex 16)\n          for log in checked/unit.log';
+		const backendRound2 = {
+			'an exit after a # in a quoted string': replace(`${nodeLine}      # ARV-068`, `          echo "step #1"; exit 0\n${nodeLine}      # ARV-068`),
+			'a gate under with:': replace(uploadGate, `if: always()\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          if: \${{ !cancelled() && steps.test-logs.outcome == 'success' }}\n`),
+			'a writer left in the background by the check': replace(`${nodeLine}      # ARV-068`, `          ( sleep 30; cp unit.log checked/late.log ) &\n${nodeLine}      # ARV-068`),
+			'LOGS_CHECKED set in the step': replace(gateAnchor, `          LOGS_CHECKED=success\n${gateAnchor}`),
+			'a fi that closes the block early': replace(gateAnchor, '          if [ "$LOGS_CHECKED" = success ]; then\n            fi; tail -n 3 checked/unit.log >> test-summary.md\n          if true; then\n            for log in'),
+			'a write into checked/ by a quoted path': replace(testLogsAnchor, `          printenv > "$GITHUB_WORKSPACE/checked/env.txt"\n${testLogsAnchor}`),
+			'an in-place edit of a checked log': replace(testLogsAnchor, `          sed -i 's/x/y/' checked/unit.log\n${testLogsAnchor}`)
+		};
+		for (const [label, change] of Object.entries(backendRound2)) {
+			const changed = change(workflow);
+			if (changed === null || changed === workflow) problems.push(`ci.yml no longer has the text that ${label} changes: update the wiring cases`);
+			else if (backendLogWiring(changed).length === 0) problems.push(`the wiring check passes ${label}`);
+		}
+		const mutationGate = "if: ${{ !cancelled() && steps.mutation-logs.outcome == 'success' }}\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n";
+		const mutationRound2 = {
+			'a gate under with:': replace(mutationGate, `if: always()\n        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          if: \${{ !cancelled() && steps.mutation-logs.outcome == 'success' }}\n`),
+			'a second run without --log': replace('      - name: Mutation log and report hold no secret (CWE-532)\n', '      - name: Again\n        working-directory: Platform/Backplane/Ariva.UnitTests\n        run: node "$GITHUB_WORKSPACE/scripts/mutation-run.mjs" -- dotnet-stryker\n      - name: Mutation log and report hold no secret (CWE-532)\n'),
+			'an exit after a # in a quoted string': replace(`${nodeLine}      - name: Mutation report`, `          echo "step #1"; exit 0\n${nodeLine}      - name: Mutation report`)
+		};
+		for (const [label, change] of Object.entries(mutationRound2)) {
+			const changed = change(mutation);
+			if (changed === null || changed === mutation) problems.push(`mutation.yml no longer has the text that ${label} changes: update the wiring cases`);
+			else if (mutationLogWiring(changed).length === 0) problems.push(`the mutation wiring check passes ${label}`);
+		}
+		const e2eStart = '          set +o pipefail # head closes pipes early on purpose here\n          # ARV-271: every quoted line';
+		const e2ePost = '          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file failure.md\n      - name: Playwright report';
+		const e2eRound2 = {
+			'an escaped pipe': replace(webServer, "              if cat -- e2e.log \\| tr -d '\\140'; then true; fi\n"),
+			"a $'...' quote": replace(webServer, "              echo $'\\''; cat e2e.log; echo $'\\''\n"),
+			'a tee inside a filtered pipe': replace(webServer, "              grep x e2e.log | tee -a failure.md | tr -d '\\140'\n"),
+			'a redirection before the filter': replace(webServer, "              cat e2e.log >> failure.md | tr -d '\\140'\n"),
+			"gh reading the run's log": replace(webServer, "              gh run view \"$GITHUB_RUN_ID\" --log-failed | tr -d '\\140'\n"),
+			'a bare set': replace(webServer, '              set\n'),
+			'tr redefined before the group': replace(e2eStart, e2eStart.replace('\n', '\n          tr() { command cat; }\n')),
+			'a pull request title in the environment': replace('          PR: ${{ github.event.pull_request.number }}\n        run: |\n' + e2eStart, '          PR: ${{ github.event.pull_request.number }}\n          TITLE: ${{ github.event.pull_request.title }}\n        run: |\n' + e2eStart),
+			'a second comment by --body': replace(e2ePost, e2ePost.replace('\n', '\n          gh pr comment "$PR" --body "see the log"\n'))
+		};
+		for (const [label, change] of Object.entries(e2eRound2)) {
+			const changed = change(workflow);
+			if (changed === null || changed === workflow) problems.push(`ci.yml no longer has the text that ${label} changes: update the comment cases`);
+			else if (e2eCommentQuotes(changed).length === 0) problems.push(`the comment check passes ${label}`);
+		}
+		// The pins: the workflows as they are match them; a one-character edit of a pinned job, an edit of a pinned step and a
+		// comment step added outside them each fail.
+		for (const problem of workflowPins(workflows).problems) problems.push(problem);
+		const pinCases = {
+			'a one-character edit of the backend job': ['ci.yml', 'timeout-minutes: 28\n', 'timeout-minutes: 29\n'],
+			"an edit of the E2E comment's step": ['ci.yml', "| tail -n 15 | cut -c1-300 | tr -d '\\140'", "| tail -n 16 | cut -c1-300 | tr -d '\\140'"],
+			'a comment step added to the web job': ['ci.yml', '      - name: npm audit, web, dev dependencies included (fails on high or critical)\n', '      - name: Comment\n        run: gh pr comment "$PR" --body-file x.md\n      - name: npm audit, web, dev dependencies included (fails on high or critical)\n'],
+			'an edit of the mutation job': ['mutation.yml', '--concurrency 4', '--concurrency 5']
+		};
+		for (const [label, [file, from, to]] of Object.entries(pinCases)) {
+			const original = workflows.find(([f]) => f === file)?.[1] ?? '';
+			if (!original.includes(from)) problems.push(`${file} no longer has the text that the pin case ${label} changes: update it`);
+			else if (workflowPins(workflows.map(([f, text]) => [f, f === file ? text.replace(from, () => to) : text])).problems.length === 0) problems.push(`the pins pass ${label}`);
+		}
+		const added = {
+			'a comment through gh api in a new workflow': ['lint.yml', 'on: pull_request\njobs:\n  lint:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Lint comment\n        run: gh api repos/o/r/issues/1/comments -F body=@lint.log\n'],
+			'a workflow whose jobs are not at two spaces': ['lint.yml', 'on: pull_request\njobs:\n    lint:\n        runs-on: ubuntu-24.04\n        steps:\n            - name: Lint\n              run: gh pr comment 1 --body-file lint.md\n'],
+			'a comment action in a new workflow': ['lint.yml', 'on: pull_request\njobs:\n  lint:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: example/sticky-pull-request-comment@0123456789abcdef0123456789abcdef01234567\n']
+		};
+		for (const [label, entry] of Object.entries(added)) if (workflowPins([...workflows, entry]).problems.length === 0) problems.push(`the pins pass ${label}`);
+		const bumped = workflows.map(([f, text]) => [f, text.replace(/upload-artifact@[0-9a-f]{40} # v7\.0\.1/g, 'upload-artifact@0123456789abcdef0123456789abcdef01234567 # v7.0.2')]);
+		if (workflowPins(bumped).problems.length) problems.push("the pins fail on an action's pin bump (the bots' updates must pass)");
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
@@ -1079,6 +1351,11 @@ function selfTest() {
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
 	const args = process.argv.slice(2);
 	if (args.includes('--self-test')) process.exit(selfTest() ? 0 : 1);
+	if (args.includes('--pins')) {
+		const { hashes } = workflowPins(readWorkflows());
+		for (const [key, hash] of Object.entries(hashes)) console.log(`\t'${key}': '${hash ?? 'NOT FOUND'}',`);
+		process.exit(0);
+	}
 	// The derived variables for the run's environment: `NAME=value` lines for GitHub's $GITHUB_ENV, or Azure DevOps commands
 	// (plain variables, mapped into later steps' environment; --mask azure registers each value as a secret first).
 	const environment = args.indexOf('--env');
