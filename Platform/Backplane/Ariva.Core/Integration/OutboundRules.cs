@@ -240,7 +240,7 @@ public static partial class OutboundRules
     }
 
     private static bool IsRelativePath(string value, bool allowQuery) =>
-        value is not null && (allowQuery ? PathAndQuery() : PathOnly()).IsMatch(value) && !value.Contains("//", StringComparison.Ordinal) &&
+        value is not null && (allowQuery ? PathAndQuery().IsMatch(value) : PathOnly().IsMatch(value)) && !value.Contains("//", StringComparison.Ordinal) &&
         !value.Contains("/../", StringComparison.Ordinal) && !value.EndsWith("/..", StringComparison.Ordinal) && !value.Contains("/./", StringComparison.Ordinal);
 
     [GeneratedRegex(@"^[a-z0-9][a-z0-9-]{1,23}\z", RegexOptions.CultureInvariant, matchTimeoutMilliseconds: 100)]

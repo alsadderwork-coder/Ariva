@@ -56,7 +56,7 @@
       ],
       "priority": 39,
       "passes": false,
-      "notes": "Size XS. Split from ARV-163 on 2026-10-24 (owner sign-in freeze: no sign-in, login, password, TOTP or authentication changes for now; the dashboard guard checks an operator key and issues a ticket cookie). Start only when the owner lifts the freeze, with or after ARV-087.",
+      "notes": "Size XS. Split from ARV-163 on 2026-10-24 (owner sign-in freeze: no sign-in, login, password, TOTP or authentication changes for now; the dashboard guard checks an operator key and issues a ticket cookie). Start only when the owner lifts the freeze, with or after ARV-087. ARV-293 (2026-11-05): JobsDashboardGuard.BaseElement (NonBacktracking, its Replace on the dashboard page) follows here when the freeze lifts: put it through LinearRuleTests' long-scan theory (its shortest match and a run of its own) or move it to the backtracking engine with a linearity argument; LinearRuleTests lists it as the one exemption until then.",
       "dependsOn": [
         "ARV-163"
       ]
@@ -2516,7 +2516,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 323,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3. Found by the ARV-289 checkpoint fix (2026-11-04). Low for the three rules (their inputs are short: a template, a version line, the dashboard page); the unbounded protected text is the larger part. The dashboard's rule is in the sign-in freeze. Reporting the defect upstream is the owner's (an issue outside this repository). No sign-in code.",
       "dependsOn": [
         "ARV-289"

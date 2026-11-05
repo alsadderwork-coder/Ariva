@@ -413,8 +413,9 @@ public sealed class LogProtectionTests
     [InlineData(".@.", false)]
     public void MaskAddressesIn_Should_FinishQuickly_When_TheTextIsALongAdversarialRun(string fragment, bool holdsAddresses)
     {
-        // 100,000 characters of address fragments and dots, ending in an @ that completes no address.
-        var text = string.Concat(Enumerable.Repeat(fragment, 100_000 / fragment.Length)) + "@";
+        // Address fragments and dots up to the most the rules read of one text (ARV-293: a longer one is cut first), ending in an
+        // @ that completes no address.
+        var text = string.Concat(Enumerable.Repeat(fragment, (Ariva.Infra.Security.SecretText.MaxProtectedLength - 1) / fragment.Length)) + "@";
         var watch = System.Diagnostics.Stopwatch.StartNew();
 
         var masked = LogProtection.MaskAddressesIn(text);

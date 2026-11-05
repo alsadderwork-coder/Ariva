@@ -5381,3 +5381,60 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - Stripping SQL comments with a regular expression is not reading SQL: a comment mark inside a string, a nested block comment or an E'' escape shifts everything after it. Lex the file, and when readers may differ (nesting, escapes), read it every way and refuse if any reading finds the mention.
   - Keep string and body text whole in its statement, and also read it as SQL of its own: a body is a program, and its comments hide what a fold of the raw text cannot see.
   - A file type is not a file's kind: MSBuild imports any file whose first element is Project, so judge by content.
+
+## 2026-11-05: ARV-293 [E17] The other shared linear rules that find matches, checked against the long-scan defect; a bound on the text SecretText protects
+
+- What changed:
+  - **The long-scan theory now covers the other shared rules, and each rule's own long match.** The theory of the ARV-289 checkpoint fix is now one helper, and it adds each rule's own long match (a value or key followed by a long run it could take, the trigger the fix named) and a long match followed by a run. `ClamdScanner.VersionPattern` (its Match, whose groups give the signatures) goes through it with every group's capture compared, and matches as the backtracking engine does; anchored with short fields, it has no long match. `EmailTemplates.Placeholder` failed it (review round 1): after its own long match of about 48,000 letters, a linear instance matched `{{Zone}}.` with its name not captured, so Fill would write the value over the dot and the template check would read no name. It moved to the backtracking engine without a timeout, linear by its shape: `[A-Za-z]+` before a `}` is atomic, so only an attempt at a `{{` reads a letter run, each letter once. The templates are embedded resources, so nothing reached it in practice.
+  - **`JobsDashboardGuard.BaseElement` is left as it is.** It is in the sign-in freeze; ARV-163a's notes now say it follows there.
+  - **A new source test names every production rule on the linear engine.** It reads the production assemblies (every `GeneratedRegex` method and property, static or not, none an instance member, as many as the attributes in the sources) and their sources:
+    - every rule that any use other than a direct IsMatch reaches (Replace, Match, Matches, Split, Count, an instance handed on; a call, a method group, a member reached through the type, an alias, using static or a derived type) is in the theory, or listed with its reason (the dashboard's rule);
+    - the rules only IsMatch uses are the eleven named validators;
+    - the option appears nowhere but in a `GeneratedRegex` attribute.
+  - **`OutboundRules.IsRelativePath` calls IsMatch directly on each rule.** The test reads a conditional as a use that hands the instance on, so `(allowQuery ? PathAndQuery() : PathOnly()).IsMatch(value)` became one IsMatch call per rule.
+  - **SecretText now bounds the text it reads (CWE-400).** Nothing else capped it: the enricher protects every string property of every event and the exception sink every exception's text. `Protect`, `Redact` and `MaskAddressesIn` read at most `MaxProtectedLength` (65,536) characters of one text. A longer text is cut once, before every rule:
+    - the cut is at the bound, one character earlier when a surrogate pair would be split;
+    - when the characters on both sides of the cut could belong to a credential's shape (ASCII letters and digits, `_-.+/=~%@`, the Kelvin sign and the long s), the whole run the cut falls in goes;
+    - the part kept is protected, and ` [n more characters left out: protection reads 65536 at most]` is added.
+
+    Every rule whose match needs a length, a separator or an ending holds only such characters, so a shape cut in two is dropped, never kept in part. Every rule that takes other characters masks to the end of the part kept: a header line, a JSON member's or a pair's value, a password, a token parameter's value, a private key block. A JSON string value now takes a backslash that ends it (review round 1: a cut right after the backslash of an escape left it behind the mask).
+  - **Measured cost of one text at the bound** (on the loaded build machine): about 5 ms for prose. Runs of most rules' fragments took 2 to 32 ms. The costliest found, a pair `a=b ` every four characters (two pair rules matching each), took about 250 ms, and the cost is linear in the length, so a million characters of it took about 4 s before the bound.
+- Tests:
+  - New unit `SecretTextBoundTests` (43 tests):
+    - for every SecretText rule, a credential written in characters found nowhere else in the text is placed across the bound at every split; the kept part holds none of them (17 rules);
+    - the same credentials are masked whole inside the bound;
+    - a JSON value with an escaped quote, an escaped backslash and a `\u` escape at every split (8 splits keep a backslash without the round 1 fix);
+    - a text at the bound is left as it is;
+    - the cut and its note, from Protect, Redact and MaskAddressesIn alike;
+    - the cut is made once when both rules run;
+    - a run longer than the bound is dropped whole, and a text that is one run keeps only the note;
+    - a run ending at the bound is kept and masked;
+    - a surrogate pair is not split;
+    - ProtectAndCut cuts after the bound;
+    - a million-character exception text comes back at the bound, its leading key masked.
+  - `LinearRuleTests`:
+    - `SharedRule_Should_MatchAndCaptureAsTheBacktrackingEngine_When_LongScansCameFirst` (the version line);
+    - `Placeholder_Should_RunOnTheBacktrackingEngineAndKeepMatching_When_ItsOwnLongMatchCameFirst` (its options; a million-letter placeholder, an unclosed one, half a million `{{` and 300,000 `{{a` timed; a placeholder found and captured after its own long match);
+    - `ProductionRules_Should_BeInTheLongScanTheoryOrBeNamedValidators_When_TheSourcesAreRead`.
+  - The two long-run timing tests (`MaskAddressesIn_Should_FinishQuickly...`, `RedactText_Should_FinishQuickly...`) now run up to the bound, which is the most the rules read.
+- Files:
+  - Platform/Backplane/Ariva.Infra/Security/SecretText.cs, Platform/Backplane/Ariva.Infra/Notifications/Email.cs (the placeholder's engine)
+  - Platform/Backplane/Ariva.Core/Integration/OutboundRules.cs
+  - Platform/Backplane/Ariva.UnitTests/Logging/{SecretTextBoundTests.cs (new), LogProtectionTests.cs, SecretFormatRedactionTests.cs}
+  - Platform/Backplane/Ariva.UnitTests/Security/LinearRuleTests.cs
+  - docs/security/{costly-operations.md (section 2, log protection row), log-inventory.md, cwe-controls.md, asvs-l2.md (V1.2.9, V15.2.2, V16.2.5)}
+  - backlog/prd-phase3.json (ARV-293 passes; ARV-163a notes), backlog/progress.md
+- Gates: GATES_BATCH
+- Security review: security-reviewer PASS in round 2 (CWE-532, CWE-400, CWE-20, CWE-1333; none of the 14-CWE matrix touched; ASVS V1.2.9 stays Met, V15.2.2 and V16.2.5 Partly, their evidence accurate).
+  - Round 1 FAIL:
+    - Medium: the placeholder was poisoned by its own long match, which the theory never built. Fixed by moving it to the backtracking engine and adding each rule's long match to the theory.
+    - Medium: the source guard missed partial properties, instance members, method groups, using static, aliases and derived types. Fixed by reflecting every member by attribute, counting the attributes, and widening the use reading.
+    - Low: one backslash of an escaped JSON value was kept at the cut. Fixed in the value pattern.
+    - Low: docs (the long s, "unbounded input").
+  - Round 2 residual (Low, recorded, not blocking): the guard reads source text, so a bare method group in the rule's own declaring file written as a ternary, a collection expression, an array initializer, a cast, `??`, a grandchild's bare call or a property's bare `?.Replace` escapes it. Each needs a rule also used with IsMatch and written that way on purpose. Reading the compiled IL (a call or ldftn on the rule, then a callvirt on `Regex::IsMatch`) would be exact; left for a later story.
+- For the owner: the runtime defect's repro is in the ARV-289 checkpoint fix entry above, ready to report to dotnet/runtime. It reproduces on the linear engine (NonBacktracking, .NET 10.0.13), and reporting it is the owner's, outside this repository.
+- Gotchas:
+  - A bound that cuts text it then protects must not cut a credential in two: a shape's prefix no longer matches its rule. Drop the whole run of shape characters the cut falls in. Rely on the rules that take other characters to mask to the text's end.
+  - A long-scan theory must hold each rule's own long match, not only long runs beside a short one: the placeholder passed every scan but that one.
+  - A rule's shared instance must not run the long-scan theory itself: the defect leaves the instance wrong for every later caller in the process. Use new instances of the same pattern and options.
+  - A source test that classifies uses by the text after the call reads a conditional (`(a ? X() : Y()).IsMatch`) as an instance handed on. Write each call directly, or the rule must join the theory.
