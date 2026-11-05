@@ -414,7 +414,8 @@ internal sealed class SvcDevices(
         }
         catch (InvalidOperationException e) when (e is IDomainRule rule)
         {
-            result = Result.Error<T>(rule.Rule);
+            // ARV-287a: a device that cannot be removed is answered by its kind, as the service's own check is.
+            result = Result.Error<T>(rule.Kind == DomainRuleKind.NotRemovable ? DeviceErrors.NotRemovable : rule.Rule);
         }
 
         if (result.HasErrors)

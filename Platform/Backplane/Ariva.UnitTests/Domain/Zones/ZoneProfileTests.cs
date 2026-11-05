@@ -472,7 +472,11 @@ public sealed class ZoneProfileTests
         profile.Invoking(p => p.SetZoneLane(profile.Zones.Single(z => z.Kind == ZoneKind.Overflow), "CIT")).Should().Throw<InvalidOperationException>("only a queue zone is a lane's queue");
 
         profile.Publish(12, Levels(level), "admin", Now);
-        profile.Invoking(p => p.SetZoneLane(queue, null)).Should().Throw<InvalidOperationException>("a published version never changes");
+        var unchanged = (Ariva.Core.Domain.Common.IDomainRule)profile.Invoking(p => p.SetZoneLane(queue, null)).Should()
+            .Throw<InvalidOperationException>("a published version never changes").Which;
+        // ARV-287a: answered by its kind, so no answer tells this rule apart from another by its text.
+        unchanged.Kind.Should().Be(DomainRuleKind.NotADraft);
+        unchanged.Rule.Should().Be(Ariva.Core.Services.Topology.ZoneProfileErrors.NotADraft);
         var draft = profile.CreateDraft("v13");
         var copy = draft.Zones.Single(z => z.Kind == ZoneKind.Queue);
         copy.LaneCategory.Should().Be("CIT", "a draft keeps the lanes");

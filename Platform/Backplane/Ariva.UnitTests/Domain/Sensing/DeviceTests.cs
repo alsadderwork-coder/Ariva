@@ -374,7 +374,10 @@ public sealed class DeviceTests
         var calibrated = NewDevice();
         calibrated.RecordCalibration(CalibrationMethod.ManualCountTally, 200, 80, 3, 95, null, true, Now);
         var refused = () => calibrated.Remove("it", Now);
-        refused.Should().Throw<InvalidOperationException>();
+        var rule = (IDomainRule)refused.Should().Throw<InvalidOperationException>().Which;
+        // ARV-287a: answered by its kind, so no answer tells this rule apart from another by its text.
+        rule.Kind.Should().Be(DomainRuleKind.NotRemovable);
+        rule.Rule.Should().Be(Ariva.Core.Services.Sensing.DeviceErrors.NotRemovable);
 
         var fresh = NewDevice();
         fresh.Remove("it", Now);

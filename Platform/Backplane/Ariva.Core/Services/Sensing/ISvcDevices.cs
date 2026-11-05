@@ -10,7 +10,7 @@ public static class DeviceErrors
     public const string ZoneOnAnotherLevel = "The queue zone is on another level than the device.";
     public const string OutOfReach = "The device's footprint does not reach its queue zone; move it over the zone.";
     public const string Retired = "The device is retired.";
-    public const string NotRemovable = "Only a device that was never calibrated can be removed; retire it instead.";
+    public const string NotRemovable = Ariva.Core.Domain.Entities.Device.NotRemovableMessage;
     public const string UnknownFamily = "Unknown device family.";
     public const string UnknownTransport = "Unknown transport.";
     public const string UnsupportedTransport = "Ariva does not support this transport yet: register the device with HTTPS push or MQTT.";
