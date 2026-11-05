@@ -381,9 +381,13 @@ internal static class IlFlow
                 else if (ins.Member is FieldInfo written && name is "stfld" or "stsfld")
                 {
                     var value = Pop();
-                    if (name == "stfld")
-                        Pop();
+                    var receiver = name == "stfld" ? Pop() : new Slot(0, []);
                     var key = (written.Module, written.MetadataToken);
+                    // ARV-287: a field written keeps its value in its object (an answer body's public field, a struct's), as a
+                    // setter does; a closure's or a state machine's fields are followed by themselves. Into `this`, it reaches
+                    // the caller through what the method stores into its arguments.
+                    if (name == "stfld" && written.DeclaringType is { } holder && !holder.Name.StartsWith('<') && value.Flags != 0)
+                        Store(receiver.Homes, (Held(value.Flags) & ~Exception) | ((value.Flags & (Exception | ExceptionPart)) != 0 ? ExceptionPart : 0));
                     fields[key] = fields.GetValueOrDefault(key) | value.Flags;
                     if (!value.Homes.IsEmpty)
                         fieldAliases[key] = fieldAliases.GetValueOrDefault(key, ImmutableHashSet<int>.Empty).Union(value.Homes);

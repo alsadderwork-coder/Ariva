@@ -39,7 +39,8 @@ namespace Ariva.UnitTests.Architecture;
 /// emptiness check or an iteration apart); a helper of the scope is followed back when it takes a flagged value, reads a
 /// flagged field, or reads a rule's text itself or through its helpers, so nothing is followed across an await (an
 /// awaiter carries nothing: an async helper's result) or into a lambda a caller passes its helper (both ARV-287a), or
-/// through a delegate whose target is set outside the method (its Invoke counts as a call outside the scope); summaries nest at most six deep and skip a recursive call;
+/// through a delegate whose target is set outside the method (its Invoke counts as a call outside the scope, and a minimal
+/// API handler held in a field a type initializer sets is not found as a handler); summaries nest at most six deep and skip a recursive call;
 /// fields are flagged per field, not per object; framework throws (Enum.Parse, Single, checked arithmetic) and type
 /// initializers are not walked by the rule walk.
 /// </summary>
@@ -84,7 +85,7 @@ public sealed class DomainRuleTests
         ["ErrorHandlingExtensions.CustomizeProblemDetails: ToString in code that answers callers"] = "the exception extension is written only in vm-local and removed in every other environment",
         ["BatchBody.Parse: get_Path in code that answers callers"] = "a malformed batch answers its JsonException's path cut by KnownPath to the members Ariva knows (array indices kept), so no member name or value of the caller's is echoed; the rest of the answer is fixed text",
         ["BatchBody.Parse: KnownPath in code that answers callers"] = "KnownPath is that cut: it compares the path's members with the ones Ariva knows and keeps the known prefix",
-        ["DependencyOutageHandler.TryHandleAsync: TryWriteAsync in code that answers callers"] = "the problem details service is given the exception (ProblemDetailsContext.Exception), the framework's way, so CustomizeProblemDetails can describe it in vm-local only (the entries above); in every other environment its Detail is cleared and the exception extension removed, and this answer's title and status are fixed",
+        ["DependencyOutageHandler.TryHandleAsync: TryWriteAsync in code that answers callers"] = "the problem details service is given the exception (ProblemDetailsContext.Exception), the framework's way, so CustomizeProblemDetails can describe it in vm-local only (the entries above); in every other environment its Detail is cleared and the exception extension removed, and this answer's title and status are constants, as ErrorHandlingTests.Get_Should_Return503WithRetryAfter_When_ADependencyIsUnavailable checks of the k8s-prd answer; anything else the handler adds to the answer is still found",
         ["SensingIngest.Read: get_Message in code that answers callers"] = "a push the mapper refuses answers its PushFormatException's text, Ariva's own: the mappers' fixed texts naming the mapping's fields and paths (the device's declarative mapping, an administrator's) and a JSON path cut to Ariva's known members, never a pushed value"
     };
 
@@ -198,7 +199,9 @@ public sealed class DomainRuleTests
             // ARV-287 review round 4: an answer body made or set from an exception's part, a result's value set after it is
             // made, a stash read in a lambda the helper runs itself, a set made by a factory, and a minimal API handler.
             "AnswerController.DtoCtorPart", "AnswerController.DtoInitPart", "AnswerController.ObjectResultInitializer", "Refusals.AnswerOwnLambda",
-            "Bypasses.HeldImmutableCount", "Bypasses.MapProbe"
+            "Bypasses.HeldImmutableCount", "Bypasses.MapProbe",
+            // ARV-287 review round 5: an exception's part written to an answer body's field (a class's, a struct's, by a helper).
+            "AnswerController.DtoFieldInitPart", "AnswerController.DtoStructFieldPart", "AnswerController.DtoFieldByHelper"
         ]);
     }
 
@@ -2429,6 +2432,18 @@ public sealed class DomainRuleTests
             }
         }
 
+#pragma warning disable CA1051 // ARV-287 fixtures: answer bodies with visible fields, the shape the field check must find.
+        private sealed class FieldBody
+        {
+            public object Detail;
+        }
+
+        private struct FieldStruct
+        {
+            public object Detail;
+        }
+#pragma warning restore CA1051
+
         private sealed class ErrorBody
         {
             public ErrorBody()
@@ -2506,6 +2521,51 @@ public sealed class DomainRuleTests
                     return new Microsoft.AspNetCore.Mvc.ObjectResult(null) { Value = v.ValidationResult };
                 }
             }
+
+            public Microsoft.AspNetCore.Mvc.IActionResult DtoFieldInitPart(Action act)
+            {
+                try
+                {
+                    act();
+                    return Ok();
+                }
+                catch (System.ComponentModel.DataAnnotations.ValidationException v)
+                {
+                    return Ok(new FieldBody { Detail = v.ValidationResult });
+                }
+            }
+
+            public Microsoft.AspNetCore.Mvc.IActionResult DtoStructFieldPart(Action act)
+            {
+                try
+                {
+                    act();
+                    return Ok();
+                }
+                catch (System.ComponentModel.DataAnnotations.ValidationException v)
+                {
+                    var body = new FieldStruct();
+                    body.Detail = v.ValidationResult;
+                    return Ok(body);
+                }
+            }
+
+            public Microsoft.AspNetCore.Mvc.IActionResult DtoFieldByHelper(Action act)
+            {
+                try
+                {
+                    act();
+                    return Ok();
+                }
+                catch (System.ComponentModel.DataAnnotations.ValidationException v)
+                {
+                    var body = new FieldBody();
+                    Fill(body, v.ValidationResult);
+                    return Ok(body);
+                }
+            }
+
+            private static void Fill(FieldBody body, object detail) => body.Detail = detail;
 
             public Microsoft.AspNetCore.Mvc.IActionResult ObjectResultException(Action act)
             {
