@@ -93,6 +93,9 @@
         <!-- ARV-126: the restore test starts these hosts on a restored database (WebApplicationFactory, k8s-dev). -->
         <ProjectReference Include="..\Ariva.Api.Main\Ariva.Api.Main.csproj" />
         <ProjectReference Include="..\Ariva.Api.Integration\Ariva.Api.Integration.csproj" />
+        <!-- ARV-235: every bounded loop and Cronz job run on a database that holds its statement (RunTimeoutStatementTests). -->
+        <ProjectReference Include="..\Ariva.Api.Stream\Ariva.Api.Stream.csproj" />
+        <ProjectReference Include="..\Ariva.Api.Cronz\Ariva.Api.Cronz.csproj" />
         <!-- ARV-036: the reference evening (sensor emulator, Ingest) for the golden replay over the archive. -->
         <ProjectReference Include="..\..\Simulation\Ariva.Simulation.Api\Ariva.Simulation.Api.csproj" />
     </ItemGroup>
