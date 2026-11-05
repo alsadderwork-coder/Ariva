@@ -2378,7 +2378,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 304,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3. Filed 2026-11-02 from the ARV-282 security review round 4 (follow-up list items 1 to 7). Test tooling only; no sign-in code. Also from the ARV-286 review (A7): SvcDeskCodeMappingImports.Refusal tells the cannot-map rule apart by its text (\" code cannot map to a \"), read back through Result.ErrorMessages, which the text analysis does not follow; not a leak (it maps to fixed CSV texts), but a DomainRuleKind on that rule would remove the coupling.",
       "dependsOn": [
         "ARV-282"
@@ -2542,6 +2542,26 @@
       "notes": "Size M. Phase 3. Found by ARV-292's inventory (2026-11-05). Low: the 960 s limit already bounds a lost session; this narrows it. The email change alters a delivery guarantee, so its trade-off goes to the owner in decisions.md. No sign-in code. Optional (ARV-292 review, recommendation 10): the migration login has no keepalives; a lost migration job's session is bounded by its statement timeout and the server's TCP only.",
       "dependsOn": [
         "ARV-292"
+      ]
+    },
+    {
+      "id": "ARV-287a",
+      "title": "[E15] DomainRuleTests: values followed across an await, and a helper's rule text given back through an async result or a lambda its caller passes",
+      "description": "Found by the ARV-287 security review (round 2, 2026-11-05). DomainRuleTests' IL analysis (IlFlow) summarises a helper of the scope with what it returns, stores and leaves in fields, and since ARV-287 follows one given nothing flagged when it reads a flagged field or a rule's text (itself or through its helpers). An async helper is not followed back: its kickoff method only builds and starts its state machine, the state machine's MoveNext hands its result to the builder's SetResult, and an awaiter (a struct) carries no flag, so a rule's text a same-scope async guard answers in a Result (`var tried = await GuardAsync(act); tried.ErrorMessages.Contains(...)`) is not followed to the caller's comparison. An async helper returning the raw text (`var text = await TextOfAsync(r); text == ...`) is found already (the any-call rule at SetResult and GetResult); only text held in a result escapes. Map an async kickoff method's result to the flags its state machine gives SetResult (and an iterator's to what MoveNext gives Current), and let GetAwaiter, ConfigureAwait and GetResult carry the task's flags, so both shapes are found. The same family (ARV-287 review round 3, item 5): a guard whose rule read sits in a lambda its caller passes (`var tried = Try(act, r => Result.Error<int>(r.Rule)); tried.ErrorMessages.Contains(...)`) is not followed, as the transitive rule read skips a method pointer and a delegate argument's targets are not bound into the callee's summary; bind the delegates a call is given into the callee's summary (its Invoke of that parameter runs them). CWEs to review: CWE-209, CWE-20.",
+      "acceptanceCriteria": [
+        "A call to an async method of the scope is summarised with the flags its state machine gives the builder's SetResult (a Task or ValueTask result), and an awaiter's GetResult gives back the awaited task's flags (ConfigureAwait too)",
+        "Bypass fixtures for an async guard whose Result's text its caller compares after the await and a guard whose rule read is in a lambda its caller passes (GuardViaLambda) must be found, and an async helper returning a rule's text compared after the await stays found (a regression fixture); a rule's text answered after an await must not be found",
+        "The host check's run time stays within twice that of ARV-287 (about 20 s in Debug), and no production finding is added without a listed reason",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate), in Debug and with the unit tests built in Release",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 325,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-11-05 from the ARV-287 review round 2 (its limits 1 and 2: a callee given nothing flagged, and values across an await). Test tooling only; no sign-in code. The reviewer's probes: GuardResultAsync and SvcProbe.AsyncText (ARV-287 review round 2), GuardViaLambda (round 3).",
+      "dependsOn": [
+        "ARV-287"
       ]
     }
   ]

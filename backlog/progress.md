@@ -5477,3 +5477,94 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - Locking TimescaleDB's catalog makes every statement in that database wait, a monitoring query too: read `pg_stat_activity` from another database (it is cluster-wide).
   - A test that a run's token reaches its statements needs the connection already open (a warm pool), or the open's own timeout ends the wait first and proves nothing about the statement.
   - A vm-local host on a vm-local database needs no Data Protection certificate; a k8s-dev host needs the PEM pair the chart mounts.
+
+## 2026-11-05: ARV-287 [E15] DomainRuleTests text analysis hardening: comparisons by any call, values through arrays and closures, finally blocks, every answer path
+
+- What changed: test tooling, plus one production change the ARV-286 review asked for.
+  - The ARV-282 review's follow-up list (items 1 to 7) is closed in the IL analysis that `DomainRuleTests` runs over every Ariva assembly the hosts load. The ARV-287 review's round 1 probes (29 bypasses) are closed too.
+  - **IlFlow tracks where each value lives.** Each value on the stack carries a set of homes: the locals, arguments, fields and made objects it may be, or point into. A merge takes the union.
+    - A store adds its flags to every alias of the home it reaches:
+      - an array element (`stelem`);
+      - through an address (`stind`, `stobj`): a span's element, a ref local, an out argument;
+      - a call outside the scope that is given a container: a by-ref, an array, a span, a builder, a collection, or a struct taken by address. The async machinery (builders, awaiters, tasks) is left out.
+    - `alias = parts`, a ref local, a span over an array and a merge of two arrays all reach the array.
+  - **Calls into the scope are summarised.**
+    - A helper, constructor or lambda is followed with the flags it takes and the fields as the caller left them. Its summary gives back what it returns, what it stores into its arguments, and the fields it leaves.
+    - It is summarised when it takes a flagged value, reads a flagged field (a closure's, a static's), or reads a rule's text itself or through the helpers it calls (a guard answering a rule).
+    - Summaries are cached, nest at most six deep and skip recursion.
+    - A delegate's targets (every method it may hold, a ternary's both) are followed from their `ldftn` through locals and fields. A body the runtime gives (a delegate's Invoke, an extern) is no target. A delegate given to a call outside the scope (a predicate) is judged with that call's other arguments' flags.
+  - **Exception handlers are interpreted with their edges.**
+    - Finally and fault handlers are interpreted. A handler starts from every instruction of its try block, with that instruction's locals merged.
+    - A `leave` enters the finally blocks it crosses, and `endfinally` goes on to where those leaves went.
+    - `endfilter` enters its handler with the filter's locals.
+    - The worklist takes the lowest instruction first, so a try block is finished before its handler. This brought the host test from 4m17s to 15s.
+  - **Comparisons and nulls.** Reference comparisons (`ceq`, `beq`, `bne.un`) of text are recorded, null checks apart. A value null on one path only is not a null.
+  - **Struct and public fields.** A field of a struct or a public field (a tuple's item, a box's value) is read with its receiver's flags.
+  - **New flags.**
+    - `ExceptionPart`: what an exception, or a part of one, hands out: a Kafka error, a driver's command, a validation result.
+    - `RuleHeld`: a container or object holding a rule's text. What is read back out of it is the rule's text.
+  - **Convergence.** The field iteration takes a `maxPasses` and throws if it has not converged.
+  - **DomainRuleTests' rules:**
+    - Answer code is checked in every catch, not only one that can hold a rule.
+    - In answer code, a rule's text may be given only to an answer (a Fluentx result), a format, a log (LoggerExtensions, `ILogger.Log`, a LoggerMessage delegate) or a helper of the scope whose own body is judged. Any other call is a finding, a delegate of the scope's own type included.
+    - A string read or made from an exception's part (a getter, bytes decoded, a value converted), or a part formatted, is the exception's text. An object the framework makes from an exception (a tuple, a box) is a part of it. An answer (a result, a response, a problem detail, a hub's error) given an exception or a part is a finding.
+    - A holder of a rule's text given to a call outside the scope that computes a plain value from it is a finding, a size, an emptiness check or an iteration apart. LINQ's set and grouping operations, and any call given a comparer or a StringComparison, compare.
+    - A helper given nothing flagged is judged when it reads a flagged field, itself or through its own helpers (a rule's text stashed in a field or a static).
+    - An answer made from an exception or its part is a finding: a Fluentx result, an HTTP result (Results, TypedResults, a controller's Ok, an ObjectResult), a response, a problem detail, a hub's push or error, an async answer's SetResult, or an answer method's own return (a struct made from values, such as an answer tuple, holds them).
+    - A set or a dictionary made from text (by a constructor or a factory), and a set operation, compare.
+    - A setter or a field written keeps its value in its object (an answer body's member, a result's value, a struct's field), and so does a helper whose summary flags a field of its receiver's type; an object constructed from an exception, or handed back by the framework from one, is a part of it. A setter given to an answer is judged by its value, not by the object it sets.
+    - A minimal API handler (a delegate given to MapGet and the others) is answer code whatever it returns.
+    - The transitive field and rule reads follow a method pointer a body takes (a lambda it makes and runs).
+    - Code that answers callers now also covers: SignalR hubs and hub filters, hub pushes (IClientProxy), exception handlers, authorization result handlers, MVC and endpoint filters, middleware (IMiddleware or a conventional Invoke/InvokeAsync taking the HttpContext), and IResult and action result types. It also covers every method whose result is an answer, and every method that writes one: the response body, the problem details service or its members, a filter's result, a HubException.
+    - A constructor made with newobj gets its arguments after its own receiver.
+    - Generic parameters are exception values by their constraints.
+    - Four readers are listed in TextReads, each by its method and call (not its type, so the type's other code is still checked), with their reasons; each must still be found:
+      - the problem details' exception text, in vm-local only;
+      - the integration batch reader's JSON path, cut to the members Ariva knows;
+      - the sensing ingest's PushFormatException texts, which are Ariva's own mapper texts;
+      - the dependency outage handler giving the exception to the problem details service (ProblemDetailsContext.Exception), which describes it in vm-local only.
+  - **Production (ARV-286 review, A7).**
+    - `DeskCodeMapping.Fits(system, kind)` holds the desk kind rule; `Assign` uses it.
+    - The desk code mapping import refuses a desk the system cannot map (MappingDoesNotFitDesk, desk column) before it asks the mapping service. `Refusal` no longer matches the entity's text.
+- Tests:
+  - `DomainRuleTests` bypass fixtures gain 82 that must be found, and one that must not.
+    - Round 0 (17): StringComparer, ReferenceEquals, an indexer, GetValueOrDefault and IndexOf on a rule's text; string.Format with four arguments; string.Join; FormattableStringFactory.Create; a captured rule text compared in a lambda; an exception formatted in a finally; a struct receiver by address; a constructor formatting its argument; a Kafka error's ToString; a hub and an exception handler; an Error tuple; a Fluentx result.
+    - Round 1 (35): values through an alias, a span, Array.SetValue, a helper, a ternary and a ref local; a finally's effect after its leave; a filter's locals in its handler; a rule's text given back by a helper, an out argument, a result, a log event, a lambda, a closure, an object, a delegate of the scope, or compared to a value null on one path; a generic exception by address; a catch that cannot hold a rule in answer code; a driver's command text; a validation result's text; a KeyValuePair formatted; a try's local in its handler; an async result; an interpolated string handler's text compared; a fluent builder; an endpoint filter; a middleware; a problem details writer.
+    - Round 2 (14): a delegate's either target; a holder of a rule's text given to Intersect with a comparer, List.Remove and Any with a predicate; a rule's text stashed in a static field and in an instance field for a helper given nothing; a sync guard's answer compared by its caller; a consumed record's bytes decoded; a driver parameter cast; an exception kept in a Tuple, a value tuple and a StrongBox; a hub push.
+    - Round 3 (7): an exception or its part given to a controller's Ok, an ObjectResult and Results.Json, or returned in an answer tuple; a rule's text stashed for a helper's helper; a set made from held text and measured.
+    - Round 5 (3): an exception's part written to an answer body's public field (a class's in an initialiser, a struct's, and by a helper).
+    - Round 4 (6): an answer body of Ariva's own made or set (object initialiser) from an exception's part; an ObjectResult's Value set after it is made; a stash read in a lambda the helper makes and runs itself; an immutable set made by a factory and measured; a minimal API handler returning an exception's part.
+    - Must not be found: a rule's text answered as a result (through an interpolated string handler too) and logged; the sync guard itself.
+  - New fact `Flow_Should_ReportThatItDidNotConverge_When_TheFieldsStillGainFlagsAtTheLastPass`.
+  - `MappingAndPlanGuardTests.Fits_Should_AnswerWhetherASystemsCodeCanMapTheDeskKind_When_TheImportChecksARowBeforeTheService` (7 cases).
+  - `ImportRowsTests`: the cannot-map text now maps to MappingRefused.
+  - Results: Architecture 93 of 93 in Debug; RESULTS.
+- Files:
+  - Platform/Backplane/Ariva.UnitTests/Architecture/{IlFlow.cs, IlReader.cs, DomainRuleTests.cs}
+  - Platform/Backplane/Ariva.Core/Domain/Entities/DeskCodeMapping.cs
+  - Platform/Backplane/Ariva.Infra/Services/Topology/SvcDeskCodeMappingImports.cs
+  - Platform/Backplane/Ariva.UnitTests/{Imports/ImportRowsTests.cs, Services/MappingAndPlanGuardTests.cs}
+  - docs/security/asvs-l2.md (V16.5.1)
+  - backlog/prd-phase3.json (ARV-287 passes; ARV-287a filed), backlog/progress.md
+- Gates: GATES_BATCH
+- Security review: security-reviewer PASS in round 6 (CWE-209, CWE-20; ASVS V16.5.1), given on the condition the landing gates pass and recorded once they did (REVIEW_GATES). Rounds 1 to 5 FAIL, each closed with must-find fixtures from the reviewer's own probes:
+  - Round 1: answer code checked only in rule catches; answers outside services and controllers (filters, middleware, writers); values lost through call results, out arguments, aliases, finally and filter edges, null merges and delegates; the logging allow-list too wide. Fixed by IlFlow v3 (homes as sets, summaries, delegate targets, the handler edges) and the wider answer code.
+  - Round 2: a rule's text stashed in a field for a helper given nothing; held text given to framework comparisons and predicates; exception parts cast or decoded; readers listed by type. Fixed, with the readers listed by call.
+  - Round 3: exceptions given to HTTP result makers or returned in an answer tuple; a stash two helpers down; sets made from held text.
+  - Round 4: setters on answer bodies and results; a stash read in a lambda the helper runs; set factories; minimal API handlers.
+  - Round 5: a field written on an answer body.
+  - Accepted residuals: values across an await and a lambda a caller passes its helper (filed as ARV-287a); fields flagged per field; a delegate set outside the method (a handler held in a field included); the framework's bodies not followed.
+- Limits kept, stated in the test and in V16.5.1:
+  - The framework's bodies are not followed. What a call returns keeps the text it takes, a container it is given takes its other arguments' flags, and a delegate it is given is judged with them.
+  - Nothing is followed across an await: an async helper's result (a guard's Result, a returned rule text) does not reach its caller. Nor is a lambda a caller passes its helper bound into the helper's summary. Both filed as ARV-287a.
+  - A delegate set outside the method (a static field set by a type initializer) is a call outside the scope, and a minimal API handler held in such a field is not found as a handler.
+  - Fields are flagged per field, not per object.
+- Gotchas:
+  - The compiler writes `ReferenceEquals(a, b)` as a `beq`, and an overridden `ToString` as a callvirt on `Object.ToString`. A check that reads calls must read branches too, and must flag the receiver rather than its declared method.
+  - A handler can start from any instruction of its try block. Interpret it with the locals merged over the try, or what the try stored is lost.
+  - Give stored values homes, as sets that union on merge. Otherwise a value stored into an array, a params span or an interpolated string handler loses its flags at the store, and a ternary keeps only one branch's array.
+  - The async builder's `AwaitUnsafeOnCompleted(ref awaiter, ref this)` and `SetException(e)` would spread an exception's flag into every await result. Leave the machinery out of container stores.
+  - With finally edges, a FIFO worklist re-runs the handler and everything after it for every change in the try (4 minutes on the hosts). Take the lowest instruction first.
+  - A lambda reads closures nested in each other (`CS$<>8__locals1`). Checking only the lambda's own class for flagged fields misses them: scan what the body reads.
+  - Marking the framework's objects made from an exception as parts must leave out exceptions (InnerException), types and members, or every SqlState check and `GetType().Name` becomes exception text.
+  - Building the unit tests in Release beside Debug in a worktree took the disk's last space while a mutation run held 1.5 GB. Free a finished worktree's build output first.

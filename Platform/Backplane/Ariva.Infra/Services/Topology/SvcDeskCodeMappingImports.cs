@@ -215,7 +215,7 @@ internal sealed class SvcDeskCodeMappingImports(
         // Checkpoint codes are unique among a site's live checkpoints, desk codes within their checkpoint.
         var desks = (await Query<Desk>().Where(d => d.SiteCode == siteCode && d.DeletedOn == null).Fetch(d => d.Checkpoint).ToListAsync(ct))
             .GroupBy(d => SiteConfigurationRules.DeskKey(d.Checkpoint.Code, d.Code), StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.Ordinal);
+            .ToDictionary(g => g.Key, g => (g.First().Id, g.First().Kind), StringComparer.Ordinal);
         var planned = new List<(MappingImportRow, CreateDeskCodeMappingRequest)>();
         foreach (var row in rows)
         {
@@ -225,20 +225,29 @@ internal sealed class SvcDeskCodeMappingImports(
                 continue;
             }
 
-            planned.Add((row, new CreateDeskCodeMappingRequest(row.System, row.ExternalCode, desk)));
+            // ARV-287: the system's codes fit only some desk kinds; checked here, so the entity's refusal is never matched by its text.
+            if (SiteConfigurationRules.ParseKind<ExternalSystem>(row.System) is { } system && !Ariva.Core.Domain.Entities.DeskCodeMapping.Fits(system, desk.Kind))
+            {
+                table.Errors.Add(row.Row, table.Column("desk"), CsvImportErrors.MappingDoesNotFitDesk);
+                continue;
+            }
+
+            planned.Add((row, new CreateDeskCodeMappingRequest(row.System, row.ExternalCode, desk.Id)));
         }
 
         return (planned, table, null);
     }
 
-    /// <summary>The column and fixed text of the mapping service's refusal; an entity's message (which names kinds) becomes a fixed text.</summary>
+    /// <summary>
+    /// The column and fixed text of the mapping service's refusal; any other message (an entity's, which names kinds) becomes a
+    /// fixed text. A desk kind the system cannot map is refused before the service is asked (ARV-287).
+    /// </summary>
     internal static (string Column, string Reason) Refusal(string message) => message switch
     {
         TopologyErrors.UnknownKind => ("externalSystem", CsvImportErrors.UnknownSystem),
         TopologyErrors.NotFound => ("desk", CsvImportErrors.DeskNotFound),
         TopologyErrors.Duplicate => ("externalCode", CsvImportErrors.MappingTaken),
         CsvImportErrors.ExternalCode => ("externalCode", CsvImportErrors.ExternalCode),
-        _ when message?.Contains(" code cannot map to a ", StringComparison.Ordinal) == true => ("desk", CsvImportErrors.MappingDoesNotFitDesk),
         _ => ("desk", CsvImportErrors.MappingRefused)
     };
 

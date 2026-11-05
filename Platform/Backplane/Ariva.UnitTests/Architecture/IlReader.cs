@@ -147,7 +147,8 @@ internal static class IlReader
     /// <summary>
     /// The method's exception regions: a filter's own code, and each catch handler with the type it catches. A filtered
     /// catch's type is the one its filter tests first (the C# compiler starts a <c>catch (T e) when</c> filter with
-    /// <c>isinst T</c>); a filter that does not catches anything (<see cref="object"/>).
+    /// <c>isinst T</c>); a filter that does not catches anything (<see cref="object"/>). ARV-287: finally and fault handlers
+    /// too, and each region with the try block it handles.
     /// </summary>
     public static IReadOnlyList<Region> Regions(MethodBase method, IReadOnlyList<Instruction> instructions)
     {
@@ -155,16 +156,22 @@ internal static class IlReader
         var regions = new List<Region>();
         foreach (var clause in clauses)
         {
+            var (tryStart, tryEnd) = (clause.TryOffset, clause.TryOffset + clause.TryLength);
             if (clause.Flags == ExceptionHandlingClauseOptions.Filter)
             {
                 var first = instructions.FirstOrDefault(i => i.Offset == clause.FilterOffset);
                 var caught = first.OpCode == OpCodes.Isinst && first.Member is Type tested ? tested : typeof(object);
-                regions.Add(new Region(RegionKind.Filter, clause.FilterOffset, clause.HandlerOffset, caught));
-                regions.Add(new Region(RegionKind.Catch, clause.HandlerOffset, clause.HandlerOffset + clause.HandlerLength, caught));
+                regions.Add(new Region(RegionKind.Filter, clause.FilterOffset, clause.HandlerOffset, caught, tryStart, tryEnd));
+                regions.Add(new Region(RegionKind.Catch, clause.HandlerOffset, clause.HandlerOffset + clause.HandlerLength, caught, tryStart, tryEnd));
             }
             else if (clause.Flags == ExceptionHandlingClauseOptions.Clause)
             {
-                regions.Add(new Region(RegionKind.Catch, clause.HandlerOffset, clause.HandlerOffset + clause.HandlerLength, clause.CatchType));
+                regions.Add(new Region(RegionKind.Catch, clause.HandlerOffset, clause.HandlerOffset + clause.HandlerLength, clause.CatchType, tryStart, tryEnd));
+            }
+            else if (clause.Flags.HasFlag(ExceptionHandlingClauseOptions.Finally) || clause.Flags.HasFlag(ExceptionHandlingClauseOptions.Fault))
+            {
+                var kind = clause.Flags.HasFlag(ExceptionHandlingClauseOptions.Finally) ? RegionKind.Finally : RegionKind.Fault;
+                regions.Add(new Region(kind, clause.HandlerOffset, clause.HandlerOffset + clause.HandlerLength, null, tryStart, tryEnd));
             }
         }
 
@@ -217,16 +224,27 @@ internal static class IlReader
         public MethodBase Callee => OpCode.OperandType == OperandType.InlineMethod ? Member as MethodBase : null;
     }
 
-    /// <summary>A filter's code or a catch handler's, from <see cref="Start"/> up to <see cref="End"/>, with the type it catches.</summary>
-    public readonly record struct Region(RegionKind Kind, int Start, int End, Type CatchType)
+    /// <summary>
+    /// A filter's code or a handler's (a catch, a finally, a fault), from <see cref="Start"/> up to <see cref="End"/>, with the
+    /// type a catch catches, and the try block it handles (<see cref="TryStart"/> up to <see cref="TryEnd"/>).
+    /// </summary>
+    public readonly record struct Region(RegionKind Kind, int Start, int End, Type CatchType, int TryStart = 0, int TryEnd = 0)
     {
         public bool Holds(int offset) => offset >= Start && offset < End;
+
+        /// <summary>Whether an instruction at <paramref name="offset"/> is in the try block this region handles.</summary>
+        public bool InTry(int offset) => offset >= TryStart && offset < TryEnd;
+
+        /// <summary>A filter or a catch: code that runs with the exception.</summary>
+        public bool Catches => Kind is RegionKind.Filter or RegionKind.Catch;
     }
 
     public enum RegionKind
     {
         Filter,
-        Catch
+        Catch,
+        Finally,
+        Fault
     }
 
     /// <summary>
