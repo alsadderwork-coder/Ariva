@@ -925,10 +925,21 @@ function readWorkflow(text) {
 				const stripped = stripComments(part).replace(/^ {6}- /, '');
 				return { name: nameOf(stripped, i), raw: part, text: stripped };
 			});
-			for (const line of job.lines) {
+			// The job's own keys at four spaces, each a plain key; its steps a block whose items start at six spaces with their
+			// keys at eight (review round 4: keys at another depth, or a complex key, hid its permissions and steps).
+			let inSteps = false;
+			for (const line of job.lines.slice(1)) {
+				const level = line.search(/\S/);
+				if (level < 0 || /^\s*#/.test(line)) continue;
+				if (level < 4) problems.push(`the ${job.name} job has a line at ${level} spaces (its keys at four)`);
+				else if (level === 4) {
+					if (!/^ {4}[A-Za-z_][\w-]*:(?:\s|$)/.test(line)) problems.push(`the ${job.name} job has a key at four spaces that is not a plain key (a quoted or complex key, a list)`);
+					inSteps = /^ {4}steps:/.test(line);
+				} else if (inSteps && (level === 5 || level === 7 || (level === 6 && !/^ {6}- /.test(line)))) problems.push(`the ${job.name} job's steps are not items at six spaces with their keys at eight`);
 				if (/^ {4}steps:/.test(line) && !/^ {4}steps:\s*(?:#.*)?$/.test(line)) problems.push(`the ${job.name} job's steps: is not a plain block`);
 				if (/^ {4}uses:/.test(line)) problems.push(`the ${job.name} job calls a reusable workflow, which this reader does not follow`);
 			}
+			if (!job.lines.some((line) => /^ {4}steps:/.test(line))) problems.push(`the ${job.name} job has no steps: at four spaces`);
 			return { name: job.name, raw, steps, declaresSteps: job.lines.some((line) => /^ {4}steps:/.test(line)) };
 		})
 	};
@@ -1520,6 +1531,16 @@ function selfTest() {
 			if (changed === null) problems.push(`${file} no longer has the text that the pin case ${label} changes: update it`);
 			else if (workflowPins(workflows.map(([f, text]) => [f, f === file ? changed : text])).problems.length === 0) problems.push(`the pins pass ${label}`);
 		}
+		// Review round 4: a job whose keys sit at another depth, or use a complex key, hid its permissions and steps.
+		const deeper = (n) => post(`${readOnly}jobs:\n  post:\n${' '.repeat(n)}permissions:\n${' '.repeat(n + 2)}pull-requests: write\n${' '.repeat(n)}runs-on: ubuntu-24.04\n${' '.repeat(n)}steps:\n${' '.repeat(n + 2)}- name: Post\n${' '.repeat(n + 4)}run: node scripts/post-summary.mjs\n`);
+		const round5New = {
+			"a job's keys at three spaces": deeper(3),
+			"a job's keys at five spaces": deeper(5),
+			"a job's keys at six spaces": deeper(6),
+			'a complex key for permissions': post(`${readOnly}jobs:\n  post:\n    ? permissions\n    : pull-requests: write\n${postJob}`),
+			'steps at four spaces': post(`${readOnly}jobs:\n  post:\n${writes}    runs-on: ubuntu-24.04\n    steps:\n    - name: Post\n      run: node scripts/post-summary.mjs\n`)
+		};
+		for (const [label, entry] of Object.entries(round5New)) if (workflowPins([...workflows, entry]).problems.length === 0) problems.push(`the pins pass ${label}`);
 		const bumped = workflows.map(([f, text]) => [f, text.replace(/upload-artifact@[0-9a-f]{40} # v7\.0\.1/g, 'upload-artifact@0123456789abcdef0123456789abcdef01234567 # v7.0.2')]);
 		if (workflowPins(bumped).problems.length) problems.push("the pins fail on an action's pin bump (the bots' updates must pass)");
 	} finally {
