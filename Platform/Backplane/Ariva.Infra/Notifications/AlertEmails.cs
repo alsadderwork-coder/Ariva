@@ -237,7 +237,10 @@ public sealed class EmailSenderWorker(IServiceScopeFactory scopes, EmailSettings
     : BackgroundService, IBoundedRuns
 {
     /// <summary>Ten minutes: a slow relay's round is cut between messages and goes on in the next round from what is left.</summary>
-    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(10);
+    public TimeSpan RunTimeout { get; init; } = DefaultRunTimeout;
+
+    /// <summary>The run timeout a host runs with (ARV-292: its idle transaction budget counts it, <see cref="Settings.IdleTransactionBudget"/>).</summary>
+    public static readonly TimeSpan DefaultRunTimeout = TimeSpan.FromMinutes(10);
 
     /// <summary>One round under the run timeout (tests).</summary>
     internal Task<EmailRound> RunOnceAsync(CancellationToken stoppingToken) => RunBound.RunAsync("Email round", RunTimeout, timeProvider, async ct =>

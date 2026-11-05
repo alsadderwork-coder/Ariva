@@ -26,6 +26,10 @@ public static class PersistenceExtensions
         EnsureProductionTransport(settings, configuration);
         // ARV-096d: a command or statement timeout out of range stops the host (and the migration job, which builds it) at start.
         settings.EnsureValidLimits();
+        // ARV-292: and an idle transaction limit that a wait this host's settings allow could pass.
+        var budget = IdleTransactionBudget.FromConfiguration(configuration, settings).ProblemWith(settings.IdleInTransactionTimeoutSeconds);
+        if (budget is not null)
+            throw new InvalidOperationException(budget);
         services.AddSingleton(settings);
         // ARV-104g1: the validation reader login (Database:ValidationReader), apart from the runtime login. Configured in the
         // clusters for api-main and the migration job only; held by the validation service, the migrator and the guard.

@@ -2496,7 +2496,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 322,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Found by the ARV-291 security review (2026-11-04). Low: needs a connection lost on the network; nothing of the session's transaction can commit. The settings are user-settable, so the migration login can set them as it sets statement_timeout (unlike ARV-290's temp_file_limit). No sign-in code.",
       "dependsOn": [
         "ARV-291"
@@ -2520,6 +2520,28 @@
       "notes": "Size M. Phase 3. Found by the ARV-289 checkpoint fix (2026-11-04). Low for the three rules (their inputs are short: a template, a version line, the dashboard page); the unbounded protected text is the larger part. The dashboard's rule is in the sign-in freeze. Reporting the defect upstream is the owner's (an issue outside this repository). No sign-in code.",
       "dependsOn": [
         "ARV-289"
+      ]
+    },
+    {
+      "id": "ARV-294",
+      "title": "[E17] The long waits inside transactions shortened, so the runtime login's idle transaction limit can come down to 300 s",
+      "description": "Found by ARV-292's inventory (2026-11-05, docs/security/costly-operations.md section 16). The runtime login's idle transaction limit (Database:IdleInTransactionTimeoutSeconds) has to stay above the longest stretch a host's transaction waits on other work, and two waits set it at 960 s: an alert email round (Ariva.Infra/Notifications/AlertEmails.cs) sends its whole SMTP batch inside its claim transaction with no statement between messages (780 s with a slow relay at Email:Smtp:TimeoutSeconds 30), and a request on a transfer endpoint holds its transaction across disk writes and reads (Security:RequestTimeouts:TransferSeconds 900). A scheduled report's send (SvcReportDeliveries) holds its delivery row and the report slot across an SMTP send bounded per network operation only (about 420 s), and the availability ledger reads Redis per zone under its site lock. Shorten each so no wait inside a transaction passes 240 s whatever its settings allow, then lower the default limit to 300 s: claim the alert emails and commit, send outside the transaction, then mark each sent in a short transaction of its own (with the at-most-once and at-least-once trade-off written down: an email the relay accepted and the host could not mark is sent again, as today on a cut); give the report's send a total budget (a CancellationTokenSource over the whole send) below the limit; read the availability ledger's Redis snapshots before taking the site lock; write upload files before taking their locks (the post-rollback deletes exist) and read a configuration export's files outside its snapshot or bound them. CWEs to review: CWE-400, CWE-362 (a claim released before its send must not let two rounds send the same email).",
+      "acceptanceCriteria": [
+        "No transaction of a host waits on other work for longer than 240 s at any value its settings allow (IdleTransactionBudget's waits, each recomputed and tested at its settings' maxima), and the default Database:IdleInTransactionTimeoutSeconds is 300",
+        "The alert email round sends outside its claim transaction and marks each email in a transaction of its own; an integration test proves two rounds never send the same email and an email the relay accepted is marked sent, or sent again at most once after a crash between send and mark (recorded)",
+        "A scheduled report's send has a total budget below the limit; an integration test with a relay that answers slowly proves the delivery is counted as failed and its row and slot freed",
+        "The availability ledger reads its Redis snapshots before its site lock, and the upload and site configuration services do their file work outside their locks or within a bound, each with a test",
+        "Each host reads its runtime login's idle_in_transaction_session_timeout at start (SHOW) and refuses to start when the server's value is not above its longest wait, so a limit the migration job set from another copy of the settings is caught too (ARV-292 review, recommendation 8)",
+        "docs/security/costly-operations.md section 16 updated (each wait and its new bound)",
+        "node scripts/verify.mjs backend passes; node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 324,
+      "passes": false,
+      "notes": "Size M. Phase 3. Found by ARV-292's inventory (2026-11-05). Low: the 960 s limit already bounds a lost session; this narrows it. The email change alters a delivery guarantee, so its trade-off goes to the owner in decisions.md. No sign-in code. Optional (ARV-292 review, recommendation 10): the migration login has no keepalives; a lost migration job's session is bounded by its statement timeout and the server's TCP only.",
+      "dependsOn": [
+        "ARV-292"
       ]
     }
   ]

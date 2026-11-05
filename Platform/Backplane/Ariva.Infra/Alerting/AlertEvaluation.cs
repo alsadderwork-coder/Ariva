@@ -492,7 +492,10 @@ public sealed class AlertEvaluationWorker(AlertEvaluation evaluation, AlertEvalu
     : BackgroundService, IBoundedRuns
 {
     /// <summary>Two minutes: 500 rules a site read with bounded inputs take seconds; a tick past it waits on a stalled database.</summary>
-    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(2);
+    public TimeSpan RunTimeout { get; init; } = DefaultRunTimeout;
+
+    /// <summary>The run timeout a host runs with (ARV-292: its idle transaction budget counts it, <see cref="Settings.IdleTransactionBudget"/>).</summary>
+    public static readonly TimeSpan DefaultRunTimeout = TimeSpan.FromMinutes(2);
 
     /// <summary>One tick under the run timeout. Public for tests.</summary>
     public Task<AlertTickResult> RunOnceAsync(CancellationToken stoppingToken) =>
