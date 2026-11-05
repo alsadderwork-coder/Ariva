@@ -31,6 +31,8 @@ public sealed class ReportDeliveryReadFailureTests(PostgresFixture fixture) : IA
 
     private static readonly SemaphoreSlim TimeoutGate = new(1, 1);
     private static bool _timeoutSet;
+    private static readonly SemaphoreSlim IdleGate = new(1, 1);
+    private static bool _idleSet;
 
     private readonly CountingTransport _transport = new();
     private readonly CapturedLogs _logs = new();
@@ -215,6 +217,39 @@ public sealed class ReportDeliveryReadFailureTests(PostgresFixture fixture) : IA
         (await StatusAsync(host, schedule)).Should().Be("Sent:2:");
     }
 
+    /// <summary>
+    /// ARV-292: a scheduled report's send holds its delivery row and the deliveries' report slot in its transaction, idle on the
+    /// server while the relay takes the message. On a database whose sessions may stay idle in a transaction for 3 s, a send of 1 s
+    /// commits (the delivery is sent), and one of 5 s has the session ended by the server: nothing of the round commits, and the row
+    /// and the slot are free for the next round at once (the relay took the report, so the next round sends it again).
+    /// </summary>
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(5, false)]
+    public async Task Round_Should_CommitOrBeEndedByTheIdleLimit_When_ItsSendTakesLessOrMoreThanTheLimit(int sendSeconds, bool commits)
+    {
+        var host = await IdleHostAsync(TimeSpan.FromSeconds(sendSeconds));
+        var site = commits ? "RIS" : "RIL";
+        var admin = await SiteAsync(host, site, $"it.idle.{site.ToLowerInvariant()}", $"idle.{site.ToLowerInvariant()}@ariva.test");
+        var schedule = await ScheduleAsync(host, admin, site, "Idle limit");
+
+        var round = await Record.ExceptionAsync(() => RunAsync(host));
+
+        if (commits)
+        {
+            round.Should().BeNull();
+            (await StatusAsync(host, schedule)).Should().StartWith("Sent:", "a send within the limit commits");
+            return;
+        }
+
+        (await StatusAsync(host, schedule)).Should().NotContain("Sent", "the server ended the session before its commit");
+        (await host.ReadAsync<int>("SELECT count(*)::int FROM (SELECT id FROM report_delivery WHERE schedule_id = @id FOR UPDATE SKIP LOCKED) free", schedule))
+            .Should().BeGreaterThan(0, "the delivery's row is free");
+        (await HeldSlotsAsync(host)).Should().BeEmpty("no report slot is held");
+        (await host.ReadAsync<int>("SELECT count(*)::int FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'"))
+            .Should().Be(0);
+    }
+
     #region Helpers
 
     private Dictionary<string, string> Settings() => new()
@@ -259,6 +294,42 @@ public sealed class ReportDeliveryReadFailureTests(PostgresFixture fixture) : IA
         }
 
         database.Should().Be("it_report_read_timeout");
+        return host;
+    }
+
+    /// <summary>
+    /// A host whose transport takes <paramref name="sendTime"/> for a batch, on the database whose sessions may stay idle in a
+    /// transaction for 3 s (set once, before any session of a host opens).
+    /// </summary>
+    private async Task<AccountsHost> IdleHostAsync(TimeSpan sendTime)
+    {
+        var host = new AccountsHost(fixture, Settings(), TestDatabase.ReportSendIdle, services =>
+        {
+            Configure(services);
+            services.Replace(ServiceDescriptor.Singleton<IEmailTransport>(new SlowTransport(_transport, sendTime)));
+        });
+        _host = host;
+        var database = await host.DatabaseAsync();
+        await IdleGate.WaitAsync(Ct);
+        try
+        {
+            if (!_idleSet)
+            {
+                await using var connection = new NpgsqlConnection(Unpooled(database));
+                await connection.OpenAsync(Ct);
+                // The database's name is the fixture's own constant (it_report_send_idle); a statement cannot bind it.
+                await using var set = new NpgsqlCommand("ALTER DATABASE it_report_send_idle SET idle_in_transaction_session_timeout = '3s'", connection);
+                await set.ExecuteNonQueryAsync(Ct);
+                _idleSet = true;
+                NpgsqlConnection.ClearAllPools();
+            }
+        }
+        finally
+        {
+            IdleGate.Release();
+        }
+
+        database.Should().Be("it_report_send_idle");
         return host;
     }
 
@@ -356,6 +427,16 @@ public sealed class ReportDeliveryReadFailureTests(PostgresFixture fixture) : IA
         }
 
         return false;
+    }
+
+    /// <summary>A transport whose relay takes a while for each batch (the delay, then the inner transport).</summary>
+    private sealed class SlowTransport(IEmailTransport inner, TimeSpan delay) : IEmailTransport
+    {
+        public async Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
+        {
+            await Task.Delay(delay, CancellationToken.None);
+            return await inner.SendAsync(emails, ct);
+        }
     }
 
     /// <summary>Counts the sends; every email is taken.</summary>

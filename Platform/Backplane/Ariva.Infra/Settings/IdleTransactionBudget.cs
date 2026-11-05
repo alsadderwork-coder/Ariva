@@ -23,8 +23,12 @@ public sealed record IdleTransactionBudget(IReadOnlyList<IdleTransactionWait> Wa
     /// </summary>
     public const int SmtpExchangesPerMessage = 6;
 
-    /// <summary>The SMTP exchanges of a scheduled report's send (connect, greeting, TLS, authentication, envelope, data, QUIT).</summary>
-    public const int SmtpExchangesPerReport = 10;
+    /// <summary>
+    /// The SMTP network reads of a scheduled report's send, each bounded by the SMTP timeout (MailKit bounds an operation, not a
+    /// send): connect, greeting, EHLO, STARTTLS, two for the TLS handshake, EHLO again, authentication, MAIL, RCPT, DATA, the final
+    /// reply and QUIT, with one to spare for the attachment's writes.
+    /// </summary>
+    public const int SmtpExchangesPerReport = 15;
 
     /// <summary>The statements a staffing pass reads on its second connection while its site lock's transaction waits.</summary>
     public const int StaffingInputStatements = 8;

@@ -3,7 +3,9 @@
 -- leaves its session open, idle in its transaction with its locks (a report delivery's row, the deliveries' report slot, a
 -- lock unit's advisory lock), until the server's TCP notices the client gone. idle_in_transaction_session_timeout ends a
 -- session idle in a transaction for longer than the limit, so its locks go and nothing of its transaction commits; TCP
--- keepalives end a session whose client is gone sooner, idle or not. The limit is above every transaction a host holds open
+-- keepalives end a session whose client is gone sooner while it is idle, in a transaction or not (not during a statement, whose bound
+-- stays the statement timeout). These are user settings: they bound a lost client, not a compromised host, which can change
+-- them for its own sessions. The limit is above every transaction a host holds open
 -- while it waits on other work (the inventory in docs/security/costly-operations.md; a host refuses to start below it). As for
 -- the statement timeout (script 0063), a setting of the ariva_runtime group role would not reach its members and no script knows
 -- the login's name, so the migration job sets these on the login itself, after ariva_ensure_runtime_login, with
@@ -20,8 +22,8 @@ BEGIN
     IF login_name IS NULL OR login_name !~ '^[a-z_][a-z0-9_]{0,62}$' THEN
         RAISE EXCEPTION 'invalid runtime login name';
     END IF;
-    IF idle_in_transaction_seconds IS NULL OR idle_in_transaction_seconds < 1 OR idle_in_transaction_seconds > 3600 THEN
-        RAISE EXCEPTION 'runtime idle in transaction limit must be 1 to 3600 seconds';
+    IF idle_in_transaction_seconds IS NULL OR idle_in_transaction_seconds < 1 OR idle_in_transaction_seconds > 7200 THEN
+        RAISE EXCEPTION 'runtime idle in transaction limit must be 1 to 7200 seconds';
     END IF;
     IF keepalive_idle_seconds IS NULL OR keepalive_idle_seconds < 1 OR keepalive_idle_seconds > 600
        OR keepalive_interval_seconds IS NULL OR keepalive_interval_seconds < 1 OR keepalive_interval_seconds > 60

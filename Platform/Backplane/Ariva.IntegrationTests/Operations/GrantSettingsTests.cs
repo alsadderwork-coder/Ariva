@@ -63,7 +63,7 @@ public sealed class GrantSettingsTests : IAsyncLifetime
 
         var before = await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         before.Stdout.Should().Contain("FAIL  temp file cap|the migration login may not set temp_file_limit, so the migration job stops (ARV-290): run grant-settings")
-            .And.Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit not set (the migration job sets 301s to 3600s, 64MB to 102400MB, 300s to 3600s and keepalives 60/10/6; ARV-096d, ARV-290, ARV-292): run the migration job");
+            .And.Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit not set (the migration job sets 301s to 3600s, 64MB to 102400MB, 300s to 7200s and keepalives 60/10/6; ARV-096d, ARV-290, ARV-292): run the migration job");
         // The job logs "The migration login ariva may not set temp_file_limit ... GRANT SET ON PARAMETER ... grant-settings" (Critical)
         // and exits 1, as for any failure, so the release's hook fails before a host starts.
         (await MigrateAsync()).Should().Be(1, "the job stops when its login may not set the cap");

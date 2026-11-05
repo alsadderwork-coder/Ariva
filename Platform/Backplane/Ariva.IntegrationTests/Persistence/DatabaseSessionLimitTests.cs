@@ -38,7 +38,7 @@ public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
         const string login = "it_sl_app";
         var password = Secret();
         await ExecuteAsync(admin, "SELECT ariva_ensure_runtime_login(@name, @password)", ("name", login), ("password", password));
-        // Three seconds here, so the test is quick; the migration job takes Database:IdleInTransactionTimeoutSeconds (300 to 3,600).
+        // Three seconds here, so the test is quick; the migration job takes Database:IdleInTransactionTimeoutSeconds (300 to 7,200).
         await ExecuteAsync(admin, "SELECT ariva_set_runtime_session_limits(@name, 3, 60, 10, 6)", ("name", login));
         await ExecuteAsync(admin, """
             INSERT INTO site (id, code, name) VALUES (gen_random_uuid(), 'SLM', 'Session limits');
@@ -61,6 +61,12 @@ public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
             (await claim.ExecuteScalarAsync(Ct)).Should().Be(Delivery);
         }
 
+        await using (var write = new NpgsqlCommand("UPDATE report_delivery SET status = 'Sent', sent_utc = now() WHERE id = @id", lost, held))
+        {
+            write.Parameters.AddWithValue("id", Delivery);
+            (await write.ExecuteNonQueryAsync(Ct)).Should().Be(1);
+        }
+
         await using (var slot = new NpgsqlCommand("SELECT pg_try_advisory_xact_lock(@class, @slot)", lost, held))
         {
             slot.Parameters.AddWithValue("class", ReportReader.SlotLockClass);
@@ -73,7 +79,8 @@ public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
 
         (await TryTakeAsync(asRuntime)).Should().Be("row taken, slot taken", "the server ended the idle session past its limit, and its locks went with it");
         var reuse = () => new NpgsqlCommand("SELECT 1", lost, held).ExecuteScalarAsync(Ct);
-        await reuse.Should().ThrowAsync<Exception>("the server closed the session");
+        await reuse.Should().ThrowAsync<NpgsqlException>("the server closed the session");
+        (await ScalarAsync(admin, "SELECT status FROM report_delivery WHERE id = 'a2920000-0000-0000-0000-000000000004'")).Should().Be("Pending", "nothing of the ended transaction committed");
         (await ScalarAsync(admin, "SELECT count(*)::text FROM pg_stat_activity WHERE usename = 'it_sl_app' AND state = 'idle in transaction'")).Should().Be("0");
     }
 
@@ -124,8 +131,8 @@ public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
             return (await call.Should().ThrowAsync<PostgresException>()).Which.MessageText;
         }
 
-        (await RefusalOf("it_sl_member", 0)).Should().Contain("1 to 3600 seconds");
-        (await RefusalOf("it_sl_member", 3601)).Should().Contain("1 to 3600 seconds");
+        (await RefusalOf("it_sl_member", 0)).Should().Contain("1 to 7200 seconds");
+        (await RefusalOf("it_sl_member", 7201)).Should().Contain("1 to 7200 seconds");
         (await RefusalOf("it_sl_member", 960, keepIdle: 0)).Should().Contain("keepalives");
         (await RefusalOf("it_sl_member", 960, keepInterval: 61)).Should().Contain("keepalives");
         (await RefusalOf("it_sl_member", 960, keepCount: 21)).Should().Contain("keepalives");

@@ -482,7 +482,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             .And.Contain("temp_file_limit SET with grant option to it_back").And.Contain("work_mem ALTER SYSTEM to PUBLIC")
             .And.Contain("session_preload_libraries SET to ariva, ").And.Contain("temp_file_limit ALTER SYSTEM to ariva_migration")
             .And.Contain("temp_file_limit SET with grant option to ariva, ");
-        check.Stdout.Should().Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit -1 (the migration job sets 301s to 3600s, 64MB to 102400MB, 300s to 3600s and keepalives 60/10/6; ARV-096d, ARV-290, ARV-292): run the migration job");
+        check.Stdout.Should().Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: temp_file_limit -1 (the migration job sets 301s to 3600s, 64MB to 102400MB, 300s to 7200s and keepalives 60/10/6; ARV-096d, ARV-290, ARV-292): run the migration job");
         // ARV-262: every file but the server's postgresql.conf: ALTER SYSTEM's and the one an include line names.
         Line(check, "FAIL  settings|").Should().Contain("set outside the server's postgresql.conf: maintenance_work_mem (")
             .And.Contain("/ariva-planted.conf), work_mem (").And.Contain("/postgresql.auto.conf): find out who");

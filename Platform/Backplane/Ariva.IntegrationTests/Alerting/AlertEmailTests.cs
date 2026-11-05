@@ -42,6 +42,8 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
 
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static readonly SemaphoreSlim _probes = new(1, 1);
+    private static readonly SemaphoreSlim IdleGate = new(1, 1);
+    private static bool _idleSet;
     private static (Guid Admin, Guid Border, Guid Terminal)? _people;
 
     private readonly SmtpSink _sink = new();
@@ -56,7 +58,8 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
         await _sink.DisposeAsync();
     }
 
-    private AccountsHost Host(int perHour = 1000, int perMinute = 60, int attempts = 8, int? port = null)
+    private AccountsHost Host(int perHour = 1000, int perMinute = 60, int attempts = 8, int? port = null, TestDatabase database = TestDatabase.AlertEmails,
+        TimeSpan? sendTime = null)
     {
         _host = new AccountsHost(fixture, new Dictionary<string, string>
         {
@@ -65,11 +68,14 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
             ["Email:MaxPerRecipientPerHour"] = perHour.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["Email:MaxPerMinute"] = perMinute.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["Email:MaxAttempts"] = attempts.ToString(System.Globalization.CultureInfo.InvariantCulture)
-        }, TestDatabase.AlertEmails, services =>
+        }, database, services =>
         {
             // The sending side, as Ariva.Api.Integration registers it, against the sink.
             services.AddSingleton(new SmtpSettings { Host = "127.0.0.1", Port = port ?? _sink.Port, Security = "None", AllowInsecure = true, TimeoutSeconds = 5 });
-            services.AddSingleton<IEmailTransport, MailKitTransport>();
+            services.AddSingleton<MailKitTransport>();
+            services.AddSingleton<IEmailTransport>(provider => sendTime is { } slow
+                ? new SlowTransport(provider.GetRequiredService<MailKitTransport>(), slow)
+                : provider.GetRequiredService<MailKitTransport>());
             services.AddScoped<EmailSender>();
         });
         return _host;
@@ -339,6 +345,99 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
         (await SendAsync(first.AddMinutes(3))).Sent.Should().Be(4 - taken);
         _sink.Received.Select(m => m.To.Single()).Should().HaveCount(4).And.OnlyHaveUniqueItems("no recipient got the alert twice");
         new EmailSenderWorker(null, new EmailSettings(), TimeProvider.System, NullLogger<EmailSenderWorker>.Instance).RunTimeout.Should().Be(TimeSpan.FromMinutes(10));
+    }
+
+    /// <summary>
+    /// ARV-292: the round sends its whole batch inside its claim, so its transaction sits idle on the server while the relay takes
+    /// the messages. On a database whose sessions may stay idle in a transaction for 3 s, a batch of 1 s commits (the emails are
+    /// Sent), and one of 5 s has the session ended by the server: nothing of the round commits (the emails stay Pending, so a
+    /// later round sends them again, as the relay already took them) and the round lock is free at once.
+    /// </summary>
+    [Theory]
+    [InlineData(1, true)]
+    [InlineData(5, false)]
+    public async Task Round_Should_CommitOrBeEndedByTheIdleLimit_When_ItsBatchTakesLessOrMoreThanTheLimit(int sendSeconds, bool commits)
+    {
+        Host(database: TestDatabase.EmailRoundIdle, sendTime: TimeSpan.FromSeconds(sendSeconds));
+        var database = await _host.DatabaseAsync();
+        await IdleLimitAsync(database);
+        var site = commits ? "EIS" : "EIL";
+        var now = new DateTime(2026, 11, 5, 10, 0, 0, DateTimeKind.Utc);
+        var manager = await _host.CreateUserAsync($"it.idle.{site.ToLowerInvariant()}", roles: [RoleCodes.TerminalDutyManager], allSites: true);
+        (await _host.ReadAsync<int>("UPDATE \"user\" SET email = @secret WHERE id = @id RETURNING 1", manager, $"idle.{site.ToLowerInvariant()}@ariva.test")).Should().Be(1);
+        var alert = Guid.NewGuid();
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString(database)))
+        {
+            await connection.OpenAsync(Ct);
+            await using var seed = new NpgsqlCommand("""
+                INSERT INTO site (id, code, name) VALUES (gen_random_uuid(), @site, 'Idle limit');
+                INSERT INTO alert_rule (id, site_code, code, name, scope_zones, metric, comparator, sustain_minutes, clear_after_minutes, severity, notify_by_email, enabled)
+                VALUES (@rule, @site, 'R-901', 'Offline', 'A-VIS', 'SensorOffline', 'IsTrue', 1, 1, 'Warning', true, true);
+                INSERT INTO alert (id, site_code, rule_id, rule_code, rule_name, zone_name, device_code, metric, severity, raised_utc, raised_value, state)
+                VALUES (@alert, @site, @rule, 'R-901', 'Offline', 'A-VIS', 'S-01', 'SensorOffline', 'Warning', @now, 1, 'Raised');
+                INSERT INTO email_message (id, kind, alert_id, site_code, recipient, subject, body, status, attempts, created_utc, next_attempt_utc)
+                VALUES (gen_random_uuid(), 'AlertRaised', @alert, @site, @recipient, '[Ariva] Offline', 'A-VIS is offline.', 'Pending', 0, @now, @now);
+                """, connection);
+            seed.Parameters.AddWithValue("site", site);
+            seed.Parameters.AddWithValue("rule", Guid.NewGuid());
+            seed.Parameters.AddWithValue("alert", alert);
+            seed.Parameters.AddWithValue("now", now);
+            seed.Parameters.AddWithValue("recipient", $"idle.{site.ToLowerInvariant()}@ariva.test");
+            await seed.ExecuteNonQueryAsync(Ct);
+        }
+
+        var round = await Record.ExceptionAsync(() => SendAsync(now.AddMinutes(1)));
+
+        var rows = await EmailsAsync(alert);
+        _sink.Received.Should().ContainSingle(message => message.To.Single() == $"idle.{site.ToLowerInvariant()}@ariva.test", "the relay took the message either way");
+        if (commits)
+        {
+            round.Should().BeNull();
+            rows.Should().ContainSingle().Which.Status.Should().Be("Sent", "a batch within the limit commits");
+            return;
+        }
+
+        round.Should().NotBeNull("the round's commit fails on the ended session");
+        rows.Should().ContainSingle().Which.Status.Should().Be("Pending", "nothing of the round committed");
+        await using var other = new NpgsqlConnection(fixture.ConnectionString(database));
+        await other.OpenAsync(Ct);
+        await using var transaction = await other.BeginTransactionAsync(Ct);
+        await using var take = new NpgsqlCommand("SELECT pg_try_advisory_xact_lock(@key)", other, transaction);
+        take.Parameters.AddWithValue("key", EmailSender.RoundLock);
+        (await take.ExecuteScalarAsync(Ct)).Should().Be(true, "the round lock went with the ended session");
+    }
+
+    /// <summary>The idle round database's sessions may stay idle in a transaction for 3 s (set once, before the round's sessions open).</summary>
+    private async Task IdleLimitAsync(string database)
+    {
+        database.Should().Be("it_email_round_idle");
+        await IdleGate.WaitAsync(Ct);
+        try
+        {
+            if (_idleSet)
+                return;
+            await using var connection = new NpgsqlConnection(fixture.ConnectionString(database));
+            await connection.OpenAsync(Ct);
+            // The database's name is the fixture's own constant; a statement cannot bind it.
+            await using var set = new NpgsqlCommand("ALTER DATABASE it_email_round_idle SET idle_in_transaction_session_timeout = '3s'", connection);
+            await set.ExecuteNonQueryAsync(Ct);
+            _idleSet = true;
+            NpgsqlConnection.ClearAllPools();
+        }
+        finally
+        {
+            IdleGate.Release();
+        }
+    }
+
+    /// <summary>A transport whose relay takes a while for each batch (the delay, then the inner transport).</summary>
+    private sealed class SlowTransport(IEmailTransport inner, TimeSpan delay) : IEmailTransport
+    {
+        public async Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
+        {
+            await Task.Delay(delay, CancellationToken.None);
+            return await inner.SendAsync(emails, ct);
+        }
     }
 
     /// <summary>A clock that always reads the same instant; its timers are the system's.</summary>

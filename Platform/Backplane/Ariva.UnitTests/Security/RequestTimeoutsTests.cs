@@ -56,7 +56,9 @@ public sealed class RequestTimeoutsTests
         await using var app = ArivaHosts.Create(ArivaHosts.Main, configure: builder => builder
             .UseSetting("Security:RequestTimeouts:DefaultSeconds", "90")
             .UseSetting("Security:RequestTimeouts:ReportsSeconds", "45")
-            .UseSetting("Security:RequestTimeouts:TransferSeconds", "1200"));
+            .UseSetting("Security:RequestTimeouts:TransferSeconds", "1200")
+            // ARV-292: a transfer request longer than the idle transaction limit needs the limit raised with it, or the host does not start.
+            .UseSetting("Database:IdleInTransactionTimeoutSeconds", "1260"));
 
         var options = app.Services.GetRequiredService<IOptions<RequestTimeoutOptions>>().Value;
 

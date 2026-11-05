@@ -118,7 +118,7 @@ public sealed partial class DatabaseSettings
     public const int MinIdleInTransactionTimeoutSeconds = 300;
 
     /// <inheritdoc cref="MinIdleInTransactionTimeoutSeconds"/>
-    public const int MaxIdleInTransactionTimeoutSeconds = 3_600;
+    public const int MaxIdleInTransactionTimeoutSeconds = 7_200;
 
     /// <summary>
     /// ARV-292 (CWE-400): the longest a session of the runtime login may stay idle inside a transaction, in seconds
@@ -129,15 +129,20 @@ public sealed partial class DatabaseSettings
     /// waits on other work, the longest a request on a transfer endpoint (900 s) and an alert email round that sends its batch in
     /// its claim (780 s); a host refuses to start when its own settings allow a longer wait (<see cref="IdleTransactionBudget"/>),
     /// and a host and the migration job outside <see cref="MinIdleInTransactionTimeoutSeconds"/> to
-    /// <see cref="MaxIdleInTransactionTimeoutSeconds"/>. ARV-294 shortens the two longest so the limit can come down.
+    /// <see cref="MaxIdleInTransactionTimeoutSeconds"/> (two hours, so every value the other settings allow can be covered: the
+    /// transfer requests' 3,600 s, a report's send at an SMTP timeout of 300 s). Set it once, in the base settings: each host checks
+    /// its own copy against its own waits, and the migration job sets the login from its copy. It is a user setting, so the runtime
+    /// login can change it for its own sessions: it bounds a lost client, not a compromised host (docs/security/costly-operations.md
+    /// section 16). ARV-294 shortens the two longest waits so the limit can come down.
     /// </summary>
     public int IdleInTransactionTimeoutSeconds { get; init; } = 960;
 
     /// <summary>
     /// ARV-292: TCP keepalives on the runtime login's sessions (<c>tcp_keepalives_idle</c>, <c>_interval</c>, <c>_count</c>, script
     /// 0070): after a minute of silence the server probes every ten seconds and ends a session whose client answered none of six,
-    /// about two minutes after a client vanished, idle or in a transaction. They do not help behind a middlebox that answers for a
-    /// lost client; the idle limit above bounds that. Fixed: ariva-db.sh check holds the runtime login to these values.
+    /// about two minutes after a client vanished while the session was idle, in a transaction or not. They do nothing during a
+    /// statement (the statement timeout bounds that) and do not help behind a middlebox that answers for a lost client; the idle
+    /// limit above bounds that. Fixed: ariva-db.sh check holds the runtime login to these values.
     /// </summary>
     public const int KeepaliveIdleSeconds = 60;
 

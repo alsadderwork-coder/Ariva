@@ -314,8 +314,8 @@ public sealed class PersistenceSettingsTests
     [Theory]
     [InlineData(299, false)]
     [InlineData(300, true)]
-    [InlineData(3_600, true)]
-    [InlineData(3_601, false)]
+    [InlineData(7_200, true)]
+    [InlineData(7_201, false)]
     [InlineData(0, false)]
     public void IdleInTransactionTimeout_Should_BeRefusedOutsideItsBounds_When_Configured(int seconds, bool valid)
     {
@@ -325,7 +325,7 @@ public sealed class PersistenceSettingsTests
         if (valid)
             check.Should().NotThrow();
         else
-            check.Should().Throw<InvalidOperationException>().WithMessage("Database:IdleInTransactionTimeoutSeconds is a whole number of seconds from 300 to 3,600 (ARV-292).");
+            check.Should().Throw<InvalidOperationException>().WithMessage("Database:IdleInTransactionTimeoutSeconds is a whole number of seconds from 300 to 7,200 (ARV-292).");
         new DatabaseSettings().IdleInTransactionTimeoutSeconds.Should().Be(960);
     }
 
@@ -336,7 +336,7 @@ public sealed class PersistenceSettingsTests
         // alert email round sending its batch inside its claim (600 + 6 x 30 = 780 s); the default limit is above every one.
         var budget = IdleTransactionBudget.FromConfiguration(new ConfigurationBuilder().Build(), new DatabaseSettings());
 
-        budget.Waits.Select(wait => wait.Seconds).Should().Equal(900, 780, 300, 255, 141, 64, 70);
+        budget.Waits.Select(wait => wait.Seconds).Should().Equal(900, 780, 450, 255, 141, 64, 70);
         budget.Longest.Seconds.Should().Be(900);
         budget.ProblemWith(new DatabaseSettings().IdleInTransactionTimeoutSeconds).Should().BeNull();
         IdleTransactionBudget.DefaultTransferSeconds.Should().Be(new Ariva.Api.Common.Settings.RequestTimeoutsSettings().TransferSeconds, "the budget reads the same default");
@@ -346,6 +346,7 @@ public sealed class PersistenceSettingsTests
     [Theory]
     [InlineData("Email:Smtp:TimeoutSeconds", "60", "an alert email round, its batch sent inside its claim, 960 s from Email:Smtp:TimeoutSeconds")]
     [InlineData("Security:RequestTimeouts:TransferSeconds", "1200", "a request on a transfer endpoint (an upload, a site configuration import or export), 1,200 s from Security:RequestTimeouts:TransferSeconds")]
+    [InlineData("Database:CommandTimeoutSeconds", "119", "a staffing pass reading its inputs on a second connection, 967 s from Database:CommandTimeoutSeconds")]
     [InlineData("Kafka:Outbox:PassSeconds", "120", null)]
     [InlineData("Kafka:Consumers:HandlerTimeoutSeconds", "120", null)]
     public void AddArivaPersistence_Should_RefuseToStart_When_AWaitOfTheHostCouldPassTheIdleLimit(string key, string value, string named)
@@ -357,7 +358,11 @@ public sealed class PersistenceSettingsTests
         var add = () => new ServiceCollection().AddArivaPersistence(configuration);
 
         if (named is null)
+        {
             add.Should().NotThrow();
+            IdleTransactionBudget.FromConfiguration(configuration, new DatabaseSettings()).Waits.Select(wait => wait.Seconds).Should().Contain(key.EndsWith("PassSeconds", StringComparison.Ordinal) ? 124 : 120,
+                "the budget reads the Kafka setting it names");
+        }
         else
             add.Should().Throw<InvalidOperationException>().WithMessage($"Database:IdleInTransactionTimeoutSeconds (960 s) must be above the longest a transaction of this host may wait on other work: {named} (ARV-292).*");
     }
@@ -368,12 +373,13 @@ public sealed class PersistenceSettingsTests
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
         {
             ["Email:Smtp:TimeoutSeconds"] = "300",
-            ["Database:IdleInTransactionTimeoutSeconds"] = "3600"
+            ["Security:RequestTimeouts:TransferSeconds"] = "3600",
+            ["Database:IdleInTransactionTimeoutSeconds"] = "7200"
         }).Build();
 
         var add = () => new ServiceCollection().AddArivaPersistence(configuration);
 
-        add.Should().NotThrow("600 + 6 x 300 = 2,400 s and a report's 10 x 300 = 3,000 s stay below 3,600 s");
+        add.Should().NotThrow("600 + 6 x 300 = 2,400 s, a report's 15 x 300 = 4,500 s and the transfer's 3,600 s stay below 7,200 s: every value the settings allow can be covered");
     }
 
     [Fact]

@@ -160,6 +160,8 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.SessionLimits => "CREATE DATABASE it_session_limits",
             TestDatabase.SessionLimitRefusals => "CREATE DATABASE it_session_limit_refusals",
             TestDatabase.SessionLimitLong => "CREATE DATABASE it_session_limit_long",
+            TestDatabase.ReportSendIdle => "CREATE DATABASE it_report_send_idle",
+            TestDatabase.EmailRoundIdle => "CREATE DATABASE it_email_round_idle",
             TestDatabase.SessionLimitMigration => "CREATE DATABASE it_session_limit_migration",
             TestDatabase.EnvironmentDeployed => "CREATE DATABASE it_environment_deployed",
             TestDatabase.EnvironmentLocal => "CREATE DATABASE it_environment_local",
@@ -344,6 +346,8 @@ public enum TestDatabase
     SessionLimits,
     SessionLimitRefusals,
     SessionLimitLong,
+    ReportSendIdle,
+    EmailRoundIdle,
     SessionLimitMigration,
     EnvironmentDeployed,
     EnvironmentLocal
