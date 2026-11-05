@@ -25,6 +25,28 @@
         <!-- CWE-120: no unsafe code anywhere; scripts/security/scan.mjs also fails the build gate on the unsafe keyword -->
         <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     </PropertyGroup>
+    <!-- ARV-225b (CWE-94): the compiler decodes a source file without a byte order mark in the code page MSBuild gives it, so it
+         gets none but UTF-8. Two checks: before the compiler runs, the evaluated properties (global properties and environment
+         variables included) may set no code page other than 65001 and no compiler response file; after it, the arguments the
+         compiler was actually given (CscCommandLineArgs) may hold no other code page and no response file, whatever target set
+         them later, and the assembly is deleted when they do. scripts/security/scan.mjs refuses the text forms besides, and
+         scripts/security/source-encoding-check.mjs proves both checks with builds. -->
+    <PropertyGroup Label="Source encoding">
+        <ProvideCommandLineArgs>true</ProvideCommandLineArgs>
+    </PropertyGroup>
+    <Target Name="ArivaSourceEncodingCheck" BeforeTargets="CoreCompile">
+        <Error Condition="'$(CodePage)' != '' And '$(CodePage)' != '65001'" Text="A code page other than 65001 is set for the compiler (ARV-225b): the sources are UTF-8." />
+        <Error Condition="'$(CompilerResponseFile)' != ''" Text="A compiler response file is set (ARV-225b): it can give the compiler a code page of its own." />
+    </Target>
+    <Target Name="ArivaCompilerArgumentsCheck" AfterTargets="CoreCompile" Condition="'@(CscCommandLineArgs)' != ''">
+        <ItemGroup>
+            <ArivaRefusedCompilerArgument Include="@(CscCommandLineArgs)" Condition="$([System.String]::Copy('%(Identity)').ToLowerInvariant().StartsWith('/codepage:')) And '%(Identity)' != '/codepage:65001'" />
+            <ArivaRefusedCompilerArgument Include="@(CscCommandLineArgs)" Condition="$([System.String]::Copy('%(Identity)').ToLowerInvariant().StartsWith('-codepage:')) And '%(Identity)' != '-codepage:65001'" />
+            <ArivaRefusedCompilerArgument Include="@(CscCommandLineArgs)" Condition="$([System.String]::Copy('%(Identity)').StartsWith('@'))" />
+        </ItemGroup>
+        <Delete Files="@(IntermediateAssembly)" Condition="'@(ArivaRefusedCompilerArgument)' != ''" />
+        <Error Condition="'@(ArivaRefusedCompilerArgument)' != ''" Text="The compiler was given @(ArivaRefusedCompilerArgument) (ARV-225b): a code page other than 65001 or a response file; the sources are UTF-8, and the assembly was deleted." />
+    </Target>
     <!-- ARV-096 (ASVS 5.0 V15.1.2, supply chain): every project records its resolved package graph in packages.lock.json,
          committed with the change that moves it (dotnet restore Ariva.slnx updates them; add force-evaluate to re-resolve).
          CI restores in locked mode: GitHub Actions sets CI=true and GITHUB_ACTIONS=true (which a step cannot override) and Azure

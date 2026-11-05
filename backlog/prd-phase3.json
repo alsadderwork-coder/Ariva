@@ -1062,7 +1062,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 303,
-      "passes": false,
+      "passes": true,
       "notes": "Split from ARV-225 on 2026-11-01. Low by the owner's rule; not needed before the pilot (ARV-157 round 8).",
       "dependsOn": [
         "ARV-225"

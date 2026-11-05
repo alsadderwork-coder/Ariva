@@ -851,7 +851,7 @@ export function pullRequestCommentQuotes(workflows) {
 const PINS = {
 	'ci.yml header': '40bc804bd779d6b746554a4a0f937149659408e3baa391b5a6ba5679dfcb97da',
 	'ci.yml security-gate': 'e49b3c293c8f4af57a5f2558b615a2a1527ec30ab465c4ae0dde071a61247837',
-	'ci.yml backend': 'b29c38001541aea9952d991b6ce22cf58f759b4b6ef5cee16468226c37b0c7d8',
+	'ci.yml backend': '839ae0f79ed036baae052b9443cfd660131edc739f5b7d5652a11081d42ae416',
 	'ci.yml e2e': '2216433c743748719f49fa257d0dd388959887523015d5d3be18a8d85bce445a',
 	'mutation.yml header': 'b69f30202bc5fdb6671d666ea25d1e67a1c6fb61369debb46956e39c34f920c0',
 	'mutation.yml stryker': 'd0831436cd7a735a5148e512b12225cce4f9c92ecd948469714e5133a4a083aa',

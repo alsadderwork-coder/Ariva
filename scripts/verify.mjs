@@ -623,6 +623,8 @@ const steps = {
   security: () => {
     run('security scanner self-test', 'node', ['scripts/security/scan.mjs', '--self-test']);
     run('security scan', 'node', ['scripts/security/scan.mjs']);
+    // ARV-225b (CWE-94): the two source encoding checks of Directory.Build.props, proven with builds of a scratch project.
+    run('source encoding build check', 'node', ['scripts/security/source-encoding-check.mjs']);
     // ARV-152 (CWE-532): no spec passes an answer's body as an expect message (Playwright keeps it as the step title even when
     // the assertion passes), and the artifact check every Playwright run ends with finds every kind of secret it looks for.
     run('E2E expect message check self-test', 'node', ['Platform/Testing/Ariva.E2E/scripts/expect-messages.mjs', '--self-test']);

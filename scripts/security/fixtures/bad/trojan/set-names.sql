@@ -1,0 +1,1 @@
+SET NAMES 'LATIN1';

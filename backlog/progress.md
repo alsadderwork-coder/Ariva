@@ -5312,3 +5312,72 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - In a String.replace replacement string, $' and $& are patterns (the text after the match, the match): a self-test that builds a variant with a replacement holding them must pass a function.
   - A change to ci.yml's backend job, the mutation job or a pinned comment step now fails the artifact check's self-test until its hash in PINS is updated (node Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs --pins prints them): read the change against the checks first.
   - A check line that must run is safest as the script's last line at its own level: a function, an if, a loop or a group around it, or a here-document before it, all then show.
+
+## 2026-11-05: ARV-225b [E17] Trojan Source check: further declared encodings, code pages outside project files, and encoded or evaluated settings
+
+- What changed: SEC-130 reads the further encodings a file can declare. These are:
+  - an .editorconfig charset other than utf-8 or utf-8-bom;
+  - an Emacs coding line in any comment of the first two lines, or a Local Variables block (a coding name never ends with a dash, so `coding:utf-8-*-` reads utf-8);
+  - a Vim modeline's fileencoding;
+  - in SQL, a client encoding other than UTF8, read as PostgreSQL and psql read it (below);
+  - in batch files, a console code page other than 65001 by chcp (carets dropped first, as cmd.exe drops them) or mode.
+
+  SQL is read by a lexer that handles:
+  - line comments, and block comments, nested or not;
+  - strings with doubled quotes;
+  - backslash escapes in no string, in E'' strings only, or in every string;
+  - dollar-quoted bodies and quoted identifiers.
+
+  It reads every file six ways and refuses if any reading finds a mention other than exactly SET [SESSION or LOCAL] client_encoding = or TO UTF8. The content of every string and body is also read as SQL of its own, down to eight levels; deeper nesting is refused. As a result, a comment mark inside a string hides nothing, and neither does a comment or line break between SET and NAMES, at any level. Further refusals in SQL:
+  - set_config, pg_settings, standard_conforming_strings and U&" identifiers, anywhere in the text;
+  - every psql meta-command except `\encoding UTF8` (one could include a file of another type).
+
+  MSBuild files are now known by type or by content: a first element Project, whatever the name or folder, Markdown included. They are read as MSBuild reads them:
+  - XML character references and %XX escapes are decoded;
+  - a document type or entity is refused;
+  - the code page and compiler response file are refused in every form, CompilerResponseFile and Csc ResponseFiles included;
+  - each import is judged part by part, with XML quoting (a > inside a quoted Condition is text), and an import of a file of another type is refused;
+  - Properties, AdditionalProperties and a PropertyName that is not a plain name are refused.
+
+  Outside MSBuild files:
+  - MSBuild's extension points (CustomBefore and CustomAfter, the Directory.Build paths and switches, wildcard imports, the project extension paths) and the checks' own names are refused in every text file except the documentation, Directory.Build.props, the scanner and its probe;
+  - the code page word must be followed by 65001 (a Dockerfile ENV, a workflow env:, a command line, a launch profile).
+
+  HTML character references in a meta tag are decoded first: numeric, named, upper case, and the bare forms a browser takes. `&hyphen;` reads as U+2010, which fails closed. A reference the scanner does not decode is refused.
+
+  A leading byte order mark is refused in types whose tool keeps it: shebang scripts, .env, YAML, shell and CODEOWNERS. .ps1xml and .cdxml hold to the PowerShell rule. The full scan reports gitlinks, untracked repositories inside this one, and links git tracks that a core.symlinks=false checkout holds as files. It takes its mapped files from git's own list, so a case-insensitive file system cannot leave a file to SEC-130 alone. The .editorconfig lost its own leading mark.
+
+  Directory.Build.props now holds two evaluated checks:
+  - ArivaSourceEncodingCheck, before CoreCompile, refuses a CodePage other than 65001 and any CompilerResponseFile.
+  - ArivaCompilerArgumentsCheck, after CoreCompile, uses ProvideCommandLineArgs. It reads the arguments the compiler was actually given (/codepage: or -codepage: other than 65001, or an @ response file). On a refusal it deletes the assembly and fails. This catches a late target, a check replaced by name, and a later BeforeTargets of the compiler.
+
+  Recorded with their reasons:
+  - The scan reads the working tree, which is what builds and runs here; CI checks out the commit, so there it reads the blob that was reviewed.
+  - The `--changed` scan leaves gitlinks, untracked repositories and links held as files to the full scan.
+  - A dynamic SQL statement that spells the name only in parts (concatenation, chr(), format) is visible code, not hidden text, so it stays with review. An after-script check in the runner would not help: Npgsql sends a script's statements one by one, so a script could set and reset the encoding inside itself.
+  - YAML, JSON and shell escapes of the variable name, and AdditionalProperties as a child element, pass the text rules but are caught by the first build check.
+- Tests:
+  - scan.mjs --self-test: 157 hidden-character fixtures, each refused alone for its own reason. These are the ARV-157 and ARV-225 fixtures plus 66 new bad ones and 9 new good ones under scripts/security/fixtures/{bad,good}/trojan.
+    - The bad ones cover: the declared encodings; the other project types; response files named; imports of another type, with a > in the Condition, or of a list; references, escapes, a document type and evaluated names; code pages outside project files; meta references; leading marks; .ps1xml.
+    - From the review rounds: an extension point; a Markdown project; a replaced check; Directory.Build.props switched off; a publish profile; the SQL forms (SESSION and LOCAL NAMES, a comment or line break inside SET NAMES, set_config, pg_settings, standard_conforming_strings, U&", a comment mark inside a string or a dollar body, nested and unnested comments, an E'' string, a psql include, a dynamic SET, a comment inside a body and inside an EXECUTE's text); meta references after a > and in upper case; a caret in chcp.
+    - The good ones: a tight `coding:utf-8-*-`, UTF8 client encodings, SQL comment marks inside strings and bodies, chcp 65001, CodePage 65001 in YAML, UseStatusCodePages, a leading mark in a .csproj, a decoded meta reference, a utf-8 .editorconfig.
+    - A scratch repository proves the gitlink, the untracked repository, the tracked link held as a file, and the mapped set being git's own list.
+    - The self-test also checks that Directory.Build.props holds both targets with their exact conditions.
+  - New scripts/security/source-encoding-check.mjs runs 8 builds of a scratch project under the real Directory.Build.props (.verify/source-encoding, ignored by git). It is wired into `verify.mjs` backend's security step and CI's backend job, after Build.
+    - It passes for nothing set and for 65001.
+    - It fails for each check's own reason for: a code page on the command line; one in the environment; a response file; a code page set after the first check; one set by a later BeforeTargets of the compiler; the first check replaced with the code page in the environment. The last three are caught by the second check, which also deletes the assembly.
+- Files:
+  - Directory.Build.props, .editorconfig, .github/workflows/ci.yml (backend job, re-pinned in artifact-secrets.mjs PINS);
+  - scripts/security/{scan.mjs, source-encoding-check.mjs}, scripts/security/fixtures/{bad,good}/trojan/*, scripts/verify.mjs;
+  - docs/security/{cwe-controls.md (CWE-94), asvs-l2.md (ARV-157 row)};
+  - backlog/prd-phase3.json (ARV-225b passes), backlog/progress.md.
+- Gates: GATES_BATCH
+- Security review: security-reviewer PASS in round 4 (CWE-94; CWE-78 and CWE-77 for the probe's dotnet calls, argument arrays and no shell).
+  - Round 1 FAIL: the evaluated check alone was bypassed by a late target, a CustomAfter import, an import whose Condition holds a >, an import list, a replaced check and Directory.Build.props switched off; there was no automated test of the build check; SQL SET SESSION NAMES, a comment or line break inside SET NAMES, set_config and U&" passed; an HTML meta with a > before a bare reference, or an upper case one, passed; the docs overstated. Fixed by the after-compile check on the compiler's arguments, MSBuild files by content, the extension points refused, the probe, and the SQL and HTML forms.
+  - Round 2 FAIL: SQL comments stripped without regard to strings (`SELECT 'a--b'; SET NAMES 'SJIS';` on one line passed). Fixed by the lexer and its six readings, plus pg_settings, standard_conforming_strings and the meta-commands.
+  - Round 3 FAIL: a comment between SET and NAMES inside a dollar body passed. Fixed by reading every string's and body's content as SQL of its own.
+- Gotchas:
+  - A check that runs before the compiler is checking a property, not what the compiler was given. Any target can set the property later, or replace the check by its name. Read the compiler's own arguments after it runs (ProvideCommandLineArgs, CscCommandLineArgs), and delete the assembly when they are wrong, or the next incremental build reuses it.
+  - Stripping SQL comments with a regular expression is not reading SQL: a comment mark inside a string, a nested block comment or an E'' escape shifts everything after it. Lex the file, and when readers may differ (nesting, escapes), read it every way and refuse if any reading finds the mention.
+  - Keep string and body text whole in its statement, and also read it as SQL of its own: a body is a program, and its comments hide what a fold of the raw text cannot see.
+  - A file type is not a file's kind: MSBuild imports any file whose first element is Project, so judge by content.
