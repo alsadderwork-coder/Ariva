@@ -67,7 +67,7 @@ public sealed class SecretTextBoundTests
     [MemberData(nameof(RuleNames))]
     public void Protect_Should_KeepNoPartOfACredential_When_TheBoundCutsIt(string name)
     {
-        Credentials.Should().ContainKey(name, "every rule needs a credential across the bound here");
+        Credentials.ContainsKey(name).Should().BeTrue("every rule needs a credential across the bound here (asserted as a boolean, ARV-249)");
         var (credential, secret) = Credentials[name];
         var wrong = new List<string>();
 
@@ -126,7 +126,7 @@ public sealed class SecretTextBoundTests
 
         var protectedText = SecretText.Protect("| " + credential + " |");
 
-        protectedText.Should().NotBe("| " + credential + " |");
+        string.Equals(protectedText, "| " + credential + " |", StringComparison.Ordinal).Should().BeFalse("the credential is masked (asserted as a boolean, ARV-249)");
         protectedText.Where(secret.Contains).Should().BeEmpty("the sample is a credential its rule masks");
     }
 
