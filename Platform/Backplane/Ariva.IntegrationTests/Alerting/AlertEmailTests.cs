@@ -59,7 +59,7 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
     }
 
     private AccountsHost Host(int perHour = 1000, int perMinute = 60, int attempts = 8, int? port = null, TestDatabase database = TestDatabase.AlertEmails,
-        TimeSpan? sendTime = null)
+        TimeSpan? sendTime = null, int smtpTimeoutSeconds = 5)
     {
         _host = new AccountsHost(fixture, new Dictionary<string, string>
         {
@@ -71,7 +71,7 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
         }, database, services =>
         {
             // The sending side, as Ariva.Api.Integration registers it, against the sink.
-            services.AddSingleton(new SmtpSettings { Host = "127.0.0.1", Port = port ?? _sink.Port, Security = "None", AllowInsecure = true, TimeoutSeconds = 5 });
+            services.AddSingleton(new SmtpSettings { Host = "127.0.0.1", Port = port ?? _sink.Port, Security = "None", AllowInsecure = true, TimeoutSeconds = smtpTimeoutSeconds });
             services.AddSingleton<MailKitTransport>();
             services.AddSingleton<IEmailTransport>(provider => sendTime is { } slow
                 ? new SlowTransport(provider.GetRequiredService<MailKitTransport>(), slow)
@@ -438,6 +438,41 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
             await Task.Delay(delay, CancellationToken.None);
             return await inner.SendAsync(emails, ct);
         }
+    }
+
+    [Fact]
+    public async Task Worker_Should_EndTheMessageAtTheSmtpTimeoutAndKeepItForRetry_When_TheRelayTakesItsDataAndNeverAnswers()
+    {
+        // ARV-235 (ARV-096e round 2, N1): once a message has begun, the relay's timeout (Email:Smtp:TimeoutSeconds, MailKit's own,
+        // each exchange) is its only bound: the run's token stops a round between messages, never inside one. Here the relay
+        // takes the first message's DATA and never answers. That message ends at the 1 s SMTP timeout, far before the relay's
+        // 60 s and the round's 120 s run timeout, and is recorded for retry with its attempt counted; the connection the
+        // timeout closed fails the others for a retry too, and the next round sends every one.
+        Host(smtpTimeoutSeconds: 1);
+        var p = await PeopleAsync();
+        var first = ReferenceReplay.WallOf(65 * 60);
+        var alert = await RaiseAsync(p.Admin, "A-VIS", first, owner: null);
+        await SetAsidePendingAsync(alert.Id);
+        var count = (await EmailsAsync(alert.Id)).Count;
+        count.Should().BePositive();
+        _sink.DataDelay = TimeSpan.FromSeconds(60);
+        var worker = new EmailSenderWorker(_host.Provider.GetRequiredService<IServiceScopeFactory>(), _host.Provider.GetRequiredService<EmailSettings>(),
+            new FixedNow(first.AddMinutes(2)), NullLogger<EmailSenderWorker>.Instance) { RunTimeout = TimeSpan.FromSeconds(120) };
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        var round = await worker.RunOnceAsync(Ct);
+
+        watch.Elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(1)).And.BeLessThan(TimeSpan.FromSeconds(8),
+            "the begun message ended at its 1 s SMTP timeout, not at the relay's 60 s, the round's 120 s or any fixed bound");
+        round.Should().Be(new EmailRound(0, 0, count), "every email is kept for a retry, none given up");
+        _sink.Received.Should().BeEmpty("the relay answered no message");
+        var rows = await EmailsAsync(alert.Id);
+        rows.Should().OnlyContain(r => r.Status == "Pending" && r.Attempts == 1 && r.NextAttemptUtc == first.AddMinutes(3));
+        rows.Count(r => r.Reason == "SMTP refused the message: TimeoutException").Should().Be(1, "the begun message failed at the SMTP timeout (MailKit's TimeoutException)");
+        rows.Count(r => r.Reason == "SMTP connection lost.").Should().Be(count - 1, "the timeout closed the connection the others were to go on");
+
+        _sink.DataDelay = TimeSpan.Zero;
+        (await SendAsync(first.AddMinutes(4))).Sent.Should().Be(count, "each is sent on its retry");
     }
 
     /// <summary>A clock that always reads the same instant; its timers are the system's.</summary>

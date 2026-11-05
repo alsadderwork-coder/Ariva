@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -14,7 +15,9 @@ namespace Ariva.IntegrationTests.Operations;
 /// </summary>
 /// <typeparam name="TEntryPoint">A type in the host assembly (its <c>_IAssemblyMark</c>).</typeparam>
 /// <param name="environment">The host environment, <see cref="Environment"/> unless a test starts the host as another (ARV-180: vm-local).</param>
-internal sealed class DeployedHost<TEntryPoint>(IReadOnlyDictionary<string, string> settings, string environment = "k8s-dev") : WebApplicationFactory<TEntryPoint>
+/// <param name="services">Changes to the host's registrations after its own (ARV-235: its hosted services taken out).</param>
+internal sealed class DeployedHost<TEntryPoint>(IReadOnlyDictionary<string, string> settings, string environment = "k8s-dev",
+    Action<IServiceCollection> services = null) : WebApplicationFactory<TEntryPoint>
     where TEntryPoint : class
 {
     public const string Environment = "k8s-dev";
@@ -48,7 +51,9 @@ internal sealed class DeployedHost<TEntryPoint>(IReadOnlyDictionary<string, stri
         foreach (var (key, value) in settings)
             builder.UseSetting(key, value);
 
-        builder.ConfigureServices(services => StartGate.Hold(services, _startGate.Task));
+        builder.ConfigureServices(registered => StartGate.Hold(registered, _startGate.Task));
+        if (services is not null)
+            builder.ConfigureTestServices(services);
     }
 
     /// <summary>

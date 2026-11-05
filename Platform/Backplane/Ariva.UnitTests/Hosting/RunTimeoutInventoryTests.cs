@@ -19,7 +19,7 @@ namespace Ariva.UnitTests.Hosting;
 /// timeout set for the test with <see cref="RunTimeoutException"/>, so a stalled dependency frees the loop for its next run.
 /// Npgsql does not take the token while it opens a connection, so against a server that never answers the connection timeout
 /// (2 s here) ends the wait. That a statement waiting on the server is cancelled at the run timeout is proven for the AMAN and
-/// ACRIS polls (integration <c>OutboundEndpointTests</c>); ARV-235 proves it for the other loops and jobs.
+/// ACRIS polls (integration <c>OutboundEndpointTests</c>), and since ARV-235 for every loop and job (integration <c>RunTimeoutStatementTests</c>).
 /// </summary>
 public sealed class RunTimeoutInventoryTests
 {

@@ -1195,7 +1195,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 307,
-      "passes": false,
+      "passes": true,
       "notes": "Size S to M. Low (a test gap: the token is passed at the top level of every loop, checked by reading the code in ARV-096e's review), so Phase 3 by the owner's rule. ARV-096e round 2 added N1 (the begun message's SMTP bound untested) and N3 (the report delivery's not-tried path untested; it behaves as the old cancellation path).",
       "dependsOn": [
         "ARV-096e"

@@ -5438,3 +5438,42 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - A long-scan theory must hold each rule's own long match, not only long runs beside a short one: the placeholder passed every scan but that one.
   - A rule's shared instance must not run the long-scan theory itself: the defect leaves the instance wrong for every later caller in the process. Use new instances of the same pattern and options.
   - A source test that classifies uses by the text after the call reads a conditional (`(a ? X() : Y()).IsMatch`) as an instance handed on. Write each call directly, or the rule must join the theory.
+
+## 2026-11-05: ARV-235 [E17] Run timeouts proven per loop and job on a statement the database holds
+
+- What changed: a test gap only, no production change.
+  - Before: ARV-096e's `RunTimeoutInventoryTests` ran every bounded loop and Cronz job against a database that accepts connections and never answers. There the connect timeout ends each run, because Npgsql does not take a run's token while it opens. That a statement waiting on the database is cancelled at the run timeout was proven only for the AMAN and ACRIS polls. For the other loops and jobs, the token reaching their statements was checked by reading the code.
+  - New integration `RunTimeoutStatementTests` builds each bounded loop of Main, Stream and Integration, and each Cronz job, through its own host. The host runs in process as `DeployedHost`, on a vm-local database migrated by the migration job, through the runtime login, without its hosted services. Each loop or job then runs three times:
+    1. once while the database answers, which leaves an open connection in the pool and builds the session factory;
+    2. once with a 2 s run timeout while another session holds every table of the schema, of TimescaleDB's materialized aggregates and of its catalog in ACCESS EXCLUSIVE mode. The run's first statement waits on that lock (seen in `pg_stat_activity` as the runtime login waiting on a Lock, read from the maintenance database, since every statement in the held database waits). The run ends with `RunTimeoutException` at its timeout. Its cause must be a cancellation: no client command timeout, no lock timeout (55P03). It must end within 8 s, below the 10 s that the shortest command timeout of Ariva.Infra would take, and no statement of the run may still wait once it has ended. First, the runtime login is checked to have no lock timeout and no statement timeout under the 30 s command timeout, so nothing but the run's token can end the wait in time;
+    3. once more after the lock is released, which succeeds.
+  - A fact holds the list to every bounded loop in the assemblies the unit inventory reads (Infra, Api.Common and the hosts; Ingest runs none). The scanner's signature check is named as reaching no database: it asks the scanner only, and its stalled scanner is proven in the unit inventory.
+  - The email criterion (ARV-096e round 2, N1) is a new test in `AlertEmailTests`. The relay takes the first message's DATA and never answers. That message ends at the 1 s SMTP timeout (`Email:Smtp:TimeoutSeconds`, MailKit's own: between 1 and 8 s, "SMTP refused the message: TimeoutException") rather than at the relay's 60 s or the round's 120 s. The broken connection fails the others for a retry ("SMTP connection lost."). Every email stays Pending with one attempt and its next attempt a minute on, and the next round sends them all.
+  - ARV-096e round 2's N3, filed into this story, is covered by a new `ReportServiceTests` case: the transport waits to begin a report's send until the round's token is cancelled, then answers that it tried nothing, as MailKit's transport does when cut before a message. The delivery stays Pending with no attempt counted, and the next round sends it.
+  - The integration project now references Ariva.Api.Stream and Ariva.Api.Cronz; their packages (TickerQ, ncrontab) joined its lock file. `DeployedHost` takes an optional change to the host's registrations.
+- Tests:
+  - integration `RunTimeoutStatementTests` (18): 11 loops, 6 jobs, and the list fact;
+  - `ReportServiceTests.Round_Should_LeaveADeliveryPendingWithNoAttempt_When_ItsRunTimeoutCutsTheRoundBeforeTheSend` (the stalled send proven entered), beside the existing cut after the send (both pass);
+  - `AlertEmailTests.Worker_Should_EndTheMessageAtTheSmtpTimeoutAndKeepItForRetry_When_TheRelayTakesItsDataAndNeverAnswers`;
+  - with `AlertEmailTests` and `DatabaseEnvironmentTests` (which share `DeployedHost`): 56 of 56.
+- Files:
+  - Platform/Backplane/Ariva.IntegrationTests/{Persistence/RunTimeoutStatementTests.cs (new), Alerting/AlertEmailTests.cs, Operations/DeployedHost.cs, Setup/PostgresFixture.cs, Ariva.IntegrationTests.csproj, packages.lock.json}
+  - Platform/Backplane/Ariva.UnitTests/Hosting/RunTimeoutInventoryTests.cs (comment)
+  - Platform/Backplane/Ariva.IntegrationTests/Reports/ReportServiceTests.cs
+  - docs/security/{costly-operations.md (section 12), asvs-l2.md (V15.2.2)}
+  - backlog/prd-phase3.json (ARV-235 passes), backlog/progress.md
+- Gates: GATES_BATCH
+- Security review: security-reviewer PASS in round 2 (CWE-400; CWE-89, CWE-94 and CWE-269 touched in test code only; ASVS V15.2.2 stays Partly, evidence added).
+  - Round 1 FAIL:
+    - Medium: the test could not tell the run's token from another bound under 12 s. RunBound reports any error after the timeout as the cut, and a 5 s lock timeout or a 10 s client command timeout would have passed it. Fixed by pinning the runtime login's lock and statement timeouts, bounding the run at 8 s, and requiring a cancellation as the cut's cause.
+    - Bookkeeping: N3 was dropped. Fixed with the not-tried test.
+    - Its Low items were taken: no wait left after the run, the unit inventory's assemblies, the SMTP timeout pinned to its exact reason and range, and "first statement" in the docs.
+  - Round 2 residuals:
+    - The N3 test now also proves its stalled send was entered (taken).
+    - Ingest is not referenced here, so a future Ingest loop would be flagged only by the unit inventory.
+    - The proof holds for first statements outside a per-item catch, as all are today.
+- Follow-up for the owner (from the review, not filed): after an SMTP timeout every later email of the batch fails with "SMTP connection lost." and uses an attempt without being tried, and the batch is ordered by its creation, so an email a relay always stalls on uses the attempts of all behind it until they are given up together. Counting those as not tried, or reconnecting once after a timeout, would keep alert emails flowing.
+- Gotchas:
+  - Locking TimescaleDB's catalog makes every statement in that database wait, a monitoring query too: read `pg_stat_activity` from another database (it is cluster-wide).
+  - A test that a run's token reaches its statements needs the connection already open (a warm pool), or the open's own timeout ends the wait first and proves nothing about the statement.
+  - A vm-local host on a vm-local database needs no Data Protection certificate; a k8s-dev host needs the PEM pair the chart mounts.

@@ -165,6 +165,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.SessionLimitMigration => "CREATE DATABASE it_session_limit_migration",
             TestDatabase.EnvironmentDeployed => "CREATE DATABASE it_environment_deployed",
             TestDatabase.EnvironmentLocal => "CREATE DATABASE it_environment_local",
+            TestDatabase.RunTimeoutStatements => "CREATE DATABASE it_run_timeout_statements",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
@@ -350,7 +351,8 @@ public enum TestDatabase
     EmailRoundIdle,
     SessionLimitMigration,
     EnvironmentDeployed,
-    EnvironmentLocal
+    EnvironmentLocal,
+    RunTimeoutStatements
 }
 
 [CollectionDefinition(Name)]

@@ -852,6 +852,11 @@
           "System.Security.Cryptography.Pkcs": "10.0.0"
         }
       },
+      "ncrontab": {
+        "type": "Transitive",
+        "resolved": "3.3.0",
+        "contentHash": "oNHphZD7YiqHJoqX5Myw+lfDDTnnI2i+mCuil8MW2gyHaEejhLOdsS9pqVUGAEIJsu4+OL+m3UmkBcw2gkdtsg=="
+      },
       "NETStandard.Library": {
         "type": "Transitive",
         "resolved": "1.6.1",
@@ -1020,6 +1025,14 @@
           "SharpZipLib": "1.4.2"
         }
       },
+      "TickerQ.Utilities": {
+        "type": "Transitive",
+        "resolved": "10.0.2",
+        "contentHash": "iANtJheksqWu2ukQn4QYWTfdtBbfxLW4JJGIzHdK1WG51/oKAfzQAx0uHm2wXQ4e8QsFBDH23d3K+CyLnFaJ5g==",
+        "dependencies": {
+          "NCrontab": "3.3.0"
+        }
+      },
       "xunit.analyzers": {
         "type": "Transitive",
         "resolved": "1.24.0",
@@ -1093,6 +1106,14 @@
           "Serilog.Sinks.OpenTelemetry": "[4.2.0, )"
         }
       },
+      "ariva.api.cronz": {
+        "type": "Project",
+        "dependencies": {
+          "Ariva.Api.Common": "[1.0.0, )",
+          "TickerQ": "[10.0.2, )",
+          "TickerQ.Dashboard": "[10.0.2, )"
+        }
+      },
       "ariva.api.integration": {
         "type": "Project",
         "dependencies": {
@@ -1107,6 +1128,12 @@
           "Microsoft.AspNetCore.SignalR.StackExchangeRedis": "[10.0.12, )",
           "SkiaSharp": "[4.153.1, )",
           "SkiaSharp.NativeAssets.Linux.NoDependencies": "[4.153.1, )"
+        }
+      },
+      "ariva.api.stream": {
+        "type": "Project",
+        "dependencies": {
+          "Ariva.Api.Common": "[1.0.0, )"
         }
       },
       "ariva.business.contracts": {
@@ -1463,6 +1490,24 @@
         "requested": "[10.0.13, )",
         "resolved": "10.0.13",
         "contentHash": "a+EovgC1fBnwdlQ6cn3j4JFBfKqiFaFvoAhjisOoSvazLAcIznaBzPQP0oYnvccmeXfqUH1KebVZOxSeH6rMaw=="
+      },
+      "TickerQ": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.2, )",
+        "resolved": "10.0.2",
+        "contentHash": "L8N3V2rHl9CI5+/c8bJeLLwUuAFdhCaXbdtEMK5VX/GSCoEs0IbClnuE9w3lvWda7q0nohUOwKAt+7/lap/Gqg==",
+        "dependencies": {
+          "TickerQ.Utilities": "10.0.2"
+        }
+      },
+      "TickerQ.Dashboard": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.2, )",
+        "resolved": "10.0.2",
+        "contentHash": "05vfpknWluZAj93pfkfnR891JFWnPVWoJfT+hEwpby37o4/6a859eMu+IS0Mh6iczDArxzVGvWh1DCdwBjw0Dw==",
+        "dependencies": {
+          "TickerQ.Utilities": "10.0.2"
+        }
       },
       "TimeZoneConverter": {
         "type": "CentralTransitive",
