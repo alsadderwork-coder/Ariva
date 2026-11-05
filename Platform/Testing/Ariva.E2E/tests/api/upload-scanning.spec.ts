@@ -376,13 +376,15 @@ test('an advertisement image holding the EICAR test file is refused and audited,
 	const policyUrl = `${adminApi}/sites/${site}/advertising-policy`;
 	const policy = await call('GET', policyUrl, { token: admin });
 	await expectStatus(policy, 200, 'the advertising policy');
+	const { publishedProfileId, changedOn } = await policy.json();
 	const allowed = await call('PUT', policyUrl, {
 		token: admin,
 		data: {
 			allowed: true,
 			excludedZones: [],
 			reason: 'Airport operator letter AO-E2E-092b, commercial team',
-			reviewedProfileId: (await policy.json()).publishedProfileId
+			reviewedProfileId: publishedProfileId,
+			policyChangedOn: changedOn
 		}
 	});
 	await expectStatus(allowed, 200, 'advertising allowed');

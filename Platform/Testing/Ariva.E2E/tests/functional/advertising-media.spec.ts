@@ -43,14 +43,14 @@ test.beforeAll(async () => {
 	const admin = await secondFactorSignIn(accounts().mediaWebAdmin);
 	site = (await provisionLoadSite(accounts().mediaWebAdmin, 'AW', 'Load Zone', admin)).site;
 	const policyUrl = `${hosts.main}/api/v1/admin/sites/${site}/advertising-policy`;
-	const { publishedProfileId } = await (await call('GET', policyUrl, { token: admin })).json();
+	const { publishedProfileId, changedOn } = await (await call('GET', policyUrl, { token: admin })).json();
 	const allowed = await call('PUT', policyUrl, {
 		token: admin,
 		data: {
 			allowed: true,
 			excludedZones: [],
 			reason: 'Airport operator letter AO-WEB-142a, commercial team',
-			reviewedProfileId: publishedProfileId
+			reviewedProfileId: publishedProfileId, policyChangedOn: changedOn
 		}
 	});
 	await expectStatus(allowed, 200);

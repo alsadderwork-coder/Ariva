@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
-import { accounts, call, claimsOf, developmentSigningKey, headerOf, signIn, signToken, unusedTotpCode, type Account } from '../support/accounts';
+import { accounts, call, claimsOf, developmentSigningKey, headerOf, login, signIn, signToken, unusedTotpCode, type Account } from '../support/accounts';
 import { guardPage } from '../support/browser-guards';
 import { hosts } from '../support/hosts';
 import { xssPayloads } from '../support/payloads';
@@ -13,7 +13,9 @@ import { createSite } from '../support/airports';
 // and the screen mirrors in Arabic. The display form offers Advertising only where the site's policy allows every zone the
 // display shows (the policy read is answered by the test for DMO, whose own policy stays off; the API refuses it anyway,
 // api/advertising-policy.spec.ts). ARV-193: the form keeps the zone profile version it reviews while it is open, warns when a
-// newer one is published and reviews it only when asked, and closes when the screen moves to another site.
+// newer one is published and reviews it only when asked, and closes when the screen moves to another site. ARV-273: a save
+// that answers after the screen moved on is told in a toast naming its site, and a save made from a version of the policy that
+// another change replaced is refused, with a notice and an action to reload the form.
 
 test.skip(!databaseAvailable, 'needs the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -336,6 +338,8 @@ test('a save that answers after the screen moved to another site leaves nothing 
 	// Two frames for anything the answer would have rendered.
 	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 
+	// ARV-273: what became of the save is told, for the site it was for.
+	await expect(page.locator('[data-sonner-toast]').filter({ hasText: 'Advertising policy of DMO saved' })).toBeVisible();
 	const shown = page.getByTestId('advertising-policy');
 	await expect(shown).toHaveAttribute('data-allowed', 'false');
 	await expect(shown.getByTestId('advertising-reason')).toContainText('AO-WEB-193S');
@@ -434,6 +438,124 @@ test('a newer zone profile that a refresh brings while the form is open is shown
 	await form.getByTestId('save-advertising').click();
 	await expect(panel).toHaveAttribute('data-allowed', 'true');
 	expect(sent[1]).toMatchObject({ reviewedProfileId: v13, excludedZones: ['D-NEW'] });
+	allowStatuses(guards, 409);
+	await guards.expectClean();
+});
+
+test('a save refused after the screen moved to another site is told in a toast with the reason, and changes nothing there', async ({ page }) => {
+	// ARV-273: DMO's save is held in flight while the administrator chooses the spec's site, then refused (409); the toast names
+	// DMO and the reason, the other site's panel keeps its own policy, and no read starts for either site.
+	const guards = await guardPage(page);
+	let release: () => void = () => {};
+	const held = new Promise<void>((resolve) => (release = resolve));
+	let dmoReads = 0;
+	let siteReads = 0;
+	const refusal = "This site's advertising policy was changed since you opened it; reload it to see that change, then make yours again.";
+	await emptyLibrary(page);
+	await page.route('**/api/v1/admin/sites/DMO/advertising-policy', async (route) => {
+		if (route.request().method() === 'GET') {
+			dmoReads++;
+			return route.fulfill({
+				json: {
+					siteCode: 'DMO', allowed: false, excludedZones: [], reason: null, changedOn: null, unpublishedZones: [], displaysFallingBack: [],
+					profileChanged: false, publishedProfileId: '0199a000-0000-7000-8000-00000000d012', publishedProfileVersion: 12, confirmedProfileVersion: null,
+					publishedQueueZones: ['D-CIT', 'D-RES', 'D-VIS']
+				}
+			});
+		}
+		await held;
+		return route.fulfill({ status: 409, contentType: 'application/problem+json', json: { status: 409, title: 'Conflict', detail: refusal } });
+	});
+	await page.route(`**/api/v1/admin/sites/${site}/advertising-policy`, (route) => {
+		if (route.request().method() !== 'GET') return route.fallback();
+		siteReads++;
+		return route.fulfill({
+			json: {
+				siteCode: site, allowed: false, excludedZones: [], reason: 'Site letter AO-WEB-273S', changedOn: '2026-11-05T10:00:00.123456Z', unpublishedZones: [],
+				displaysFallingBack: [], profileChanged: false, publishedProfileId: null, publishedProfileVersion: null, confirmedProfileVersion: null,
+				publishedQueueZones: []
+			}
+		});
+	});
+	await signInThroughUi(page, accounts().webAdmin);
+	await openDisplays(page, 'DMO');
+	const panel = page.getByTestId('advertising-policy');
+	await panel.getByTestId('edit-advertising').click();
+	const form = panel.getByTestId('advertising-form');
+	await form.getByTestId('advertising-allowed').check();
+	await form.getByTestId('advertising-reason-input').fill('Airport operator letter AO-WEB-273D');
+	const sent = page.waitForRequest((request) => request.method() === 'PUT' && request.url().includes('/sites/DMO/advertising-policy'));
+	await form.getByTestId('save-advertising').click();
+	expect((await sent).postDataJSON()).toMatchObject({ policyChangedOn: null, reason: 'Airport operator letter AO-WEB-273D' });
+
+	await page.locator('#displays-site').selectOption(site);
+	await expect(page.getByTestId('advertising-reason')).toContainText('AO-WEB-273S');
+	const reads = dmoReads;
+	const answered = page.waitForResponse((response) => response.request().method() === 'PUT' && response.url().includes('/sites/DMO/advertising-policy'));
+	release();
+	await answered;
+
+	await expect(page.locator('[data-sonner-toast]').filter({ hasText: `Advertising policy of DMO not saved: ${refusal}` })).toBeVisible();
+	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+	const shown = page.getByTestId('advertising-policy');
+	await expect(shown).toHaveAttribute('data-allowed', 'false');
+	await expect(shown.getByTestId('advertising-reason')).toContainText('AO-WEB-273S');
+	await expect(shown.getByTestId('advertising-problems')).toHaveCount(0);
+	expect(dmoReads, 'no read of DMO started after the refusal').toBe(reads);
+	expect(siteReads, 'no refresh started for the other site').toBe(1);
+	allowStatuses(guards, 409);
+	await guards.expectClean();
+});
+
+test('a change saved from a version another change replaced is refused; the form says so and saves after it is reloaded', async ({ page }) => {
+	// ARV-273, against the API: the administrator opens the form on the spec's site; another session of an administrator saves a
+	// change from the same version; the first save is refused (409) with a message to reload, the panel shows the other change
+	// with a notice in the form, and a save after reloading the form is taken.
+	test.setTimeout(120_000);
+	const guards = await guardPage(page);
+	const account = accounts().advertisingWebAdmin;
+	await signInThroughUi(page, account, await unusedTotpCode(account.totpSecret!));
+	await openDisplays(page, site);
+	const panel = page.getByTestId('advertising-policy');
+	await panel.getByTestId('edit-advertising').click();
+	const form = panel.getByTestId('advertising-form');
+	await expect(form.getByTestId('advertising-policy-stale')).toHaveCount(0);
+
+	// The other change, as the screen sends it: from the version a read gives now.
+	const other = await login(account.userName, account.password, undefined, undefined, { code: await unusedTotpCode(account.totpSecret!) });
+	expect(other.status(), 'the other session signs in with a second factor').toBe(200);
+	const token = (await other.json()).accessToken;
+	const url = `${hosts.main}/api/v1/admin/sites/${site}/advertising-policy`;
+	const current = await (await call('GET', url, { token })).json();
+	const theirs = await call('PUT', url, {
+		token,
+		data: { allowed: false, excludedZones: [], reason: 'Border authority letter BA-WEB-273, paused', reviewedProfileId: current.publishedProfileId, policyChangedOn: current.changedOn }
+	});
+	expect(theirs.status(), 'the other change is saved').toBe(200);
+
+	await form.getByTestId('advertising-reason-input').fill('Airport operator letter AO-WEB-273, allowed');
+	await form.getByTestId('save-advertising').click();
+	await expect(form.getByTestId('advertising-problems')).toContainText('was changed since you opened it');
+	await expect(form.getByTestId('advertising-policy-stale')).toContainText('This policy was changed since this form opened');
+	await expect(panel.getByTestId('advertising-reason')).toContainText('BA-WEB-273');
+	await expect(panel).toHaveAttribute('data-allowed', 'false');
+	// The notice in Arabic, in the page's direction, then back to English.
+	await page.getByTestId('language-toggle').click();
+	await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+	await expect(form.getByTestId('reload-advertising')).toHaveText('إعادة تحميل النموذج');
+	await page.getByTestId('language-toggle').click();
+	await expect(page.locator('html')).toHaveAttribute('dir', 'ltr');
+
+	// Reloading takes the other change; a save from it is taken.
+	await form.getByTestId('reload-advertising').click();
+	await expect(form.getByTestId('advertising-policy-stale')).toHaveCount(0);
+	await expect(form.getByTestId('advertising-allowed')).not.toBeChecked();
+	await form.getByTestId('advertising-allowed').check();
+	await form.getByTestId('advertising-reason-input').fill('Airport operator letter AO-WEB-273, allowed');
+	await form.getByTestId('save-advertising').click();
+	await expect(panel).toHaveAttribute('data-allowed', 'true');
+	await expect(panel.getByTestId('advertising-reason')).toContainText('AO-WEB-273');
+	await expect(page.locator(injected)).toHaveCount(0);
 	allowStatuses(guards, 409);
 	await guards.expectClean();
 });

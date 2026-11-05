@@ -45,10 +45,10 @@ function day(offset: number): string {
 
 async function allow(code: string) {
 	const policyUrl = `${admin()}/sites/${code}/advertising-policy`;
-	const { publishedProfileId } = await (await call('GET', policyUrl, { token: adminToken })).json();
+	const { publishedProfileId, changedOn } = await (await call('GET', policyUrl, { token: adminToken })).json();
 	const changed = await call('PUT', policyUrl, {
 		token: adminToken,
-		data: { allowed: true, excludedZones: [], reason: 'Airport operator letter AO-E2E-144, commercial team', reviewedProfileId: publishedProfileId }
+		data: { allowed: true, excludedZones: [], reason: 'Airport operator letter AO-E2E-144, commercial team', reviewedProfileId: publishedProfileId, policyChangedOn: changedOn }
 	});
 	await expectStatus(changed, 200);
 }

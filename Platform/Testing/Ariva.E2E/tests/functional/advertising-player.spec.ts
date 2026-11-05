@@ -393,10 +393,10 @@ test.beforeAll(async () => {
 	site = provisioned.site;
 	zone = provisioned.zone;
 	const policyUrl = `${admins}/sites/${site}/advertising-policy`;
-	const { publishedProfileId } = await (await call('GET', policyUrl, { token: admin })).json();
+	const { publishedProfileId, changedOn } = await (await call('GET', policyUrl, { token: admin })).json();
 	const allowed = await call('PUT', policyUrl, {
 		token: admin,
-		data: { allowed: true, excludedZones: [], reason: 'Airport operator letter AO-WEB-143b, commercial team', reviewedProfileId: publishedProfileId }
+		data: { allowed: true, excludedZones: [], reason: 'Airport operator letter AO-WEB-143b, commercial team', reviewedProfileId: publishedProfileId, policyChangedOn: changedOn }
 	});
 	await expectStatus(allowed, 200);
 
@@ -1184,11 +1184,11 @@ test('advertising turned off: the next board shows instructions, the cached byte
 		// The administrator turns the site's advertising off (a critical change: a fresh second factor).
 		const token = await secondFactorSignIn(accounts().playerAdmin);
 		const policyUrl = `${admins}/sites/${site}/advertising-policy`;
-		const { publishedProfileId } = await (await call('GET', policyUrl, { token })).json();
+		const { publishedProfileId, changedOn } = await (await call('GET', policyUrl, { token })).json();
 		const fetched = media.length;
 		const off = await call('PUT', policyUrl, {
 			token,
-			data: { allowed: false, excludedZones: [], reason: 'Airport operator letter AO-WEB-143b, advertising paused', reviewedProfileId: publishedProfileId }
+			data: { allowed: false, excludedZones: [], reason: 'Airport operator letter AO-WEB-143b, advertising paused', reviewedProfileId: publishedProfileId, policyChangedOn: changedOn }
 		});
 		await expectStatus(off, 200);
 

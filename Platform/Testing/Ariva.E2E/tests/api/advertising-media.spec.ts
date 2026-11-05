@@ -111,14 +111,14 @@ async function approve(at: string, id: string, token = approver) {
 
 async function allow(code: string) {
 	const policyUrl = `${hosts.main}/api/v1/admin/sites/${code}/advertising-policy`;
-	const { publishedProfileId } = await (await call('GET', policyUrl, { token: admin })).json();
+	const { publishedProfileId, changedOn } = await (await call('GET', policyUrl, { token: admin })).json();
 	const changed = await call('PUT', policyUrl, {
 		token: admin,
 		data: {
 			allowed: true,
 			excludedZones: [],
 			reason: 'Airport operator letter AO-E2E-142a, commercial team',
-			reviewedProfileId: publishedProfileId
+			reviewedProfileId: publishedProfileId, policyChangedOn: changedOn
 		}
 	});
 	await expectStatus(changed, 200);
@@ -691,13 +691,15 @@ test('a retired item never plays again and is not changed; turning advertising o
 	const playing = await uploaded(manager);
 	expect((await approve(site, playing.id, approver)).status()).toBe(200);
 	const policyUrl = `${hosts.main}/api/v1/admin/sites/${site}/advertising-policy`;
+	const { changedOn } = await (await call('GET', policyUrl, { token: admin })).json();
 	const turnedOff = await call('PUT', policyUrl, {
 		token: admin,
 		data: {
 			allowed: false,
 			excludedZones: [],
 			reason: 'E2E: the operator withdrew advertising',
-			reviewedProfileId: null
+			reviewedProfileId: null,
+			policyChangedOn: changedOn
 		}
 	});
 	await expectStatus(turnedOff, 200);

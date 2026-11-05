@@ -108,7 +108,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         (await _host.AsCallerAsync(admin, s => Policies(s).IsAllowedAsync("ADV2", Ct))).Should().BeTrue();
         (await _host.AsCallerAsync(admin, s => Policies(s).AccessAsync("ADV2", Ct))).Should().Be(AdvertisingAccess.Allowed);
 
-        var off = await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV2", Off("  Border authority asked for no advertising, ref BA-77  "), Ct));
+        var off = await ChangePolicyAsync(admin, "ADV2", Off("  Border authority asked for no advertising, ref BA-77  "));
         off.Data.Should().Match<AdvertisingPolicyViewModel>(p => !p.Allowed && p.Reason == "Border authority asked for no advertising, ref BA-77", "kept trimmed");
         (await _host.AsCallerAsync(admin, s => Policies(s).IsAllowedAsync("ADV2", Ct))).Should().BeFalse();
         (await _host.ReadAsync<long>("SELECT count(*) FROM advertising_policy WHERE site_code = 'ADV2'")).Should().Be(1, "one policy per site, changed in place");
@@ -149,7 +149,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
     {
         var admin = await AdminAsync($"it.ad.refused.{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(reason)))[..12]}");
         var reviewed = (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("DMO", Ct))).Data.PublishedProfileId;
-        var result = await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("DMO", request with { ReviewedProfileId = reviewed }, Ct));
+        var result = await ChangePolicyAsync(admin, "DMO", request with { ReviewedProfileId = reviewed });
         result.HasErrors.Should().BeTrue(reason);
         string.Concat(result.ErrorMessages).Should().NotContain("NOT-A-ZONE", "an answer never repeats what was sent");
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'AdvertisingPolicy.Changed' AND target_name = 'DMO' AND after_summary LIKE '%NOT-A-ZONE%'"))
@@ -179,7 +179,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         var manager = await ManagerAsync(admin, "it.ad.display.manager");
 
         // Off (other tests of this class allow it at DMO): a display cannot be set to advertising.
-        (await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("DMO", Off(), Ct))).HasErrors.Should().BeFalse();
+        (await ChangePolicyAsync(admin, "DMO", Off())).HasErrors.Should().BeFalse();
         (await _host.AsCallerAsync(manager, s => Displays(s).CreateAsync(Request("ADV-OFF"), Ct))).ErrorMessages.Should().Equal(DisplayErrors.AdvertisingOff);
         var instructions = await _host.AsCallerAsync(manager, s => Displays(s).CreateAsync(Request("ADV-A", secondRegion: "Instructions"), Ct));
         instructions.HasErrors.Should().BeFalse(string.Join(", ", instructions.ErrorMessages ?? []));
@@ -206,7 +206,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         (await BoardRegionAsync()).Should().Be("Instructions", "an excluded zone falls back within one refresh");
         (await AllowAsync(admin, "DMO", "A-RES")).Data.DisplaysFallingBack.Should().NotContain("ADV-A");
         (await BoardRegionAsync()).Should().Be("Advertising");
-        var off = await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("DMO", Off(), Ct));
+        var off = await ChangePolicyAsync(admin, "DMO", Off());
         off.Data.DisplaysFallingBack.Should().Contain("ADV-A");
         (await BoardRegionAsync()).Should().Be("Instructions", "advertising off falls back within one refresh");
         (await _host.ReadAsync<string>("SELECT second_region FROM display WHERE code = 'ADV-A' AND deleted_on IS NULL")).Should().Be("Advertising");
@@ -319,7 +319,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         // saved), and the policy is turned off.
         await RenameQueueZoneAsync(manager, "A-IMM", "A-RES");
         (await BoardRegionAsync()).Should().Be("Instructions");
-        (await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("DMO", Off(), Ct))).HasErrors.Should().BeFalse();
+        (await ChangePolicyAsync(admin, "DMO", Off())).HasErrors.Should().BeFalse();
         (await _host.AsCallerAsync(manager, s => Displays(s).DeleteAsync(created.Data.Display.Id, Ct))).HasErrors.Should().BeFalse();
     }
 
@@ -358,7 +358,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         var saved = (await AllowAsync(admin, "DMO", "A-RES")).Data;
         saved.ProfileChanged.Should().BeFalse("saved against the new profile");
         (await BoardRegionAsync()).Should().Be("Advertising");
-        (await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("DMO", Off(), Ct))).HasErrors.Should().BeFalse();
+        (await ChangePolicyAsync(admin, "DMO", Off())).HasErrors.Should().BeFalse();
         foreach (var id in new[] { created.Data.Display.Id, other.Data.Display.Id })
             (await _host.AsCallerAsync(manager, s => Displays(s).DeleteAsync(id, Ct))).HasErrors.Should().BeFalse();
     }
@@ -465,27 +465,34 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
 
         await RenameQueueZoneAsync(manager, null, null);
         var audits = await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'AdvertisingPolicy.Changed' AND target_name = 'DMO'");
-        var stale = await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("DMO", Allow("A-RES") with { ReviewedProfileId = reviewed.PublishedProfileId }, Ct));
+        var stale = await ChangePolicyAsync(admin, "DMO", Allow("A-RES") with { ReviewedProfileId = reviewed.PublishedProfileId });
         stale.ErrorMessages.Should().Equal(AdvertisingPolicyErrors.ProfileChangedSinceReview);
         (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'AdvertisingPolicy.Changed' AND target_name = 'DMO'"))
             .Should().Be(audits, "nothing is saved or audited");
         var now = (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("DMO", Ct))).Data;
         now.Should().Match<AdvertisingPolicyViewModel>(v => v.ProfileChanged && v.ConfirmedProfileVersion == reviewed.PublishedProfileVersion &&
                                                             v.PublishedProfileVersion == reviewed.PublishedProfileVersion + 1);
-        (await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("DMO", Allow("A-RES") with { ReviewedProfileId = null }, Ct))).ErrorMessages
+        (await ChangePolicyAsync(admin, "DMO", Allow("A-RES") with { ReviewedProfileId = null })).ErrorMessages
             .Should().Equal([AdvertisingPolicyErrors.ProfileChangedSinceReview], "an allowing change names the profile it reviewed");
 
         // Turning advertising off needs no review; allowing it again reviews the new profile.
-        (await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("DMO", Off(), Ct))).HasErrors.Should().BeFalse();
+        (await ChangePolicyAsync(admin, "DMO", Off())).HasErrors.Should().BeFalse();
         (await AllowAsync(admin, "DMO", "A-RES")).Data.ProfileChanged.Should().BeFalse();
-        (await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("DMO", Off(), Ct))).HasErrors.Should().BeFalse();
+        (await ChangePolicyAsync(admin, "DMO", Off())).HasErrors.Should().BeFalse();
     }
 
     /// <summary>Allows advertising at a site as an administrator does: naming the published profile the view showed it.</summary>
     private async Task<Fluentx.Result<AdvertisingPolicyViewModel>> AllowAsync(Guid caller, string site, params string[] excluded)
     {
         var reviewed = (await _host.AsCallerAsync(caller, s => Policies(s).GetAsync(site, Ct))).Data?.PublishedProfileId;
-        return await _host.AsCallerAsync(caller, s => Policies(s).ChangeAsync(site, Allow(excluded) with { ReviewedProfileId = reviewed }, Ct));
+        return await ChangePolicyAsync(caller, site, Allow(excluded) with { ReviewedProfileId = reviewed });
+    }
+
+    /// <summary>ARV-273: a change as the screen makes it, from the version of the policy a read gives now.</summary>
+    private async Task<Fluentx.Result<AdvertisingPolicyViewModel>> ChangePolicyAsync(Guid caller, string site, AdvertisingPolicyRequest request)
+    {
+        var current = (await _host.AsCallerAsync(caller, s => Policies(s).GetAsync(site, Ct))).Data?.ChangedOn;
+        return await _host.AsCallerAsync(caller, s => Policies(s).ChangeAsync(site, request with { PolicyChangedOn = current }, Ct));
     }
 
     /// <summary>A copy of a display under another code, its zone replaced in the entries' JSON text, written by the runtime role.</summary>
@@ -584,18 +591,64 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
     }
 
     [Fact]
-    public async Task Change_Should_MakeOnePolicy_When_TwoAdministratorsChangeANewSiteAtOnce()
+    public async Task Change_Should_MakeOnePolicyAndRefuseTheOther_When_TwoAdministratorsChangeANewSiteAtOnce()
     {
         var admin = await AdminAsync("it.ad.race.admin");
         var other = await _host.CreateUserAsync("it.ad.race.other", roles: [RoleCodes.SystemAdministrator]);
         await _host.ReadAsync<int>("UPDATE \"user\" SET all_sites = true WHERE id = @id RETURNING 1", other);
+        // Both opened the site without a policy, so both changes are made from none (ARV-273).
+        var opened = (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("ADV3", Ct))).Data;
+        opened.ChangedOn.Should().BeNull();
 
         var results = await Task.WhenAll(
-            AllowAsync(admin, "ADV3"),
+            _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV3", Allow() with { ReviewedProfileId = opened.PublishedProfileId }, Ct)),
             _host.AsCallerAsync(other, s => Policies(s).ChangeAsync("ADV3", Off(), Ct)));
 
-        results.Should().OnlyContain(r => !r.HasErrors, "the site lock makes the second change an update of the first");
+        // The site lock orders them; the second was made from no policy, which the first replaced, so it is refused rather than
+        // overwriting the first unseen.
+        results.Count(r => !r.HasErrors).Should().Be(1);
+        results.Single(r => r.HasErrors).ErrorMessages.Should().Equal(AdvertisingPolicyErrors.ChangedSinceLoaded);
         (await _host.ReadAsync<long>("SELECT count(*) FROM advertising_policy WHERE site_code = 'ADV3'")).Should().Be(1);
-        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'AdvertisingPolicy.Changed' AND target_name = 'ADV3'")).Should().Be(2);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'AdvertisingPolicy.Changed' AND target_name = 'ADV3'")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Change_Should_BeRefusedAndKeepThePolicy_When_ItWasMadeFromAnotherVersionThanTheStoredOne()
+    {
+        // ARV-273: two administrators opened the same policy; the second save, made from the version the first replaced, is
+        // refused with a message to reload, and the first change stays.
+        var admin = await AdminAsync("it.ad.version.admin");
+        var other = await _host.CreateUserAsync("it.ad.version.other", roles: [RoleCodes.SystemAdministrator]);
+        await _host.ReadAsync<int>("UPDATE \"user\" SET all_sites = true WHERE id = @id RETURNING 1", other);
+        (await ChangePolicyAsync(admin, "ADV4", Off("Border authority asked for no advertising, ref BA-273"))).HasErrors.Should().BeFalse();
+        var opened = (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("ADV4", Ct))).Data;
+        opened.ChangedOn.Should().NotBeNull();
+        // The host's clock moves only when a test moves it; the server's moves on between two changes the site lock orders.
+        _host.Clock.Advance(TimeSpan.FromSeconds(1));
+
+        var first = await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV4",
+            Off("Border authority asked for no advertising, ref BA-273a") with { PolicyChangedOn = opened.ChangedOn }, Ct));
+        var second = await _host.AsCallerAsync(other, s => Policies(s).ChangeAsync("ADV4",
+            Off("Border authority asked for no advertising, ref BA-273b") with { PolicyChangedOn = opened.ChangedOn }, Ct));
+
+        first.HasErrors.Should().BeFalse(string.Join(", ", first.ErrorMessages ?? []));
+        second.ErrorMessages.Should().Equal(AdvertisingPolicyErrors.ChangedSinceLoaded);
+        var stored = (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("ADV4", Ct))).Data;
+        stored.Reason.Should().Be("Border authority asked for no advertising, ref BA-273a");
+        stored.ChangedOn.Should().Be(first.Data.ChangedOn, "the answer names the version a later read gives, to the microsecond");
+        stored.ChangedOn.Should().BeAfter(opened.ChangedOn.Value);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'AdvertisingPolicy.Changed' AND target_name = 'ADV4' AND after_summary LIKE '%BA-273b%'"))
+            .Should().Be(0, "a refused change is not audited as made");
+
+        // A change from the answer's version is taken at once; one that names no version, or the replaced one, is refused.
+        _host.Clock.Advance(TimeSpan.FromSeconds(1));
+        (await _host.AsCallerAsync(other, s => Policies(s).ChangeAsync("ADV4",
+            Off("Border authority asked for no advertising, ref BA-273c") with { PolicyChangedOn = first.Data.ChangedOn }, Ct))).HasErrors.Should().BeFalse();
+        (await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV4", Off(), Ct))).ErrorMessages.Should().Equal(AdvertisingPolicyErrors.ChangedSinceLoaded);
+        (await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV4", Off() with { PolicyChangedOn = opened.ChangedOn }, Ct))).ErrorMessages
+            .Should().Equal(AdvertisingPolicyErrors.ChangedSinceLoaded);
+        // A site that never had a policy is changed from none: naming a version there is refused too.
+        (await _host.AsCallerAsync(admin, s => Policies(s).ChangeAsync("ADV5", Off() with { PolicyChangedOn = opened.ChangedOn }, Ct))).ErrorMessages
+            .Should().Equal(AdvertisingPolicyErrors.ChangedSinceLoaded);
     }
 }

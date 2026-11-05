@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Megaphone, Pencil } from '@lucide/svelte';
+	import { onDestroy } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
 	import StatusBadge from '$lib/components/shared/StatusBadge.svelte';
@@ -14,7 +15,10 @@
 	 * shown here, so the server refuses it (409) when another version was published meanwhile. ARV-193: the form takes the
 	 * version it reviews, with its queue zones, when it opens, and keeps them: a newer version that a refresh or a refused save
 	 * brings is shown in a notice with an action to review it, never switched in silently. The screen keys the panel by its
-	 * site, so changing site closes the form. Everything is shown as text.
+	 * site, so changing site closes the form. ARV-273: the save names the version of the policy the form opened from (its
+	 * changedOn); when another change was saved meanwhile the server refuses it (409), and the form says so with an action to
+	 * reload it. A save that answers after the screen moved to another site is told in a toast naming the site it was for,
+	 * saved or not saved with the reason, and changes nothing on the screen's own site. Everything is shown as text.
 	 */
 	interface Props {
 		siteCode: string;
@@ -39,6 +43,13 @@
 	let review = $state<{ profileId: string | null; version: number | null; zones: string[] } | null>(
 		null
 	);
+	/** ARV-273: the version of the policy the open form was made from (its changedOn when the form opened or was reloaded). */
+	let loaded = $state<string | null>(null);
+	/** Whether the panel is gone (the screen moved to another site): a save that answers then is told in a toast only. */
+	let gone = false;
+	onDestroy(() => {
+		gone = true;
+	});
 
 	/** The reviewed version's queue zones, then any excluded zone no longer among them, so it can be taken off the list. */
 	const published = $derived(review?.zones ?? []);
@@ -47,6 +58,8 @@
 	const stale = $derived(
 		editing && review !== null && policy.publishedProfileId !== review.profileId
 	);
+	/** ARV-273: another change of the policy saved since the form opened: saving is refused (409) until the form is reloaded. */
+	const changedSince = $derived(editing && policy.changedOn !== loaded);
 
 	function take(): void {
 		review = {
@@ -61,6 +74,7 @@
 		allowed = policy.allowed;
 		excluded = [...policy.excludedZones];
 		reason = '';
+		loaded = policy.changedOn;
 		take();
 		editing = true;
 	}
@@ -77,25 +91,44 @@
 		// for this one is then not shown on the other (the screen checks it too).
 		const site = siteCode;
 		const reviewed = review?.profileId ?? null;
+		const from = loaded;
+		// The messages as they are now: the panel may be gone when the answer comes.
+		const format = $_;
 		const result = await advertising.change(site, {
 			allowed,
 			excludedZones: [...excluded],
 			reason: reason.trim(),
-			reviewedProfileId: reviewed
+			reviewedProfileId: reviewed,
+			policyChangedOn: from
 		});
 		busy = false;
-		if (siteCode !== site) return;
+		if (gone || siteCode !== site) {
+			// ARV-273: the screen moved on before the answer came; say what became of the save, for the site it was for.
+			if (result.hasErrors || !result.data)
+				toast.error(
+					format('advertising.messages.notSavedFor', {
+						values: { site, reason: result.errorMessages.join(' ') }
+					})
+				);
+			else toast.success(format('advertising.messages.savedFor', { values: { site } }));
+			return;
+		}
 		if (result.hasErrors || !result.data) {
 			problems = result.errorMessages;
-			// Another zone profile may have been published since the review: the notice shows it, and the form keeps the version
-			// it reviews until the administrator reviews the new one.
+			// Another zone profile may have been published since the review, or another change saved since the form opened: the
+			// notices show them, and the form keeps what it reviews until the administrator reviews or reloads.
 			const fresh = await advertising.get(site);
-			if (siteCode !== site) return;
-			if (fresh.data && fresh.data.publishedProfileId !== reviewed) onChanged(fresh.data);
+			if (gone || siteCode !== site) return;
+			if (
+				fresh.data &&
+				(fresh.data.publishedProfileId !== reviewed || fresh.data.changedOn !== from)
+			)
+				onChanged(fresh.data);
 			return;
 		}
 		editing = false;
 		review = null;
+		loaded = null;
 		toast.success($_('advertising.messages.saved'));
 		onChanged(result.data);
 	}
@@ -191,6 +224,29 @@
 						? $_('advertising.reviewing', { values: { version: review.version } })
 						: $_('advertising.noProfile')}
 				</p>
+				{#if changedSince}
+					<div
+						class="flex flex-wrap items-center gap-2 rounded-md border border-status-warning-border bg-status-warning px-3 py-2 text-xs text-status-warning-foreground"
+						role="status"
+						data-testid="advertising-policy-stale"
+					>
+						<p class="min-w-0 flex-1">
+							{$_('advertising.policyStale', {
+								values: {
+									when: policy.changedOn ? new Date(policy.changedOn).toLocaleString() : ''
+								}
+							})}
+						</p>
+						<button
+							type="button"
+							data-testid="reload-advertising"
+							onclick={edit}
+							class="inline-flex h-8 items-center rounded-md border bg-card px-2.5 text-xs text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+						>
+							{$_('advertising.actions.reload')}
+						</button>
+					</div>
+				{/if}
 				{#if stale}
 					<div
 						class="flex flex-wrap items-center gap-2 rounded-md border border-status-warning-border bg-status-warning px-3 py-2 text-xs text-status-warning-foreground"
@@ -292,6 +348,7 @@
 						onclick={() => {
 							editing = false;
 							review = null;
+							loaded = null;
 						}}
 						class="inline-flex h-9 items-center rounded-md border bg-card px-3 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 					>

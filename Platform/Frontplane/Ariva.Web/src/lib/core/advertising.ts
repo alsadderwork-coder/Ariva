@@ -16,6 +16,7 @@ export interface AdvertisingPolicy {
 	allowed: boolean;
 	excludedZones: string[];
 	reason: string | null;
+	/** The policy's last change, as the server stores it: its version, which a change names (ARV-273). */
 	changedOn: string | null;
 	/** Excluded zones that are not queue zones of the published profile. */
 	unpublishedZones: string[];
@@ -38,6 +39,11 @@ export interface AdvertisingPolicyRequest {
 	reason: string;
 	/** The published zone profile the exclusions were reviewed against (409 when another has been published since). */
 	reviewedProfileId: string | null;
+	/**
+	 * ARV-273: the version of the policy the change was made from, its changedOn as the form read it (null for a site that had
+	 * none): 409 when the policy was changed since, so a change never overwrites another unseen.
+	 */
+	policyChangedOn: string | null;
 }
 
 const path = (siteCode: string) =>
