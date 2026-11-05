@@ -2377,9 +2377,14 @@ public sealed class DomainRuleTests
             }
         }
 
-        /// <summary>A minimal API handler returning an exception's part, behind sign-in as every endpoint is (never mapped: read as IL only).</summary>
-        public static void MapProbe(Microsoft.AspNetCore.Routing.IEndpointRouteBuilder app) =>
-            Authorization.RequireAuthorization(Endpoints.MapGet(app, "/probe", (Func<Action, object>)(act =>
+        /// <summary>
+        /// A minimal API handler returning an exception's part, behind sign-in as every endpoint is (never mapped: read as IL
+        /// only). The handler is given as a Delegate, which ASP.NET's route handler analyzer does not parse (it throws on the
+        /// cast lambda, AD0001).
+        /// </summary>
+        public static void MapProbe(Microsoft.AspNetCore.Routing.IEndpointRouteBuilder app)
+        {
+            Delegate handler = (Func<Action, object>)(act =>
             {
                 try
                 {
@@ -2390,7 +2395,9 @@ public sealed class DomainRuleTests
                 {
                     return v.ValidationResult;
                 }
-            })));
+            });
+            Authorization.RequireAuthorization(Endpoints.MapGet(app, "/probe", handler));
+        }
 
         public static string HeldSetCount(Action act)
         {
