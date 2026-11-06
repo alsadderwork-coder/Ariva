@@ -5653,3 +5653,55 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - A Release build lowers a string switch to a dispatch on `get_Length` (and `get_Chars` within one length) before each `op_Equality`; a Debug build hashes it (`ComputeStringHash`). A check of matcher code passes in one build and fails in the other unless the fixtures exercise both: give a fixture switch arms of one length.
   - Anonymous types are compiler-generated (`<>f__AnonymousType`) but hold values as tuples do; excluding every generated type from the field-into-object rule dropped what they hold.
   - Building a worktree beside the checkpoint's integration step took the disk to 546 MB: free a worktree's build output before the checkpoint's integration and mutation steps, and keep the stale mutation tree from a cut run out of the way.
+
+## 2026-11-05: ARV-273 [E21] Advertising policy saves confirmed after the screen moves on, and concurrent changes of a policy refused
+
+- What changed:
+  - **The policy's version.** A change of a site's advertising policy names the version it was made from: `PolicyChangedOn`, the view's `ChangedOn`, null for a site that had none.
+    - The version is the policy's last change, in UTC to the microsecond, as PostgreSQL keeps it. No schema change.
+    - `SvcAdvertisingPolicies.ChangeAsync` compares it under the site's advisory lock (class 145). A change made from another version is refused (409, `AdvertisingPolicyErrors.ChangedSinceLoaded`, one of the Conflicts), so of two changes made from one version the second never overwrites the first unseen, a site's first policy included.
+    - The update flushes before the answer is built, so the session stamps the change's time and the answer names the version a later read gives.
+    - `AuditInterceptor` (review round 1) stamps every change of an auditable row after its last stamp, to the microsecond (`After`). Before, it stamped a pod's own clock and only clamped it to the creation. So a pod whose clock was behind the one that created a policy stamped its change with the creation's time, and a form opened on the creation version passed. Production runs two or more Api.Main replicas. This applies to every auditable entity: a modification is never at or before the row's previous stamp, the later of its last change and its creation (`LastStamp`), so never earlier than the creation either.
+  - **The panel** (`AdvertisingPanel.svelte`).
+    - The form keeps the version it opened from and sends it.
+    - After a refused save it reads the policy again. When another change was saved meanwhile, the panel shows that change and the form a notice ("This policy was changed since this form opened") with a "Reload the form" action, as a stale zone profile review is shown.
+    - A save that answers after the screen moved to another site is told in a toast naming the site it was for: saved, or not saved with the reason (a fixed text when the answer gives none). So is a refusal whose re-read answers after the screen moved on. Nothing changes on the screen's own site; the panel knows it is gone by `onDestroy`.
+- Tests:
+  - Unit `AuditInterceptorTests` (4 facts, 3 cases): a change stamped now, or one microsecond after the last stamp when the clock is behind it, at it, or within its microsecond; the last stamp is the later of the change and the creation.
+  - Integration `AdvertisingPolicyServiceTests`:
+    - `Change_Should_BeRefusedAndKeepThePolicy_When_ItWasMadeFromAnotherVersionThanTheStoredOne`;
+    - `Change_Should_BeRefused_When_ItWasMadeFromTheCreationVersionAndAPodWithAClockBehindChangedThePolicy`: the answer to a site's first change names the version a read gives; with the clock 5 s behind, a change from the creation version is taken, stamped after it, and a second from it is refused;
+    - `Change_Should_MakeOnePolicyAndRefuseTheOther_When_TwoAdministratorsChangeANewSiteAtOnce`, which replaces `Change_Should_MakeOnePolicy_When_TwoAdministratorsChangeANewSiteAtOnce`: of two first changes of a site, the second is now refused, and one audit entry is kept.
+    - The other changes in the advertising tests name the version a read gives (`ChangePolicyAsync`).
+  - E2E API `advertising-policy.spec.ts`: two changes from one version, the second 409 with its message; a change naming no version 409; a malformed version 400; a read names the version the answer named. The advertising specs' policy changes name the version from the read they already made.
+  - Functional `advertising-policy.spec.ts`:
+    - the toast for a save held until the screen moved on, saved (the ARV-193 test) and refused (new; its reason carries markup, shown as text);
+    - a change saved from a version another session replaced: refused, the notice in English and Arabic, then saved after reloading.
+  - Results: unit 8,885 of 8,885 (`AuditInterceptorTests` among them); the advertising integration classes and the unit of work round trip 141 of 141; the two advertising policy E2E specs 17 of 17.
+- Files:
+  - Platform/Backplane/Ariva.Core/Services/Displays/ISvcAdvertisingPolicies.cs
+  - Platform/Backplane/Ariva.Infra/Services/Displays/SvcAdvertisingPolicies.cs, Ariva.Infra/NHibernate/Interceptors/AuditInterceptor.cs
+  - Platform/Backplane/Ariva.UnitTests/Persistence/AuditInterceptorTests.cs
+  - Platform/Backplane/Ariva.IntegrationTests/Displays/{AdvertisingPolicyServiceTests.cs, AdvertisingMediaServiceTests.cs, AdvertisingPlansServiceTests.cs}
+  - Platform/Frontplane/Ariva.Web/src/lib/core/advertising.ts, src/lib/components/pages/displays/AdvertisingPanel.svelte, src/lib/i18n/{en,ar}.json
+  - Platform/Testing/Ariva.E2E/tests/api/{advertising-policy, advertising-board, advertising-media, advertising-plans, advertising-plays, upload-scanning}.spec.ts
+  - Platform/Testing/Ariva.E2E/tests/functional/{advertising-policy, advertising-media, advertising-plans, advertising-player}.spec.ts
+  - wiki/11-Administration-Guide.md (advertising policy), docs/security/asvs-l2.md (V2.3.4)
+  - backlog/prd-phase3.json (ARV-273 passes), backlog/progress.md
+- Filed: ARV-273a (from the review, low): the runtime role keeps UPDATE on advertising_policy (script 0057), so a direct SQL write bypasses the version and the audit; a trigger that refuses an update not stamped after the row's last stamp would hold it again in the database.
+- Gates:
+  - The story gate on 3d1561d (wide: the audit interceptor and `src/lib/core`), all PASS: build, unit tests 8,885 of 8,885, the security gate, docs, web check, lint and build, visual 20 passed.
+  - Integration 979: the 25 Faults tests are blocked as recorded (their container image registry is unreachable from this machine); every other test passed.
+  - E2E: 946 passed, 1 skipped, 1 failed, 1 did not run. The failure was ARV-273's own new toast test, whose expectation left out the problem's title (`Conflict: `); the next test of that serial file did not run. The failure's trace held the run's tokens, so the artifact check failed too.
+  - With the expectation fixed, the two advertising policy specs ran again through `verify.mjs e2e --specs` on fresh services: 17 of 17, artifact check PASS. A first such run found the sign-in's second factor 401 not allowed in the conflict test, and that was fixed.
+  - An earlier gate run ran out of disk during integration; space was freed (build output, landed worktrees).
+  - scan.mjs: 0 errors.
+- Security review: security-reviewer PASS in round 2 (CWE-863, CWE-79, CWE-501; ASVS V2.3.4), on the condition of the full gates, recorded once they passed.
+  - Round 1 FAIL: the audit interceptor clamped a change to the creation's time on a pod whose clock was behind (production runs two or more Api.Main replicas), so a form opened on the creation version passed. Fixed with `AuditInterceptor.After`.
+  - The recommendations were done: markup in the refusal toast shown as text; the refusal told after a re-read; the wiki's time wording; the first change's version; a fixed text without a reason.
+  - The runtime role's UPDATE on the table, which predates this story, is filed as ARV-273a.
+- Gotchas:
+  - The session stamps `ModifiedOn` only when it flushes, at the commit, after the answer is built. A version taken from the entity before a flush is the one the change replaced.
+  - PostgreSQL keeps microseconds and .NET ticks are 100 ns: truncate a time used as a version to the microsecond, or the answer and a later read disagree.
+  - A time is a version only when no two stored states of a row share one. The interceptor clamped a change to the creation's time on a pod whose clock was behind, and a clock that does not move (the integration host's `ManualClock`) stamps two changes alike. Stamp a change strictly after the row's last stamp.
+  - A panel inside `{#key siteCode}` is destroyed when the site changes. A save's continuation runs on in the destroyed component: detect it (`onDestroy`), and take the message formatter before the await.

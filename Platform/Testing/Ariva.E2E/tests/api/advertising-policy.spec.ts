@@ -40,11 +40,15 @@ function displayRequest(zone: string, secondRegion: string, code: string) {
 
 const newCode = () => `ADV-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
-/** A change as the screen sends it: naming the published zone profile the policy was reviewed against, unless the test sets it. */
+/**
+ * A change as the screen sends it: naming the published zone profile the policy was reviewed against and the version of the
+ * policy it was made from (ARV-273: its last change), each as a read gives it now unless the test sets it.
+ */
 async function change(data: Record<string, unknown>, token = stepped) {
-	const reviewedProfileId =
-		'reviewedProfileId' in data ? data.reviewedProfileId : (await (await call('GET', policyUrl(), { token: stepped })).json()).publishedProfileId;
-	return call('PUT', policyUrl(), { token, data: { ...data, reviewedProfileId } });
+	const current = await (await call('GET', policyUrl(), { token: stepped })).json();
+	const reviewedProfileId = 'reviewedProfileId' in data ? data.reviewedProfileId : current.publishedProfileId;
+	const policyChangedOn = 'policyChangedOn' in data ? data.policyChangedOn : current.changedOn;
+	return call('PUT', policyUrl(), { token, data: { ...data, reviewedProfileId, policyChangedOn } });
 }
 
 async function boardRegion(): Promise<string> {
@@ -188,6 +192,29 @@ test('a display shows advertising only where every zone it shows is allowed, and
 	expect((await kept.json()).secondRegion, 'the display keeps its setting').toBe('Advertising');
 	const renamed = await call('PUT', `${displaysApi}/${display.id}`, { token: manager, data: { ...display.request, name: 'Renamed', secondRegion: 'Advertising' } });
 	expect(renamed.status(), 'saved only with instructions while off').toBe(400);
+});
+
+test('a change made from a version of the policy that another change replaced is refused with 409, and the first change stays', async () => {
+	// ARV-273: two administrators open the same policy and both changes name its version (its last change); the second is
+	// refused, as is a change naming no version; a malformed version is a 400; a change from the version the first answered is
+	// taken. Advertising stays off here, so no display of the earlier tests changes.
+	const opened = await (await call('GET', policyUrl(), { token: stepped })).json();
+	expect(opened.changedOn, 'the version is the last change, in UTC to the microsecond').toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,6})?Z$/);
+	const first = await change({ allowed: false, excludedZones: [], reason: 'Border authority letter BA-E2E-273a', policyChangedOn: opened.changedOn });
+	await expectStatus(first, 200);
+	const answered = (await first.json()).changedOn;
+	expect(answered, 'a new version').not.toBe(opened.changedOn);
+
+	const second = await change({ allowed: false, excludedZones: [], reason: 'Border authority letter BA-E2E-273b', policyChangedOn: opened.changedOn });
+	expect(second.status(), 'made from the version the first replaced').toBe(409);
+	expect((await second.json()).detail).toBe("This site's advertising policy was changed since you opened it; reload it to see that change, then make yours again.");
+	expect((await change({ allowed: false, excludedZones: [], reason: 'Border authority letter BA-E2E-273c', policyChangedOn: null })).status(), 'naming no version').toBe(409);
+	expect((await change({ allowed: false, excludedZones: [], reason: 'Border authority letter BA-E2E-273c', policyChangedOn: 'not a time' })).status(), 'a malformed version').toBe(400);
+	const stored = await (await call('GET', policyUrl(), { token: stepped })).json();
+	expect(stored, 'the first change stays, and a read names the version its answer named').toMatchObject({ reason: 'Border authority letter BA-E2E-273a', changedOn: answered });
+
+	const next = await change({ allowed: false, excludedZones: [], reason: 'Border authority letter BA-E2E-273d', policyChangedOn: answered });
+	await expectStatus(next, 200);
 });
 
 test("another site's caller gets 404 without data, roles without the permission 403, attack payloads never reach SQL", async () => {

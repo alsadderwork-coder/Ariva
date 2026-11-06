@@ -14,7 +14,9 @@ namespace Ariva.Infra.Services.Displays;
 /// caller's sites (another answers like a site that does not exist, CWE-863), names only queue zones of the site's published
 /// profile, and is audited with its reason; the endpoint asks for <c>AdvertisingPolicy.Edit</c> and a recent second factor.
 /// A change and a display set to advertising take the same site lock (<see cref="AdvertisingPolicyGuard"/>); the board reads
-/// the policy on every refresh and falls back to instructions where it does not allow advertising.
+/// the policy on every refresh and falls back to instructions where it does not allow advertising. ARV-273: a change names the
+/// version of the policy it was made from (its last change), checked under that lock, so a change made over another unseen is
+/// refused.
 /// </summary>
 internal sealed class SvcAdvertisingPolicies(
     IUnitOfWork unitOfWork,
@@ -46,6 +48,10 @@ internal sealed class SvcAdvertisingPolicies(
         if (problems.Count > 0)
             return Result.Error<AdvertisingPolicyViewModel>(problems);
         var policy = await guard.LockAsync(siteCode, ct);
+        // ARV-273: the policy as stored must be the version the administrator changed; the lock orders two changes, so the
+        // second, made from the version the first replaced, is refused rather than overwriting it unseen.
+        if (Microseconds(Version(policy)) != Microseconds(request.PolicyChangedOn))
+            return Result.Error<AdvertisingPolicyViewModel>(AdvertisingPolicyErrors.ChangedSinceLoaded);
         // The exclusions are judged against the profile published now, which must be the one the administrator reviewed
         // when the change allows advertising (security review of ARV-145, round 3: a profile published meanwhile is never
         // confirmed unseen); a newer one keeps advertising off until the policy is saved again.
@@ -66,6 +72,8 @@ internal sealed class SvcAdvertisingPolicies(
             var before = policy.AuditSummary();
             policy.Change(values, profile);
             await UpdateAsync(policy, ct);
+            // The session stamps the change's time when it flushes: now, so the answer names the version a later read gives.
+            await FlushAsync(ct);
             await audit.RecordAsync($"{Target}.Changed", Target, policy.Id, siteCode, before, policy.AuditSummary(), ct);
         }
 
@@ -102,9 +110,21 @@ internal sealed class SvcAdvertisingPolicies(
             .ToListAsync(ct);
         var fallingBack = advertising.Where(d => policy is null || !policy.AllowsDisplayOf(d.EntryList.Select(e => e.Zone), published, profile))
             .Select(d => d.Code).ToList();
-        return new AdvertisingPolicyViewModel(siteCode, policy?.Allowed ?? false, excluded, policy?.Reason, policy?.ModifiedOn ?? policy?.CreatedOn,
+        return new AdvertisingPolicyViewModel(siteCode, policy?.Allowed ?? false, excluded, policy?.Reason, Microseconds(Version(policy)),
             excluded.Where(z => !Enumerable.Contains(published, z, StringComparer.Ordinal)).ToList(), fallingBack,
             policy is { Allowed: true } && policy.ProfileChangedSince(profile), profile, version, await guard.ProfileVersionAsync(policy?.ConfirmedProfileId, ct),
             published);
+    }
+
+    /// <summary>ARV-273: the policy's version, its last change (null for a site without one).</summary>
+    private static DateTime? Version(AdvertisingPolicy policy) => policy?.ModifiedOn ?? policy?.CreatedOn;
+
+    /// <summary>A time in UTC to the microsecond, as PostgreSQL keeps it, so an answer names the version a later read gives.</summary>
+    private static DateTime? Microseconds(DateTime? at)
+    {
+        if (at is not { } time)
+            return null;
+        var utc = time.Kind == DateTimeKind.Local ? time.ToUniversalTime() : time;
+        return new DateTime(utc.Ticks - (utc.Ticks % 10), DateTimeKind.Utc);
     }
 }

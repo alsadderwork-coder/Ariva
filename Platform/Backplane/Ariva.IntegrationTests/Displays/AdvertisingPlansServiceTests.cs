@@ -79,8 +79,7 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
             await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcSites>().CreateAsync(new CreateSiteRequest("PLN3", "Advertising plans cap site"), Ct));
             await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcSites>().CreateAsync(new CreateSiteRequest("PLN4", "Advertising schedules cap site"), Ct));
             var reviewed = (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().GetAsync("DMO", Ct))).Data.PublishedProfileId;
-            var allowed = await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().ChangeAsync("DMO",
-                new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-143a, commercial team", reviewed), Ct));
+            var allowed = await ChangePolicyAsync(admin, new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-143a, commercial team", reviewed));
             allowed.HasErrors.Should().BeFalse(string.Join(", ", allowed.ErrorMessages ?? []));
             _admin = admin;
             return admin;
@@ -453,16 +452,14 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
         var reviewed = (await _host.AsCallerAsync(admin, s => policies(s).GetAsync("DMO", Ct))).Data.PublishedProfileId;
         try
         {
-            (await _host.AsCallerAsync(admin, s => policies(s).ChangeAsync("DMO",
-                new AdvertisingPolicyRequest(false, [], "Airport operator letter AO-IT-143b, paused", reviewed), Ct))).HasErrors.Should().BeFalse();
+            (await ChangePolicyAsync(admin, new AdvertisingPolicyRequest(false, [], "Airport operator letter AO-IT-143b, paused", reviewed))).HasErrors.Should().BeFalse();
             var off = await BoardAsync(player);
             off.SecondRegion.Should().Be("Instructions");
             off.Advertising.Should().BeNull("a plan is never itself permission to advertise");
         }
         finally
         {
-            (await _host.AsCallerAsync(admin, s => policies(s).ChangeAsync("DMO",
-                new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-143a, commercial team", reviewed), Ct))).HasErrors.Should().BeFalse();
+            (await ChangePolicyAsync(admin, new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-143a, commercial team", reviewed))).HasErrors.Should().BeFalse();
         }
 
         (await BoardAsync(player)).Advertising.Order.Should().Equal([0, 1, 0], "allowed again, the plan plays again");
@@ -623,14 +620,12 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
         var late = new AdvertisingPlayRequest(shown.Id, started.AddSeconds(200), 10_000, true);
         try
         {
-            (await _host.AsCallerAsync(admin, s => policies(s).ChangeAsync("DMO",
-                new AdvertisingPolicyRequest(false, [], "Airport operator letter AO-IT-144, paused", reviewed), Ct))).HasErrors.Should().BeFalse();
+            (await ChangePolicyAsync(admin, new AdvertisingPolicyRequest(false, [], "Airport operator letter AO-IT-144, paused", reviewed))).HasErrors.Should().BeFalse();
             (await RecordAsync(player, late)).Data.Should().Be(new AdvertisingPlaysViewModel(0, 0, 1), "a plan is never itself permission to advertise");
         }
         finally
         {
-            (await _host.AsCallerAsync(admin, s => policies(s).ChangeAsync("DMO",
-                new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-143a, commercial team", reviewed), Ct))).HasErrors.Should().BeFalse();
+            (await ChangePolicyAsync(admin, new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-143a, commercial team", reviewed))).HasErrors.Should().BeFalse();
         }
 
         (await RecordAsync(player, late)).Data.Should().Be(new AdvertisingPlaysViewModel(1, 0, 0), "allowed again");
@@ -1010,5 +1005,12 @@ public sealed class AdvertisingPlansServiceTests(PostgresFixture fixture) : IAsy
         public void Dispose()
         {
         }
+    }
+
+    /// <summary>ARV-273: a change of DMO's advertising policy as the screen makes it, from the version a read gives now.</summary>
+    private async Task<Fluentx.Result<AdvertisingPolicyViewModel>> ChangePolicyAsync(Guid admin, AdvertisingPolicyRequest request)
+    {
+        var version = (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().GetAsync("DMO", Ct))).Data?.ChangedOn;
+        return await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().ChangeAsync("DMO", request with { PolicyChangedOn = version }, Ct));
     }
 }

@@ -2123,7 +2123,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 317,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Filed 2026-10-29 by ARV-193. No sign-in code.",
       "dependsOn": [
         "ARV-193"
@@ -2562,6 +2562,26 @@
       "notes": "Size S. Phase 3. Filed 2026-11-05 from the ARV-287 review round 2 (its limits 1 and 2: a callee given nothing flagged, and values across an await). Test tooling only; no sign-in code. The reviewer's probes: GuardResultAsync and SvcProbe.AsyncText (ARV-287 review round 2), GuardViaLambda (round 3).",
       "dependsOn": [
         "ARV-287"
+      ]
+    },
+    {
+      "id": "ARV-273a",
+      "title": "[E21] Advertising policy changes held again by the database: a runtime write that does not stamp a new version is refused",
+      "description": "Found by the ARV-273 security review (round 2, 2026-11-05, low). Since ARV-273 a change of a site's advertising policy names the version it was made from (its last change, to the microsecond) and the service refuses one made from another version under the site's advisory lock; every change is stamped after the row's last stamp (AuditInterceptor.After). The runtime role keeps UPDATE on advertising_policy (script 0057 revokes only DELETE and TRUNCATE, and the service needs UPDATE), so a direct SQL write through the runtime login bypasses both the version and the audit trail. Hold it again in the database, as script 0057 does for displays: a new script with a BEFORE UPDATE trigger on advertising_policy that refuses an update whose modified_on is not after the row's last stamp (coalesce(OLD.modified_on, OLD.created_on), compared to the microsecond) or whose modified_by_id is null. CWEs to review: CWE-863, CWE-269.",
+      "acceptanceCriteria": [
+        "A new versioned script adds a BEFORE UPDATE trigger on advertising_policy that refuses an update whose modified_on is not after the row's last stamp or whose modified_by_id is null; its SHA-256 is in checksums.lock",
+        "Integration tests: the runtime role's direct UPDATE that keeps the stamp, or moves it back, is refused; one through the service is taken; the service's answers are unchanged",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change adds a script; test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 326,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-11-05 from the ARV-273 security review (round 2, low): hardening that was already true before ARV-273 (script 0057). No sign-in code.",
+      "dependsOn": [
+        "ARV-273"
       ]
     }
   ]

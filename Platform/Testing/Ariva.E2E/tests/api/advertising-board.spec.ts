@@ -49,10 +49,10 @@ function day(offset: number): string {
 
 async function allow(code: string, allowed = true) {
 	const policyUrl = `${admin()}/sites/${code}/advertising-policy`;
-	const { publishedProfileId } = await (await call('GET', policyUrl, { token: adminToken })).json();
+	const { publishedProfileId, changedOn } = await (await call('GET', policyUrl, { token: adminToken })).json();
 	const changed = await call('PUT', policyUrl, {
 		token: adminToken,
-		data: { allowed, excludedZones: [], reason: `Airport operator letter AO-E2E-143b, ${allowed ? 'on' : 'off'}`, reviewedProfileId: publishedProfileId }
+		data: { allowed, excludedZones: [], reason: `Airport operator letter AO-E2E-143b, ${allowed ? 'on' : 'off'}`, reviewedProfileId: publishedProfileId, policyChangedOn: changedOn }
 	});
 	await expectStatus(changed, 200);
 }

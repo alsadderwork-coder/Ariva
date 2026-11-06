@@ -1159,6 +1159,7 @@
 		"reviewStale": "Zone profile version {current} has been published since this form opened on version {reviewed}. Saving is refused until you review the zones in the new version.",
 		"reviewStaleFirst": "Zone profile version {current} has been published since this form opened. Saving is refused until you review its zones.",
 		"reviewStaleGone": "The zone profile this form reviews is no longer published. Saving is refused: cancel, and check the site's zone profiles.",
+		"policyStale": "This policy was changed since this form opened (last change {when}, shown above). Saving is refused until you reload the form, which takes that change; then make yours again.",
 		"noProfile": "The site has no published zone profile, so no display can show advertising yet.",
 		"fields": {
 			"allowed": "Allow advertising on this site's displays",
@@ -1172,10 +1173,14 @@
 			"change": "Change",
 			"save": "Save policy",
 			"cancel": "Cancel",
-			"review": "Review version {version}"
+			"review": "Review version {version}",
+			"reload": "Reload the form"
 		},
 		"messages": {
-			"saved": "Advertising policy saved"
+			"saved": "Advertising policy saved",
+			"savedFor": "Advertising policy of {site} saved",
+			"notSavedFor": "Advertising policy of {site} not saved: {reason}",
+			"notSavedForUnknown": "Advertising policy of {site} not saved"
 		}
 	},
 	"advertisingMedia": {

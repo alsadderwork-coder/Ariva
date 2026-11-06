@@ -114,8 +114,7 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
             await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcSites>().CreateAsync(new CreateSiteRequest("MED2", "Advertising media test site"), Ct));
             await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcSites>().CreateAsync(new CreateSiteRequest("MED3", "Advertising library cap test site"), Ct));
             var reviewed = (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().GetAsync("DMO", Ct))).Data.PublishedProfileId;
-            var allowed = await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().ChangeAsync("DMO",
-                new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-142a, commercial team", reviewed), Ct));
+            var allowed = await ChangePolicyAsync(admin, new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-142a, commercial team", reviewed));
             allowed.HasErrors.Should().BeFalse(string.Join(", ", allowed.ErrorMessages ?? []));
             _admin = admin;
             return admin;
@@ -437,14 +436,11 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
 
         // The site's policy, read on every fetch: an excluded zone, then advertising off.
         var reviewed = (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().GetAsync("DMO", Ct))).Data.PublishedProfileId;
-        (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().ChangeAsync("DMO",
-            new AdvertisingPolicyRequest(true, ["A-CIT"], "Airport operator letter AO-IT-142a, citizens hall excluded", reviewed), Ct))).HasErrors.Should().BeFalse();
+        (await ChangePolicyAsync(admin, new AdvertisingPolicyRequest(true, ["A-CIT"], "Airport operator letter AO-IT-142a, citizens hall excluded", reviewed))).HasErrors.Should().BeFalse();
         (await ServedAsync(playing.Id, advertising)).Should().BeFalse("the display's zone is excluded");
-        (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().ChangeAsync("DMO",
-            new AdvertisingPolicyRequest(false, [], "Border authority asked for no advertising, ref BA-142"), Ct))).HasErrors.Should().BeFalse();
+        (await ChangePolicyAsync(admin, new AdvertisingPolicyRequest(false, [], "Border authority asked for no advertising, ref BA-142"))).HasErrors.Should().BeFalse();
         (await ServedAsync(playing.Id, advertising)).Should().BeFalse("advertising is off");
-        (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().ChangeAsync("DMO",
-            new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-142a, commercial team", reviewed), Ct))).HasErrors.Should().BeFalse();
+        (await ChangePolicyAsync(admin, new AdvertisingPolicyRequest(true, [], "Airport operator letter AO-IT-142a, commercial team", reviewed))).HasErrors.Should().BeFalse();
         (await ServedAsync(playing.Id, advertising)).Should().BeTrue("allowed again");
     }
 
@@ -654,5 +650,12 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
         }
 
         throw new TimeoutException("No session waited on the lock.");
+    }
+
+    /// <summary>ARV-273: a change of DMO's advertising policy as the screen makes it, from the version a read gives now.</summary>
+    private async Task<Fluentx.Result<AdvertisingPolicyViewModel>> ChangePolicyAsync(Guid admin, AdvertisingPolicyRequest request)
+    {
+        var version = (await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().GetAsync("DMO", Ct))).Data?.ChangedOn;
+        return await _host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcAdvertisingPolicies>().ChangeAsync("DMO", request with { PolicyChangedOn = version }, Ct));
     }
 }

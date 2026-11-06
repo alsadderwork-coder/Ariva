@@ -9,12 +9,16 @@ namespace Ariva.Core.Services.Displays;
 /// airport operator) and their reference. The whole policy is sent each time. <c>ReviewedProfileId</c> is the published zone
 /// profile the administrator reviewed the exclusions against (the view's <c>PublishedProfileId</c>): a change that allows
 /// advertising is refused (409) when another profile has been published since, so it never confirms geometry nobody saw.
+/// ARV-273: <c>PolicyChangedOn</c> is the version of the policy the change was made from (the view's <c>ChangedOn</c>, null
+/// for a site that had none): a change made from another version than the stored one is refused (409), so two administrators
+/// never overwrite each other's change unseen.
 /// </summary>
 public sealed record AdvertisingPolicyRequest(
     bool Allowed,
     [MaxLength(20)] IReadOnlyList<string> ExcludedZones,
     [Required, MaxLength(500)] string Reason,
-    Guid? ReviewedProfileId = null);
+    Guid? ReviewedProfileId = null,
+    DateTime? PolicyChangedOn = null);
 
 /// <summary>
 /// A site's advertising policy as the API shows it. A site that never had one shows advertising off, without a reason.
@@ -25,7 +29,8 @@ public sealed record AdvertisingPolicyRequest(
 /// display of the site shows advertising until an administrator saves it again (a zone renamed, moved, dropped or added in
 /// the new profile never shifts an exclusion on its own). <c>UnpublishedZones</c> are excluded zones that are not queue
 /// zones of the published profile. <c>DisplaysFallingBack</c> are the site's displays set to advertising that show
-/// instructions because of this policy.
+/// instructions because of this policy. <c>ChangedOn</c> is the policy's last change, to the microsecond as stored (null for
+/// a site that never had one): its version, which a change names (ARV-273).
 /// </summary>
 public sealed record AdvertisingPolicyViewModel(
     string SiteCode,
@@ -51,7 +56,11 @@ public static class AdvertisingPolicyErrors
     public const string ProfileChangedSinceReview =
         "Another zone profile has been published since you reviewed this policy; check the excluded zones against it and save again.";
 
-    public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal) { ProfileChangedSinceReview };
+    /// <summary>ARV-273: the policy was changed since the version the change was made from (409): reload it and change it again.</summary>
+    public const string ChangedSinceLoaded =
+        "This site's advertising policy was changed since you opened it; reload it to see that change, then make yours again.";
+
+    public static readonly IReadOnlySet<string> Conflicts = new HashSet<string>(StringComparer.Ordinal) { ProfileChangedSinceReview, ChangedSinceLoaded };
 
     /// <summary>The answer of an advertising endpoint for a site whose policy does not allow advertising (403).</summary>
     public const string Off = "Advertising is off for this site.";

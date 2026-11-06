@@ -59,10 +59,10 @@ function scheduled(changes: Record<string, unknown> = {}) {
 
 async function allow(code: string) {
 	const policyUrl = `${hosts.main}/api/v1/admin/sites/${code}/advertising-policy`;
-	const { publishedProfileId } = await (await call('GET', policyUrl, { token: admin })).json();
+	const { publishedProfileId, changedOn } = await (await call('GET', policyUrl, { token: admin })).json();
 	const changed = await call('PUT', policyUrl, {
 		token: admin,
-		data: { allowed: true, excludedZones: [], reason: 'Airport operator letter AO-E2E-143a, commercial team', reviewedProfileId: publishedProfileId }
+		data: { allowed: true, excludedZones: [], reason: 'Airport operator letter AO-E2E-143a, commercial team', reviewedProfileId: publishedProfileId, policyChangedOn: changedOn }
 	});
 	await expectStatus(changed, 200);
 }
