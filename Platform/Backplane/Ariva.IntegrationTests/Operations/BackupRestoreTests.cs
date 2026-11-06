@@ -463,7 +463,10 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
     /// the same functions replaced in template1 too, and sha256 replaced in place. ARV-263: TimescaleDB's job rows changed (an
     /// owner, a period outside its bounds, a configuration naming another hypertable, another procedure) and one added, a toast
     /// table granted to the runtime role and USAGE on pg_toast for its login, EXECUTE on the server's file functions beyond
-    /// initdb's grants, and a login holding pg_maintain.
+    /// initdb's grants, and a login holding pg_maintain. ARV-263b: a login holding pg_read_all_stats and one holding pg_monitor,
+    /// which read every session's statement text (and, through pg_read_all_settings, every setting); --allow-login lets a DBA's
+    /// own monitoring login pass, never a predefined role; and a grant made to pg_monitor itself is reported, initdb's own
+    /// memberships of it not.
     /// </summary>
     private async Task AssertCheckFindsWhatAForgedDumpWouldLeaveAsync()
     {
@@ -487,7 +490,12 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         Line(check, "FAIL  logins|").Should().Contain("it_privileged (createrole)").And.Contain("it_super (superuser)").And.Contain("it_back (holds it_super)")
             .And.Contain("it_repl (replication)").And.Contain("it_bypass (bypassrls)").And.Contain("ariva_runtime (holds pg_execute_server_program)")
             .And.Contain($"{RuntimeLogin} (holds pg_execute_server_program)", "the runtime login reaches the server role through ariva_runtime")
-            .And.Contain("it_maintainer (holds pg_maintain)", "ARV-263: PostgreSQL 17's maintenance role locks any table");
+            .And.Contain("it_maintainer (holds pg_maintain)", "ARV-263: PostgreSQL 17's maintenance role locks any table")
+            .And.Contain("it_stats (holds pg_read_all_stats)", "ARV-263b: every session's statement text")
+            .And.Contain("it_monitor (holds pg_monitor)").And.Contain("it_monitor (holds pg_read_all_stats)", "pg_monitor holds pg_read_all_stats")
+            .And.Contain("it_monitor (holds pg_read_all_settings)", "the superuser-only settings too")
+            // Its review: initdb's own memberships of pg_monitor are the server's, but a grant made to pg_monitor since is reported.
+            .And.Contain("pg_monitor (holds pg_write_all_data)").And.NotContain("pg_monitor (holds pg_read_all_stats)");
         // ARV-263: a toast table granted to the runtime role (outbound_endpoint's: its long values, protected secrets included)
         // and USAGE on pg_toast for its login, and
         // grants on the system catalog's own functions beyond initdb's (server file access for the runtime role and its login).
@@ -616,20 +624,23 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         check.Stdout.Should().Contain("ok    planted|", "nothing under a system name outside the extensions yet");
         check.Stdout.Should().Contain("FAIL  extensions|pg_stat_statements (a DBA-provided server's own: name it with --allow-extension)");
         var allowed = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--allow-extension", "pg_stat_statements", "--allow-login", "it_repl", "--allow-login", "it_extra_member",
+            "--allow-login", "it_monitor",
             "--allow-setting", "work_mem", "--allow-setting", "maintenance_work_mem", "--allow-setting", "temp_file_limit");
         allowed.Stdout.Should().Contain("ok    extensions|plpgsql, timescaledb and timescaledb_toolkit, and allowed: pg_stat_statements")
             .And.Contain("ok    settings|no setting from a file but the server's postgresql.conf (postgresql.auto.conf, a file an include names) but the allowed: maintenance_work_mem (")
             .And.Contain("/ariva-planted.conf), work_mem (")
             .And.Contain("ok    role settings|none but the runtime login's statement timeout, temporary file cap, idle transaction limit and keepalives, and allowed: work_mem, maintenance_work_mem, temp_file_limit");
-        Line(allowed, "FAIL  logins|").Should().NotContain("it_repl").And.Contain("it_bypass (bypassrls)");
+        Line(allowed, "FAIL  logins|").Should().NotContain("it_repl").And.NotContain("it_monitor", "ARV-263b: a DBA's own monitoring login named with --allow-login")
+            .And.Contain("it_bypass (bypassrls)").And.Contain("it_stats (holds pg_read_all_stats)")
+            .And.Contain("pg_monitor (holds pg_write_all_data)", "allowing the monitoring login does not allow a grant made to pg_monitor itself");
         // ARV-263 review: --allow-login never lets the runtime role or a login of it pass, by a name of Ariva's (refused) or another.
         Line(allowed, "FAIL  system function grants|").Should().Contain("pg_ls_dir(text,boolean,boolean) EXECUTE to it_extra_member",
             "it_extra_member holds ariva_runtime, so --allow-login does not cover it");
-        foreach (var own in new[] { RuntimeLogin, "ariva_runtime", ChartDatabase.MigrationLogin })
+        foreach (var own in new[] { RuntimeLogin, "ariva_runtime", ChartDatabase.MigrationLogin, "pg_monitor" })
         {
             var refusedName = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--allow-login", own);
             refusedName.ExitCode.Should().NotBe(0);
-            refusedName.Stderr.Should().Contain($"--allow-login must name a DBA's own login, not one of Ariva's roles or logins: {own}");
+            refusedName.Stderr.Should().Contain($"--allow-login must name a DBA's own login, not one of Ariva's roles or logins or PostgreSQL's predefined roles: {own}");
         }
         foreach (var (option, value) in new[] { ("--allow-extension", "pg-stat"), ("--allow-login", "It_Repl"), ("--allow-setting", "work-mem") })
         {
@@ -947,6 +958,9 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             GRANT SELECT ON pg_catalog.pg_authid TO ariva_runtime;
             GRANT SELECT ON information_schema._pg_user_mappings TO PUBLIC;
             CREATE ROLE it_maintainer LOGIN IN ROLE pg_maintain;
+            CREATE ROLE it_stats LOGIN IN ROLE pg_read_all_stats;
+            CREATE ROLE it_monitor LOGIN IN ROLE pg_monitor;
+            GRANT pg_write_all_data TO pg_monitor;
             DO $$ BEGIN
                 EXECUTE (SELECT format('GRANT SELECT ON %s TO ariva_runtime', reltoastrelid::regclass) FROM pg_class WHERE oid = 'public.outbound_endpoint'::regclass);
             END $$;

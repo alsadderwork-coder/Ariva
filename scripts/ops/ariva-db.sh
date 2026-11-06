@@ -61,7 +61,8 @@
 #                                   within the bounds the migration job holds it to; ARIVA_SCHEMA), no toast table granting
 #                                   the runtime role or a login of it anything and none of them using pg_toast, no grant on
 #                                   a system catalog function beyond initdb's (pg_init_privs), and pg_maintain among the
-#                                   roles no login may hold. It
+#                                   roles no login may hold; since ARV-263b pg_read_all_stats, pg_read_all_settings and
+#                                   pg_monitor too (initdb's own memberships among those roles are the server's). It
 #                                   finds what a careless forged dump leaves; it cannot prove a careful one absent (the
 #                                   superuser that ran it can change what check reads): the signed manifest is the gate
 #   schema [--full]                 what check compares: one <object>=<hash> line per object of Ariva's in public and per
@@ -914,11 +915,12 @@ cmd_check() {
   check_settings
   [[ -z "$runtime" ]] || valid_identifier "$runtime" || die "--runtime-login must be a plain lower-case identifier"
   [[ -z "$reader" ]] || valid_identifier "$reader" || die "--reader-login must be a plain lower-case identifier"
-  # ARV-263 review: --allow-login is for a DBA's own login; Ariva's roles and logins are never let pass by it.
+  # ARV-263 review: --allow-login is for a DBA's own login; Ariva's roles and logins are never let pass by it, nor (ARV-263b
+  # review) one of PostgreSQL's predefined roles (pg_ names are reserved for them), which would hide a grant made to the role.
   local allowed_name
   for allowed_name in ${logins_allowed//,/ }; do
-    if [[ "$allowed_name" == ariva_* || "$allowed_name" == "$LOGIN" || "$allowed_name" == "$runtime" || "$allowed_name" == "$reader" ]]; then
-      die "--allow-login must name a DBA's own login, not one of Ariva's roles or logins: $allowed_name"
+    if [[ "$allowed_name" == ariva_* || "$allowed_name" == pg_* || "$allowed_name" == "$LOGIN" || "$allowed_name" == "$runtime" || "$allowed_name" == "$reader" ]]; then
+      die "--allow-login must name a DBA's own login, not one of Ariva's roles or logins or PostgreSQL's predefined roles: $allowed_name"
     fi
   done
   require_migration_login
@@ -1201,12 +1203,18 @@ plpgsql_members AS (
 -- ARV-183 (and its review): the roles whose power a member can take: a superuser, CREATEROLE, REPLICATION or BYPASSRLS,
 -- and PostgreSQL's roles that run programs on the server, read or write its files or every table, signal other sessions or
 -- create subscriptions; and (ARV-263) pg_maintain, PostgreSQL 17's VACUUM, ANALYZE, CLUSTER, REINDEX, REFRESH and LOCK TABLE
--- on every relation, with which its holder can lock the hosts out of any table.
+-- on every relation, with which its holder can lock the hosts out of any table; and (ARV-263b) pg_read_all_stats and
+-- pg_monitor (which holds it), with which its holder reads every session's statement text, literals included, in
+-- pg_stat_activity and pg_stat_statements, and every relation's statistics, and pg_read_all_settings (also in pg_monitor),
+-- which reads the superuser-only settings too (primary_conninfo can hold a replication password, archive_command and
+-- restore_command a program to run, and the server's file paths). A DBA's own monitoring login passes when named with
+-- --allow-login.
 powerful AS (
     SELECT oid, rolname FROM pg_roles
      WHERE rolsuper OR rolcreaterole OR rolreplication OR rolbypassrls
         OR rolname IN ('pg_execute_server_program', 'pg_read_server_files', 'pg_write_server_files', 'pg_read_all_data',
-                       'pg_write_all_data', 'pg_signal_backend', 'pg_create_subscription', 'pg_maintain')),
+                       'pg_write_all_data', 'pg_signal_backend', 'pg_create_subscription', 'pg_maintain', 'pg_read_all_stats',
+                       'pg_monitor', 'pg_read_all_settings')),
 -- Every role and each role it holds, directly or through others; every grant counts (with the admin option a member may
 -- grant itself the rest).
 held (member, roleid) AS (
@@ -1225,7 +1233,15 @@ privileged_roles AS (
     UNION
     SELECT r.rolname || ' (holds ' || p.rolname || ')'
       FROM held h JOIN pg_roles r ON r.oid = h.member JOIN powerful p ON p.oid = h.roleid
-     WHERE h.member <> 10 AND (r.oid IN (SELECT g.oid FROM runtime_grantees g) OR NOT r.rolname = ANY (string_to_array(:'allowed_logins', ',')))),
+     WHERE h.member <> 10 AND (r.oid IN (SELECT g.oid FROM runtime_grantees g) OR NOT r.rolname = ANY (string_to_array(:'allowed_logins', ',')))
+       -- ARV-263b: initdb's own memberships among PostgreSQL's predefined roles (pg_monitor holds pg_read_all_settings,
+       -- pg_read_all_stats and pg_stat_scan_tables) are the server's: a pair whose rows are all initdb's as it made them
+       -- (granted by the bootstrap superuser, without the admin option) passes. One granted since (to pg_monitor too), a
+       -- second grant of the same pair or initdb's row given the admin option is reported, and so is a login that reaches a
+       -- powerful role through initdb's memberships (no row of its own).
+       AND NOT (EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member = h.member AND m.roleid = h.roleid)
+                AND NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member = h.member AND m.roleid = h.roleid
+                                                                 AND (m.oid >= 16384 OR m.admin_option OR m.grantor <> 10)))),
 -- ARV-183 review: Ariva's group roles hold no role, and the named reader login only the reader role (the runtime login's
 -- own line checks it the same way).
 held_by_ariva AS (
@@ -1397,7 +1413,7 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'extensions|plpgsql, timescaledb an
                       ELSE 'FAIL extensions|' || string_agg(name, ', ' ORDER BY name) || ' (a DBA-provided server''s own: name it with --allow-extension)' END FROM other_extensions
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'plpgsql|its three handler functions and its language only'
                       ELSE 'FAIL plpgsql|also holds ' || string_agg(name, ', ' ORDER BY name) || ' (added to the extension, where the function checks do not look)' END FROM plpgsql_members
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'logins|no role but the bootstrap superuser and the migration login is a superuser or has createrole, replication or bypassrls, and none holds such a role or one of the server, data, signal or maintenance roles'
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'logins|no role but the bootstrap superuser and the migration login is a superuser or has createrole, replication or bypassrls, and none holds such a role or one of the server, data, signal, maintenance or statistics roles'
                                                 || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', but allowed: ' || replace(:'allowed_logins', ',', ', ') END
                       ELSE 'FAIL logins|' || string_agg(name, ', ' ORDER BY name) || ' (a DBA''s own login: name it with --allow-login)' END FROM privileged_roles
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'role settings|none but the runtime login''s statement timeout, temporary file cap, idle transaction limit and keepalives'

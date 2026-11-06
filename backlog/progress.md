@@ -5838,3 +5838,38 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - Not covered here, for a later story: `pg_read_all_stats` and `pg_monitor`, which show other sessions' query text, are not among the powerful roles.
   - A gate inside a shell trap's lifetime must fail closed: set the "keep" flag before the risky step and clear it only on the success path, or `set -e` and a signal take the trap's happy path.
   - An embedded SQL script changes the unit test binary: rebuild Ariva.UnitTests after editing a script, or OpsScriptTests compares the pins with the old body.
+
+## 2026-11-06: ARV-263b [E17] Post-restore check: the statistics and monitoring roles among those no login may hold
+
+- What changed (`scripts/ops/ariva-db.sh`):
+  - The `powerful` roles of `check`'s logins line now include `pg_read_all_stats` and `pg_monitor` (which holds it), beside the server, data, signal and maintenance roles. With either role, a login reads every session's statement text in `pg_stat_activity` and `pg_stat_statements`, literals included (a DBA's ad hoc statement too), and every relation's statistics.
+  - From the review, `pg_read_all_settings` (also in `pg_monitor`) is in the list too. It reads the superuser-only settings: `primary_conninfo` can hold a replication password, `archive_command` and `restore_command` name a program, and it shows the server's file paths.
+  - initdb's own memberships among these roles (`pg_monitor` holds the other three) are the server's and are not reported. Without that rule a clean server failed the line, and with it `check` and `restore`. A membership granted since (to `pg_monitor` too) is reported, and so is a login that reaches a powerful role through initdb's memberships.
+  - A DBA's own monitoring login (a metrics exporter) passes when named with `--allow-login`. That option refuses Ariva's own roles and logins (ARV-263) and, since this story's review, PostgreSQL's predefined `pg_` role names, which would hide a grant made to the role itself.
+  - wiki 04 now says that an exporter's login holds `pg_monitor` and is named with `--allow-login`.
+- Tests:
+  - Integration `BackupRestoreTests`:
+    - As the superuser, it plants `it_stats` (in `pg_read_all_stats`) and `it_monitor` (in `pg_monitor`). Both are reported, `it_monitor` also as holding `pg_read_all_stats` and `pg_read_all_settings`.
+    - It grants `pg_write_all_data` to `pg_monitor` and asserts "pg_monitor (holds pg_write_all_data)", with the monitoring login allowed too. initdb's own "pg_monitor (holds pg_read_all_stats)" is not reported.
+    - `--allow-login it_monitor` lets that login pass while `it_stats` is still reported, and `--allow-login pg_monitor` is refused.
+    - The clean restore and every other ops test (OlderBackupRestoreTests, RestoreGateTests, ExtensionUpdateTests, GrantSettingsTests) still pass the logins line.
+  - Results: BackupRestoreTests, OlderBackupRestoreTests, RestoreGateTests, ExtensionUpdateTests and GrantSettingsTests (6 cases) passed, in the story gate as well; OpsScriptTests passed.
+- Files:
+  - scripts/ops/ariva-db.sh
+  - Platform/Backplane/Ariva.IntegrationTests/Operations/BackupRestoreTests.cs
+  - docs/security/cwe-controls.md (CWE-269), wiki/10-Operations-Runbook.md (the logins line), wiki/04-Deployment-Guide.md (an exporter's login)
+  - backlog/prd-phase3.json (ARV-263b passes; its description and first criterion updated for the review), backlog/progress.md
+- Gates: `node scripts/verify.mjs story --base c49a055` on the story's tree, 2026-11-06, exit 0. Build, unit tests 8,886 of 8,886, the security gate with its self-tests, and docs all passed. The ops integration classes passed (6 cases). E2E ran 5 spec files, smoke included: 342 passed, and the artifact secret check passed. scan.mjs reported 0 errors.
+- Security review: security-reviewer PASS in round 2 (CWE-269, CWE-200), recorded with the gates.
+  - Round 1 FAIL:
+    - (Critical) initdb's own memberships made `pg_monitor` hold `pg_read_all_stats`, so the logins line failed every clean PostgreSQL 17 server, and with it `check` and `restore`; the first test run failed the same way. Fixed by leaving out initdb's rows.
+    - (M) `--allow-login` took PostgreSQL's predefined role names, which would hide a grant made to the role itself. Fixed: `pg_` names are refused.
+    - (L) `pg_read_all_settings` reads the superuser-only settings (`primary_conninfo` with a replication password). Fixed: it is now among the powerful roles.
+    - Confirmed right to leave out: `pg_stat_scan_tables`, `pg_checkpoint`, `pg_use_reserved_connections` and `pg_database_owner`. PostgreSQL 18 adds `pg_signal_autovacuum_worker`, which a later image bump should weigh.
+  - Round 2 PASS. Its three notes were taken:
+    - initdb's pair passes only while all its rows are as initdb made them, so a second grant or an added admin option is reported;
+    - a grant to `pg_monitor` is shown reported with the monitoring login allowed;
+    - the runbook names the three roles.
+- Gotchas:
+  - PostgreSQL's monitoring roles nest: `pg_monitor` holds `pg_read_all_settings`, `pg_read_all_stats` and `pg_stat_scan_tables`. The logins line follows memberships through other roles, so a login is named once for each powerful role it reaches.
+  - A powerful role that initdb itself makes a member of another (`pg_monitor`) fails every clean server unless initdb's own rows (`pg_auth_members.oid` below 16384) are left out. The clean restores in the integration tests catch it, so run them before the review, not after.
