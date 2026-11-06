@@ -2558,7 +2558,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 325,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Filed 2026-11-05 from the ARV-287 review round 2 (its limits 1 and 2: a callee given nothing flagged, and values across an await). Test tooling only; no sign-in code. The reviewer's probes: GuardResultAsync and SvcProbe.AsyncText (ARV-287 review round 2), GuardViaLambda (round 3).",
       "dependsOn": [
         "ARV-287"

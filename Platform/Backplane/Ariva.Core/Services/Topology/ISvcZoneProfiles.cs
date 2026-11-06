@@ -6,7 +6,7 @@ namespace Ariva.Core.Services.Topology;
 /// <summary>Errors of the zone profile workflow; the controller maps them to status codes.</summary>
 public static class ZoneProfileErrors
 {
-    public const string NotADraft = "A published or retired zone profile never changes; create a draft from it.";
+    public const string NotADraft = Ariva.Core.Domain.Entities.ZoneProfile.NotADraftMessage;
     public const string DraftExists = "The site already has a draft; edit or discard it.";
     public const string NotPublishable = "The draft cannot be published yet; see the problems.";
     public const string ChangedSinceReview = "The draft changed since it was validated; validate it again and publish the geometry you reviewed.";

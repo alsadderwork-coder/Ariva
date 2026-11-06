@@ -101,6 +101,9 @@ public sealed class ImportRowsTests
         SvcDeskCodeMappingImports.Refusal(TopologyErrors.NotFound).Should().Be(("desk", CsvImportErrors.DeskNotFound));
         // ARV-287: the import refuses a desk kind the system cannot map before it asks the service, so the rule's text is never matched.
         SvcDeskCodeMappingImports.Refusal("A Aman code cannot map to a Counter.").Should().Be(("desk", CsvImportErrors.MappingRefused));
+        // ARV-287a: the import refuses an external code NormalizeCode rejects before it asks the service (the row check above), so
+        // the entity's text, which is the import's own, is never matched either.
+        SvcDeskCodeMappingImports.Refusal(CsvImportErrors.ExternalCode).Should().Be(("desk", CsvImportErrors.MappingRefused));
         SvcDeskCodeMappingImports.Refusal("Something about <b>X1</b>").Should().Be(("desk", CsvImportErrors.MappingRefused));
     }
 

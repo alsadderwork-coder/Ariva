@@ -90,6 +90,7 @@ internal static class IlReader
             var unresolved = false;
             var index = ImplicitIndexes.GetValueOrDefault(opCode.Value, -1);
             int[] targets = [];
+            string literal = null;
             switch (opCode.OperandType)
             {
                 case OperandType.InlineNone:
@@ -125,6 +126,12 @@ internal static class IlReader
                     i = next;
                     break;
                 }
+                case OperandType.InlineString:
+                    // ARV-287a: the string an ldstr loads, so a check can tell a constant operand from a computed one.
+                    literal = ResolveString(method.Module, BitConverter.ToInt32(il, i));
+                    unresolved = literal is null;
+                    i += 4;
+                    break;
                 case OperandType.InlineMethod:
                 case OperandType.InlineField:
                 case OperandType.InlineType:
@@ -138,7 +145,7 @@ internal static class IlReader
                     break;
             }
 
-            instructions.Add(new Instruction(offset, opCode, member, index, unresolved, targets));
+            instructions.Add(new Instruction(offset, opCode, member, index, unresolved, targets, literal));
         }
 
         return instructions;
@@ -210,15 +217,27 @@ internal static class IlReader
         }
     }
 
+    private static string ResolveString(Module module, int token)
+    {
+        try
+        {
+            return module.ResolveString(token);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
     #endregion
 
     #region Types
 
     /// <summary>
     /// One IL instruction: its offset, its op code, the member its operand names (if any), the local or argument it names
-    /// (or -1), whether its token could not be resolved, and the offsets a branch or switch goes to.
+    /// (or -1), whether its token could not be resolved, the offsets a branch or switch goes to, and the string an ldstr loads.
     /// </summary>
-    public readonly record struct Instruction(int Offset, OpCode OpCode, MemberInfo Member, int Index, bool Unresolved, int[] Targets)
+    public readonly record struct Instruction(int Offset, OpCode OpCode, MemberInfo Member, int Index, bool Unresolved, int[] Targets, string Literal = null)
     {
         /// <summary>The method or constructor the instruction calls, creates with or loads a pointer to.</summary>
         public MethodBase Callee => OpCode.OperandType == OperandType.InlineMethod ? Member as MethodBase : null;

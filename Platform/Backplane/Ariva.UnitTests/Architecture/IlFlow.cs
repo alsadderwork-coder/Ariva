@@ -15,7 +15,9 @@ namespace Ariva.UnitTests.Architecture;
 /// into what it was given (an array, a span, a builder, a collection, a struct taken by address) adds its flags to every
 /// alias of that home; a call into the scope is summarised (what it returns, what it stores into its arguments and fields,
 /// through a delegate's target too) when it takes a flagged value; finally, fault and filter blocks are interpreted with the
-/// edges that reach and leave them; and the field iteration throws when it has not converged.
+/// edges that reach and leave them; and the field iteration throws when it has not converged. ARV-287a: each value also knows
+/// whether it is a constant on every path (a literal, or a field a caller names constant) and which, recorded for every call,
+/// and the delegates a method leaves in its fields reach a caller that follows them on (a state machine's).
 /// </summary>
 internal static class IlFlow
 {
@@ -58,14 +60,18 @@ internal static class IlFlow
     /// stores into its arguments. Null when the method uses calli or jmp.
     /// </summary>
     /// <param name="typeFlags">The flags a value has because of its type (an exception type is <see cref="Exception"/>).</param>
-    /// <param name="callResult">The flags of a call's result, from the call and the flags of the values it takes.</param>
+    /// <param name="callResult">The flags of a call's result, from the call, the flags of the values it takes, and whether its body was followed (summarised).</param>
     /// <param name="seed">The flags of the method's arguments (the receiver first), when a caller's are known.</param>
     /// <param name="fieldSeed">The fields' flags as a caller left them (the closure fields a lambda reads).</param>
     /// <param name="summarize">What a call into the scope returns and stores, or null when it is not followed.</param>
     /// <param name="maxPasses">The most passes before the iteration is reported as not converging.</param>
+    /// <param name="seedRuns">ARV-287a: the methods each argument's delegate may run, when a caller's are known (a lambda it passes).</param>
+    /// <param name="constantField">ARV-287a: whether a static field loaded is a constant (an error text, a set of them), as a literal is.</param>
+    /// <param name="fieldRunsSeed">ARV-287a: the methods each field's delegate may run, as a caller left them (a state machine's kickoff).</param>
     public static Result Follow(MethodBase method, IReadOnlyList<IlReader.Instruction> instructions, IReadOnlyList<IlReader.Region> regions,
-        Func<Type, int> typeFlags, Func<MethodBase, int[], int> callResult, int[] seed = null, IReadOnlyDictionary<(Module, int), int> fieldSeed = null,
-        Summarizer summarize = null, int maxPasses = MaxPasses)
+        Func<Type, int> typeFlags, Func<MethodBase, int[], bool, int> callResult, int[] seed = null, IReadOnlyDictionary<(Module, int), int> fieldSeed = null,
+        Summarizer summarize = null, int maxPasses = MaxPasses, IReadOnlyList<IReadOnlyCollection<MethodBase>> seedRuns = null,
+        Func<FieldInfo, bool> constantField = null, IReadOnlyDictionary<(Module, int), IReadOnlyCollection<MethodBase>> fieldRunsSeed = null)
     {
         if (instructions.Any(i => i.OpCode == OpCodes.Calli || i.OpCode == OpCodes.Jmp))
             return null;
@@ -73,8 +79,10 @@ internal static class IlFlow
         var body = method.GetMethodBody();
         var argTypes = (method.IsStatic ? [] : new[] { method.DeclaringType }).Concat(method.GetParameters().Select(p => p.ParameterType)).ToArray();
         if (body is null || instructions.Count == 0)
-            return new Result([], fields, [], [], [], 0, new int[argTypes.Length]);
+            return new Result([], fields, [], [], [], 0, new int[argTypes.Length], [], new Dictionary<(Module, int), IReadOnlyCollection<MethodBase>>());
         var byOffset = instructions.Select((ins, k) => (ins.Offset, k)).ToDictionary(x => x.Offset, x => x.k);
+        var argumentRuns = Enumerable.Range(0, argTypes.Length)
+            .Select(a => seedRuns is not null && a < seedRuns.Count && seedRuns[a] is { Count: > 0 } given ? given.ToImmutableHashSet() : null).ToArray();
         var localTypes = body.LocalVariables.Select(l => l.LocalType).ToArray();
         var returnsValue = method is MethodInfo info && info.ReturnType != typeof(void);
         var fieldKeys = new List<(Module, int)>();
@@ -99,8 +107,10 @@ internal static class IlFlow
         var comparisons = new Dictionary<int, int>();
         var invoked = new Dictionary<int, HashSet<MethodBase>>();
         var passed = new Dictionary<int, HashSet<MethodBase>>();
+        var constants = new Dictionary<int, ImmutableHashSet<object>[]>();
         var fieldAliases = new Dictionary<(Module, int), ImmutableHashSet<int>>();
-        var fieldTargets = new Dictionary<(Module, int), ImmutableHashSet<MethodBase>>();
+        var fieldTargets = fieldRunsSeed is null ? new Dictionary<(Module, int), ImmutableHashSet<MethodBase>>()
+            : fieldRunsSeed.Where(p => p.Value is { Count: > 0 }).ToDictionary(p => p.Key, p => p.Value.ToImmutableHashSet());
         var returned = 0;
         var stored = new int[argTypes.Length];
         // Fields are followed across the whole method: the interpretation is run again until no field gains a flag.
@@ -235,10 +245,15 @@ internal static class IlFlow
                         slots[a] = Pop();
                     var taken = slots.Select(s => s.Flags).ToArray();
                     arguments[k] = arguments.TryGetValue(k, out var seen) ? [.. seen.Zip(taken, (x, y) => x | y)] : taken;
+                    // ARV-287a: which arguments are a constant on every path that reaches the call, and which constants.
+                    var constant = slots.Select(s => s.Constants).ToArray();
+                    constants[k] = constants.TryGetValue(k, out var known) ? [.. known.Zip(constant, Both)] : constant;
                     // ARV-287: the delegates a call is given (a predicate, a selector), by the method each runs.
                     if (!(created && typeof(Delegate).IsAssignableFrom(callee.DeclaringType)))
                         foreach (var given in slots.Where(s => s.Runs is { IsEmpty: false }).SelectMany(s => s.Runs))
                             (passed.TryGetValue(k, out var those) ? those : passed[k] = []).Add(given);
+                    // ARV-287a: the delegates each argument holds, from this stack position on, for the callee's summary.
+                    IReadOnlyCollection<MethodBase>[] Runs(int from) => [.. slots.Skip(from).Select(s => (IReadOnlyCollection<MethodBase>)s.Runs ?? [])];
                     int Others(int except) => slots.Where((_, a) => a != except).Aggregate(0, (x, s) => x | s.Flags);
                     // The async machinery (a builder, an awaiter, a task) moves the state machine and its awaiters by reference, not
                     // values into each other.
@@ -256,10 +271,10 @@ internal static class IlFlow
                             // method is static.
                             (invoked.TryGetValue(k, out var those) ? those : invoked[k] = []).UnionWith(runs);
                             foreach (var target in runs)
-                                if (summarize(target, false, taken[(target.IsStatic ? 1 : 0)..], fields) is { } one)
+                                if (summarize(target, false, taken[(target.IsStatic ? 1 : 0)..], fields, Runs(target.IsStatic ? 1 : 0)) is { } one)
                                     summaries.Add((one, target.IsStatic ? 1 : 0));
                         }
-                        else if (summarize(callee, created, taken, fields) is { } one)
+                        else if (summarize(callee, created, taken, fields, Runs(0)) is { } one)
                         {
                             summaries.Add((one, 0));
                         }
@@ -301,7 +316,9 @@ internal static class IlFlow
                     var returns = created ? callee.DeclaringType : (callee as MethodInfo)?.ReturnType;
                     if (returns is not null && returns != typeof(void))
                     {
-                        var flags = callResult(callee, taken) | typeFlags(returns.IsByRef ? returns.GetElementType() : returns) | (summary?.Returned ?? 0);
+                        // ARV-287a: a call whose body was followed returns what its summary says, beside what a specific rule
+                        // gives its result (a rule's text read, an exception's text); a call outside the scope keeps what it takes.
+                        var flags = callResult(callee, taken, summary is not null) | typeFlags(returns.IsByRef ? returns.GetElementType() : returns) | (summary?.Returned ?? 0);
                         // A ref a call returns is into what it was given; a fluent call returns its receiver; a span or memory
                         // made from an array is that array; a made object is its own.
                         var homes = returns.IsByRef ? slots.Aggregate(ImmutableHashSet<int>.Empty, (h, s) => h.Union(s.Homes))
@@ -355,7 +372,7 @@ internal static class IlFlow
                 {
                     var a = ins.Index;
                     stack.Push(new Slot(state.Arguments.ElementAtOrDefault(a) | typeFlags(argTypes.ElementAtOrDefault(a)),
-                        a >= 0 && a < state.Arguments.Length ? state.ArgumentHomes[a] : []));
+                        a >= 0 && a < state.Arguments.Length ? state.ArgumentHomes[a] : [], false, a >= 0 && a < argumentRuns.Length ? argumentRuns[a] : null));
                 }
                 else if (name.StartsWith("starg", StringComparison.Ordinal))
                 {
@@ -372,11 +389,13 @@ internal static class IlFlow
                     var receiver = name is "ldfld" or "ldflda" ? Pop() : new Slot(0, []);
                     var key = (field.Module, field.MetadataToken);
                     var flags = fields.GetValueOrDefault(key) | typeFlags(field.FieldType);
+                    ImmutableHashSet<object> named = name == "ldsfld" && constantField?.Invoke(field) == true ? [field] : null;
                     // ARV-287: a field of a struct or a public field (a tuple's item, a StrongBox's value) is part of the value it
                     // is read from; a closure's or a state machine's fields are followed by themselves.
-                    if (field.DeclaringType is { } holder && !holder.Name.StartsWith('<') && (holder.IsValueType || field.IsPublic))
+                    if (field.DeclaringType is { } holder && !IsClosureOrMachine(holder) && (holder.IsValueType || field.IsPublic))
                         flags |= Read(receiver.Flags);
-                    stack.Push(new Slot(flags, fieldAliases.GetValueOrDefault(key, ImmutableHashSet<int>.Empty).Add(FieldHome(key)), false, fieldTargets.GetValueOrDefault(key)));
+                    stack.Push(new Slot(flags, fieldAliases.GetValueOrDefault(key, ImmutableHashSet<int>.Empty).Add(FieldHome(key)), false, fieldTargets.GetValueOrDefault(key),
+                        false, named));
                 }
                 else if (ins.Member is FieldInfo written && name is "stfld" or "stsfld")
                 {
@@ -386,7 +405,7 @@ internal static class IlFlow
                     // ARV-287: a field written keeps its value in its object (an answer body's public field, a struct's), as a
                     // setter does; a closure's or a state machine's fields are followed by themselves. Into `this`, it reaches
                     // the caller through what the method stores into its arguments.
-                    if (name == "stfld" && written.DeclaringType is { } holder && !holder.Name.StartsWith('<') && value.Flags != 0)
+                    if (name == "stfld" && written.DeclaringType is { } holder && !IsClosureOrMachine(holder) && value.Flags != 0)
                         Store(receiver.Homes, (Held(value.Flags) & ~Exception) | ((value.Flags & (Exception | ExceptionPart)) != 0 ? ExceptionPart : 0));
                     fields[key] = fields.GetValueOrDefault(key) | value.Flags;
                     if (!value.Homes.IsEmpty)
@@ -432,6 +451,10 @@ internal static class IlFlow
                 else if (ins.OpCode == OpCodes.Ldnull)
                 {
                     stack.Push(new Slot(0, [], true));
+                }
+                else if (ins.OpCode == OpCodes.Ldstr)
+                {
+                    stack.Push(new Slot(0, [], false, null, false, ins.Literal is null ? null : [ins.Literal]));
                 }
                 else if (ins.OpCode == OpCodes.Ceq || ins.OpCode == OpCodes.Beq || ins.OpCode == OpCodes.Beq_S || ins.OpCode == OpCodes.Bne_Un || ins.OpCode == OpCodes.Bne_Un_S)
                 {
@@ -516,7 +539,9 @@ internal static class IlFlow
                 break;
         }
 
-        return new Result(arguments, fields, comparisons, invoked.ToDictionary(p => p.Key, p => (IReadOnlyCollection<MethodBase>)p.Value), passed.ToDictionary(p => p.Key, p => (IReadOnlyCollection<MethodBase>)p.Value), returned, stored);
+        return new Result(arguments, fields, comparisons, invoked.ToDictionary(p => p.Key, p => (IReadOnlyCollection<MethodBase>)p.Value),
+            passed.ToDictionary(p => p.Key, p => (IReadOnlyCollection<MethodBase>)p.Value), returned, stored, constants,
+            fieldTargets.ToDictionary(p => p.Key, p => (IReadOnlyCollection<MethodBase>)p.Value));
 
         // Everything the passes carry over only grows, so an unchanged signature means nothing was gained.
         long Signature() => fields.Values.Sum(v => (long)v) + fieldAliases.Values.Sum(h => (long)h.Count) + fieldTargets.Values.Sum(t => 7L * t.Count) + returned + stored.Sum(v => (long)v);
@@ -534,8 +559,14 @@ internal static class IlFlow
         return [.. keys];
     });
 
+    /// <summary>
+    /// A closure's or a state machine's type, whose fields are followed by themselves; ARV-287a: an anonymous type holds the
+    /// values it is made from, as a tuple does, so its fields are its object's.
+    /// </summary>
+    private static bool IsClosureOrMachine(Type type) => type.Name.StartsWith('<') && !type.Name.StartsWith("<>f__AnonymousType", StringComparison.Ordinal);
+
     /// <summary>The compiler's async and iterator machinery and the tasks it awaits; the interpolated string handler is a builder, not machinery.</summary>
-    private static bool IsMachinery(Type type) =>
+    internal static bool IsMachinery(Type type) =>
         type is not null && ((type.Namespace == "System.Runtime.CompilerServices" && type.Name != "DefaultInterpolatedStringHandler") ||
                              type == typeof(Task) || type == typeof(ValueTask) ||
                              (type.IsGenericType && type.GetGenericTypeDefinition() is var open && (open == typeof(Task<>) || open == typeof(ValueTask<>))));
@@ -579,25 +610,34 @@ internal static class IlFlow
     /// What a call into the scope does, for a given seed: the flags of what it returns, the flags it stores into each argument it
     /// takes (by stack position, the receiver first), and the fields' flags it leaves.
     /// </summary>
-    public delegate Summary Summarizer(MethodBase callee, bool created, int[] taken, IReadOnlyDictionary<(Module, int), int> fields);
+    public delegate Summary Summarizer(MethodBase callee, bool created, int[] taken, IReadOnlyDictionary<(Module, int), int> fields,
+        IReadOnlyList<IReadOnlyCollection<MethodBase>> runs);
 
     /// <summary>
     /// A method's flow: the flags each call takes (by instruction index), the flags each field gained, the flags of the values
     /// each ceq, beq or bne.un compares by reference (none when either is a null), the delegate targets invoked and the ones
-    /// each call is given (by instruction index), and the flags it returns and stores into each argument.
+    /// each call is given (by instruction index), and the flags it returns and stores into each argument. ARV-287a: for each
+    /// call, the constants each argument is on every path (the literals, the constant fields), null for one that is not; and
+    /// the delegates each field may hold.
     /// </summary>
     public sealed record Result(Dictionary<int, int[]> Arguments, Dictionary<(Module, int), int> Fields, Dictionary<int, int> Comparisons,
-        Dictionary<int, IReadOnlyCollection<MethodBase>> Invoked, Dictionary<int, IReadOnlyCollection<MethodBase>> Passed, int Returned, int[] ArgumentsOut);
+        Dictionary<int, IReadOnlyCollection<MethodBase>> Invoked, Dictionary<int, IReadOnlyCollection<MethodBase>> Passed, int Returned, int[] ArgumentsOut,
+        Dictionary<int, ImmutableHashSet<object>[]> Constants, IReadOnlyDictionary<(Module, int), IReadOnlyCollection<MethodBase>> FieldRuns);
 
     /// <summary>What a call does: the flags it returns, stores into each argument, and leaves in the fields.</summary>
     public sealed record Summary(int Returned, int[] ArgumentsOut, IReadOnlyDictionary<(Module, int), int> Fields);
 
     /// <summary>
     /// A value on the stack: its flags; its homes (the locals, arguments, fields and made objects it may be or point into); whether
-    /// it is a null on every path; the methods a delegate or method pointer may run; and whether it is the address of a
-    /// container's element.
+    /// it is a null on every path; the methods a delegate or method pointer may run; whether it is the address of a container's
+    /// element; and (ARV-287a) the constants it is on every path (literals, constant fields), or null when it may be computed.
     /// </summary>
-    private readonly record struct Slot(int Flags, ImmutableHashSet<int> Homes, bool IsNull = false, ImmutableHashSet<MethodBase> Runs = null, bool Element = false);
+    private readonly record struct Slot(int Flags, ImmutableHashSet<int> Homes, bool IsNull = false, ImmutableHashSet<MethodBase> Runs = null, bool Element = false,
+        ImmutableHashSet<object> Constants = null);
+
+    /// <summary>ARV-287a: the constants a value is on both paths: their union, or null when it may be computed on either.</summary>
+    private static ImmutableHashSet<object> Both(ImmutableHashSet<object> mine, ImmutableHashSet<object> theirs) =>
+        mine is null || theirs is null ? null : Union(mine, theirs);
 
     /// <summary>The union of two sets (of homes, of methods): the first itself when it holds every member of the second.</summary>
     private static ImmutableHashSet<T> Union<T>(ImmutableHashSet<T> mine, ImmutableHashSet<T> theirs) =>
@@ -651,9 +691,9 @@ internal static class IlFlow
             for (var i = 0; i < Math.Min(mine.Length, theirs.Length); i++)
             {
                 var merged = new Slot(mine[i].Flags | theirs[i].Flags, Union(mine[i].Homes, theirs[i].Homes), mine[i].IsNull && theirs[i].IsNull,
-                    Union(mine[i].Runs, theirs[i].Runs), mine[i].Element || theirs[i].Element);
+                    Union(mine[i].Runs, theirs[i].Runs), mine[i].Element || theirs[i].Element, Both(mine[i].Constants, theirs[i].Constants));
                 if (merged.Flags == mine[i].Flags && ReferenceEquals(merged.Homes, mine[i].Homes) && merged.IsNull == mine[i].IsNull &&
-                    ReferenceEquals(merged.Runs, mine[i].Runs) && merged.Element == mine[i].Element)
+                    ReferenceEquals(merged.Runs, mine[i].Runs) && merged.Element == mine[i].Element && ReferenceEquals(merged.Constants, mine[i].Constants))
                     continue;
                 mine[i] = merged;
                 changed = true;
