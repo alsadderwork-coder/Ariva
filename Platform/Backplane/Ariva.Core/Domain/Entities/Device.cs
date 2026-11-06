@@ -24,6 +24,9 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     public const string ZoneNotPublishedMessage =
         "The device's queue zone is not in the site's published zone profile, on its level and within its footprint; publish the zone (or move the device) before it goes online.";
 
+    /// <summary>The refusal of a removal of a device that was calibrated or left commissioning, answered by its kind (ARV-287a).</summary>
+    public const string NotRemovableMessage = "Only a device that was never calibrated can be removed; retire it instead.";
+
     protected Device()
     {
     }
@@ -363,7 +366,7 @@ public partial class Device : BaseSoftDeletableEntity<Device>, ISiteBound
     {
         EnsureNotRetired();
         if (State != DeviceState.Commissioning || Calibrations.Count > 0)
-            throw new DomainRuleException("Only a device that was never calibrated can be removed; retire it instead.");
+            throw new DomainRuleException(NotRemovableMessage, DomainRuleKind.NotRemovable);
         CredentialHash = null;
         SoftDelete(removedBy, Utc(utcNow));
         Raise("Removed", utcNow);

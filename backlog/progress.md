@@ -5568,3 +5568,88 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - A lambda reads closures nested in each other (`CS$<>8__locals1`). Checking only the lambda's own class for flagged fields misses them: scan what the body reads.
   - Marking the framework's objects made from an exception as parts must leave out exceptions (InnerException), types and members, or every SqlState check and `GetType().Name` becomes exception text.
   - Building the unit tests in Release beside Debug in a worktree took the disk's last space while a mutation run held 1.5 GB. Free a finished worktree's build output first.
+
+## 2026-11-05: ARV-287a [E15] DomainRuleTests: values followed across an await, and a helper's rule text given back through an async result or a lambda its caller passes
+
+- What changed: test tooling, plus a production change the review's overlap check asked for. The two limits ARV-287 left are closed in `DomainRuleTests`' IL analysis (IlFlow):
+  - **State machines.** A call to an async method or an iterator of the scope is summarised through its state machine. The kickoff only builds and starts the machine, so its summary is followed on into the machine: the machine's fields start as the kickoff left them (its parameters copied in), and an iterator's GetEnumerator is followed before MoveNext.
+    - The call gives back the flags its MoveNext gives the builder's SetResult (a Task's or ValueTask's result), or what MoveNext leaves in Current (held).
+    - An awaiter, ConfigureAwait and GetResult carry the awaited task's flags, as the struct rule of ARV-287 already did.
+    - The transitive rule and field reads walk into the machine too.
+  - **Lambdas a caller passes.** The delegates each argument of a call holds are bound into the callee's summary, so its Invoke of that parameter runs them. A callee given nothing flagged is followed when a delegate it is given reads a rule's text or a flagged field.
+  - **Followed calls by their summaries.** A call whose body was followed gives back its summary. CallResult's "what a call returns keeps the text it takes" now applies only to calls outside the scope. Before, a mapper returning its own constants (a Refusal's tuple of fixed texts) looked as if it held the text it was given.
+  - **The rules' own getters.** IDomainRule.Rule is a rule's text, and an exception's message or string is its text, whatever their getters' bodies read. The rule types give their Rule as their Message, so their summary had reported exception text on every result a service built from a rule.
+  - **Smaller precision changes:**
+    - The async machinery (an awaiter's IsCompleted) computes nothing from the text it holds.
+    - A LINQ call given a selector compares the keys its lambda computes, and that lambda is judged with what it is given; only the selector-free forms compare their items.
+    - The compiler's string switch hash (ComputeStringHash) compares the text it matches.
+    - A Fluentx result's Data is its success value, not its error texts.
+    - A delegate's Invoke result is its target's, not a framework object made from an exception.
+    - A followed constructor gives the object it makes what it stores into it (an answer body's members).
+  - **What it found.** Following the await, the analysis now sees the answer mappers compare a service's answer, which may be a rule's text, with Ariva's own error constants: a Fluentx result carries no error code. They are listed by assembly, full type name and method in `ConstantMatchers`, each with its reason and each required to still name a method of the hosts:
+    - `TopologyAnswers.Problem` (404, 403 and 409 by the services' NotFound, Forbidden and Conflicts constants);
+    - `CsvImportAnswers.Answer`;
+    - `UploadScanAnswers.Refusal`;
+    - `FloorPlansController.Upload` (whether the service refused the file as too large);
+    - `SvcDeviceImports.Refusal`;
+    - `SvcDeskCodeMappingImports.Refusal`.
+  - **What a matcher may do (review rounds 1 and 2).** Within a matcher a rule's text may only be:
+    - tested for equality with an Ariva error constant (a text or set of texts of an *Errors type, never a literal of the method's own): string equality, or Contains of such a set or of such an item;
+    - dispatched on as the compiler's string switch does: its hash, its length and, in a Release build, a character at a fixed position;
+    - answered (an HTTP result);
+    - returned in a value tuple.
+    A substring search, a pattern, a comparer, a reference comparison or any other call is still a finding, and so is every other check.
+    - IlReader now resolves ldstr. IlFlow tracks which constants a value is on every path (the literals, and the static readonly or const fields of Ariva's *Errors types), and records them per call.
+    - The host test asserts that every constant a matcher compares with is an error constant's text, and that none is the text of a rule of kind Rule.
+  - **Production (the overlap check).** The check found three rules of kind Rule whose text equals a constant a matcher maps:
+    - a zone profile changed outside its draft and a device that cannot be removed: both become rules of their own kinds (`DomainRuleKind.NotADraft`, `NotRemovable`). The entities hold the texts, the services' error constants reference them, and `SvcZoneProfiles` and `SvcDevices` answer them by kind, as `SvcTopology` does for FloorTaken. The answers are unchanged.
+    - the desk code mapping import's `Refusal` no longer maps the external code rule's text, which only the entity's rule could give: the import refuses a code `NormalizeCode` rejects before it asks the service.
+  - **Other round 1 fixes:**
+    - a LINQ set, grouping or ordering call given a selector compares when the selector returns text;
+    - a followed getter of an Ariva object gives back what the object holds (one the framework made from a rule's text);
+    - an anonymous object keeps what its constructor stores into it;
+    - the kickoff's delegates (a lambda its caller passes) reach the state machine;
+    - a call none of whose bodies can be followed is not summarised.
+  - **Two reads listed by call in TextReads:** in the device import's preview, a column name and the planned rows share a tuple with the table whose row errors hold the service's messages (a value's flags are per value, not per item).
+- Tests:
+  - `DomainRuleTests` bypass fixtures gain 12 that must be found, and three that must not:
+    - must be found: GuardResultAsync (an async guard's Result compared after the await), GuardViaLambda (a refusal lambda a caller passes its guard), AsyncTextAnswer (an async helper's text compared after the await, already found before, kept as a regression fixture), IteratorRuleAnswer (an iterator's Current compared);
+    - must be found, review rounds 1 and 2: ListedMatcherSubstring (a listed matcher's substring search), ListedMatcherInstance (its equality with a literal of its own, an instance of a rule's computed text), UnlistedMatcherEquality, SameNameMatcher (a matcher's simple name), HeldGroupByCount, HeldDistinctByCount, FrameworkMadeView, GuardViaLambdaAsync;
+    - must not be found: AwaitedRuleAnswered (an awaited guard's rule text answered as a result), ListedMatcherEquality (a listed matcher's equality with its error constants, with arms of one length so the Release build dispatches on the length and a character), DataLimit (the stated limit on a result's Data, pinned).
+  - The guards themselves (GuardAsync, TryRefuse, TryRefuseAsync) are not found.
+  - `TopologyGuardTests.RegisterAndCreateDraft_Should_AnswerTheRuleByItsKind_When_ARuleOfTheirKindIsRaisedAnywhere`; the kinds asserted in `DeviceTests` and `ZoneProfileTests`; `ImportRowsTests`: the external code text maps to MappingRefused.
+  - Results: DomainRuleTests 5 of 5 in Debug (about 27 s, within the bound of 40 s) and in Release (about 18 s); TopologyGuardTests, ImportRowsTests, DeviceTests and ZoneProfileTests pass.
+- Files:
+  - Platform/Backplane/Ariva.UnitTests/Architecture/{IlFlow.cs, IlReader.cs, DomainRuleTests.cs}
+  - Platform/Backplane/Ariva.Core/Domain/Enums/DomainRuleKind.cs, Domain/Entities/{ZoneProfile.cs, Device.cs}, Services/Topology/ISvcZoneProfiles.cs, Services/Sensing/ISvcDevices.cs
+  - Platform/Backplane/Ariva.Infra/Services/Topology/{SvcZoneProfiles.cs, SvcDeskCodeMappingImports.cs}, Services/Sensing/SvcDevices.cs
+  - Platform/Backplane/Ariva.UnitTests/{Services/TopologyGuardTests.cs, Domain/Sensing/DeviceTests.cs, Domain/Zones/ZoneProfileTests.cs, Imports/ImportRowsTests.cs}
+  - docs/security/asvs-l2.md (V16.5.1: the closed limits, the matchers and what they may do, the new per-value limits)
+  - backlog/prd-phase3.json (ARV-287a passes), backlog/progress.md
+- Gates: on 3d67951, backend (Debug) exit 0, unit 8,879 of 8,879 (936 s); the unit tests built in Release exit 0, 8,863 of 8,863, AD0001 0 (587 s). A first Release run lost `MqttTransportTests.Listener_Should_RefuseTls12_When_TheClientOffersOnlyACbcSuite` to a port another test run on the machine had taken, and a second was cut short by a build cleanup in its worktree. Docs exit 0; scan.mjs 0 errors on the 16 changed files.
+- Security review: security-reviewer PASS in round 3 (CWE-209, CWE-20; ASVS V16.5.1), on the condition of a green Release run, recorded once it passed.
+  - Round 1 FAIL: the matcher exemption keyed by a simple name and exempting any comparison (a substring search passed); selector LINQ no longer compared; a getter of an Ariva object the framework made gave back nothing; an async guard given a lambda escaped.
+  - Round 2 FAIL: the Release build dispatches a string switch on `get_Length` and `get_Chars`, which the narrowed rule refused; a matcher's literal of its own (one instance of a computed rule text) passed; low: matchers keyed by assembly.
+  - The production change (two rules answered by kind, the unreachable arm removed) was sound from round 2.
+  - Accepted residuals:
+    - a listed matcher may read a text's length and a character at a fixed position;
+    - an error constant equal to one instance of a computed rule text is not told from the others;
+    - a service that answered `rule.Rule` for a kinded rule would reach a matcher with the constant's own text;
+    - a result's Data is not taken to hold its error texts;
+    - a delegate set outside the method is a call outside the scope.
+- Limits kept, stated in the test and in V16.5.1:
+  - A delegate set outside the method (a type initializer's) is a call outside the scope.
+  - Fields are flagged per field, not per object, and a value's flags are the whole value's (a tuple's items share them).
+  - A result's Data is not taken to hold its error texts (pinned by the DataLimit fixture).
+  - A listed matcher may read a text's length and a character at a fixed position, as the compiler's string switch does in a Release build.
+  - An error constant equal to one instance of a rule's computed (formatted) text is not told from the others.
+  - The overlap check cannot prove that every service catching a kinded rule answers it by kind; only SvcZoneProfiles and SvcDevices reach those two entity methods today.
+- Gotchas:
+  - IDomainRule.Rule is implemented as the exception's Message. Summarising its getter makes every rule's text look like exception text, so the rules' own getters must not be summarised.
+  - Once results are followed across an await, every place that turns a service's answer into a status by its text shows up. Fluentx results carry no error code, so the mappers are listed rather than rewritten.
+  - A string switch with many cases compiles to ComputeStringHash, a method of the assembly's PrivateImplementationDetails: descending into it judges a character loop, not a comparison.
+  - The container rule (a call outside the scope keeps its other arguments in a container it is given) marks a constant set as holding a rule's text after `Set.Contains(text)`. A constant operand's RuleHeld flag is that artifact, not text of its own.
+  - A literal list of the domain model's strings is far too wide to compare against: entity constants used by plain guards (InvalidOperationException) and kinded rules share their text with service constants by design. Read the rule constructors' own arguments instead, and skip a kind loaded as a non-zero constant.
+  - A Release build lowers a string switch to a dispatch on `get_Length` (and `get_Chars` within one length) before each `op_Equality`; a Debug build hashes it (`ComputeStringHash`). A check of matcher code passes in one build and fails in the other unless the fixtures exercise both: give a fixture switch arms of one length.
+  - Anonymous types are compiler-generated (`<>f__AnonymousType`) but hold values as tuples do; excluding every generated type from the field-into-object rule dropped what they hold.
+  - Building a worktree beside the checkpoint's integration step took the disk to 546 MB: free a worktree's build output before the checkpoint's integration and mutation steps, and keep the stale mutation tree from a cut run out of the way.

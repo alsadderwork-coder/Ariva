@@ -353,8 +353,9 @@ internal sealed class SvcZoneProfiles(
         }
         catch (InvalidOperationException e) when (e is IDomainRule rule)
         {
+            // ARV-287a: a published or retired version changed is answered by its kind, as the workflow's own check is.
             UnitOfWork.PromiseNotToCommit();
-            return Result.Error<T>(rule.Rule);
+            return Result.Error<T>(rule.Kind == DomainRuleKind.NotADraft ? ZoneProfileErrors.NotADraft : rule.Rule);
         }
     }
 

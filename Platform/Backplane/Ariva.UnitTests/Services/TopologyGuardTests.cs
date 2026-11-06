@@ -71,6 +71,8 @@ public sealed class TopologyGuardTests
         "argument" => new DomainArgumentException("The argument rule's text.", "name"),
         "range" => new DomainArgumentOutOfRangeException("floorNumber", 99, "The range rule's text."),
         "code" => new DomainRuleException("Terminal T1 already exists here.", DomainRuleKind.CodeTaken),
+        "draft" => new DomainRuleException("A draft text of any wording.", DomainRuleKind.NotADraft),
+        "removable" => new DomainRuleException("A removal text of any wording.", DomainRuleKind.NotRemovable),
         _ => new DomainRuleException("A floor text of any wording.", DomainRuleKind.FloorTaken)
     };
 
@@ -80,6 +82,8 @@ public sealed class TopologyGuardTests
         "argument" => "The argument rule's text.",
         "range" => "The range rule's text.",
         "code" => TopologyErrors.Duplicate,
+        "draft" => ZoneProfileErrors.NotADraft,
+        "removable" => DeviceErrors.NotRemovable,
         _ => TopologyErrors.FloorTaken
     };
 
@@ -191,6 +195,24 @@ public sealed class TopologyGuardTests
 
         registered.ErrorMessages.Should().Equal(Answer(kind));
         drafted.ErrorMessages.Should().Equal(Answer(kind));
+        devices.Verify(u => u.PromiseNotToCommit(), Times.Once());
+        profiles.Verify(u => u.PromiseNotToCommit(), Times.Once());
+    }
+
+    [Fact]
+    public async Task RegisterAndCreateDraft_Should_AnswerTheRuleByItsKind_When_ARuleOfTheirKindIsRaisedAnywhere()
+    {
+        // ARV-287a: a published version changed and a device that cannot be removed answer their service's own constant by
+        // the rule's kind, whatever its text, so no answer tells them apart from another rule by their text.
+        var request = new RegisterDeviceRequest("S-1", "StereoVision", "PC2SE", "HttpsPush", "Xovis", "Ntp", new DevicePlacement(Guid.NewGuid(), 20, 16, 5, 0, "Snake A"));
+        var devices = FailingStorage(Rule("removable"));
+        var profiles = FailingStorage(Rule("draft"));
+
+        var registered = await Devices(devices).RegisterAsync(request, CancellationToken.None);
+        var drafted = await ZoneProfiles(profiles).CreateDraftAsync(new CreateZoneProfileDraftRequest("ABC", null), CancellationToken.None);
+
+        registered.ErrorMessages.Should().Equal(Answer("removable"));
+        drafted.ErrorMessages.Should().Equal(Answer("draft"));
         devices.Verify(u => u.PromiseNotToCommit(), Times.Once());
         profiles.Verify(u => u.PromiseNotToCommit(), Times.Once());
     }

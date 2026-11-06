@@ -240,14 +240,14 @@ internal sealed class SvcDeskCodeMappingImports(
 
     /// <summary>
     /// The column and fixed text of the mapping service's refusal; any other message (an entity's, which names kinds) becomes a
-    /// fixed text. A desk kind the system cannot map is refused before the service is asked (ARV-287).
+    /// fixed text. A desk kind the system cannot map (ARV-287) and an external code that is not one (ARV-287a) are refused
+    /// before the service is asked, so the entity's text is never matched.
     /// </summary>
     internal static (string Column, string Reason) Refusal(string message) => message switch
     {
         TopologyErrors.UnknownKind => ("externalSystem", CsvImportErrors.UnknownSystem),
         TopologyErrors.NotFound => ("desk", CsvImportErrors.DeskNotFound),
         TopologyErrors.Duplicate => ("externalCode", CsvImportErrors.MappingTaken),
-        CsvImportErrors.ExternalCode => ("externalCode", CsvImportErrors.ExternalCode),
         _ => ("desk", CsvImportErrors.MappingRefused)
     };
 

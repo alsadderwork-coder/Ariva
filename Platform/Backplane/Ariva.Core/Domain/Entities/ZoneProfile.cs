@@ -442,10 +442,13 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
 
     #endregion
 
+    /// <summary>The refusal of a change to a published or retired version, answered by its kind (ARV-287a).</summary>
+    public const string NotADraftMessage = "A published or retired zone profile never changes; create a draft from it.";
+
     private void EnsureDraft()
     {
         if (Status != ZoneProfileStatus.Draft)
-            throw new DomainRuleException("A published or retired zone profile never changes; create a draft from it.");
+            throw new DomainRuleException(NotADraftMessage, DomainRuleKind.NotADraft);
     }
 
     /// <summary>The problem of a stored name the name rule refuses (ARV-162); the sentence ends with what to do.</summary>
