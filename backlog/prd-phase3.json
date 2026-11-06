@@ -1935,7 +1935,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 312,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3 (the owner's rule of 2026-10-14). Defence in depth behind the signed manifest, which stays the gate; a job row needs a forged dump that passes the signature, or the superuser.",
       "dependsOn": [
         "ARV-189"
@@ -2582,6 +2582,25 @@
       "notes": "Size S. Phase 3. Filed 2026-11-05 from the ARV-273 security review (round 2, low): hardening that was already true before ARV-273 (script 0057). No sign-in code.",
       "dependsOn": [
         "ARV-273"
+      ]
+    },
+    {
+      "id": "ARV-263b",
+      "title": "[E17] Post-restore check: the statistics and monitoring roles among those no login may hold",
+      "description": "Found by the ARV-263 security review (round 1, 2026-11-06, noted). The logins line of ariva-db.sh check reports a role holding PostgreSQL's server, data, signal or maintenance roles (pg_execute_server_program, pg_read_server_files, pg_write_server_files, pg_read_all_data, pg_write_all_data, pg_signal_backend, pg_create_subscription, pg_maintain), but not pg_read_all_stats or pg_monitor (which holds it). With either, a login reads every session's statement text in pg_stat_activity and pg_stat_statements (the statements' literals included, and a DBA's ad hoc statement with a value in it) and every relation's statistics, which ariva-db.sh's own superuser steps and the migration job's statements show. Add both to the powerful roles, so a login that holds them fails the line unless --allow-login names a DBA's own monitoring login (never Ariva's own roles or logins, ARV-263). pg_read_all_settings (also in pg_monitor) reads settings only and stays out. CWEs to review: CWE-269, CWE-200.",
+      "acceptanceCriteria": [
+        "check fails the logins line on a role that holds pg_read_all_stats or pg_monitor, directly or through another role, and passes it for a login --allow-login names; BackupRestoreTests plants each",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story (test cadence in docs/harness/test-cadence.md)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 327,
+      "passes": false,
+      "notes": "Size S. Phase 3. Filed 2026-11-06 from the ARV-263 security review (round 1, noted for a later story). Defence in depth behind the signed manifest. No sign-in code.",
+      "dependsOn": [
+        "ARV-263"
       ]
     }
   ]

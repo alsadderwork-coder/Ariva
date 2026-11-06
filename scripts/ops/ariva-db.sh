@@ -55,10 +55,17 @@
 #                                   exactly the image's members (ARIVA_EXTENSION_MEMBERS), the system catalog's functions,
 #                                   operators, types, casts, aggregates and languages as this PostgreSQL version ships them
 #                                   (ARIVA_SYSTEM_FUNCTIONS, a digest taken outside the database), and no setting from a file
-#                                   but the server's postgresql.conf (postgresql.auto.conf or a file an include names). It
+#                                   but the server's postgresql.conf (postgresql.auto.conf or a file an include names).
+#                                   Since ARV-263 also: TimescaleDB's jobs as a database the same scripts migrated (each
+#                                   job's procedure, owner, hypertable, schedule and configuration, a retention period
+#                                   within the bounds the migration job holds it to; ARIVA_SCHEMA), no toast table granting
+#                                   the runtime role or a login of it anything and none of them using pg_toast, no grant on
+#                                   a system catalog function beyond initdb's (pg_init_privs), and pg_maintain among the
+#                                   roles no login may hold. It
 #                                   finds what a careless forged dump leaves; it cannot prove a careful one absent (the
 #                                   superuser that ran it can change what check reads): the signed manifest is the gate
-#   schema [--full]                 what check compares: one <object>=<hash> line per object of Ariva's in public, each
+#   schema [--full]                 what check compares: one <object>=<hash> line per object of Ariva's in public and per
+#                                   TimescaleDB job, each
 #                                   TimescaleDB extension's members digest and the system functions' digest; with --full
 #                                   each object's normalised definition and each extension member, one line each, so that
 #                                   two databases' outputs compare line by line (read-only, as the migration login)
@@ -102,7 +109,11 @@
 # What may be restored (CWE-345). The superuser runs the dump's SQL, so its origin is the gate, and that gate is outside
 # this script: ariva-ops.mjs restores only a file whose private copy has the SHA-256 of a manifest signed by an allowed
 # signer (or a SHA-256 the operator gives from their own log). check-dump reads the table of contents only, never the SQL
-# of each entry, and check after the restore looks for what a forged dump would leave; both are defence in depth.
+# of each entry, and check after the restore looks for what a forged dump would leave; both are defence in depth. Since
+# ARV-263's review check-dump takes TimescaleDB's data only for the tables a dump of it carries (TIMESCALE_CATALOG_DATA) and
+# for chunks and TimescaleDB's own hypertables, and restore judges the jobs it brought while TimescaleDB's restore mode still
+# keeps the scheduler away (restore_job_gate): a job that would run otherwise than this release makes it keeps the database
+# in restore mode and stops the restore, since a job runs as its owner as soon as that mode ends.
 #
 # Inputs (CWE-78). Every value is checked against a strict pattern before use, every command is an argument array (no
 # eval, no shell given a command string, no string built into a command line), and values reach SQL only as psql
@@ -120,6 +131,17 @@ readonly COMPACTED_TOPICS=(
   ariva.desk.state-changed.v1
 )
 readonly TIMESCALE_EXTENSIONS=(timescaledb timescaledb_toolkit)
+# ARV-263 review: the tables of _timescaledb_catalog whose rows a dump of TimescaleDB carries (the extension's configuration
+# tables, pg_extension.extconfig); BackupRestoreTests holds the list equal to the image's. check_toc refuses data for any
+# other TimescaleDB table (a job's run state, for one, which pg_dump never writes: a forged next_start would keep a pinned
+# retention job from running), and in _timescaledb_internal it takes only the data of chunks, compressed chunks (TimescaleDB
+# 2.31 names one after its chunk with _compressed; older versions compress_hyper_N_N_chunk) and the hypertables behind
+# continuous aggregates and compression, owned by the migration login.
+readonly TIMESCALE_CATALOG_DATA=(bgw_job bgw_job_id_seq chunk chunk_column_stats chunk_column_stats_id_seq chunk_id_seq compression_chunk_size
+  compression_settings continuous_agg continuous_aggs_bucket_function continuous_aggs_hypertable_invalidation_log continuous_aggs_invalidation_threshold
+  continuous_aggs_jobs_refresh_ranges continuous_aggs_materialization_invalidation_log continuous_aggs_materialization_ranges continuous_aggs_tenant_tracking
+  continuous_aggs_watermark dimension dimension_id_seq dimension_slice dimension_slice_id_seq hypertable hypertable_cagg_settings hypertable_id_seq metadata
+  tablespace)
 
 # ARV-183: every function body Ariva's scripts ship, as name:SHA-256 of the text between its dollar quotes (what PostgreSQL
 # stores as its source). OpsScriptTests holds this list equal to every CREATE FUNCTION of Ariva.Infra/Timescale/Scripts, the
@@ -268,6 +290,14 @@ readonly RUNTIME_KEEPALIVE_IDLE_SECONDS=60
 readonly RUNTIME_KEEPALIVE_INTERVAL_SECONDS=10
 readonly RUNTIME_KEEPALIVE_COUNT=6
 
+# ARV-263: the retention period each hypertable's TimescaleDB retention policy may have, in days, as <hypertable>=<min>-<max>
+# entries separated by ";": the bounds RetentionSettings holds each configured period to (the migration job refuses any
+# other; OpsScriptTests holds these equal). A retention job's drop_after is pinned as "within the bounds" (each deployment
+# configures its own period), so schema's hash of the job stays the same, and a period outside them is reported as a
+# difference.
+readonly ARIVA_RETENTION_DAYS="advertising_play=30-3650;desk_zone_reading=2-90;device_health_event=7-3650;lane_staffing=90-3650;\
+sensing_batch=7-3650;sensing_event=7-3650;zone_outage=7-3650"
+
 # ARV-189 review: the views of public as the scripts create them, as <view>=<what it reads> entries separated by ";": a
 # continuous aggregate its hypertable, a plain view the relations it names (separated by spaces). check compares them, as
 # it does the privileges, once the database is at ARIVA_RUNTIME_PRIVILEGES_AT: a view a forged dump adds takes the default
@@ -343,6 +373,19 @@ integration_call=e46b0d368a4916cb0834ecee757ad780;\
 integration_client=5900cfdb0d5ca73d3abce7cebf968b94;\
 integration_idempotency=7391a46cbb12dc523a9f98ef518d8c77;\
 integration_idempotency_keep()=b3b527e2df0c9358c30ac3e1d26d786f;\
+job _timescaledb_functions.policy_compression on public.device_health_event=89b38544bfc656b1c3fd4271615bc972;\
+job _timescaledb_functions.policy_compression on public.sensing_event=ae0ad0fbd8f7bfca70da5aa0f18de182;\
+job _timescaledb_functions.policy_job_stat_history_retention=f9f6e8a98aae7855fc8b2fc6d0d11712;\
+job _timescaledb_functions.policy_refresh_continuous_aggregate on public.line_minute_15m=818f3058b83c76b8289b1a356e442f4b;\
+job _timescaledb_functions.policy_refresh_continuous_aggregate on public.queue_minute_15m=52094f391c0352044bda48078e0e673e;\
+job _timescaledb_functions.policy_retention on public.advertising_play=ad58ef1bb606639f073579bc3076248f;\
+job _timescaledb_functions.policy_retention on public.desk_zone_reading=e16c4e0e02e3a2ec237efd63912e1b14;\
+job _timescaledb_functions.policy_retention on public.device_health_event=7295264071aa07fd1c00c5ef47162393;\
+job _timescaledb_functions.policy_retention on public.lane_staffing=41130943d66f17fe5d1af29c6f7b230d;\
+job _timescaledb_functions.policy_retention on public.sensing_batch=41989bc3ae244f955bab1b04f099690e;\
+job _timescaledb_functions.policy_retention on public.sensing_event=13fc8b41922715a182ff842c2988f340;\
+job _timescaledb_functions.policy_retention on public.zone_outage=8ecdc4df16b85f013fce50266318a530;\
+job _timescaledb_functions.policy_telemetry=391d9deb8604ef06497fe1c4d49a4936;\
 lane_staffing=8cf2ed16d6b64a3ca97dd63cbe84a654;\
 level=ef72305459eb8b4ba8140489c8612fcf;\
 line=b17d4462e2e004ba9db787d69655149d;\
@@ -608,9 +651,19 @@ check_toc() {
           continue
         fi ;;
       "TABLE DATA" | "SEQUENCE SET")
-        schema="${rest#"$kind" }"; schema="${schema%% *}"
-        if [[ "$schema" == _timescaledb_catalog || "$schema" == _timescaledb_config || "$schema" == _timescaledb_internal ]]; then
+        schema="${rest#"$kind" }"; name="${schema#* }"; schema="${schema%% *}"; name="${name%% *}"
+        if [[ "$schema" == _timescaledb_catalog ]]; then
+          ext=0
+          for e in "${TIMESCALE_CATALOG_DATA[@]}"; do [[ "$name" == "$e" ]] && ext=1; done
+          ((ext == 1)) || { say "refused: data of $schema.$name, which a dump of TimescaleDB does not carry"; problems=$((problems + 1)); }
           continue
+        fi
+        if [[ "$schema" == _timescaledb_config || "$schema" == _timescaledb_cache || "$schema" == _timescaledb_functions ]]; then
+          say "refused: data of $schema.$name, which a dump of TimescaleDB does not carry"; problems=$((problems + 1)); continue
+        fi
+        if [[ "$schema" == _timescaledb_internal ]] \
+          && ! [[ "$kind" == "TABLE DATA" && "$name" =~ ^(_hyper_[0-9]+_[0-9]+_chunk(_compressed)?|compress_hyper_[0-9]+_[0-9]+_chunk|_materialized_hypertable_[0-9]+|_compressed_hypertable_[0-9]+)$ ]]; then
+          say "refused: data of $schema.$name, which is not a chunk or a hypertable of TimescaleDB's"; problems=$((problems + 1)); continue
         fi ;;
       ACL)
         [[ "$rest" == "ACL - SCHEMA public pg_database_owner" ]] && continue ;;
@@ -662,6 +715,9 @@ cmd_check_dump() {
 }
 
 RESTORING=0
+# ARV-263 review: set while a restore has not yet had its jobs passed by restore_job_gate (from restore mode's start), so
+# that a restore refused, failed or stopped leaves the database in restore mode and none of the dump's jobs runs.
+KEEP_RESTORING=0
 end_restore_mode() {
   if ((RESTORING == 1)); then
     RESTORING=0
@@ -674,10 +730,56 @@ SQL
 
 on_restore_exit() {
   local status=$?
-  end_restore_mode
+  if ((KEEP_RESTORING == 1)); then
+    ((RESTORING == 0)) || say "the database stays in TimescaleDB's restore mode, so that no job of the dump runs before it is judged: drop it, and restore a backup you trust into an empty database (a new volume)."
+  else
+    end_restore_mode
+  fi
   if ((status != 0)); then
     say "the restore did not finish: the database is partly restored. Start again from an empty database (a new volume) after fixing the cause."
   fi
+}
+
+# ARV-263 review (CWE-269, CWE-345): the jobs a restore brings, read while TimescaleDB's restore mode still keeps its scheduler
+# away from the database, as the migration login; check, after it, compares them with ARIVA_SCHEMA, but by then a job would
+# have run. Each job must run one of TimescaleDB's policy procedures (its own two as the extension's owner, every other as
+# the migration login), with the procedure's own check or none; a policy acts on its own hypertable, and a retention policy
+# only on a hypertable of ARIVA_RETENTION_DAYS within its bounds. Any other job keeps the database in restore mode and
+# stops the restore. Prints one line per job refused.
+restore_job_gate() {
+  as_migration_catalog --tuples-only --no-align --set=retention_days="$ARIVA_RETENTION_DAYS" <<'SQL'
+WITH bounds AS (
+    SELECT split_part(e, '=', 1) AS name, split_part(split_part(e, '=', 2), '-', 1)::integer AS low, split_part(split_part(e, '=', 2), '-', 2)::integer AS high
+      FROM unnest(string_to_array(:'retention_days', ';')) e),
+jobs AS (
+    SELECT j.*, h.schema_name, h.table_name, a.user_view_schema, a.user_view_name,
+           (SELECT x.extowner FROM pg_extension x WHERE x.extname = 'timescaledb') AS extension_owner
+      FROM _timescaledb_catalog.bgw_job j
+      LEFT JOIN _timescaledb_catalog.hypertable h ON h.id = j.hypertable_id
+      LEFT JOIN _timescaledb_catalog.continuous_agg a ON a.mat_hypertable_id = j.hypertable_id)
+SELECT regexp_replace('job ' || j.id || ' (' || coalesce(j.proc_schema || '.' || j.proc_name, 'no procedure') || ', owner '
+                      || coalesce(j.owner::text, 'none') || ')', '[[:cntrl:]]', '?', 'g')
+  FROM jobs j
+ -- A condition that is unknown (a NULL anywhere in it) refuses the job, as false does.
+ WHERE NOT coalesce((j.proc_schema = '_timescaledb_functions'
+            AND (j.check_name IS NULL OR (j.check_schema = '_timescaledb_functions' AND j.check_name = j.proc_name || '_check'))
+            AND CASE
+                WHEN j.proc_name IN ('policy_telemetry', 'policy_job_stat_history_retention')
+                    THEN j.owner::oid = j.extension_owner AND j.hypertable_id IS NULL
+                WHEN j.proc_name IN ('policy_compression', 'policy_retention')
+                    THEN j.owner::oid = (SELECT r.oid FROM pg_roles r WHERE r.rolname = current_user) AND j.hypertable_id IS NOT NULL
+                         AND j.schema_name = 'public' AND j.user_view_name IS NULL AND jsonb_typeof(j.config) = 'object'
+                         AND (j.config -> 'hypertable_id')::text = j.hypertable_id::text
+                         AND (j.proc_name = 'policy_compression'
+                              OR EXISTS (SELECT 1 FROM bounds b WHERE b.name = j.table_name
+                                           AND substring((j.config -> 'drop_after')::text FROM '^"([1-9][0-9]{0,4}) days"$')::integer BETWEEN b.low AND b.high))
+                WHEN j.proc_name = 'policy_refresh_continuous_aggregate'
+                    THEN j.owner::oid = (SELECT r.oid FROM pg_roles r WHERE r.rolname = current_user) AND j.hypertable_id IS NOT NULL
+                         AND j.user_view_schema = 'public' AND jsonb_typeof(j.config) = 'object'
+                         AND (j.config -> 'mat_hypertable_id')::text = j.hypertable_id::text
+                ELSE false END), false)
+ ORDER BY j.id;
+SQL
 }
 
 cmd_restore() {
@@ -751,6 +853,9 @@ SQL
   members="$(extra_members "$runtime" "$reader")"
   [[ -z "$members" ]] || die "Ariva's group roles already have other members ($members); name this deployment's logins with --runtime-login and --reader-login, or restore into a server of its own"
 
+  # ARV-263 review: from here on the database leaves restore mode only once restore_job_gate passed its jobs, so a restore
+  # that fails or is stopped (an error in the dump's data, a signal) never starts a job nothing has judged.
+  KEEP_RESTORING=1
   trap on_restore_exit EXIT
   say "entering TimescaleDB's restore mode (superuser over the local socket)"
   as_superuser --tuples-only --no-align <<'SQL' >/dev/null
@@ -764,6 +869,13 @@ SQL
   else
     PGAPPNAME=ariva-ops pg_restore "${args[@]}" "$input"
   fi
+  local refused_jobs
+  refused_jobs="$(restore_job_gate)" || die "the restored jobs could not be read as $LOGIN before TimescaleDB's scheduler starts"
+  if [[ -n "$refused_jobs" ]]; then
+    die "the dump holds TimescaleDB jobs this release does not create, which would run once restore mode ends: ${refused_jobs//$'\n'/, } (treat the dump as untrusted, wiki 10 section 4.13)"
+  fi
+  say "TimescaleDB's jobs checked before its scheduler starts: each runs one of TimescaleDB's policies as the role this release gives it"
+  KEEP_RESTORING=0
   end_restore_mode
   trap - EXIT
 
@@ -802,6 +914,13 @@ cmd_check() {
   check_settings
   [[ -z "$runtime" ]] || valid_identifier "$runtime" || die "--runtime-login must be a plain lower-case identifier"
   [[ -z "$reader" ]] || valid_identifier "$reader" || die "--reader-login must be a plain lower-case identifier"
+  # ARV-263 review: --allow-login is for a DBA's own login; Ariva's roles and logins are never let pass by it.
+  local allowed_name
+  for allowed_name in ${logins_allowed//,/ }; do
+    if [[ "$allowed_name" == ariva_* || "$allowed_name" == "$LOGIN" || "$allowed_name" == "$runtime" || "$allowed_name" == "$reader" ]]; then
+      die "--allow-login must name a DBA's own login, not one of Ariva's roles or logins: $allowed_name"
+    fi
+  done
   require_migration_login
   # The report runs as the migration login with the catalog's search path for the session (ARV-183 review): a setting of the
   # database or an object the login created cannot change what a name in it means, or what it reports.
@@ -1081,12 +1200,13 @@ plpgsql_members AS (
            ('function plpgsql_call_handler()', 'function plpgsql_inline_handler(internal)', 'function plpgsql_validator(oid)', 'language plpgsql')),
 -- ARV-183 (and its review): the roles whose power a member can take: a superuser, CREATEROLE, REPLICATION or BYPASSRLS,
 -- and PostgreSQL's roles that run programs on the server, read or write its files or every table, signal other sessions or
--- create subscriptions.
+-- create subscriptions; and (ARV-263) pg_maintain, PostgreSQL 17's VACUUM, ANALYZE, CLUSTER, REINDEX, REFRESH and LOCK TABLE
+-- on every relation, with which its holder can lock the hosts out of any table.
 powerful AS (
     SELECT oid, rolname FROM pg_roles
      WHERE rolsuper OR rolcreaterole OR rolreplication OR rolbypassrls
         OR rolname IN ('pg_execute_server_program', 'pg_read_server_files', 'pg_write_server_files', 'pg_read_all_data',
-                       'pg_write_all_data', 'pg_signal_backend', 'pg_create_subscription')),
+                       'pg_write_all_data', 'pg_signal_backend', 'pg_create_subscription', 'pg_maintain')),
 -- Every role and each role it holds, directly or through others; every grant counts (with the admin option a member may
 -- grant itself the rest).
 held (member, roleid) AS (
@@ -1101,11 +1221,11 @@ privileged_roles AS (
                                          CASE WHEN r.rolreplication THEN 'replication' END, CASE WHEN r.rolbypassrls THEN 'bypassrls' END) || ')' AS name
       FROM pg_roles r
      WHERE (r.rolsuper OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls) AND r.oid <> 10 AND r.rolname <> current_user
-       AND NOT r.rolname = ANY (string_to_array(:'allowed_logins', ','))
+       AND (r.oid IN (SELECT g.oid FROM runtime_grantees g) OR NOT r.rolname = ANY (string_to_array(:'allowed_logins', ',')))
     UNION
     SELECT r.rolname || ' (holds ' || p.rolname || ')'
       FROM held h JOIN pg_roles r ON r.oid = h.member JOIN powerful p ON p.oid = h.roleid
-     WHERE h.member <> 10 AND NOT r.rolname = ANY (string_to_array(:'allowed_logins', ','))),
+     WHERE h.member <> 10 AND (r.oid IN (SELECT g.oid FROM runtime_grantees g) OR NOT r.rolname = ANY (string_to_array(:'allowed_logins', ',')))),
 -- ARV-183 review: Ariva's group roles hold no role, and the named reader login only the reader role (the runtime login's
 -- own line checks it the same way).
 held_by_ariva AS (
@@ -1137,7 +1257,38 @@ parameter_grants AS (
      WHERE a.grantee <> 10
        AND NOT (p.parname = 'temp_file_limit' AND a.privilege_type = 'SET' AND NOT a.is_grantable
                 AND r.rolname IN (current_user, 'ariva_migration'))
-       AND NOT coalesce(r.rolname = ANY (string_to_array(:'allowed_logins', ',')), false)),
+       AND (a.grantee IN (SELECT g.oid FROM runtime_grantees g) OR NOT coalesce(r.rolname = ANY (string_to_array(:'allowed_logins', ',')), false))),
+-- ARV-263 (ARV-262 review, N6): the system catalog's own functions (below oid 16384) grant no role more than initdb did
+-- (pg_init_privs, or EXECUTE for PUBLIC and the owner where it recorded none): EXECUTE on lo_export, lo_import or
+-- pg_read_binary_file reads or writes the server's files as whoever holds it, and a grant to ariva_runtime gives that to the
+-- hosts. A NULL ACL is the default one (EXECUTE for PUBLIC), so one written over initdb's revoke is reported too; a grant
+-- option counts as more; a DBA's own login named with --allow-login passes, but never the runtime role or a login of it.
+system_function_grants AS (
+    SELECT regexp_replace(p.oid::regprocedure::text || ' ' || a.privilege_type || CASE WHEN a.is_grantable THEN ' with grant option' ELSE '' END || ' to '
+                          || CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE coalesce(r.rolname::text, 'role ' || a.grantee) END, '[[:cntrl:]]', '?', 'g') AS name
+      FROM pg_proc p CROSS JOIN LATERAL aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a LEFT JOIN pg_roles r ON r.oid = a.grantee
+     WHERE p.oid < 16384
+       AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce((SELECT ip.initprivs FROM pg_init_privs ip
+                                                          WHERE ip.objoid = p.oid AND ip.classoid = 'pg_proc'::regclass AND ip.objsubid = 0),
+                                                         acldefault('f', p.proowner))) b
+                        WHERE b.grantee = a.grantee AND b.privilege_type = a.privilege_type AND (b.is_grantable OR NOT a.is_grantable))
+       AND (a.grantee IN (SELECT g.oid FROM runtime_grantees g) OR NOT coalesce(r.rolname = ANY (string_to_array(:'allowed_logins', ',')), false))),
+-- ARV-263 (ARV-189 review, round 3): no toast table grants the runtime role or a login that holds it anything, table-wide or
+-- on a column, PUBLIC's grants included (a migrated database's toast tables have no grant: their owner's privileges only),
+-- and none of them may use pg_toast, or a temporary toast schema: a grant on the toast table behind a table it may not read
+-- hands it that table's long values. Only a toast table with grants of its own is looked at, so a server with many chunks
+-- costs little.
+toast_grants AS (
+    SELECT DISTINCT regexp_replace(c.oid::regclass::text || ' to ' || pg_get_userbyid(r.oid), '[[:cntrl:]]', '?', 'g') AS name
+      FROM pg_class c CROSS JOIN runtime_grantees r
+     WHERE c.relkind = 't'
+       AND (c.relacl IS NOT NULL OR EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND a.attacl IS NOT NULL))
+       AND (EXISTS (SELECT 1 FROM table_privileges t WHERE has_table_privilege(r.oid, c.oid, t.p))
+            OR EXISTS (SELECT 1 FROM column_privileges t WHERE has_any_column_privilege(r.oid, c.oid, t.p)))
+    UNION ALL
+    SELECT regexp_replace('USAGE on schema ' || n.nspname || ' to ' || pg_get_userbyid(r.oid), '[[:cntrl:]]', '?', 'g')
+      FROM pg_namespace n CROSS JOIN runtime_grantees r
+     WHERE n.nspname ~ '^pg_toast(_temp_[0-9]+)?$' AND has_schema_privilege(r.oid, n.oid, 'USAGE')),
 -- ARV-290 review (L3): the runtime login's own settings in this database, which role_settings allows by name: the migration job
 -- sets both on every release, and the migration login may change them in between (it may set temp_file_limit, to -1 or to
 -- terabytes too). Each is judged by its value, in the form the job writes and within the bounds the job holds it to; at most
@@ -1222,6 +1373,10 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'runtime grants|every grant of a re
                       ELSE 'FAIL runtime grants|' || count(*) || ' grants to a role that holds ariva_runtime, with grant option or to PUBLIC: '
                            || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM stray_grants ORDER BY name LIMIT 50) first_ones)
                            || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END FROM stray_grants
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'toast|no toast table grants ariva_runtime or a login that holds it anything, and none of them may use pg_toast'
+                      ELSE 'FAIL toast|' || count(*) || ' grants on toast tables or their schemas: '
+                           || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM toast_grants ORDER BY name LIMIT 50) first_ones)
+                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END FROM toast_grants
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'default privileges|script 0001''s only: the migration login''s tables in public give ariva_runtime SELECT, INSERT, UPDATE and DELETE, its sequences there SELECT and USAGE'
                       ELSE 'FAIL default privileges|' || count(*) || ' entries differ from script 0001''s: ' || string_agg(name, '; ' ORDER BY name) END FROM default_drift
 UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader')
@@ -1242,7 +1397,7 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'extensions|plpgsql, timescaledb an
                       ELSE 'FAIL extensions|' || string_agg(name, ', ' ORDER BY name) || ' (a DBA-provided server''s own: name it with --allow-extension)' END FROM other_extensions
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'plpgsql|its three handler functions and its language only'
                       ELSE 'FAIL plpgsql|also holds ' || string_agg(name, ', ' ORDER BY name) || ' (added to the extension, where the function checks do not look)' END FROM plpgsql_members
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'logins|no role but the bootstrap superuser and the migration login is a superuser or has createrole, replication or bypassrls, and none holds such a role or one of the server, data or signal roles'
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'logins|no role but the bootstrap superuser and the migration login is a superuser or has createrole, replication or bypassrls, and none holds such a role or one of the server, data, signal or maintenance roles'
                                                 || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', but allowed: ' || replace(:'allowed_logins', ',', ', ') END
                       ELSE 'FAIL logins|' || string_agg(name, ', ' ORDER BY name) || ' (a DBA''s own login: name it with --allow-login)' END FROM privileged_roles
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'role settings|none but the runtime login''s statement timeout, temporary file cap, idle transaction limit and keepalives'
@@ -1254,6 +1409,12 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'parameter privileges|SET on temp_f
                                                 || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', and the allowed logins'' own' END
                       ELSE 'FAIL parameter privileges|' || string_agg(name, ', ' ORDER BY name)
                            || ' (GRANT ... ON PARAMETER, the cluster''s: find out who granted it, wiki 10 section 4.19)' END FROM parameter_grants
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'system function grants|the system catalog''s functions grant what initdb gave and nothing more'
+                                                || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', but the allowed logins'' own' END
+                      ELSE 'FAIL system function grants|' || count(*) || ' beyond initdb''s: '
+                           || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM system_function_grants ORDER BY name LIMIT 50) first_ones)
+                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END
+                           || ' (GRANT on a function of pg_catalog, a superuser''s: find out who granted it, then REVOKE it)' END FROM system_function_grants
 UNION ALL SELECT CASE WHEN timeout_ok AND temp_ok AND idle_ok AND keepalives_ok
                       THEN 'runtime caps|' || :'runtime' || ' in this database: statement_timeout ' || statement_timeout || ', temp_file_limit ' || temp_file_limit
                            || ', idle_in_transaction_session_timeout ' || idle_limit || ', tcp_keepalives ' || keepalives
@@ -1379,8 +1540,12 @@ SQL
 # validation reader logins (a REVOKE narrows it and passes); and each type, operator, collation,
 # conversion, text search configuration or dictionary, operator class or family in public and cast created after initdb
 # outside the extensions, and each of these or a relation created after initdb in pg_catalog or information_schema (a
-# migrated database has none). TimescaleDB's jobs are left out (the retention a deployment
-# configures). Each part is hashed as PostgreSQL prints it but for the one form a dump and restore changes in a CHECK
+# migrated database has none); and (ARV-263) each TimescaleDB job, which a dump carries as a row of TimescaleDB's catalog and
+# which runs as its owner, as "job <procedure> on <hypertable>" (a continuous aggregate's by its view) with its owner,
+# schedule, retries, whether it is scheduled (but TimescaleDB's telemetry job's), check function and configuration, the
+# hypertable ids in it as the hypertables they name and a
+# retention policy's period as "within the retention bounds" when ARIVA_RETENTION_DAYS allows it (each deployment
+# configures its own). Each part is hashed as PostgreSQL prints it but for the one form a dump and restore changes in a CHECK
 # constraint (a varchar IN list: ((ARRAY['a'::character varying])::text[]) migrated, (ARRAY[('a'::character varying)::text])
 # restored, both hashed as (ARRAY['a'::character varying])); printed, a backslash doubles, a newline is \n and any other
 # control character "?" (display only). Modes: full (those lines), list (<object>=<hash>, the first 32 hex digits of the
@@ -1388,7 +1553,7 @@ SQL
 # database is at ARIVA_SCHEMA_AT).
 schema_report() {
   as_migration_catalog --tuples-only --no-align --set=mode="$1" --set=pinned="$ARIVA_SCHEMA" --set=schema_at="$ARIVA_SCHEMA_AT" \
-    --set=after_restore="$check_after_restore" <<'SQL'
+    --set=after_restore="$check_after_restore" --set=retention_days="$ARIVA_RETENTION_DAYS" <<'SQL'
 WITH extension_members AS (
     SELECT d.classid, d.objid FROM pg_depend d WHERE d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e'),
 relations AS (
@@ -1420,6 +1585,21 @@ cagg AS (
            to_regclass(format('%I.%I', h.schema_name, h.table_name)) AS materialization
       FROM _timescaledb_catalog.continuous_agg a LEFT JOIN _timescaledb_catalog.hypertable h ON h.id = a.mat_hypertable_id
      WHERE a.user_view_schema = 'public'),
+-- ARV-263: TimescaleDB's jobs, each named by its procedure and the hypertable it acts on (a continuous aggregate's
+-- materialization by the aggregate's view), and the retention bounds each hypertable of ARIVA_RETENTION_DAYS has.
+job_targets AS (
+    SELECT h.id, CASE WHEN a.mat_hypertable_id IS NULL THEN format('%I.%I', h.schema_name, h.table_name)
+                      ELSE format('%I.%I', a.user_view_schema, a.user_view_name) END AS name
+      FROM _timescaledb_catalog.hypertable h LEFT JOIN _timescaledb_catalog.continuous_agg a ON a.mat_hypertable_id = h.id),
+job_retention_days AS (
+    SELECT format('%I.%I', 'public', split_part(e, '=', 1)) AS name, split_part(split_part(e, '=', 2), '-', 1)::integer AS low,
+           split_part(split_part(e, '=', 2), '-', 2)::integer AS high
+      FROM unnest(string_to_array(:'retention_days', ';')) e),
+jobs AS (
+    SELECT j.*, 'job ' || format('%I.%I', j.proc_schema, j.proc_name)
+           || CASE WHEN j.hypertable_id IS NULL THEN ''
+                   ELSE ' on ' || coalesce((SELECT t.name FROM job_targets t WHERE t.id = j.hypertable_id), 'hypertable ' || j.hypertable_id || ' (no such hypertable)') END AS object
+      FROM _timescaledb_catalog.bgw_job j),
 -- public's, and those created after initdb in the system's schemas (ARV-262 review: an overload or an operator there is
 -- picked up by any statement that names it, a superuser's included).
 object_schemas AS (
@@ -1553,6 +1733,33 @@ parts (object, part) AS (
            || ' ' || a.privilege_type || CASE WHEN a.is_grantable THEN ' with grant option' ELSE '' END
       FROM namespaces n CROSS JOIN LATERAL aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a
     UNION ALL
+    SELECT j.object, 'job owner ' || CASE WHEN j.owner::oid = 10 THEN 'the bootstrap superuser'
+                                          WHEN j.owner::oid = (SELECT r.oid FROM pg_roles r WHERE r.rolname = current_user) THEN 'the migration login'
+                                          ELSE j.owner::text END
+           || ', application ' || regexp_replace(j.application_name, '\[[0-9]+\]$', '[N]') || ', schedule ' || j.schedule_interval::text
+           || ', fixed ' || j.fixed_schedule::text || ', initial start ' || coalesce(extract(epoch FROM j.initial_start)::text, 'none')
+           || ', time zone ' || coalesce(j.timezone, 'none') || ', max runtime ' || j.max_runtime::text || ', max retries ' || j.max_retries::text
+           || ', retry period ' || j.retry_period::text
+           -- Whether TimescaleDB's telemetry job is scheduled is left out: the image's entrypoint unschedules it in the database it
+           -- creates when telemetry is off, a database whose extension was created otherwise keeps it scheduled, and what it sends
+           -- is decided by timescaledb.telemetry_level, which the chart sets off (any other job's switch is compared).
+           || CASE WHEN j.proc_schema = '_timescaledb_functions' AND j.proc_name = 'policy_telemetry' THEN '' ELSE ', scheduled ' || j.scheduled::text END
+           || ', check ' || CASE WHEN j.check_name IS NULL THEN 'none' ELSE format('%I.%I', j.check_schema, j.check_name) END
+           || ', config ' || CASE
+                  WHEN j.config IS NULL THEN 'none'
+                  WHEN jsonb_typeof(j.config) <> 'object' THEN j.config::text
+                  ELSE coalesce((SELECT string_agg(k.key || '=' || CASE
+                           WHEN k.key IN ('hypertable_id', 'mat_hypertable_id')
+                               THEN coalesce((SELECT t.name FROM job_targets t WHERE t.id::text = k.value::text), 'no hypertable ' || k.value::text)
+                           WHEN k.key = 'drop_after' AND j.proc_schema = '_timescaledb_functions' AND j.proc_name = 'policy_retention'
+                                AND EXISTS (SELECT 1 FROM job_retention_days d JOIN job_targets t ON t.name = d.name
+                                             WHERE t.id::text = (j.config -> 'hypertable_id')::text
+                                               AND substring(k.value::text FROM '^"([1-9][0-9]{0,4}) days"$')::integer BETWEEN d.low AND d.high)
+                               THEN 'within the retention bounds'
+                           ELSE k.value::text END, ',' ORDER BY k.key COLLATE "C")
+                                   FROM jsonb_each(j.config) k), 'empty') END
+      FROM jobs j
+    UNION ALL
     SELECT 'database', 'owner ' || CASE WHEN d.datdba = (SELECT r.oid FROM pg_roles r WHERE r.rolname = current_user) THEN 'the migration login'
                                         ELSE pg_get_userbyid(d.datdba) END
       FROM pg_database d WHERE d.datname = current_database()
@@ -1600,7 +1807,7 @@ SELECT line FROM (
             THEN 'FAIL schema|not compared: the database is at ' || (SELECT script FROM latest) || ', past the list at ' || :'schema_at'
                  || ' (run the ariva-db.sh of the release whose migration job ran)'
         WHEN count(*) = 0 THEN 'schema|Ariva''s ' || (SELECT count(*) FROM pinned) || ' objects in public as a database the same scripts migrated'
-                 || ' (columns, constraints, indexes, triggers, grants and function definitions)'
+                 || ' (columns, constraints, indexes, triggers, grants and function definitions), TimescaleDB''s jobs included'
         ELSE 'FAIL schema|' || count(*) || ' objects differ from a database the same scripts migrated: '
              || (SELECT string_agg(regexp_replace(name, '[[:cntrl:]]', '?', 'g'), ', ' ORDER BY name COLLATE "C")
                    FROM (SELECT name FROM drift ORDER BY name COLLATE "C" LIMIT 50) first_ones)

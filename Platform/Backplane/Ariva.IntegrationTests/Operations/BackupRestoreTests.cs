@@ -138,12 +138,13 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         // The restore into the fresh server, then the release's migration job with this deployment's own runtime password.
         var restore = await _target.OpsAsync(Ct, "restore", "--input", DumpPath);
         restore.ExitCode.Should().Be(0, restore.Stderr + restore.Stdout);
+        restore.Stderr.Should().Contain("TimescaleDB's jobs checked before its scheduler starts", "ARV-263 review: the jobs are judged while no job can run");
         restore.Stdout.Should().Contain("every object belongs to ariva")
             .And.Contain("ariva_runtime and the logins that hold it have no CREATE on public, on any other schema or on the database");
         // ARV-183 and its review: the wider checks pass on a clean restore (every Ariva function body is one its scripts ship, and
         // the system functions are template1's).
         foreach (var line in new[] { "logins", "held roles", "role settings", "settings", "rules", "other functions", "plpgsql", "system functions", "replication", "planted",
-                     "internal privileges", "runtime grants", "default privileges", "schema", "extension members" })
+                     "internal privileges", "runtime grants", "default privileges", "schema", "extension members", "toast", "system function grants" })
             restore.Stdout.Should().Contain($"ok    {line}|");
         // The backup is at the latest script, so restore's own check compares the runtime role's privileges and the views (an ok
         // "not compared" would be the wrong pass here).
@@ -318,6 +319,13 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         {
             script.Contains(pinned, StringComparison.Ordinal).Should().BeTrue("ariva-db.sh pins what a database the release's migration job migrated holds:\n" + pinned);
         }
+
+        // ARV-263 review: the TimescaleDB tables whose rows a dump carries, which check-dump takes and no other, are the image's.
+        var catalogData = System.Text.RegularExpressions.Regex.Match(script, @"^readonly TIMESCALE_CATALOG_DATA=\((?<names>[^)]*)\)", System.Text.RegularExpressions.RegexOptions.Multiline);
+        catalogData.Success.Should().BeTrue("ariva-db.sh lists the TimescaleDB tables a dump carries");
+        catalogData.Groups["names"].Value.Split(new[] { ' ', '\n' }, StringSplitOptions.RemoveEmptyEntries).Order(StringComparer.Ordinal).Should()
+            .Equal((await ScalarAsync<string>(_source.ConnectionString(ChartDatabase.MigrationLogin, _source.MigrationPassword), Query.TimescaleConfigTables))
+                .Split(' ').Order(StringComparer.Ordinal), "the image's TimescaleDB marks exactly these for pg_dump");
     }
 
     private void AssertNoSecretIn(string text, SourceDeployment source, string what)
@@ -356,11 +364,14 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             .And.Contain("ok    views|the views of public are the scripts' 3, each reading what its script reads")
             .And.Contain("ok    internal privileges|ariva_runtime: each inheritance child no wider than its parent")
             .And.Contain("ok    runtime grants|every grant of a relation or column to the runtime role goes to ariva_runtime without grant option")
-            .And.Contain("ok    default privileges|script 0001's only");
+            .And.Contain("ok    default privileges|script 0001's only")
+            .And.Contain("ok    toast|no toast table grants ariva_runtime or a login that holds it anything, and none of them may use pg_toast")
+            .And.Contain("ok    system function grants|the system catalog's functions grant what initdb gave and nothing more");
         // ARV-262: the restored database, migrated again by the release's job, holds Ariva's objects as a database the scripts
         // migrated (the pinned list AssertSchemaPinsAsync took from the source), TimescaleDB's members as the image ships them,
         // the system functions as the pinned digest, and no setting from a file but the server's postgresql.conf.
         check.Stdout.Should().Contain("ok    schema|Ariva's ").And.Contain(" objects in public as a database the same scripts migrated")
+            .And.Contain("TimescaleDB's jobs included")
             .And.Contain("ok    extension members|timescaledb ").And.Contain("exactly the members this release pins for the image")
             .And.Contain("ok    system functions|as PostgreSQL ").And.Contain("ok    settings|no setting from a file but the server's postgresql.conf");
         // TimescaleDB's own functions and event triggers are extension members: a clean restore has nothing to report.
@@ -449,7 +460,10 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
     /// taken away and the lost revoke against a database the scripts migrated, a function added to timescaledb, and a settings
     /// file written with COPY TO and included; its review: a chunk's copy of an immutability trigger taken away, a foreign key's
     /// triggers disabled, a grant to the validation reader role, a member replaced in place, lpad's SQL-standard body replaced,
-    /// the same functions replaced in template1 too, and sha256 replaced in place.
+    /// the same functions replaced in template1 too, and sha256 replaced in place. ARV-263: TimescaleDB's job rows changed (an
+    /// owner, a period outside its bounds, a configuration naming another hypertable, another procedure) and one added, a toast
+    /// table granted to the runtime role and USAGE on pg_toast for its login, EXECUTE on the server's file functions beyond
+    /// initdb's grants, and a login holding pg_maintain.
     /// </summary>
     private async Task AssertCheckFindsWhatAForgedDumpWouldLeaveAsync()
     {
@@ -472,7 +486,21 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         check.Stdout.Should().Contain("FAIL  group members|ariva_runtime has member it_extra_member");
         Line(check, "FAIL  logins|").Should().Contain("it_privileged (createrole)").And.Contain("it_super (superuser)").And.Contain("it_back (holds it_super)")
             .And.Contain("it_repl (replication)").And.Contain("it_bypass (bypassrls)").And.Contain("ariva_runtime (holds pg_execute_server_program)")
-            .And.Contain($"{RuntimeLogin} (holds pg_execute_server_program)", "the runtime login reaches the server role through ariva_runtime");
+            .And.Contain($"{RuntimeLogin} (holds pg_execute_server_program)", "the runtime login reaches the server role through ariva_runtime")
+            .And.Contain("it_maintainer (holds pg_maintain)", "ARV-263: PostgreSQL 17's maintenance role locks any table");
+        // ARV-263: a toast table granted to the runtime role (outbound_endpoint's: its long values, protected secrets included)
+        // and USAGE on pg_toast for its login, and
+        // grants on the system catalog's own functions beyond initdb's (server file access for the runtime role and its login).
+        // Its review: a PUBLIC grant on a toast table (which the runtime role holds) and a column grant on one to the runtime login,
+        // and on the functions a PUBLIC grant and a NULL ACL written over initdb's revoke (the default: EXECUTE for PUBLIC).
+        var owner = _target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword);
+        var outboundToast = await ScalarAsync<string>(owner, Query.OutboundEndpointToast);
+        Line(check, "FAIL  toast|").Should().Contain($"{outboundToast} to ariva_runtime").And.Contain($"USAGE on schema pg_toast to {RuntimeLogin}")
+            .And.Contain($"{await ScalarAsync<string>(owner, Query.AuditEntryToast)} to ariva_runtime", "SELECT granted to PUBLIC, which the runtime role holds")
+            .And.Contain($"{await ScalarAsync<string>(owner, Query.SiteToast)} to {RuntimeLogin}", "a column of the toast table granted to the runtime login");
+        Line(check, "FAIL  system function grants|").Should().Contain("lo_export(oid,text) EXECUTE to ariva_runtime")
+            .And.Contain($"pg_read_binary_file(text) EXECUTE to {RuntimeLogin}").And.Contain("pg_ls_dir(text) EXECUTE with grant option to it_back")
+            .And.Contain("lo_import(text) EXECUTE to PUBLIC").And.Contain("pg_read_file(text) EXECUTE to PUBLIC", "a NULL ACL is PUBLIC's EXECUTE");
         check.Stdout.Should().Contain("FAIL  held roles|ariva_runtime holds pg_execute_server_program");
         check.Stdout.Should().Contain("FAIL  role settings|it_back temp_file_limit, it_back work_mem (");
         // ARV-290 review: privileges on parameters beside the migration login's SET on temp_file_limit, and the runtime login's
@@ -556,7 +584,19 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             .And.Contain("validation_row_immutable() (differs)", "another body under an Ariva name")
             .And.Contain("it_plain() (not in the scripts)").And.Contain("it_deliveries (not in the scripts)").And.Contain("schema it_side (not in the scripts)")
             .And.Contain("schema pg_catalog (differs)", "CREATE on pg_catalog for the migration role, which would let its login plant an overload there")
-            .And.Contain("information_schema.it_view (not in the scripts)", "a relation created after initdb in a system schema");
+            .And.Contain("information_schema.it_view (not in the scripts)", "a relation created after initdb in a system schema")
+            // ARV-263: TimescaleDB's jobs, which a dump carries as catalog rows and which run as their owner: one owned by the
+            // runtime role, one with a period outside its bounds, one acting on another hypertable than its own, one running
+            // another procedure, and one the scripts never add.
+            .And.Contain("job _timescaledb_functions.policy_retention on public.sensing_event (differs)", "its owner is the runtime role")
+            .And.Contain("job _timescaledb_functions.policy_retention on public.sensing_batch (differs)", "a period outside the retention bounds")
+            .And.Contain("job _timescaledb_functions.policy_retention on public.zone_outage (differs)", "its configuration names another hypertable")
+            .And.Contain("job _timescaledb_functions.policy_compression on public.device_health_event (missing)")
+            .And.Contain("job public.it_plain on public.device_health_event (not in the scripts)", "the compression job runs another procedure")
+            .And.Contain("job public.it_plain (not in the scripts)", "a job the scripts never add")
+            // Its review: an exact copy of a pinned job's row, and a job unscheduled.
+            .And.Contain("job _timescaledb_functions.policy_retention on public.lane_staffing (differs)", "an exact copy of its row added")
+            .And.Contain("job _timescaledb_functions.policy_retention on public.desk_zone_reading (differs)", "unscheduled, so it never drops a row");
         var full = await _target.OpsAsync(Ct, "schema", "--full");
         full.ExitCode.Should().Be(0, full.Stderr);
         full.Stdout.Should().MatchRegex(@"(?m)^queue_bin\|child _timescaledb_internal\._hyper_\d+_\d+_chunk lacks trigger trg_queue_bin_final_is_immutable$",
@@ -565,16 +605,32 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             .And.Contain("user|grant ariva_validation_reader SELECT")
             // Its third round: what a child has that its parent does not (a guard trigger or row security on a chunk).
             .And.Contain("alert_rule|child it_side.it_child has trigger it_extra its parent lacks")
-            .And.Contain("alert_rule|child it_side.it_child has row security or a policy");
+            .And.Contain("alert_rule|child it_side.it_child has row security or a policy")
+            // ARV-263: each job's parts; a period within its bounds is pinned as such, one outside them as it is.
+            .And.Contain("job _timescaledb_functions.policy_retention on public.lane_staffing|job owner the migration login, application Retention Policy [N], ")
+            .And.Contain("config drop_after=within the retention bounds,hypertable_id=public.lane_staffing")
+            .And.Contain("config drop_after=\"1 day\",hypertable_id=public.sensing_batch")
+            .And.Contain("job _timescaledb_functions.policy_retention on public.sensing_event|job owner ariva_runtime, ")
+            .And.MatchRegex(@"(?m)^job _timescaledb_functions\.policy_retention on public\.zone_outage\|.*, config drop_after=within the retention bounds,hypertable_id=public\.lane_staffing$",
+                "zone_outage's job acts on lane_staffing");
         check.Stdout.Should().Contain("ok    planted|", "nothing under a system name outside the extensions yet");
         check.Stdout.Should().Contain("FAIL  extensions|pg_stat_statements (a DBA-provided server's own: name it with --allow-extension)");
-        var allowed = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--allow-extension", "pg_stat_statements", "--allow-login", "it_repl",
+        var allowed = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--allow-extension", "pg_stat_statements", "--allow-login", "it_repl", "--allow-login", "it_extra_member",
             "--allow-setting", "work_mem", "--allow-setting", "maintenance_work_mem", "--allow-setting", "temp_file_limit");
         allowed.Stdout.Should().Contain("ok    extensions|plpgsql, timescaledb and timescaledb_toolkit, and allowed: pg_stat_statements")
             .And.Contain("ok    settings|no setting from a file but the server's postgresql.conf (postgresql.auto.conf, a file an include names) but the allowed: maintenance_work_mem (")
             .And.Contain("/ariva-planted.conf), work_mem (")
             .And.Contain("ok    role settings|none but the runtime login's statement timeout, temporary file cap, idle transaction limit and keepalives, and allowed: work_mem, maintenance_work_mem, temp_file_limit");
         Line(allowed, "FAIL  logins|").Should().NotContain("it_repl").And.Contain("it_bypass (bypassrls)");
+        // ARV-263 review: --allow-login never lets the runtime role or a login of it pass, by a name of Ariva's (refused) or another.
+        Line(allowed, "FAIL  system function grants|").Should().Contain("pg_ls_dir(text,boolean,boolean) EXECUTE to it_extra_member",
+            "it_extra_member holds ariva_runtime, so --allow-login does not cover it");
+        foreach (var own in new[] { RuntimeLogin, "ariva_runtime", ChartDatabase.MigrationLogin })
+        {
+            var refusedName = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--allow-login", own);
+            refusedName.ExitCode.Should().NotBe(0);
+            refusedName.Stderr.Should().Contain($"--allow-login must name a DBA's own login, not one of Ariva's roles or logins: {own}");
+        }
         foreach (var (option, value) in new[] { ("--allow-extension", "pg-stat"), ("--allow-login", "It_Repl"), ("--allow-setting", "work-mem") })
         {
             var badName = await _target.OpsAsync(Ct, "check", option, value);
@@ -727,7 +783,11 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         PurgeNotForReader,
         PurgeOtherTimeZone,
         PurgeUtc,
-        ForgePurgeBody
+        ForgePurgeBody,
+        TimescaleConfigTables,
+        OutboundEndpointToast,
+        AuditEntryToast,
+        SiteToast
     }
 
     // A switch over string literals keeps every command text constant (CA2100).
@@ -886,6 +946,41 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             GRANT SELECT ON pg_catalog.pg_statistic TO PUBLIC;
             GRANT SELECT ON pg_catalog.pg_authid TO ariva_runtime;
             GRANT SELECT ON information_schema._pg_user_mappings TO PUBLIC;
+            CREATE ROLE it_maintainer LOGIN IN ROLE pg_maintain;
+            DO $$ BEGIN
+                EXECUTE (SELECT format('GRANT SELECT ON %s TO ariva_runtime', reltoastrelid::regclass) FROM pg_class WHERE oid = 'public.outbound_endpoint'::regclass);
+            END $$;
+            GRANT USAGE ON SCHEMA pg_toast TO ariva_app;
+            GRANT EXECUTE ON FUNCTION pg_catalog.lo_export(oid, text) TO ariva_runtime;
+            GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO ariva_app;
+            GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text) TO it_back WITH GRANT OPTION;
+            GRANT EXECUTE ON FUNCTION pg_catalog.lo_import(text) TO PUBLIC;
+            UPDATE pg_catalog.pg_proc SET proacl = NULL WHERE oid = 'pg_catalog.pg_read_file(text)'::regprocedure;
+            GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO it_extra_member;
+            DO $$ BEGIN
+                EXECUTE (SELECT format('GRANT SELECT ON %s TO PUBLIC', reltoastrelid::regclass) FROM pg_class WHERE oid = 'public.audit_entry'::regclass);
+                EXECUTE (SELECT format('GRANT SELECT (chunk_data) ON %s TO ariva_app', reltoastrelid::regclass) FROM pg_class WHERE oid = 'public.site'::regclass);
+            END $$;
+            INSERT INTO _timescaledb_catalog.bgw_job (application_name, schedule_interval, max_runtime, max_retries, retry_period, proc_schema, proc_name, owner,
+                                                      scheduled, fixed_schedule, initial_start, hypertable_id, config, check_schema, check_name, timezone)
+            SELECT application_name, schedule_interval, max_runtime, max_retries, retry_period, proc_schema, proc_name, owner,
+                   scheduled, fixed_schedule, initial_start, hypertable_id, config, check_schema, check_name, timezone
+              FROM _timescaledb_catalog.bgw_job
+             WHERE proc_name = 'policy_retention' AND hypertable_id = (SELECT id FROM _timescaledb_catalog.hypertable WHERE table_name = 'lane_staffing');
+            UPDATE _timescaledb_catalog.bgw_job SET scheduled = false
+             WHERE proc_name = 'policy_retention' AND hypertable_id = (SELECT id FROM _timescaledb_catalog.hypertable WHERE table_name = 'desk_zone_reading');
+            UPDATE _timescaledb_catalog.bgw_job SET owner = 'ariva_runtime'
+             WHERE proc_name = 'policy_retention' AND hypertable_id = (SELECT id FROM _timescaledb_catalog.hypertable WHERE table_name = 'sensing_event');
+            UPDATE _timescaledb_catalog.bgw_job SET config = jsonb_set(config, '{drop_after}', '"1 day"')
+             WHERE proc_name = 'policy_retention' AND hypertable_id = (SELECT id FROM _timescaledb_catalog.hypertable WHERE table_name = 'sensing_batch');
+            UPDATE _timescaledb_catalog.bgw_job
+               SET config = jsonb_set(config, '{hypertable_id}', to_jsonb((SELECT id FROM _timescaledb_catalog.hypertable WHERE table_name = 'lane_staffing')))
+             WHERE proc_name = 'policy_retention' AND hypertable_id = (SELECT id FROM _timescaledb_catalog.hypertable WHERE table_name = 'zone_outage');
+            UPDATE _timescaledb_catalog.bgw_job SET proc_schema = 'public', proc_name = 'it_plain'
+             WHERE proc_name = 'policy_compression' AND hypertable_id = (SELECT id FROM _timescaledb_catalog.hypertable WHERE table_name = 'device_health_event');
+            INSERT INTO _timescaledb_catalog.bgw_job (application_name, schedule_interval, max_runtime, max_retries, retry_period, proc_schema, proc_name, owner,
+                                                      scheduled, fixed_schedule)
+            VALUES ('It Planted Job', INTERVAL '1 hour', INTERVAL '0', -1, INTERVAL '1 hour', 'public', 'it_plain', 'ariva', false, false);
             """,
         Query.AlterSystem => "ALTER SYSTEM SET work_mem = '8MB'",
         Query.IncludeSettingsFile => """
@@ -936,6 +1031,14 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             CREATE OR REPLACE FUNCTION public.ariva_retention_purge(p_data_set text, p_limit integer) RETURNS integer
                 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET TimeZone = 'UTC' AS $$ BEGIN RETURN 0; END $$
             """,
+        Query.TimescaleConfigTables => """
+            SELECT string_agg(CASE WHEN c.relnamespace = '_timescaledb_catalog'::regnamespace THEN c.relname::text ELSE c.oid::regclass::text END, ' ')
+              FROM pg_extension x CROSS JOIN LATERAL unnest(x.extconfig) e(cfg) JOIN pg_class c ON c.oid = e.cfg
+             WHERE x.extname = 'timescaledb'
+            """,
+        Query.OutboundEndpointToast => "SELECT reltoastrelid::regclass::text FROM pg_class WHERE oid = 'public.outbound_endpoint'::regclass",
+        Query.AuditEntryToast => "SELECT reltoastrelid::regclass::text FROM pg_class WHERE oid = 'public.audit_entry'::regclass",
+        Query.SiteToast => "SELECT reltoastrelid::regclass::text FROM pg_class WHERE oid = 'public.site'::regclass",
         _ => throw new ArgumentOutOfRangeException(nameof(query))
     };
 

@@ -5755,3 +5755,86 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - PostgreSQL rounds `interval '0.0000004 second'` to zero, so a sub-microsecond case has to come from the client (an Npgsql `DateTime` parameter, which it sends truncated to the microsecond).
   - A BEFORE trigger runs before the row's constraints, so a test that expects the trigger's refusal must assert its message: the table's CHECK constraints raise 23514 too.
   - The ops check pins every function body (`ARIVA_FUNCTIONS`, kept equal to the scripts by OpsScriptTests) and every object's definition (`ARIVA_SCHEMA`, printed by BackupRestoreTests from a migrated database); a new script moves `ARIVA_SCHEMA_AT`.
+
+## 2026-11-06: ARV-263 [E17] Post-restore check: TimescaleDB jobs pinned, and the last privilege residuals of ARV-189
+
+- What changed (`scripts/ops/ariva-db.sh`, defence in depth behind the signed manifest, which stays the gate):
+  - **TimescaleDB's jobs pinned.** A dump carries the job rows (`_timescaledb_catalog.bgw_job`) as catalog data, and a job runs as its owner; `check` only counted them. `schema` now lists each job as an object `job <procedure> on <hypertable>` (a continuous aggregate's by its view), so `ARIVA_SCHEMA` holds its hash and `check` reports a job that differs, is missing or is not in the scripts.
+    - Its parts: owner (the migration login or the bootstrap superuser by role, any other by name), application name (the id written as N), schedule, fixed schedule, initial start, time zone, maximum runtime and retries, retry period, scheduled, check function and configuration.
+    - In the configuration, `hypertable_id` and `mat_hypertable_id` are written as the hypertables they name, so a job made to act on another hypertable differs. A retention policy's `drop_after` is written as "within the retention bounds" when the new `ARIVA_RETENTION_DAYS` allows it for the hypertable its configuration names: each deployment configures its own period, and the hash stays the same.
+    - `ARIVA_RETENTION_DAYS` holds the bounds `RetentionSettings` keeps each hypertable's period to. OpsScriptTests holds it equal, proving each bound by what `Problems()` accepts and refuses.
+  - **Toast line.** A toast table that grants the runtime role, or a login that holds it, anything (PUBLIC's grants included), and USAGE on `pg_toast` or a temporary toast schema for them, fail it. Only toast tables with grants of their own are looked at, so many chunks cost little.
+  - **System function grants line.** A grant on a system catalog function (below oid 16384) beyond `pg_init_privs` fails it (or beyond the default EXECUTE, where initdb recorded none), a grant option included. A login named with `--allow-login` passes. An example is EXECUTE on `lo_export` or `pg_read_binary_file`, which is server file access.
+  - **`pg_maintain`** (PostgreSQL 17) is among the roles no login may hold.
+  - From the security review:
+    - **Restore judges the jobs before they can run.** A job runs as its owner once a restore leaves TimescaleDB's restore mode, before `check` can look. So `restore_job_gate` reads the restored jobs as the migration login while that mode still keeps the scheduler away. Each job must:
+      - run a TimescaleDB policy procedure with its own check, or none;
+      - be owned by the extension's owner if it is one of TimescaleDB's own two, and by the migration login otherwise;
+      - act on its own hypertable (its configuration's id equal to its own);
+      - if it is a retention policy, act on a hypertable of `ARIVA_RETENTION_DAYS` within its bounds.
+
+      Any other job keeps the database in restore mode (`KEEP_RESTORING`, so `on_restore_exit` does not end it) and stops the restore.
+    - **`check-dump` takes TimescaleDB's data only for the tables a dump of it carries.** These are `TIMESCALE_CATALOG_DATA`, the extension's configuration tables, held equal to the image's by BackupRestoreTests. It also takes chunks (2.31's `_chunk_compressed` form included) and TimescaleDB's own hypertables, owned by the migration login. A job's run state, which pg_dump never writes, is refused: a forged `next_start` would keep a pinned retention job from running.
+    - **A system function's NULL ACL counts as the default** (EXECUTE for PUBLIC), so a NULL written over initdb's revoke is reported.
+    - **`--allow-login` never lets the runtime role or a login of it pass.** It refuses Ariva's role and login names, and in the SQL a member of `ariva_runtime` under another name is never exempt (system function grants, logins and parameter privileges).
+    - **Role names in the new lines have control characters replaced.**
+- Tests:
+  - Unit, `OpsScriptTests`:
+    - `RetentionBounds_Should_BeTheRetentionSettingsBounds_When_SchemaPinsTheRetentionJobs`.
+    - The schema list test now requires the job entries to be exactly the scripts' `add_*_policy` calls plus TimescaleDB's two own jobs.
+  - Integration, `BackupRestoreTests`:
+    - The pins hold the 13 jobs of a migrated database.
+    - Restore and check pass the new lines.
+    - As the superuser, the test plants each of these, and check fails on each: a retention job owned by the runtime role; one with a period outside its bounds; one whose configuration names another hypertable; the compression job given another procedure; an added job; SELECT on `outbound_endpoint`'s toast table for the runtime role; USAGE on `pg_toast` for its login; EXECUTE on `lo_export` (runtime role), `pg_read_binary_file` (runtime login) and `pg_ls_dir` (another login, with grant option); and a login holding `pg_maintain`.
+    - `schema --full` names each job's parts.
+  - Integration, review additions in `BackupRestoreTests`:
+    - A toast table granted to PUBLIC, and a column of one granted to the runtime login.
+    - EXECUTE on `lo_import` for PUBLIC, and a NULL ACL on `pg_read_file`.
+    - An exact copy of a job's row, and a job unscheduled.
+    - `--allow-login` of the runtime login, the runtime role and the migration login refused, and of a runtime member still reported.
+    - The gate's ok message on a clean restore.
+    - `TIMESCALE_CATALOG_DATA` equal to the source's extension configuration.
+  - Integration, new `RestoreGateTests`:
+    - A dump carrying a job's run state (bgw_job_stat made a configuration table on the source) is refused by `check-dump` before anything is restored.
+    - A dump with a retention job owned by the bootstrap superuser, and one dropping rows sooner than its bounds, is refused with both named. `SHOW timescaledb.restoring` is still on afterwards.
+  - Integration, new `OlderBackupRestoreTests`:
+    - A source holding only the scripts before `ARIVA_RUNTIME_PRIVILEGES_AT` is backed up and restored.
+    - Restore's own check passes the runtime privileges, the views and the schema as not compared, with its closing message.
+    - A plain check then fails on those lines and on the missing runtime login. After the release's migration job it passes, jobs included.
+    - The schema line on a database past `ARIVA_SCHEMA_AT` fails as not compared while the runtime privileges stay compared. With the database back at the list, check passes.
+  - Results: OpsScriptTests 64 of 64 with RetentionSettingsTests and the script catalog tests; BackupRestoreTests, OlderBackupRestoreTests, RestoreGateTests, ExtensionUpdateTests and GrantSettingsTests (6 cases) passed, in the gate's full integration run as well.
+- Files:
+  - scripts/ops/ariva-db.sh
+  - Platform/Backplane/Ariva.UnitTests/Operations/OpsScriptTests.cs
+  - Platform/Backplane/Ariva.IntegrationTests/Operations/{BackupRestoreTests.cs, OlderBackupRestoreTests.cs, RestoreGateTests.cs}
+  - docs/security/cwe-controls.md (CWE-269), wiki/04-Deployment-Guide.md (section 10), wiki/10-Operations-Runbook.md (check lines)
+  - backlog/prd-phase3.json (ARV-263 passes), backlog/progress.md
+- Gates: one story gate for the landing batch (ARV-273a, ARV-263) on its combined tree, 2026-11-06: `node scripts/verify.mjs story --base c8a76df` (the full integration suite, script 0071 being new).
+  - PASS: build, unit tests 8,886 of 8,886, the security gate with every self-test and audit, docs, and E2E (7 spec files, the advertising policy API and screen specs among them: 359 passed, artifact check PASS).
+  - Integration 997: the 25 Faults tests are blocked as recorded (ghcr.io's blob host is unreachable for their toxiproxy image; the owner's decision); every other test passed.
+  - Before the gate, on the final tree: OpsScriptTests with RetentionSettingsTests and the script catalog tests 64 of 64; BackupRestoreTests, OlderBackupRestoreTests, RestoreGateTests, ExtensionUpdateTests and GrantSettingsTests (6 cases); AdvertisingPolicyServiceTests.
+  - scan.mjs: 0 errors.
+- Security review: security-reviewer PASS in round 3 (CWE-269, CWE-345, CWE-89), recorded with the gates below.
+  - Round 1 FAIL:
+    - (M) The jobs were checked only after they could run: `timescaledb_post_restore()` restarts the scheduler before `check`, so a dumped job (accepted by `check-dump` as catalog data) could run as its owner and even delete its own row first. Fixed with `restore_job_gate`.
+    - (L-M) A system function's NULL ACL (PUBLIC's EXECUTE) was skipped. Fixed.
+    - (L) `--allow-login` could exempt the runtime login or role. Fixed in bash and in SQL.
+    - (L) `check-dump` accepted any `_timescaledb_internal` data, a job's run state included. Fixed with `TIMESCALE_CATALOG_DATA` and the chunk name rule.
+    - (L) Claimed cases had no test (PUBLIC and column grants on toast tables, a duplicate job row, a job unscheduled). Added.
+    - (I) Control characters in role names. Replaced.
+  - Round 2 FAIL:
+    - (M) The gate failed open when the restore itself failed (a malformed data block or a signal ended restore mode through the EXIT trap). Fixed: restore mode is kept from its start until the gate passes, and a cut dump is tested.
+    - (L) A NULL in the gate's condition passed a job. Fixed with `coalesce(..., false)` and `hypertable_id IS NOT NULL`, and a compression job on no hypertable is tested.
+    - Residual recorded in the CWE-269 row: a retention period within the bounds but shorter than the configured one passes until the migration job resets it.
+  - Round 3 PASS. Its informational note was taken: the restore-mode line prints only when restore mode was entered. Not adopted: offsets of refresh and compression policies are not checked by the gate; they run TimescaleDB code without loss, and `check`'s schema line pins them.
+- Gotchas:
+  - `format('%I.%I', ...)` raises on a NULL name, so a nullable name pair needs a CASE, never `coalesce(format(...), ...)`.
+  - TimescaleDB dumps the job rows with ids from 1000 and creates its own two jobs (telemetry, job history retention) with the extension; both kinds are pinned.
+  - The job ids change whenever the migration job replaces a retention policy, so the id stays out of the hash.
+  - With `TIMESCALEDB_TELEMETRY=off` the image's entrypoint unschedules TimescaleDB's telemetry job in the database it creates. A database whose extension was created any other way keeps it scheduled (ExtensionUpdateTests re-creates the extension, and found it). So that job's switch is left out of its pin; `timescaledb.telemetry_level`, which the chart sets off, decides what it sends. Every other job's switch is pinned.
+  - A grant on a toast table is possible (a superuser's or its owner's), and `has_any_column_privilege` covers its column grants.
+  - A check that runs after the restore cannot stop what runs during it: anything that executes as soon as TimescaleDB's restore mode ends has to be judged before `timescaledb_post_restore()`.
+  - TimescaleDB 2.31 names a compressed chunk `_hyper_N_M_chunk_compressed`; a pattern written from older docs (`compress_hyper_`) refused a clean restore, which BackupRestoreTests found.
+  - Not covered here, for a later story: `pg_read_all_stats` and `pg_monitor`, which show other sessions' query text, are not among the powerful roles.
+  - A gate inside a shell trap's lifetime must fail closed: set the "keep" flag before the risky step and clear it only on the success path, or `set -e` and a signal take the trap's happy path.
+  - An embedded SQL script changes the unit test binary: rebuild Ariva.UnitTests after editing a script, or OpsScriptTests compares the pins with the old body.

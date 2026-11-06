@@ -49,6 +49,44 @@ public sealed partial class OpsScriptTests
         Constant("RUNTIME_KEEPALIVE_COUNT").Should().Be(DatabaseSettings.KeepaliveCount);
     }
 
+    /// <summary>
+    /// ARV-263: schema pins a retention job's period as "within the retention bounds" when ARIVA_RETENTION_DAYS allows it, so
+    /// the script lists every hypertable the migration job sets a policy on, each with the bounds RetentionSettings holds its
+    /// period to: the lowest and highest period it accepts, and none outside them.
+    /// </summary>
+    [Fact]
+    public void RetentionBounds_Should_BeTheRetentionSettingsBounds_When_SchemaPinsTheRetentionJobs()
+    {
+        var match = Regex.Match(Script.Value, @"^readonly ARIVA_RETENTION_DAYS=""(?<value>[^""]+)""$", RegexOptions.Multiline | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
+        match.Success.Should().BeTrue("the script declares ARIVA_RETENTION_DAYS");
+        var bounds = match.Groups["value"].Value.Replace("\\\n", "", StringComparison.Ordinal).Split(';')
+            .Select(entry => entry.Split('=', '-'))
+            .ToDictionary(parts => parts[0], parts => (Min: int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture),
+                Max: int.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture)), StringComparer.Ordinal);
+        bounds.Keys.Should().BeInAscendingOrder(StringComparer.Ordinal).And.BeEquivalentTo(new RetentionSettings().Hypertables().Select(h => h.Table));
+
+        // Each hypertable's period with the setting that feeds it: the mapping is proven by the period it gives that table.
+        var settingFor = new Dictionary<string, Func<int, RetentionSettings>>(StringComparer.Ordinal)
+        {
+            ["sensing_event"] = days => new RetentionSettings { RawSensingDays = days },
+            ["sensing_batch"] = days => new RetentionSettings { RawSensingDays = days },
+            ["device_health_event"] = days => new RetentionSettings { RawSensingDays = days },
+            ["zone_outage"] = days => new RetentionSettings { RawSensingDays = days },
+            ["desk_zone_reading"] = days => new RetentionSettings { DeskZoneReadingDays = days },
+            ["lane_staffing"] = days => new RetentionSettings { LaneStaffingDays = days },
+            ["advertising_play"] = days => new RetentionSettings { AdvertisingPlayDays = days }
+        };
+        settingFor.Keys.Should().BeEquivalentTo(bounds.Keys);
+        foreach (var (table, (min, max)) in bounds)
+        {
+            settingFor[table](min).Hypertables().Single(h => h.Table == table).Days.Should().Be(min, $"{table}'s period comes from that setting");
+            settingFor[table](min).Problems().Should().BeEmpty($"{min} days is the lowest period of {table}");
+            settingFor[table](max).Problems().Should().BeEmpty($"{max} days is the highest period of {table}");
+            settingFor[table](min - 1).Problems().Should().NotBeEmpty($"{min - 1} days is below {table}'s bounds");
+            settingFor[table](max + 1).Problems().Should().NotBeEmpty($"{max + 1} days is above {table}'s bounds");
+        }
+    }
+
     [Fact]
     public void CompactedTopics_Should_BeTheTopicsProvisionedWithCompaction_When_Listed()
     {
@@ -239,7 +277,8 @@ public sealed partial class OpsScriptTests
         var listed = SchemaList().Match(Script.Value);
         listed.Success.Should().BeTrue("the script lists Ariva's objects in ARIVA_SCHEMA");
         var entries = listed.Groups["entries"].Value.Replace("\\\n", string.Empty, StringComparison.Ordinal).Split(';');
-        entries.Should().OnlyContain(entry => SchemaEntry().IsMatch(entry), "<relation>=<hash>, <function>(<arguments>)=<hash>, schema <name>=<hash> or database=<hash>");
+        entries.Should().OnlyContain(entry => SchemaEntry().IsMatch(entry),
+            "<relation>=<hash>, <function>(<arguments>)=<hash>, schema <name>=<hash>, job <procedure>[ on <hypertable>]=<hash> or database=<hash>");
         var names = entries.Select(entry => entry[..entry.LastIndexOf('=')]).ToList();
         names.Should().BeInAscendingOrder(StringComparer.Ordinal).And.OnlyHaveUniqueItems();
 
@@ -250,7 +289,8 @@ public sealed partial class OpsScriptTests
             .ToHashSet(StringComparer.Ordinal);
         // The migration runner's own table, and "user", whose quoted name CreateTable does not read.
         relations.UnionWith(["schema_version", "user"]);
-        var listedRelations = names.Where(name => !name.Contains('(', StringComparison.Ordinal) && !name.StartsWith("schema ", StringComparison.Ordinal) && name != "database").ToList();
+        var listedRelations = names.Where(name => !name.Contains('(', StringComparison.Ordinal) && !name.StartsWith("schema ", StringComparison.Ordinal)
+                                                  && !name.StartsWith("job ", StringComparison.Ordinal) && name != "database").ToList();
         listedRelations.Where(name => !name.EndsWith("_seq", StringComparison.Ordinal)).Should().BeEquivalentTo(relations,
             "every table and view the scripts create (none is dropped), and nothing else");
 
@@ -260,6 +300,22 @@ public sealed partial class OpsScriptTests
         names.Where(name => name.Contains('(', StringComparison.Ordinal)).Select(name => name[..name.IndexOf('(', StringComparison.Ordinal)])
             .Should().BeEquivalentTo(functions, "every function the scripts create, once");
         names.Should().Contain(["schema_version", "queue_minute_15m", "ariva_retention_purge(p_data_set text, p_limit integer)", "schema public", "database"]);
+
+        // ARV-263: TimescaleDB's jobs, one per policy a script adds (retention, compression, a continuous aggregate's refresh) and
+        // TimescaleDB's own two (telemetry, its job history's retention), each once.
+        var procedures = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["retention"] = "policy_retention",
+            ["compression"] = "policy_compression",
+            ["continuous_aggregate"] = "policy_refresh_continuous_aggregate"
+        };
+        var policies = scripts.SelectMany(script => PolicyCall().Matches(WithoutComments(script.Sql)))
+            .Select(m => $"job _timescaledb_functions.{procedures[m.Groups["kind"].Value]} on public.{m.Groups["table"].Value}")
+            .ToList();
+        policies.Should().HaveCountGreaterThan(5).And.OnlyHaveUniqueItems();
+        names.Where(name => name.StartsWith("job ", StringComparison.Ordinal)).Should().BeEquivalentTo(
+            policies.Concat(["job _timescaledb_functions.policy_telemetry", "job _timescaledb_functions.policy_job_stat_history_retention"]),
+            "every policy the scripts add and TimescaleDB's own jobs, and nothing else");
     }
 
     [Fact]
@@ -538,11 +594,15 @@ public sealed partial class OpsScriptTests
     [GeneratedRegex(@"^readonly ARIVA_SCHEMA_AT=""(?<script>[0-9]{4}_[a-z0-9_]+\.sql)""$", RegexOptions.Multiline)]
     private static partial Regex SchemaAt();
 
-    [GeneratedRegex(@"^readonly ARIVA_SCHEMA=""(?<entries>[a-z0-9_=;(), \\\n]+)""$", RegexOptions.Multiline)]
+    [GeneratedRegex(@"^readonly ARIVA_SCHEMA=""(?<entries>[a-z0-9_=;(),. \\\n]+)""$", RegexOptions.Multiline)]
     private static partial Regex SchemaList();
 
-    [GeneratedRegex(@"^(schema [a-z_][a-z0-9_]*|[a-z_][a-z0-9_]*(\([a-z0-9_ ,]*\))?)=[0-9a-f]{32}$")]
+    [GeneratedRegex(@"^(schema [a-z_][a-z0-9_]*|job [a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*( on [a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*)?|[a-z_][a-z0-9_]*(\([a-z0-9_ ,]*\))?)=[0-9a-f]{32}$")]
     private static partial Regex SchemaEntry();
+
+    // ARV-263: each TimescaleDB policy a shipped script adds, by its kind and its table or continuous aggregate.
+    [GeneratedRegex(@"add_(?<kind>retention|compression|continuous_aggregate)_policy\('(?<table>[a-z_][a-z0-9_]*)'")]
+    private static partial Regex PolicyCall();
 
     [GeneratedRegex(@"^readonly ARIVA_EXTENSION_MEMBERS=""(?<entries>timescaledb [0-9]+(\.[0-9]+)+=[0-9a-f]{64};timescaledb_toolkit [0-9]+(\.[0-9]+)+=[0-9a-f]{64})""$", RegexOptions.Multiline)]
     private static partial Regex ExtensionMembersList();
