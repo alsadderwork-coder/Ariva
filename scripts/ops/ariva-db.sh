@@ -128,6 +128,7 @@ readonly TIMESCALE_EXTENSIONS=(timescaledb timescaledb_toolkit)
 readonly ARIVA_FUNCTIONS="advertising_media_guard:0ab8da7a9d52b3ddaa476898c7585a7b9d0ce0dceec2c7daf34cb25f4dfd164d,\
 advertising_media_guard:2b454da6258f0a91d18a87b3978039af67d57f6475cffe9a5d6c607581a632e3,\
 advertising_playlist_guard:2e0ba89e6033c9331e127d4556458e0f0fb149a54ad0d81070b5ad732b440a60,\
+advertising_policy_stamped:28c88ccd31dc85f4c85df229bf47b92fc358e5e5f88ba85cc4e31f0b95e7a6e0,\
 advertising_schedule_guard:4db8de8d13bee5fdb96ff795f78e5f1c3777c11d21ff179ef4cc21aeb28e6652,\
 alert_keep_raise:52af781790c93f2eab47e7cc2b99b6e592da013f16804c725a0dc1b20b5f4805,\
 alert_keep_raise:7da479242dafa3d0ffae451c6f31cd9e9301a2be48720b166dc10ef985dc4190,\
@@ -279,7 +280,7 @@ readonly ARIVA_VIEWS="line_minute_15m=line_minute;overflow_bin_15m=overflow_minu
 # ARIVA_SCHEMA_AT, the latest script (any script may change them), so a trigger, constraint, grant or function a forged dump
 # left out, changed or added is reported even where no other line looks. OpsScriptTests holds ARIVA_SCHEMA_AT at the
 # latest script; BackupRestoreTests holds the list equal to a database the release's migration job migrated (and prints it).
-readonly ARIVA_SCHEMA_AT="0070_runtime_session_limits.sql"
+readonly ARIVA_SCHEMA_AT="0071_advertising_policy_stamped.sql"
 readonly ARIVA_SCHEMA="advertising_media=2cb17c8c169d81de441d4192fdc21b0c;\
 advertising_media_guard()=0c14e39356e12f186a82b88895cc130a;\
 advertising_play=d5f1179d8cfaccdcc0d9c7d9c3634258;\
