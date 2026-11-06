@@ -70,6 +70,7 @@
     "0067_device_health_covered_lines.sql": "5a99d23fce1ea51d8174b2e5eaabec73e6e18295c08320ed7312a33c0bf4d0bb",
     "0068_outage_and_staffing_reads.sql": "aed44758844a20f0e4baa9c251f2cd7bb5a8016c10fe4f19b8e8148f70de1ff9",
     "0069_runtime_temp_file_limit.sql": "e0bd80b920ef82758a56af816f93d84ef851a3dddc67973c4c3e11b2e98821f3",
-    "0070_runtime_session_limits.sql": "83251d7d5df4f630c378f6edba276f9139f765238c19c7f93810158f1f903fd7"
+    "0070_runtime_session_limits.sql": "83251d7d5df4f630c378f6edba276f9139f765238c19c7f93810158f1f903fd7",
+    "0071_advertising_policy_stamped.sql": "af3279ab2c8243164da2e236d494d4720662af9ca6884862bcdac962748e37ea"
   }
 }

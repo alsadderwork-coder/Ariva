@@ -5705,3 +5705,53 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - PostgreSQL keeps microseconds and .NET ticks are 100 ns: truncate a time used as a version to the microsecond, or the answer and a later read disagree.
   - A time is a version only when no two stored states of a row share one. The interceptor clamped a change to the creation's time on a pod whose clock was behind, and a clock that does not move (the integration host's `ManualClock`) stamps two changes alike. Stamp a change strictly after the row's last stamp.
   - A panel inside `{#key siteCode}` is destroyed when the site changes. A save's continuation runs on in the destroyed component: detect it (`onDestroy`), and take the message formatter before the await.
+
+## 2026-11-06: ARV-273a [E21] Advertising policy changes held again by the database: a runtime write that does not stamp a new version is refused
+
+- What changed:
+  - **Script 0071** (`advertising_policy_stamped`, a BEFORE INSERT OR UPDATE trigger on `advertising_policy`). For every writer it refuses:
+    - an update whose `modified_on` is not after the row's last stamp (the later of its last change and its creation, to the microsecond), whose `modified_by_id` is missing, or that changes `created_on` or `created_by_id`;
+    - a new policy without `created_on` and `created_by_id`; its version would read as "no policy", and a form opened on a site without one would save over it unseen;
+    - any stamp that is not finite or is more than a day ahead of the database's clock. That day is the pods' clock skew tolerated. Every later change must be stamped after the last one, so one such write would hold the policy as it is for good.
+    - The runtime role keeps UPDATE on the table, because the service changes the policy through it. So before this, a direct SQL write through the runtime login could store a change under the version it replaced (ARV-273), or without who made it.
+    - The service's changes already stamp after the last stamp (`AuditInterceptor.After`), so its answers are unchanged.
+  - `scripts/ops/ariva-db.sh`: the new function's body in `ARIVA_FUNCTIONS`; `ARIVA_SCHEMA_AT` at 0071; and `ARIVA_SCHEMA`'s pins for `advertising_policy` and the new function, as `BackupRestoreTests` printed them from a migrated database.
+- Tests:
+  - Integration `AdvertisingPolicyServiceTests.RuntimeRole_Should_NotChangeAPolicyUnstamped_When_ItWritesThePolicyDirectly` (15 cases). Each is refused with 23514 and the trigger's own message:
+    - a change that keeps the stamp, is stamped at it, or is stamped before it;
+    - a change stamped within its microsecond, sent as a client parameter four ticks after it;
+    - a change without an author, or one that changes when or by whom the policy was created;
+    - a change stamped at infinity or two days ahead;
+    - a new policy without its creation stamps, or created or changed at infinity, or created two days ahead;
+    - a new policy with a change stamp before its creation or without who made it.
+
+    A direct write stamped after the last change with an author is taken, at the database clock and 23 hours ahead of it, and a change through the service still is.
+  - `RuntimeRole_Should_ChangeAnUnstampedPolicyOnlyStamped_When_ItWasWrittenBeforeScript0071`: a row with no stamps (from before 0071) takes a stamped change and refuses an unstamped one.
+  - `Display_Should_NotBeSetToAdvertising_When_ThePolicyIsTurnedOffAtTheSameMoment`: its direct writes of the policy, which stand for a change in progress, now stamp it.
+  - Results: the theory's 15 cases, the unstamped-row fact and the rest of AdvertisingPolicyServiceTests passed, in the gate's full integration run as well.
+- Files:
+  - Platform/Backplane/Ariva.Infra/Timescale/Scripts/{0071_advertising_policy_stamped.sql, checksums.lock}
+  - scripts/ops/ariva-db.sh
+  - Platform/Backplane/Ariva.IntegrationTests/Displays/AdvertisingPolicyServiceTests.cs
+  - wiki/11-Administration-Guide.md (advertising policy), docs/security/asvs-l2.md (V2.3.4), docs/security/cwe-controls.md (CWE-863)
+  - backlog/prd-phase3.json (ARV-273a passes), backlog/progress.md
+- Gates: one story gate for the landing batch (ARV-273a, ARV-263) on its combined tree, 2026-11-06: `node scripts/verify.mjs story --base c8a76df` (the full integration suite, script 0071 being new).
+  - PASS: build, unit tests 8,886 of 8,886, the security gate with every self-test and audit, docs, and E2E (7 spec files, the advertising policy API and screen specs among them: 359 passed, artifact check PASS).
+  - Integration 997: the 25 Faults tests are blocked as recorded (ghcr.io's blob host is unreachable for their toxiproxy image; the owner's decision); every other test passed.
+  - Before the gate, on the final tree: OpsScriptTests with RetentionSettingsTests and the script catalog tests 64 of 64; BackupRestoreTests, OlderBackupRestoreTests, RestoreGateTests, ExtensionUpdateTests and GrantSettingsTests (6 cases); AdvertisingPolicyServiceTests.
+  - scan.mjs: 0 errors.
+- Security review: security-reviewer PASS in round 3 (CWE-863, CWE-269; ASVS V2.3.4), recorded with the gates below.
+  - Round 1 FAIL (probes as the runtime role on a scratch database):
+    - (M) `modified_on = 'infinity'`, or a year past 9999, was taken, after which every change was refused and the service's `AuditInterceptor.After` overflowed: one direct write froze the policy. Fixed by the finiteness and one-day bound.
+    - (L-M) The trigger fired on UPDATE only, so a direct INSERT of a site's first policy with no stamps (version "no policy") or created at infinity was taken. Fixed with BEFORE INSERT OR UPDATE and the insert rules.
+    - (L) The microsecond case was the "at the stamp" case again, because PostgreSQL rounds the interval to zero. Fixed with a client parameter.
+    - (L) 23514 alone did not tell the trigger from the table's CHECK constraints. Fixed by asserting the message, and the unstamped-row branch now has its own test.
+    - (L) The CWE-863 row did not name the control. Fixed.
+  - Round 2 PASS, with two low findings, both taken: an insert's change stamp before its creation or without an author is refused, and a write 23 hours ahead is shown taken.
+  - Round 3 PASS: no findings; the checksum, function body hash and the function's schema pin were checked against a scratch database migrated through 0071.
+- Gotchas:
+  - An integration test that writes a row directly to stand for the service's change must stamp it as the service does, now that the database checks the stamp.
+  - A rule that every change comes after the last one makes one bad stamp permanent, so it needs an upper bound (and finiteness) as well as the lower one, and the insert needs the rule too.
+  - PostgreSQL rounds `interval '0.0000004 second'` to zero, so a sub-microsecond case has to come from the client (an Npgsql `DateTime` parameter, which it sends truncated to the microsecond).
+  - A BEFORE trigger runs before the row's constraints, so a test that expects the trigger's refusal must assert its message: the table's CHECK constraints raise 23514 too.
+  - The ops check pins every function body (`ARIVA_FUNCTIONS`, kept equal to the scripts by OpsScriptTests) and every object's definition (`ARIVA_SCHEMA`, printed by BackupRestoreTests from a migrated database); a new script moves `ARIVA_SCHEMA_AT`.

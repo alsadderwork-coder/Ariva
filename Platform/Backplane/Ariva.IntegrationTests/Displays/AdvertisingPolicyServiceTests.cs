@@ -415,11 +415,13 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         var created = await _host.AsCallerAsync(manager, s => Displays(s).CreateAsync(Request("ADV-RACE", "A-CIT", "Instructions"), Ct));
         created.HasErrors.Should().BeFalse(string.Join(", ", created.ErrorMessages ?? []));
 
-        // A change of the policy in progress, as the service makes it: the site's lock (class 145), then the row, not yet committed.
+        // A change of the policy in progress, as the service makes it: the site's lock (class 145), then the row, stamped after its
+        // last change with who made it (script 0071), not yet committed.
         await using (var change = await RuntimeAsync())
         {
             await using (var command = new NpgsqlCommand(
-                             "SELECT pg_advisory_xact_lock(145, hashtext('DMO')); UPDATE advertising_policy SET allowed = false WHERE site_code = 'DMO'",
+                             "SELECT pg_advisory_xact_lock(145, hashtext('DMO')); UPDATE advertising_policy SET allowed = false, modified_on = clock_timestamp(), " +
+                             "modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'",
                              change.Connection, change.Transaction))
                 await command.ExecuteNonQueryAsync(Ct);
             var setting = _host.AsCallerAsync(manager, s => Displays(s).UpdateAsync(created.Data.Display.Id, Request("ADV-RACE", "A-CIT"), Ct));
@@ -435,7 +437,8 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         await using (var change = await RuntimeAsync())
         await using (var write = await RuntimeAsync())
         {
-            await using (var off = new NpgsqlCommand("UPDATE advertising_policy SET allowed = false WHERE site_code = 'DMO'", change.Connection, change.Transaction))
+            await using (var off = new NpgsqlCommand("UPDATE advertising_policy SET allowed = false, modified_on = clock_timestamp(), " +
+                                                     "modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'", change.Connection, change.Transaction))
                 await off.ExecuteNonQueryAsync(Ct);
             await using var advertise = new NpgsqlCommand("UPDATE display SET second_region = 'Advertising' WHERE code = 'ADV-RACE'", write.Connection,
                 write.Transaction);
@@ -565,6 +568,127 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         var published = await _host.AsCallerAsync(manager, s => s.GetRequiredService<ISvcZoneProfiles>().PublishAsync(draft.Data.Profile.Id,
             new PublishZoneProfileRequest(reviewed.Data.GeometryHash), Ct));
         published.HasErrors.Should().BeFalse(string.Join(", ", published.ErrorMessages ?? []));
+    }
+
+    [Theory]
+    [InlineData("a change that keeps the last stamp", "UPDATE advertising_policy SET allowed = NOT allowed WHERE site_code = 'DMO'")]
+    [InlineData("a change stamped at the last stamp",
+        "UPDATE advertising_policy SET reason = 'A direct write at the last stamp', modified_on = greatest(modified_on, created_on) WHERE site_code = 'DMO'")]
+    [InlineData("a change stamped before the last stamp",
+        "UPDATE advertising_policy SET allowed = false, modified_on = greatest(modified_on, created_on) - interval '1 second', " +
+        "modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'")]
+    [InlineData("a change the client stamps within the last stamp's microsecond, which it sends truncated to it",
+        "UPDATE advertising_policy SET allowed = false, modified_on = @within, modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'")]
+    [InlineData("a change without who made it", "UPDATE advertising_policy SET allowed = false, modified_on = clock_timestamp(), modified_by_id = NULL WHERE site_code = 'DMO'")]
+    [InlineData("a change of when the policy was created",
+        "UPDATE advertising_policy SET created_on = created_on - interval '1 day', modified_on = clock_timestamp(), " +
+        "modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'")]
+    [InlineData("a change of who created the policy",
+        "UPDATE advertising_policy SET created_by_id = '0199a000-0000-7000-8000-000000000274', modified_on = clock_timestamp(), " +
+        "modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'")]
+    [InlineData("a change stamped at infinity, after which no change could be stamped",
+        "UPDATE advertising_policy SET allowed = true, modified_on = 'infinity', modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'")]
+    [InlineData("a change stamped two days ahead of the database clock",
+        "UPDATE advertising_policy SET allowed = true, modified_on = clock_timestamp() + interval '2 days', " +
+        "modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'")]
+    [InlineData("a new policy without when and by whom it was created",
+        "INSERT INTO advertising_policy (id, site_code, allowed, excluded_zones, reason) VALUES (gen_random_uuid(), 'DMO', true, '[]', 'A direct first policy')")]
+    [InlineData("a new policy created at infinity",
+        "INSERT INTO advertising_policy (id, site_code, allowed, excluded_zones, reason, created_on, created_by_id) " +
+        "VALUES (gen_random_uuid(), 'DMO', true, '[]', 'A direct first policy', 'infinity', '0199a000-0000-7000-8000-000000000273')")]
+    [InlineData("a new policy created two days ahead of the database clock",
+        "INSERT INTO advertising_policy (id, site_code, allowed, excluded_zones, reason, created_on, created_by_id) " +
+        "VALUES (gen_random_uuid(), 'DMO', true, '[]', 'A direct first policy', clock_timestamp() + interval '2 days', '0199a000-0000-7000-8000-000000000273')")]
+    [InlineData("a new policy changed before it was created",
+        "INSERT INTO advertising_policy (id, site_code, allowed, excluded_zones, reason, created_on, created_by_id, modified_on, modified_by_id) " +
+        "VALUES (gen_random_uuid(), 'DMO', true, '[]', 'A direct first policy', clock_timestamp(), '0199a000-0000-7000-8000-000000000273', clock_timestamp() - interval '1 hour', '0199a000-0000-7000-8000-000000000273')")]
+    [InlineData("a new policy changed without who changed it",
+        "INSERT INTO advertising_policy (id, site_code, allowed, excluded_zones, reason, created_on, created_by_id, modified_on) " +
+        "VALUES (gen_random_uuid(), 'DMO', true, '[]', 'A direct first policy', clock_timestamp(), '0199a000-0000-7000-8000-000000000273', clock_timestamp())")]
+    [InlineData("a new policy changed at infinity",
+        "INSERT INTO advertising_policy (id, site_code, allowed, excluded_zones, reason, created_on, created_by_id, modified_on, modified_by_id) " +
+        "VALUES (gen_random_uuid(), 'DMO', true, '[]', 'A direct first policy', clock_timestamp(), '0199a000-0000-7000-8000-000000000273', 'infinity', '0199a000-0000-7000-8000-000000000273')")]
+    public async Task RuntimeRole_Should_NotChangeAPolicyUnstamped_When_ItWritesThePolicyDirectly(string change, string sql)
+    {
+        // ARV-273a: the version a change names is the row's last stamp, which only a change stamped after it, with who made it,
+        // moves; script 0071 holds that for a direct write through the runtime login, which the service's check never sees, and
+        // refuses a stamp no later change could follow (not finite, or more than a day ahead) and a new policy without its own.
+        // The trigger runs before the row's constraints, so a new policy for a site that has one is refused by it, not by them.
+        var admin = await AdminAsync($"it.ad.stamp.admin.{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(change)))[..12]}");
+        (await AllowAsync(admin, "DMO", "A-RES")).HasErrors.Should().BeFalse();
+        var before = (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("DMO", Ct))).Data;
+
+        await using (var refused = await RuntimeAsync())
+        {
+            DateTime lastStamp;
+            await using (var read = new NpgsqlCommand("SELECT greatest(modified_on, created_on) FROM advertising_policy WHERE site_code = 'DMO'", refused.Connection, refused.Transaction))
+                lastStamp = (DateTime)await read.ExecuteScalarAsync(Ct);
+#pragma warning disable CA2100 // the statements are the theory's literals
+            await using var command = new NpgsqlCommand(sql, refused.Connection, refused.Transaction);
+#pragma warning restore CA2100
+            // Four ticks after the last stamp, which Npgsql sends as the microsecond it falls in: the last stamp itself.
+            command.Parameters.AddWithValue("within", lastStamp.AddTicks(4));
+            var write = () => command.ExecuteNonQueryAsync(Ct);
+            var exception = (await write.Should().ThrowAsync<PostgresException>()).Which;
+            exception.SqlState.Should().Be("23514", $"script 0071 refuses {change}");
+            exception.MessageText.Should().Contain(" is stamped ", "the trigger refuses it, not one of the table's CHECK constraints");
+        }
+
+        // A direct write stamped after the last change, with who made it, is taken (and rolled back here), up to a day ahead of the
+        // database clock (the pods' clock skew the trigger tolerates).
+        foreach (var write in new[]
+                 {
+                     "UPDATE advertising_policy SET allowed = false, modified_on = clock_timestamp(), " +
+                     "modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'",
+                     "UPDATE advertising_policy SET allowed = false, modified_on = clock_timestamp() + interval '23 hours', " +
+                     "modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'"
+                 })
+        {
+            await using var taken = await RuntimeAsync();
+#pragma warning disable CA2100 // the statements are the literals above
+            await using var command = new NpgsqlCommand(write, taken.Connection, taken.Transaction);
+#pragma warning restore CA2100
+            (await command.ExecuteNonQueryAsync(Ct)).Should().Be(1, $"a direct write is taken: {write}");
+        }
+
+        var after = (await _host.AsCallerAsync(admin, s => Policies(s).GetAsync("DMO", Ct))).Data;
+        after.Should().Match<AdvertisingPolicyViewModel>(p => p.Allowed && p.ChangedOn == before.ChangedOn, "nothing refused or rolled back was kept");
+        (await ChangePolicyAsync(admin, "DMO", Off())).HasErrors.Should().BeFalse("a change through the service is stamped after the last one and taken");
+    }
+
+    [Fact]
+    public async Task RuntimeRole_Should_ChangeAnUnstampedPolicyOnlyStamped_When_ItWasWrittenBeforeScript0071()
+    {
+        // ARV-273a: a row with no stamps at all (written before script 0071, here made so by the table's owner with the trigger
+        // off) has no last stamp, so a change stamped with who made it is taken, and one without is still refused.
+        var admin = await AdminAsync("it.ad.unstamped.admin");
+        (await AllowAsync(admin, "DMO", "A-RES")).HasErrors.Should().BeFalse();
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
+        await connection.OpenAsync(Ct);
+        await using var transaction = await connection.BeginTransactionAsync(Ct);
+        foreach (var sql in new[]
+                 {
+                     "ALTER TABLE advertising_policy DISABLE TRIGGER advertising_policy_stamped",
+                     "UPDATE advertising_policy SET created_on = NULL, created_by_id = NULL, modified_on = NULL, modified_by_id = NULL WHERE site_code = 'DMO'",
+                     "ALTER TABLE advertising_policy ENABLE TRIGGER advertising_policy_stamped",
+                     "SET LOCAL ROLE ariva_runtime"
+                 })
+        {
+#pragma warning disable CA2100 // the statements are the literals above
+            await using var step = new NpgsqlCommand(sql, connection, transaction);
+#pragma warning restore CA2100
+            await step.ExecuteNonQueryAsync(Ct);
+        }
+
+        await using (var stamped = new NpgsqlCommand("UPDATE advertising_policy SET allowed = false, modified_on = clock_timestamp(), " +
+                                                     "modified_by_id = '0199a000-0000-7000-8000-000000000273' WHERE site_code = 'DMO'", connection, transaction))
+            (await stamped.ExecuteNonQueryAsync(Ct)).Should().Be(1, "an unstamped row has no last stamp to be after");
+        await using var unstamped = new NpgsqlCommand("UPDATE advertising_policy SET allowed = true, modified_by_id = NULL WHERE site_code = 'DMO'", connection, transaction);
+        var write = () => unstamped.ExecuteNonQueryAsync(Ct);
+        var exception = (await write.Should().ThrowAsync<PostgresException>()).Which;
+        exception.SqlState.Should().Be("23514");
+        exception.MessageText.Should().Contain(" is stamped after its last change, with who made it");
+        await transaction.RollbackAsync(Ct);
     }
 
     [Fact]

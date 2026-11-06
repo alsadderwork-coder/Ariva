@@ -2578,7 +2578,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 326,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Phase 3. Filed 2026-11-05 from the ARV-273 security review (round 2, low): hardening that was already true before ARV-273 (script 0057). No sign-in code.",
       "dependsOn": [
         "ARV-273"
