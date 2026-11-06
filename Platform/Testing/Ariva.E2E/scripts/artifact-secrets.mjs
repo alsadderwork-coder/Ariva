@@ -46,9 +46,11 @@ import { REDACTION_SAMPLES, SHAPES, redactSecrets, shapeMatches } from './secret
 const E2E = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ACCOUNTS = path.join(E2E, 'tests', 'support', 'accounts.ts');
 const KEYS = path.join(E2E, '.e2e-keys');
-const CI_WORKFLOW = path.resolve(E2E, '..', '..', '..', '.github', 'workflows', 'ci.yml');
-const MUTATION_WORKFLOW = path.resolve(E2E, '..', '..', '..', '.github', 'workflows', 'mutation.yml');
-const WORKFLOWS = path.resolve(E2E, '..', '..', '..', '.github', 'workflows');
+// ARV-295: GitHub's workflows, archived on 2026-11-06 (the move to Azure DevOps). GitHub runs none of them; these checks read
+// them as the reference the Azure pipeline stories port from, until each check moves to its Azure pipeline (ARV-217, ARV-220).
+const WORKFLOWS = path.resolve(E2E, '..', '..', '..', 'github_archived', 'workflows');
+const CI_WORKFLOW = path.join(WORKFLOWS, 'ci.yml');
+const MUTATION_WORKFLOW = path.join(WORKFLOWS, 'mutation.yml');
 export const DEFAULT_PATHS = ['playwright-report', 'test-results'].map((folder) => path.join(E2E, folder));
 
 export { SHAPES };
@@ -378,7 +380,7 @@ function checkLineProblems(step, what) {
 const climbs = (p) => /(?:^|\/)\.\.(?:\/|$)/.test(p);
 
 /**
- * ARV-252: the backend job's wiring in a CI workflow's text (.github/workflows/ci.yml), read step by step with comments left
+ * ARV-252: the backend job's wiring in a CI workflow's text (github_archived/workflows/ci.yml), read step by step with comments left
  * out (whole lines and a comment after a value), so a step is read by what it runs:
  * - every step that runs a test suite (`dotnet ...Tests.dll`; `dotnet test` is refused) runs the unit or the integration
  *   executable, writes its output to unit.log or integration.log alone (never teed to the public job log), has a timeout of
@@ -550,7 +552,7 @@ const nestedIf = (step) => step.split('\n').some((line) => /^ {9,}if:/.test(line
 const gatedBy = (step, gate) => stepIfs(step).length === 1 && stepIfs(step)[0] === gate && !nestedIf(step);
 
 /**
- * ARV-271 (CWE-532): the mutation workflow (.github/workflows/mutation.yml, public artifacts) checks Stryker's log and report before
+ * ARV-271 (CWE-532): the mutation workflow (github_archived/workflows/mutation.yml, public artifacts) checks Stryker's log and report before
  * it uploads them, as backendLogWiring holds CI's backend job: one check (id mutation-logs) that runs after a failed run, cannot be
  * told to go on after an error, copies .verify/mutation.log and .verify/stryker/reports to checked/ with links followed and checks
  * that copy alone, its check the script's last line at its own level (ARV-271a); no upload before it; every upload after it waits

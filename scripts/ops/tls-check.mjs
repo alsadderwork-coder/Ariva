@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// TLS check of an Ariva site's hosts (ARV-084; the release gate after .github/workflows/release-dev.yml's release, wiki 04).
+// TLS check of an Ariva site's hosts (ARV-084; the release gate after github_archived/workflows/release-dev.yml's release, wiki 04).
 // No dependencies beyond Node 22. It reads, it never changes anything: TLS handshakes, GET /, GET /health/readiness, one POST
 // without a body and a plain HTTP GET per path of each host.
 //

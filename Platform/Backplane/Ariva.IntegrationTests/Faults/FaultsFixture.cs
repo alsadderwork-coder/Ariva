@@ -75,21 +75,28 @@ public sealed class FaultsFixture : IAsyncLifetime
     /// <summary>Kafka over the container's own listener, not the proxy, for reading the broker's view while the proxy is down.</summary>
     public string KafkaDirectBootstrap => _kafka.GetBootstrapAddress();
 
+    /// <summary>Set by scripts/verify.mjs for every child process: the run is a gate (ARV-295).</summary>
+    public const string GateVariable = "ARIVA_GATE";
+
     /// <summary>
     /// The Toxiproxy image to start: <see cref="ToxiproxyImage"/> by its digest, or by its tag alone when <see cref="TagOnlyVariable"/>
-    /// is true on a machine that is not a pipeline run.
+    /// is true on a machine that is neither a pipeline run nor a local gate's (ARV-295: since no hosted pipeline runs, the gates of
+    /// scripts/verify.mjs, which set <c>ARIVA_GATE</c>, take Toxiproxy by its digest only, and the fault tests are blocked where it
+    /// cannot be pulled).
     /// </summary>
     /// <param name="variable">Reads an environment variable by name (<see cref="Environment.GetEnvironmentVariable(string)"/>).</param>
     /// <returns>The image reference.</returns>
-    /// <exception cref="InvalidOperationException">The variable is true in a pipeline (<c>GITHUB_ACTIONS</c> or <c>TF_BUILD</c> true, in any case).</exception>
+    /// <exception cref="InvalidOperationException">The variable is true in a pipeline (<c>GITHUB_ACTIONS</c> or <c>TF_BUILD</c> true, in any case)
+    /// or under a local gate (<c>ARIVA_GATE</c> set to anything).</exception>
     public static string ImageToStart(Func<string, string> variable)
     {
         ArgumentNullException.ThrowIfNull(variable);
         if (variable(TagOnlyVariable) != "true")
             return ToxiproxyImage;
-        if (string.Equals(variable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase) || string.Equals(variable("TF_BUILD"), "true", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(variable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase) || string.Equals(variable("TF_BUILD"), "true", StringComparison.OrdinalIgnoreCase)
+            || !string.IsNullOrEmpty(variable(GateVariable)))
             throw new InvalidOperationException(
-                $"{TagOnlyVariable} is set in a pipeline (GITHUB_ACTIONS or TF_BUILD is true), where Toxiproxy is pulled by its pinned digest only. Unset {TagOnlyVariable} in the pipeline.");
+                $"{TagOnlyVariable} is set in a pipeline or under a local gate (GITHUB_ACTIONS or TF_BUILD is true, or {GateVariable} is set), where Toxiproxy is pulled by its pinned digest only. Unset {TagOnlyVariable}, or run the fault tests outside the gate.");
         return ToxiproxyImage[..ToxiproxyImage.IndexOf('@', StringComparison.Ordinal)];
     }
 

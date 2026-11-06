@@ -5,8 +5,9 @@ namespace Ariva.IntegrationTests.Faults;
 /// <summary>
 /// ARV-096, second security review (L7): the faults fixture pulls Toxiproxy by its pinned digest, takes it by its tag alone only when
 /// <see cref="FaultsFixture.TagOnlyVariable"/> is true outside a pipeline, and refuses that variable in one (GitHub Actions sets
-/// <c>GITHUB_ACTIONS</c> to true, Azure DevOps sets <c>TF_BUILD</c> to True). The generic <c>CI</c> variable alone, which local tooling
-/// sets too, does not refuse it. No container is started here.
+/// <c>GITHUB_ACTIONS</c> to true, Azure DevOps sets <c>TF_BUILD</c> to True) and, since ARV-295, under a local gate (scripts/verify.mjs
+/// sets <c>ARIVA_GATE</c>). The generic <c>CI</c> variable alone, which local tooling sets too, does not refuse it. No container is
+/// started here.
 /// </summary>
 public sealed class ToxiproxyImageTests
 {
@@ -27,9 +28,10 @@ public sealed class ToxiproxyImageTests
     [InlineData(null, null, null)]
     [InlineData("false", "False", null)]
     [InlineData(null, null, "true")]
-    public void ImageToStart_Should_TakeTheTagAlone_When_TheVariableIsTrueOutsideAPipeline(string githubActions, string tfBuild, string genericCi)
+    [InlineData(null, null, null, "")]
+    public void ImageToStart_Should_TakeTheTagAlone_When_TheVariableIsTrueOutsideAPipelineAndAGate(string githubActions, string tfBuild, string genericCi, string gate = null)
     {
-        FaultsFixture.ImageToStart(Variables("true", githubActions, tfBuild, genericCi)).Should().Be(Tag);
+        FaultsFixture.ImageToStart(Variables("true", githubActions, tfBuild, genericCi, gate)).Should().Be(Tag);
     }
 
     [Theory]
@@ -37,16 +39,19 @@ public sealed class ToxiproxyImageTests
     [InlineData("True", null)]
     [InlineData(null, "True")]
     [InlineData("false", "true")]
-    public void ImageToStart_Should_Throw_When_TheVariableIsTrueInAPipeline(string githubActions, string tfBuild)
+    [InlineData(null, null, "1")]
+    [InlineData("false", "False", "true")]
+    public void ImageToStart_Should_Throw_When_TheVariableIsTrueInAPipelineOrUnderAGate(string githubActions, string tfBuild, string gate = null)
     {
-        var start = () => FaultsFixture.ImageToStart(Variables("true", githubActions, tfBuild, "true"));
+        var start = () => FaultsFixture.ImageToStart(Variables("true", githubActions, tfBuild, "true", gate));
 
         start.Should().Throw<InvalidOperationException>().WithMessage($"*{FaultsFixture.TagOnlyVariable}*pinned digest*");
     }
 
-    private static Func<string, string> Variables(string tagOnly, string githubActions, string tfBuild, string genericCi = null) => name => name switch
+    private static Func<string, string> Variables(string tagOnly, string githubActions, string tfBuild, string genericCi = null, string gate = null) => name => name switch
     {
         FaultsFixture.TagOnlyVariable => tagOnly,
+        FaultsFixture.GateVariable => gate,
         "GITHUB_ACTIONS" => githubActions,
         "TF_BUILD" => tfBuild,
         "CI" => genericCi,

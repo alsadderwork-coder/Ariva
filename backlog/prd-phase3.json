@@ -973,7 +973,7 @@
         "The validator CI runs is installed from a committed lock file (a small package.json under scripts/) with npm ci and no install scripts, and audited like the other npm trees in ci.yml and node scripts/verify.mjs security (with the approved exception, if that is the choice)",
         "The asyncapi job still fails on an invalid docs/architecture/asyncapi.yaml (a broken document proven to fail once) and passes on the generated one",
         "The Trivy filesystem scan stays green with the new lock file, or its finding is under the same recorded exception",
-        "Dependabot watches the new npm tree (.github/dependabot.yml)",
+        "Dependabot watches the new npm tree (github_archived/dependabot.yml since ARV-295; on Azure DevOps, the dependency updates of ARV-220)",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
         "docs/security/asvs-l2.md V15.1.2 and wiki 13 section 9 updated (the AsyncAPI residual closed or its exception named)",

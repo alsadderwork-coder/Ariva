@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Ariva quality gates. Cross-platform (Windows, Linux, CI). No dependencies.
-//   node scripts/verify.mjs <scope> [--no-restore]
+//   node scripts/verify.mjs <scope> [--no-restore]   (on Linux x64 the build first restores in locked mode even with --no-restore;
+//                                                    every restore a gate starts there is locked, ARV-295)
 // Scopes:
 //   quick        security scan of changed files + root search guard self-test + docs text checks (used by the Stop hook)
 //   build        dotnet build Ariva.slnx (security analyzers run as errors)
@@ -41,8 +42,10 @@
 //                --specs <file,...> the story's E2E specs (tests/api/x.spec.ts); --integration "FullyQualifiedName~A|..."
 //                (methods whose fully qualified name holds A, or another term; ARV-164b: only this shape, run as --filter-method);
 //                --base <ref> compare with this commit (default HEAD: the uncommitted story)
-//   checkpoint   the full suite on a committed tree every few stories and at each phase end: backend, docs, web, integration,
-//                visual, e2e and mutation on the engine code changed since the last checkpoint; records backlog/checkpoint.json
+//   release      the Release proof (ARV-295): the solution built in Release and NbjSiteScopeTests run on the Release assemblies
+//   checkpoint   the full suite on a committed tree every few stories and at each phase end: backend, the Release proof, docs,
+//                web, integration, visual, e2e and mutation on the engine code changed since the last checkpoint; records
+//                backlog/checkpoint.json
 //                --mutation-base <commit>: only while no checkpoint is recorded, the commit of an earlier checkpoint run whose
 //                mutation step passed (the run failed elsewhere); mutation then runs only on engine code changed since it
 // --plan prints what story or checkpoint would run without running it.
@@ -75,6 +78,16 @@ let solutionBuilt = false;
 // run instead of about 15; with this set it took 16. Values already set by the caller win.
 for (const [name, value] of Object.entries({ DOTNET_CLI_TELEMETRY_OPTOUT: '1', TESTINGPLATFORM_TELEMETRY_OPTOUT: '1', PACT_DO_NOT_TRACK: 'true' }))
   process.env[name] ??= value;
+// ARV-295: since GitHub's workflows were archived no hosted pipeline runs, so these gates are the gate. A check that skips what
+// it cannot run outside CI (the chart render without Helm, the Helmfile environments without Helmfile, the offline bundle's
+// end to end bundles without Helm) fails instead when ARIVA_GATE is set, which every scope sets for its child processes, a
+// caller's value overridden.
+process.env.ARIVA_GATE = '1';
+// ARV-295: and every restore a gate starts on Linux x64 is locked (Directory.Build.props reads ARIVA_LOCKED_RESTORE), as every CI
+// restore was: the Release build, the integration tests' own build and E2E's host build too, so a drifted lock file fails each
+// rather than being rewritten. Linux x64 only: Ariva.AppHost and Ariva.UnitTests commit only linux-x64's lock file.
+const LOCKED_PLATFORM = process.platform === 'linux' && process.arch === 'x64';
+if (LOCKED_PLATFORM) process.env.ARIVA_LOCKED_RESTORE = 'true';
 
 function flag(name) {
   const i = args.indexOf(name);
@@ -324,6 +337,10 @@ const WEB_CHANGED = /^Platform\/Frontplane\/Ariva\.Web\//;
 // ARV-188: a change that can move a screenshot of the visual suite or stop it from running: the web app, the suite and its
 // baselines, its browser, the E2E configuration that declares the project, the Playwright pin the image must match, and the
 // support code the suite imports.
+// ARV-295: what the Release proof (NbjSiteScopeTests in Release) reads or depends on: the two assemblies it reads whole for the
+// NBJ-BC1 seed's types and site texts (Ariva.Infra, Ariva.Di), every MSBuild file at the root, and every project file (one may
+// define ARIVA_DEV_SEED).
+const RELEASE_RELEVANT = /^(Directory\.Build\.[^/]+$|Directory\.Packages\.props$|GlobalSuppressions\.cs$|Platform\/Backplane\/(Ariva\.Infra|Ariva\.Di)\/|Platform\/.*\.csproj$|Platform\/Backplane\/Ariva\.UnitTests\/Seed\/NbjSiteScopeTests\.cs$)/;
 const VISUAL_RELEVANT = /^Platform\/(Frontplane\/Ariva\.Web\/|Testing\/Ariva\.E2E\/(tests\/(visual|support)\/|scripts\/visual-browser\.mjs$|playwright\.config\.ts$|package(-lock)?\.json$))/;
 // Always run with a story's own specs: sign-in, the security baseline and the permission matrix (authorization is where
 // cross-site and missing-permission defects show), and the shell screen.
@@ -407,6 +424,8 @@ function storyGate() {
   steps.security();
   steps.docs();
   if (files.some(f => WEB_CHANGED.test(f))) steps.web();
+  // ARV-295: the Release proof when the change touches what decides the NBJ-BC1 seed's build (every checkpoint runs it too).
+  if (files.some(f => RELEASE_RELEVANT.test(f))) steps.release();
 
   if (wide.length || newScript || (persistence && filter === undefined)) steps.integration();
   else if (persistence) steps.integration(filter);
@@ -461,6 +480,7 @@ function checkpointGate() {
   }
   const since = last?.commit ?? mutationBase;
   steps.unit();
+  steps.release();
   steps.security();
   steps.docs();
   steps.web();
@@ -474,7 +494,8 @@ function checkpointGate() {
   else if (engineChangedSince(since)) steps.mutation(isAncestor(since) && changedEngineFiles(since, head) ? since : undefined, head);
   else results.push({ name: `mutation tests (no engine change since ${since.slice(0, 10)})`, ok: true, skipped: true });
   if (PLAN || results.some(r => !r.ok)) return;
-  const record = { commit: head, at: new Date().toISOString().slice(0, 10), stories: last ? storiesSince(last.commit) : undefined, mutationBase,
+  // ARV-295: the platform, since the Linux-only security tests and the locked restore run on Linux x64 only.
+  const record = { commit: head, at: new Date().toISOString().slice(0, 10), platform: `${process.platform}-${process.arch}`, stories: last ? storiesSince(last.commit) : undefined, mutationBase,
     results: results.map(r => ({ name: r.name, ok: r.ok, skipped: r.skipped || undefined, seconds: r.seconds })) };
   fs.writeFileSync(CHECKPOINT_FILE, JSON.stringify(record, null, 2) + '\n');
   console.log(`\ncheckpoint: recorded ${head.slice(0, 10)} in backlog/checkpoint.json; commit it ("Checkpoint: full suite green")`);
@@ -482,7 +503,20 @@ function checkpointGate() {
 
 const steps = {
   quick: () => { run('security scan (changed files)', 'node', ['scripts/security/scan.mjs', '--changed']); run('root search guard self-test', 'node', ['.claude/hooks/root-search.test.mjs']); docsCheck(); windowsPathsCheck(); },
-  build: () => (solutionBuilt = run('dotnet build', 'dotnet', ['build', 'Ariva.slnx', '-c', 'Debug', ...(args.includes('--no-restore') ? ['--no-restore'] : [])])),
+  // ARV-295: CI restored in locked mode (Directory.Build.props: CI, GITHUB_ACTIONS or TF_BUILD), so a package graph that
+  // differs from the committed lock files (NU1004) failed there; the local gates restore so first. Linux x64 only, since
+  // Ariva.AppHost and Ariva.UnitTests keep one lock file per platform (NuGetLockFilePath) and only linux-x64's is committed.
+  build: () => {
+    // The build after a locked restore does not restore again: an unlocked restore would rewrite a drifted lock file in the tree.
+    let locked = false;
+    if (LOCKED_PLATFORM) {
+      // Forced: NuGet's up-to-date check otherwise skips a restore whose project files did not change, and with it the
+      // comparison, so a lock file edited by hand passed while obj/ was current (seen in ARV-295's drift check).
+      if (!run('dotnet restore in locked mode (the committed lock files)', 'dotnet', ['restore', 'Ariva.slnx', '--locked-mode', '--force'])) return (solutionBuilt = false);
+      locked = true;
+    } else results.push({ name: 'dotnet restore in locked mode (runs on Linux x64 only, where every lock file is committed)', ok: true, skipped: true });
+    return (solutionBuilt = run('dotnet build', 'dotnet', ['build', 'Ariva.slnx', '-c', 'Debug', ...(locked || args.includes('--no-restore') ? ['--no-restore'] : [])]));
+  },
   unit: () => {
     steps.build();
     // The scenario engine's golden fingerprints must come from the current sim.js (ARV-027); the unit tests check the port against them.
@@ -503,6 +537,14 @@ const steps = {
     run('unit test count guard (every listed case has its results)', 'node', ['scripts/test-count-guard.mjs', '--dll', unitDll,
       '--trx', path.join(ROOT, '.verify', 'unit-tests.trx')]);
     resultsCheck('unit test results hold no secret (ARV-252)', path.join(ROOT, '.verify', 'unit-tests.trx'));
+  },
+  // ARV-295: the Release proof GitHub's backend job ran on every pull request (it built the solution in Release and ran the unit
+  // suite there): NbjSiteScopeTests reads the Release Ariva.Infra.dll and Ariva.Di.dll it loads and finds no NBJ-BC1 seed type
+  // or site text in them. Run at every checkpoint, and alone as the release scope.
+  release: () => {
+    run('dotnet build (Release)', 'dotnet', ['build', 'Ariva.slnx', '-c', 'Release', ...(args.includes('--no-restore') ? ['--no-restore'] : [])]);
+    run('NBJ-BC1 seed absent from the Release build (NbjSiteScopeTests in Release)', 'dotnet',
+      [path.join('Platform', 'Backplane', 'Ariva.UnitTests', 'bin', 'Release', 'net10.0', 'Ariva.UnitTests.dll'), '--filter-class', 'Ariva.UnitTests.Seed.NbjSiteScopeTests']);
   },
   // ARV-164b: as the unit suite, the test executable runs the integration suite itself (Microsoft Testing Platform, in process),
   // not dotnet test, whose VSTest adapter reads the runner's messages from standard output, which the hosts' console logs share,
@@ -649,7 +691,7 @@ const steps = {
     // SignalR assemblies at or above the fixed file version); base-images --check holds each Dockerfile to it.
     run('published runtime check self-test', 'node', ['scripts/published-runtime.mjs', '--self-test']);
     // ARV-127: the offline bundle's verifier and builder (every kind of tampering fails; the builder's bundles need Helm, and
-    // are skipped without it outside GitHub Actions).
+    // fail without it under these gates, ARIVA_GATE, or in a pipeline; ARV-295).
     run('offline bundle verifier self-test', 'node', ['scripts/offline/verify.mjs', '--self-test']);
     run('offline bundle builder self-test', 'node', ['scripts/offline/bundle.mjs', '--self-test']);
     const CHART_TESTS = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'tests');

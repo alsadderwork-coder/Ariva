@@ -1406,8 +1406,10 @@ if (process.argv.includes('--self-test')) {
 selfTest();
 if (!helmAvailable()) {
 	const message = 'chart-security: helm not found (set HELM or install Helm 3)';
-	if (process.env.CI) {
-		console.error(`${message}; failing because CI is set.`);
+	// ARV-295: the local gates (ARIVA_GATE, set by scripts/verify.mjs) are the gate since no hosted pipeline runs, so they fail
+	// closed as CI does; so does an Azure DevOps pipeline (TF_BUILD).
+	if (process.env.CI || process.env.TF_BUILD || process.env.ARIVA_GATE) {
+		console.error(`${message}; failing because this is a gate (CI, TF_BUILD or ARIVA_GATE is set).`);
 		process.exit(1);
 	}
 	console.warn(`${message}; chart render SKIPPED locally (rules self-tested above).`);
@@ -2874,11 +2876,11 @@ for (const [label, file, sets, message, annotation] of [
 }
 
 // ARV-062: the Helmfile the release pipelines apply renders for every environment, installs the database before the
-// platform, and refuses production without a build number. Needs Helmfile 1.x (HELMFILE or on PATH); required in GitHub
-// Actions, skipped elsewhere.
+// platform, and refuses production without a build number. Needs Helmfile 1.x (HELMFILE or on PATH); required in a pipeline
+// and under the local gates (ARIVA_GATE, ARV-295), skipped elsewhere.
 if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).status !== 0) {
-	if (process.env.GITHUB_ACTIONS) {
-		console.error('FAIL helmfile not found; failing because this is GitHub Actions');
+	if (process.env.GITHUB_ACTIONS || process.env.TF_BUILD || process.env.ARIVA_GATE) {
+		console.error('FAIL helmfile not found (set HELMFILE or install Helmfile 1.x); failing because this is a gate (GITHUB_ACTIONS, TF_BUILD or ARIVA_GATE is set)');
 		failed = true;
 	} else {
 		console.warn('helmfile not found (set HELMFILE); Helmfile environments SKIPPED locally');
@@ -3005,7 +3007,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			console.log('PASS release guard: helmfile -e prd with podTls false is refused');
 		}
 	}
-	// ARV-002: the GitHub dev release (.github/workflows/release-dev.yml) deploys from GHCR, pins every image by the digest
+	// ARV-002: the GitHub dev release (github_archived/workflows/release-dev.yml) deploys from GHCR, pins every image by the digest
 	// it verified and owns the pull secret itself. Same --set values as the workflow.
 	{
 		const repository = 'ghcr.io/example/ariva';

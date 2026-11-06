@@ -4,12 +4,51 @@
   "description": "The move of Ariva's delivery to Azure DevOps and Dalil's Azure (owner request 2026-10-20; the plan is docs/plan/azure-devops-move.md). Today GitHub Actions is the gate and the dev release, and the Azure DevOps pipelines in Platform/Cloud/Ariva.Cicd/AzureDevOps exist but have never run: the pull request pipeline would fail as written, the image builds are unscanned and unsigned, and the release deploys a mutable tag without approval or signature checks. These stories bring the Azure pipelines to the GitHub ones' level, then cut over. Option A (GitHub stays the code's home, Azure Pipelines delivers) or Option B (Azure Repos becomes the home) is the owner's first decision; the stories say where they differ. Agents never run releases or change clusters; the steps in Azure DevOps and Azure are the owner's.",
   "userStories": [
     {
+      "id": "ARV-295",
+      "title": "[E0] GitHub's files archived in github_archived/ (owner decision 2026-11-06)",
+      "description": "The owner moved the repository to Azure Repos (organisation dalil, project Ariva; decision 1, Option B) and asked for everything GitHub runs to leave the project's working folders, to be deleted later. .github/ (the workflows, Dependabot, CODEOWNERS, the issue and pull request templates) moves whole to github_archived/, so GitHub Actions runs nothing and Dependabot's version updates stop (its alerts and security updates, secret scanning and push protection are repository settings and keep running on pushes to GitHub); the owner accepts no hosted CI until ARV-217 brings the Azure pull request gate to the GitHub gate's level. The checks that read the workflows keep reading them in the archive, the reference the Azure stories port from, until each moves to its Azure pipeline.",
+      "acceptanceCriteria": [
+        "github_archived/ holds every file .github/ held, moved with git mv (history kept); .github/ no longer exists, and scripts/base-images.mjs --check refuses a .github file, folder or link (self-tested)",
+        "scripts/base-images.mjs (the Ryuk runners, the outside pins and their copies, the SDK, Helm, cosign and ZAP checks, the signing jobs, the third-party watch), Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs (the backend log and mutation workflow wiring, the comment and pinned job checks) and NbjSiteScopeTests read github_archived/workflows; the archived third-party-images.yml paths filters name github_archived/workflows/**",
+        "scripts/security/scan.mjs's full scan oracle (MUST_LIST) names a file with no extension and a file in a dot folder in place of .github/CODEOWNERS, and its self-test passes",
+        "What only CI made fail fails in the local gates: scripts/verify.mjs sets ARIVA_GATE, under which chart-security.mjs fails without Helm or Helmfile, bundle.mjs's self-test without Helm, and Playwright without its database, Kafka and clamd or on a stray test.only (as under CI, GITHUB_ACTIONS or TF_BUILD); the build restores in locked mode first on Linux x64; node scripts/verify.mjs release builds in Release and runs NbjSiteScopeTests there, and checkpoint runs it",
+        "The docs name what runs nowhere until its Azure port (wiki 16 section 9: Trivy, the SBOM, cosign signing and verification, CodeQL, Semgrep CE, the AsyncAPI validation, the weekly ZAP baseline, the Release E2E run, Claude's review), ASVS V15.1.2 goes to Partly with the summary counts, and docs/product/decisions.md records the owner's decision and the residuals for the owner to confirm",
+        "The docs and wiki pages that name .github files name github_archived/ and say that GitHub runs nothing since 2026-11-06 (wiki 04, 13 and 16, overview.md, the security inventories and asvs-l2.md, the move plan); backlog/progress.md's history is left as written",
+        "node scripts/verify.mjs backend and docs pass; node scripts/base-images.mjs --check, artifact-secrets.mjs --self-test and scan.mjs --self-test pass; node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md"
+      ],
+      "priority": 0,
+      "passes": true,
+      "notes": "Size S. The CLAUDE.md files mention .github (the repository map, Platform/Cloud's pipelines line); agents do not edit them, so the wording is proposed to the owner. GitHub keeps its settings: a ruleset or branch protection on main that requires a GitHub check would refuse the owner's fast-forward, since no check runs any more. The dev container has Helm but not Helmfile, so its gates fail on the Helmfile environments until ARV-296.",
+      "dependsOn": []
+    },
+    {
+      "id": "ARV-296",
+      "title": "[E0] Helmfile in the dev container",
+      "description": "Since ARV-295 the local gates fail without Helmfile (chart-security.mjs's Helmfile environments), and the dev container brings Helm 3.19.0 but no Helmfile, so its gates fail there. Add Helmfile 1.1.7 from an image pinned by version and digest (the dev container downloads nothing while it builds), checked by scripts/base-images.mjs like its other FROM lines.",
+      "acceptanceCriteria": [
+        ".devcontainer/Dockerfile copies Helmfile 1.1.7 from a FROM line pinned by version and digest, and its version check runs with the others",
+        "scripts/base-images.mjs knows the Helmfile line (LINES) and its --check passes; the third-party watch covers it",
+        "node scripts/verify.mjs backend passes inside the dev container with no HELMFILE set",
+        "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 0,
+      "passes": false,
+      "notes": "Size S. Needs a machine that reaches the image's registry to resolve its digest (the cloud sessions cannot pull ghcr.io's blobs).",
+      "dependsOn": [
+        "ARV-295"
+      ]
+    },
+    {
       "id": "ARV-215",
       "title": "[E0] Azure DevOps project and repository setup",
       "description": "Owner steps in Azure DevOps, with the agent writing the checklist: the project, the connection to the code (Option A: the Azure Pipelines GitHub app on alsadderwork-coder/Ariva; Option B: Azure Repos import with every branch and the full history), and for Option B the branch policies on main that replace the GitHub ruleset and CODEOWNERS.",
       "acceptanceCriteria": [
         "The owner records decision 1 of docs/plan/azure-devops-move.md (Option A or B) in docs/product/decisions.md and an ADR-0016 amendment (Proposed until accepted)",
-        "docs/harness/azure-devops.md lists every setting the owner makes, step by step: the project, the code connection, and for Option B the import, the default branch, the build validation policy (Analyze-solution), reviewers, path-based required reviewers mirroring .github/CODEOWNERS, the merge type limited to rebase and fast-forward, force push and delete denied on main and v* tags",
+        "docs/harness/azure-devops.md lists every setting the owner makes, step by step: the project, the code connection, and for Option B the import, the default branch, the build validation policy (Analyze-solution), reviewers, path-based required reviewers mirroring github_archived/CODEOWNERS (.github/CODEOWNERS until ARV-295), the merge type limited to rebase and fast-forward, force push and delete denied on main and v* tags",
+        "On GitHub, since ARV-295 archived the workflows: Actions disabled for the repository (or every workflow disabled), the repository secrets (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN) and the k8s-dev environment with its secrets deleted, and the tokens behind them revoked (the kubeconfig's service account token, the GHCR pull token, the Claude OAuth token, the Anthropic key); a ruleset restricts creating v* tags, since a tag pushed at a commit from before the archive would run its images.yml and sign as the identity scripts/offline/verify.mjs and the admission policy (wiki 04 section 6.5) trust",
         "The owner confirms each step done; the story passes on that record (agents cannot change Azure DevOps settings)",
         "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
         "security-reviewer verdict PASS recorded in backlog/progress.md",
@@ -53,7 +92,7 @@
       ],
       "priority": 3,
       "passes": false,
-      "notes": "Size M. 2026-10-25 (ARV-164a, ARV-164b): ci.yml runs both test suites as their executables (Microsoft Testing Platform) and then scripts/test-count-guard.mjs on each TRX; Analyze-solution's DotNetCoreCLI test task still runs them through dotnet test (VSTest), whose adapter can drop a case, a failing one included, without failing the run. Run the executables and the guard as ci.yml does. 2026-10-28 (ARV-252): ci.yml writes both suites' output to unit.log and integration.log, checks them and the TRX files with artifact-secrets.mjs before printing, quoting or uploading any of it (backendLogWiring holds the wiring); the Azure gate's logs are the project's own, not public, but its published test results are artifacts: check them the same way before they are published.",
+      "notes": "Size M. 2026-10-25 (ARV-164a, ARV-164b): ci.yml runs both test suites as their executables (Microsoft Testing Platform) and then scripts/test-count-guard.mjs on each TRX; Analyze-solution's DotNetCoreCLI test task still runs them through dotnet test (VSTest), whose adapter can drop a case, a failing one included, without failing the run. Run the executables and the guard as ci.yml does. 2026-10-28 (ARV-252): ci.yml writes both suites' output to unit.log and integration.log, checks them and the TRX files with artifact-secrets.mjs before printing, quoting or uploading any of it (backendLogWiring holds the wiring); the Azure gate's logs are the project's own, not public, but its published test results are artifacts: check them the same way before they are published. 2026-11-06 (ARV-295): ci.yml, mutation.yml and security-scan.yml are archived in github_archived/; port from there, and move the checks that read them (scripts/base-images.mjs, artifact-secrets.mjs, NbjSiteScopeTests) to the Azure pipeline. ARV-295: chart-security.mjs and bundle.mjs fail closed under TF_BUILD (as under CI and the local gates' ARIVA_GATE), so the Azure gate needs Helm 3.19.0 and Helmfile 1.1.7; the Release proof and the E2E run against Release hosts (ARIVA_E2E_CONFIGURATION=Release) belong in it too.",
       "dependsOn": [
         "ARV-216"
       ]
@@ -66,13 +105,14 @@
         "Every image build has complete path filters (checked against each Dockerfile's COPY lines by scripts/base-images.mjs), a Trivy image scan that fails on high or critical findings with a fix, a CycloneDX SBOM, a signature and a signed SBOM attestation by the key of decision 2 (cosign with an Azure Key Vault key, or the documented alternative), and a digest table artifact as images.yml makes",
         "wiki/04-Deployment-Guide.md section 6.5 gives the verification command for the Azure-signed images and the admission policy example for them",
         "A build on Azure DevOps produces a signed image whose signature and SBOM verify (run by the owner; recorded in backlog/progress.md)",
+        "docs/security/asvs-l2.md V15.1.2 back to Met with the Azure SBOM and signature evidence (ARV-295 reopened it), with the summary counts",
         "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
         "security-reviewer verdict PASS recorded in backlog/progress.md",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 4,
       "passes": false,
-      "notes": "Size M. Needs decision 2 (the signing key) first.",
+      "notes": "Size M. Needs decision 2 (the signing key) first. 2026-11-06 (ARV-295): images.yml and base-images.yml are archived in github_archived/; port from there, and move the checks that read them (scripts/base-images.mjs, artifact-secrets.mjs, NbjSiteScopeTests) to the Azure pipeline.",
       "dependsOn": [
         "ARV-217"
       ]
@@ -93,7 +133,7 @@
       ],
       "priority": 5,
       "passes": false,
-      "notes": "Size M. Agents never run the release; the first run is ARV-223.",
+      "notes": "Size M. Agents never run the release; the first run is ARV-223. 2026-11-06 (ARV-295): release-dev.yml, dev-environment.yml and security-zap.yml are archived in github_archived/; port from there, and move the checks that read them (scripts/base-images.mjs, artifact-secrets.mjs, NbjSiteScopeTests) to the Azure pipeline.",
       "dependsOn": [
         "ARV-218"
       ]
@@ -112,7 +152,7 @@
       ],
       "priority": 6,
       "passes": false,
-      "notes": "Size M. Not needed for Option A while GitHub keeps running these.",
+      "notes": "Size M. Needed: GitHub runs none of these since ARV-295. 2026-11-06 (ARV-295): third-party-images.yml, codeql.yml and dependabot.yml are archived in github_archived/; port from there, and move the checks that read them (scripts/base-images.mjs, artifact-secrets.mjs, NbjSiteScopeTests) to the Azure pipeline. ARV-295: once work moves to Azure Repos nothing scans pushes for secrets (GitHub's secret scanning and push protection see only pushes to GitHub; Trivy's secret scan is archived): GitHub Advanced Security for Azure DevOps or Trivy's secret scan in the pull request gate.",
       "dependsOn": [
         "ARV-217"
       ]
@@ -131,7 +171,7 @@
       ],
       "priority": 7,
       "passes": false,
-      "notes": "Size M.",
+      "notes": "Size M. 2026-11-06 (ARV-295): offline-bundle.yml are archived in github_archived/; port from there, and move the checks that read them (scripts/base-images.mjs, artifact-secrets.mjs, NbjSiteScopeTests) to the Azure pipeline.",
       "dependsOn": [
         "ARV-218"
       ]
@@ -163,6 +203,7 @@
         "Before the first Azure release the GitHub release's pull secret is deleted once (wiki 04), Build-k8s-all produces the seven signed images in dalil.azurecr.io/ariva, and the release with the owner's approval deploys them pinned by digest",
         "The smoke suite passes against dev (ARV-137) and the TLS check passes on the live hosts; both are recorded in backlog/progress.md",
         "Option B only: pushes to GitHub are frozen, a last sync is checked commit by commit, the team works on Azure Repos, and the GitHub repository is archived or kept as a read-only mirror by the owner's decision",
+        "github_archived/ (ARV-295) is deleted once no check reads it: the checks of scripts/base-images.mjs, artifact-secrets.mjs and NbjSiteScopeTests read the Azure pipelines (each moved by the story that ports its workflow), and the gates pass without the folder",
         "node scripts/verify.mjs quick passes, and node scripts/security/scan.mjs passes with 0 errors",
         "security-reviewer verdict PASS recorded in backlog/progress.md",
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"

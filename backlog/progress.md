@@ -5873,3 +5873,115 @@ Project `Ariva.UnitTests` has the following vulnerable packages
 - Gotchas:
   - PostgreSQL's monitoring roles nest: `pg_monitor` holds `pg_read_all_settings`, `pg_read_all_stats` and `pg_stat_scan_tables`. The logins line follows memberships through other roles, so a login is named once for each powerful role it reaches.
   - A powerful role that initdb itself makes a member of another (`pg_monitor`) fails every clean server unless initdb's own rows (`pg_auth_members.oid` below 16384) are left out. The clean restores in the integration tests catch it, so run them before the review, not after.
+
+## 2026-11-06: ARV-295 [E0] GitHub's files archived in github_archived/ (owner decision 2026-11-06)
+
+- Why: the owner imported the repository into Azure Repos (organisation dalil, project Ariva; decision 1, Option B) and asked for everything GitHub runs to leave the project's working folders, to be deleted later, accepting no hosted CI until ARV-217.
+- What changed:
+  - `git mv .github github_archived` (history kept): the twelve workflows, Dependabot, CODEOWNERS and the issue and pull request templates. GitHub Actions runs nothing from now on, and Dependabot's version updates stop. Its alerts and security update pull requests, secret scanning and push protection are repository settings and keep running on pushes to GitHub.
+  - `scripts/base-images.mjs --check` refuses a live `.github` (a file, a folder or a link, a dangling one included; self-tested), since no check reads it any more.
+  - What only CI made fail now fails in the local gates. `scripts/verify.mjs` sets `ARIVA_GATE` for its children, under which `chart-security.mjs` fails without Helm or Helmfile, and `bundle.mjs`'s self-test fails without Helm, as under CI, `GITHUB_ACTIONS` or `TF_BUILD` (Azure DevOps, now recognised too). The new `release` scope builds the solution in Release and runs NbjSiteScopeTests there (GitHub's backend job did that on every pull request); `checkpoint` runs it after the unit tests, and the story gate when the change touches the seed's build (Directory.Build.props, Ariva.Infra.csproj, Ariva.Infra's Services/Seed, DemoSeedExtensions, NbjSiteScopeTests).
+  - From the round 2 review, also fail closed under the gates:
+    - Ariva.E2E's playwright.config.ts: `isGate` (CI, TF_BUILD or ARIVA_GATE) refuses a run without the database, Kafka or clamd and forbids `test.only`. Retries, workers, traces and server reuse stay CI's.
+    - `scripts/verify.mjs`'s build first restores in locked mode on Linux x64 (`dotnet restore Ariva.slnx --locked-mode`), as CI did. Other platforms report the step skipped, since only the linux-x64 lock files of Ariva.AppHost and Ariva.UnitTests are committed.
+    - `base-images.mjs`'s dangling link case makes a junction on Windows, and skips there when it cannot.
+  - From the round 3 review:
+    - The fault tests' Toxiproxy taken by its tag (`ARIVA_TOXIPROXY_TAG_ONLY`) is refused under the gates too (`FaultsFixture.GateVariable`), so where the digest cannot be pulled the gates block the 25 fault tests rather than run them on a local build.
+    - A failed locked restore stops the build, and the build after a locked restore does not restore again (an unlocked restore would rewrite a drifted lock file).
+    - The Release proof runs in the story gate when a change touches Ariva.Infra, Ariva.Di, a project file or the root MSBuild files.
+    - `backlog/checkpoint.json` records the platform it ran on.
+  - From the round 4 review (PASS, with two Lows taken before commit):
+    - Every restore a gate starts on Linux x64 is locked. `scripts/verify.mjs` sets ARIVA_LOCKED_RESTORE, which Directory.Build.props reads beside CI, GITHUB_ACTIONS and TF_BUILD. So after a failed locked restore, the Release build, the integration tests' own build and E2E's host build fail too, instead of rewriting the drifted lock file.
+    - The gate's first restore is forced.
+    - The constant in FaultsFixture.cs is above the method's documentation.
+    - RELEASE_RELEVANT adds the root GlobalSuppressions.cs.
+    - The header of verify.mjs says what --no-restore does now, and test-cadence.md names the platform field.
+  - The checks that read the workflows read them in the archive, the reference the Azure stories port from:
+    - `scripts/base-images.mjs`: one constant, `GITHUB_WORKFLOWS`, used by the Ryuk runners, the outside pins and their copies (`COPY_ROOTS`), the setup-dotnet job check, the Helm, cosign, signing job and ZAP checks and the third-party watch. The self-test fixtures name the archive, so the GitHub branch of each check still fires. The archived `third-party-images.yml` paths filters name `github_archived/workflows/**`.
+    - `Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs`: the CI and mutation workflows and the workflow folder.
+    - `NbjSiteScopeTests`: the "ci" source.
+  - `scripts/security/scan.mjs`: the full scan's oracle (`MUST_LIST`) names yaml's `LICENSE` (no extension) and `.ralph-tui/config.toml` (a dot folder) in place of `.github/CODEOWNERS`; the fourth entry is still the chart fixture the partial scan reads.
+  - Docs and wiki: paths renamed, with notes saying what stopped since 2026-11-06 in wiki 04 (6.6, the third-party watch), wiki 13 (section 9, the Dependabot row), wiki 16 (section 9), cwe-controls.md, overview.md, asvs-l2.md, the log and crypto inventories and the move plan. backlog/progress.md's history is left as written.
+    - Wiki 16 section 9 lists what runs nowhere until its Azure port: Trivy's scans, the SBOM, cosign signing and verification, CodeQL, Semgrep CE, the AsyncAPI validation, the weekly ZAP baseline, the Release E2E run and Claude's review.
+    - ASVS V15.1.2 goes to Partly (no SBOM or image signature until ARV-218), so the summary reads 159 met (78 percent). V15.2.3's Release proof is the checkpoint's.
+    - docs/product/decisions.md records the owner's decision, the residuals for the owner to confirm, and the open question of Claude's review. Docs/harness names the gates' Helm and Helmfile needs, and the test cadence names the Release proof.
+  - Backlog (prd-azure-move.json unless named):
+    - ARV-295 is filed.
+    - ARV-296 (Helmfile in the dev container) is filed.
+    - ARV-223 deletes the archive once no check reads it.
+    - ARV-217 to ARV-221 name the archived workflows they port and the checks they move. ARV-217 also names TF_BUILD's fail-closed checks and the Release runs.
+    - ARV-215 gains the owner's GitHub steps: Actions disabled, the secrets and the k8s-dev environment deleted, their tokens revoked, `v*` tags restricted.
+    - ARV-215 names the archived CODEOWNERS, and ARV-214a (prd-phase3.json) the archived Dependabot file.
+- Not done by agents: the CLAUDE.md files mention `.github`. The wording proposed to the owner:
+  - CLAUDE.md, the Commands block: add "node scripts/verify.mjs release      the Release proof (Release build, NbjSiteScopeTests); in checkpoint".
+  - CLAUDE.md, the repository map: "github_archived/  GitHub Actions, Dependabot and templates, archived 2026-11-06 (ARV-295): run by nothing, the reference ARV-217 to ARV-221 port from; deleted in ARV-223".
+  - CLAUDE.md rule 8's last sentence and story step 7: "Until ARV-217 brings the Azure pull request gate to the GitHub gate's level, no hosted CI runs: the local gates (`node scripts/verify.mjs story`, and `checkpoint` on its cadence) are the gate. After it, an Azure Repos pull request with the Analyze-solution build validation is the route when CI must run first." (A GitHub pull request now runs nothing.)
+  - Platform/Cloud/CLAUDE.md, the pipelines line: "GitHub Actions is archived in `github_archived/workflows` since 2026-11-06 (ARV-295) and runs nothing; those files are the reference the Azure DevOps stories port from (ARV-217 to ARV-221). The pipelines in `Ariva.Cicd/AzureDevOps` become the gate as each lands."
+- Tests:
+  - `base-images.mjs`'s new self-test covers a root without `.github`, a `.github` folder, and a dangling `.github` link.
+  - The retargeted checks' self-tests pass: `base-images.mjs --check`, `artifact-secrets.mjs --self-test` and `scan.mjs --self-test`.
+  - `chart-security.mjs` without Helm exits 1 under ARIVA_GATE, and 0 with its SKIPPED warning outside it.
+  - `ARIVA_GATE=1 npx playwright test --list` without `ARIVA_E2E_SCHEMA_UPDATE` exits 1 ("Gate and CI runs need ARIVA_E2E_SCHEMA_UPDATE=true ..."); without the gate it lists and exits 0.
+  - `dotnet restore Ariva.slnx --locked-mode` passes on this tree.
+  - New E2E test (`smoke-guard.spec.ts`), the gates' refusals:
+    - With ARIVA_GATE set, and also with TF_BUILD alone, a run without the database, Kafka or clamd fails to load, with its message.
+    - With CI, TF_BUILD and ARIVA_GATE all empty, the run loads.
+  - ToxiproxyImageTests holds the gate rows: 13 of 13 pass.
+  - Drift check on Ariva.Core's lock file (an edited resolved version):
+    - A plain locked restore with a current obj/ passed: NuGet reported "All projects are up-to-date" and compared nothing.
+    - A forced locked restore failed (exit 1) and left the edited file as it was.
+    - The same forced restore on the clean file passed.
+    - `dotnet build Ariva.slnx -c Release` and `source-encoding-check.mjs` pass with ARIVA_LOCKED_RESTORE set.
+    - `dotnet msbuild -getProperty:RestoreLockedMode` reads true with the variable and empty without it.
+  - `node scripts/verify.mjs release` passes: NbjSiteScopeTests 47 of 47 in Release.
+- Files:
+  - .github/ to github_archived/ (17 files; third-party-images.yml's paths filters)
+  - scripts/base-images.mjs, scripts/security/scan.mjs, Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs, Platform/Backplane/Ariva.UnitTests/Seed/NbjSiteScopeTests.cs
+  - scripts/verify.mjs (ARIVA_GATE, the release scope in checkpoint and in the story gate, the locked restore), scripts/offline/bundle.mjs, Platform/Cloud/Ariva.K8s/tests/chart-security.mjs and Platform/Testing/Ariva.E2E/playwright.config.ts (fail closed under the gates)
+  - comments: Platform/Testing/Ariva.E2E/scripts/zap-findings.mjs, scripts/ops/tls-check.mjs, scripts/ops/README.md, Platform/Testing/Ariva.E2E/README.md
+  - docs/architecture/overview.md, docs/harness/README.md, docs/harness/test-cadence.md, docs/plan/azure-devops-move.md, docs/product/decisions.md, docs/security/{asvs-l2,crypto-inventory,cwe-controls,log-inventory}.md, wiki/04, wiki/13, wiki/16
+  - backlog/prd-azure-move.json, backlog/prd-phase3.json, backlog/progress.md
+- Gates: `node scripts/verify.mjs story --base 20a95cc` on the story's tree, 2026-11-06. The change is wide, since playwright.config.ts changed, so the full integration and E2E suites ran.
+  - Every step passed except integration, where exactly the 25 Faults fixture tests failed. Their pinned Toxiproxy image (ghcr.io/shopify/toxiproxy:2.12.0 by digest) cannot be pulled in this session (DockerImageNotFoundException). By the owner's standing decision they are recorded as blocked; GitHub CI on 20a95cc passed them on 2026-11-06 (run 42199780438).
+  - Forced locked restore: passed. Unit tests: 8,886. Release proof: 47 of 47. Security step with its self-tests: passed, chart-security rendering with Helm 3.19.0 and Helmfile 1.1.7. Docs: passed. Visual: 20 passed. Integration: 974 of 1,000 (25 Faults blocked, 1 skipped). E2E: 949 passed, 1 skipped, the artifact secret check included. scan.mjs: 0 errors.
+- Security review: security-reviewer PASS in round 4 (CWE-78/77, CWE-94, CWE-269; ASVS V15.1.2 Partly, V15.2.3, V13.3.1, V15.1.1, V3.4.1), its two Lows closed and confirmed. The residuals are in decisions.md 2026-11-06 for the owner.
+  - Round 1 FAIL. Its findings, all taken:
+    - (High) Checks that only CI made fail now passed while checking nothing: the chart render without Helm, the Helmfile environments, the offline bundle's end to end bundles, and the Release proof. Fixed by ARIVA_GATE and the release scope.
+    - (High) V15.1.2 stayed Met with no SBOM produced. Now Partly.
+    - (M) A live `.github` could come back unchecked. Now refused.
+    - (M) The notes were wrong about Dependabot, and claimed the local gates ran the archived scans. Corrected, and the list of what runs nowhere is in wiki 16.
+    - (M) GitHub still holds unused secrets, and an old `v*` tag would run images.yml. These are owner steps in ARV-215.
+    - (M) The decision was not in decisions.md. Now it is.
+    - (L) Smaller fixes: the Dependabot wording in `base-images.mjs`; three statements still in the present tense; Claude's review left open; the MassTransit caution; ARV-217's TF_BUILD note; the CLAUDE.md wording, given above.
+  - Round 2 FAIL. Its findings, all taken:
+    - (High) The E2E guards (services, `test.only`) applied under CI only. They now apply under the gates.
+    - (M) V15.1.2 claimed the lock files hold locally. Now true: the locked restore on Linux x64.
+    - (M) CWE-120's SkiaSharp row claimed Dependabot keeps it current. Corrected, with the by-hand check until ARV-220.
+    - (M) The reopened V15.1.2 had no story. Now ARV-218 holds it, with a row in the Gap stories table and a criterion on the story.
+    - (M) The new symlink self-test crashed on Windows. Now it makes a junction there.
+    - (L) The remaining present-tense Dependabot and CI wording is corrected.
+    - (L) The Linux-only security tests make the gates Linux's until ARV-217.
+    - (L) The Release proof runs in the story gate when the seed's build changes.
+    - (L) The older branches with `.github/workflows` are now urgent in decisions.md.
+    - (L) Secret scanning after the move is a residual (ARV-220).
+    - (L) `release` is added to the proposed CLAUDE.md Commands block.
+  - Round 3 FAIL. Its findings, all taken:
+    - (M) The round 2 E2E fix had no test. Now `smoke-guard.spec.ts` holds it.
+    - (M) The Toxiproxy tag-only escape was refused in a pipeline only. Now the gates refuse it too.
+    - (L) The Release proof's trigger was narrower than the docs said. It is wider now.
+    - (L) A failed locked restore could be followed by an unlocked one. Not any more.
+    - (L) Wording in V13.3.1, V15.1.1, V3.4.1, V15.2.3 and scripts/ops/README.md is corrected.
+    - (L) The checkpoint records its platform.
+  - Round 4 PASS: no Critical, High or Medium. Its two Lows were taken (the remaining unlocked restores after a failed locked restore, the misplaced doc comment) and confirmed closed.
+    - Noted, nothing to fix: the forced restore runs where the build step runs (story, checkpoint, backend, unit, all). The release, integration and e2e scopes run alone restore locked but not forced; they never rewrite a lock file.
+    - Left as noted: the fail-closed paths of chart-security.mjs and bundle.mjs have no test of their own (their CI-only paths had none either); proven by hand, with exit 1 under ARIVA_GATE without Helm.
+- Gotchas:
+  - `.github/CODEOWNERS` was the full scan oracle's only tracked file with no extension outside the fixtures and node_modules; the repository has no root LICENSE.
+  - GitHub keeps its repository settings: a ruleset or branch protection on main that requires a GitHub check would refuse the owner's fast-forward, since no check runs any more.
+  - A gate that only CI enforced is the risk of an archive like this one. Look for every `process.env.CI`, `GITHUB_ACTIONS` and `TF_BUILD` read in the checks, not only the files that name the moved folder. Rounds 1 to 3 each found more:
+    - round 1: the chart render, the Helmfile environments, the offline bundle, the Release proof;
+    - round 2: the E2E guards and the locked restore;
+    - round 3: the Toxiproxy tag-only escape.
+  - Stryker reads `--mutate "file{a..b}"` as character offsets, not lines.
+  - NuGet's up-to-date check skips a locked restore whose project files did not change, and so compares nothing; force the restore that is meant to catch drift.
+  - A gate run beside the mutation run went out of memory (the kernel killed a .NET process at about 6 GB) and filled the disk. Run them one after the other on this machine.

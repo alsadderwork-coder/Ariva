@@ -1005,9 +1005,11 @@ const VISIBLE_CHARS = [[0x09], [0x20, 0x7E], [0x00A0, 0x00AC], [0x034E], [0x0350
   [0x1342F], [0x13440], [0x1FFFD], [0x10FFFD]];
 
 // ARV-157: files the full scan must list (an oracle apart from gitFiles): types no rule but SEC-130 reads, and folders the
-// other rules skip.
-const MUST_LIST = ['.gitattributes', '.github/CODEOWNERS', 'docs/design/prototype/app/access.html', 'Platform/Cloud/Ariva.K8s/tests/fixtures/bad.yaml',
-  'Platform/Cloud/Ariva.K8s/tests/node_modules/yaml/README.md'];
+// other rules skip. ARV-295: a name with no extension (yaml's LICENSE) and a file in a dot folder replace .github/CODEOWNERS,
+// archived with GitHub's other files (no tracked file today is both, an unmapped name in a dot folder, as CODEOWNERS was);
+// the fourth entry stays the chart fixture the partial scan reads.
+const MUST_LIST = ['.gitattributes', 'Platform/Cloud/Ariva.K8s/tests/node_modules/yaml/LICENSE', 'docs/design/prototype/app/access.html',
+  'Platform/Cloud/Ariva.K8s/tests/fixtures/bad.yaml', 'Platform/Cloud/Ariva.K8s/tests/node_modules/yaml/README.md', '.ralph-tui/config.toml'];
 
 /**
  * --changed and the full scan's git lists in a scratch repository (ARV-157): an untracked file in a new folder, a rename

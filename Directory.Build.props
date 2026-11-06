@@ -50,12 +50,14 @@
     <!-- ARV-096 (ASVS 5.0 V15.1.2, supply chain): every project records its resolved package graph in packages.lock.json,
          committed with the change that moves it (dotnet restore Ariva.slnx updates them; add force-evaluate to re-resolve).
          CI restores in locked mode: GitHub Actions sets CI=true and GITHUB_ACTIONS=true (which a step cannot override) and Azure
-         Pipelines TF_BUILD=True, and a restore whose graph
+         Pipelines TF_BUILD=True, and ARV-295's local gates on Linux x64 ARIVA_LOCKED_RESTORE=true (scripts/verify.mjs, since no
+         hosted pipeline runs; Linux x64 only, as Ariva.AppHost and Ariva.UnitTests commit only linux-x64's lock file), and a
+         restore whose graph
          differs from the lock file fails (NU1004) instead of taking whatever the source serves. The image builds pass
          locked mode themselves (each Dockerfile). Sources and their mapping: nuget.config. -->
     <PropertyGroup Label="Lock files">
         <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-        <RestoreLockedMode Condition="'$(CI)' == 'true' Or '$(GITHUB_ACTIONS)' == 'true' Or '$(TF_BUILD)' == 'True'">true</RestoreLockedMode>
+        <RestoreLockedMode Condition="'$(CI)' == 'true' Or '$(GITHUB_ACTIONS)' == 'true' Or '$(TF_BUILD)' == 'True' Or '$(ARIVA_LOCKED_RESTORE)' == 'true'">true</RestoreLockedMode>
     </PropertyGroup>
     <!-- The images restore and publish for linux-x64 (dotnet restore -r linux-x64 in every host Dockerfile), and a locked
          restore for a runtime needs that runtime's graph in the lock file of every project the image builds. So the projects

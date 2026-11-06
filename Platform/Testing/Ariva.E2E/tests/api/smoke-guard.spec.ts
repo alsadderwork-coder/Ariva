@@ -200,6 +200,29 @@ test('the E2E suites refuse to load against a non-local target, naming the targe
 	}
 });
 
+test('the E2E suites refuse to load under the local gates or in a pipeline without the run\'s database, Kafka or clamd, and load outside them', async () => {
+	// ARV-295: no hosted pipeline runs since GitHub's workflows were archived, so the gates (ARIVA_GATE, which scripts/verify.mjs
+	// sets for every child) and an Azure DevOps run (TF_BUILD) refuse what only CI refused, instead of skipping the suites that
+	// need the services. Each row sets CI, TF_BUILD and ARIVA_GATE, since this run's own environment may carry any of them.
+	test.setTimeout(420_000);
+	const gate = { CI: '', TF_BUILD: '', ARIVA_GATE: '1' };
+	const services = { ARIVA_E2E_SCHEMA_UPDATE: 'true', ARIVA_E2E_KAFKA_BOOTSTRAP: 'localhost:9', ARIVA_E2E_CLAMD: 'localhost:9' };
+	for (const [extra, message] of [
+		[{ ...gate, ...services, ARIVA_E2E_SCHEMA_UPDATE: '' }, 'Gate and CI runs need ARIVA_E2E_SCHEMA_UPDATE=true'],
+		[{ ...gate, ...services, ARIVA_E2E_KAFKA_BOOTSTRAP: '' }, 'Gate and CI runs need ARIVA_E2E_KAFKA_BOOTSTRAP'],
+		[{ ...gate, ...services, ARIVA_E2E_CLAMD: '' }, 'Gate and CI runs need ARIVA_E2E_CLAMD'],
+		[{ ...services, CI: '', ARIVA_GATE: '', TF_BUILD: 'True', ARIVA_E2E_SCHEMA_UPDATE: '' }, 'Gate and CI runs need ARIVA_E2E_SCHEMA_UPDATE=true']
+	] as [Record<string, string>, string][]) {
+		// --list loads the config without starting a host.
+		const outcome = run('playwright.config.ts', extra, ['--list']);
+		expect(outcome.status, outcome.output).not.toBe(0);
+		expect(outcome.output).toContain(message);
+	}
+	// Outside a gate and a pipeline the same run loads (the suites that need the services then skip at run time).
+	const outside = run('playwright.config.ts', { CI: '', TF_BUILD: '', ARIVA_GATE: '', ARIVA_E2E_SCHEMA_UPDATE: '', ARIVA_E2E_KAFKA_BOOTSTRAP: '', ARIVA_E2E_CLAMD: '' }, ['--list']);
+	expect(outside.status, outside.output).toBe(0);
+});
+
 test('the E2E suites refuse to load in CI without the run\'s clamd, or with a clamd that is not host:port', async () => {
 	// ARV-092b: every upload in the run goes through the malware scan, so a CI run never starts the hosts without it.
 	test.setTimeout(180_000);

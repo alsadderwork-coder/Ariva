@@ -18,7 +18,7 @@ namespace Ariva.UnitTests.Seed;
 /// <c>Seed:DemoTopology</c>; a Release build carries no NBJ-BC1 type or text and refuses the setting; and no committed
 /// settings file, chart, AppHost, E2E environment, script, pipeline, agent hook or dev container turns it on, except
 /// run-ariva.ps1's switch through the AppHost's own key, line for line. These tests compile and run in Debug and in
-/// Release (CI runs them in Release).
+/// Release (node scripts/verify.mjs release, at every checkpoint since ARV-295; CI's backend job before).
 /// </summary>
 public sealed partial class NbjSiteScopeTests
 {
@@ -160,8 +160,9 @@ public sealed partial class NbjSiteScopeTests
     }
 
     /// <summary>
-    /// The Release proof that runs in CI: the backend job builds the solution and runs this project in Release (ci.yml), so
-    /// this test then reads the Release Ariva.Infra.dll and Ariva.Di.dll it loaded and finds no NbjBc1 type and none of the
+    /// The Release proof: node scripts/verify.mjs release (every checkpoint, and a story that touches Ariva.Infra, Ariva.Di, a project file or the root MSBuild files; CI's
+    /// backend job until ARV-295) builds the solution and runs this class in Release, so this test then reads the Release
+    /// Ariva.Infra.dll and Ariva.Di.dll it loaded and finds no NbjBc1 type and none of the
     /// site's texts in their bytes, in any letter case (type names in UTF-8 metadata, literals in UTF-16). In Debug it
     /// proves the switch is the build configuration: the same assemblies carry the seed.
     /// </summary>
@@ -257,9 +258,9 @@ public sealed partial class NbjSiteScopeTests
     /// <summary>
     /// The committed sources that configure a run, by who runs it: the hosts' and the simulator's settings, the Helm charts
     /// and Helmfile, the Aspire AppHost, the E2E environment (playwright.config.ts and its scripts), the developer scripts
-    /// (dev-up, demo-local, run-ariva), CI (GitHub Actions and Azure DevOps), Codespaces (.devcontainer, Compose) and the
-    /// agents' settings and hooks (.claude, read only). The git-ignored appsettings.local.json is the owner's own and is
-    /// not read.
+    /// (dev-up, demo-local, run-ariva), CI (Azure DevOps, and GitHub Actions' workflows archived by ARV-295, which a restore
+    /// would run again), Codespaces (.devcontainer, Compose) and the agents' settings and hooks (.claude, read only). The
+    /// git-ignored appsettings.local.json is the owner's own and is not read.
     /// </summary>
     public static TheoryData<string> Sources => new()
     {
@@ -275,7 +276,7 @@ public sealed partial class NbjSiteScopeTests
         "e2e" => [RepositoryPaths.Resolve("Platform/Testing/Ariva.E2E/playwright.config.ts"),
             .. Files("Platform/Testing/Ariva.E2E/scripts", "*.mjs", "*.ts", "*.js"), .. Files("Platform/Testing/Ariva.E2E/tests/support", "*.ts")],
         "scripts" => [.. Files("scripts", "*.mjs"), RepositoryPaths.Resolve("run-ariva.ps1"), RepositoryPaths.Resolve("run-ariva.cmd")],
-        "ci" => [.. Files(".github/workflows", "*.yml", "*.yaml"), .. Files("Platform/Cloud/Ariva.Cicd/AzureDevOps", "*.yml", "*.yaml")],
+        "ci" => [.. Files("github_archived/workflows", "*.yml", "*.yaml"), .. Files("Platform/Cloud/Ariva.Cicd/AzureDevOps", "*.yml", "*.yaml")],
         "codespaces" => [.. Files(".devcontainer", "*"), .. Directory.EnumerateFiles(RepositoryPaths.Root, "docker-compose*.yml"), RepositoryPaths.Resolve(".env.example")],
         "agents" => [RepositoryPaths.Resolve(".claude/settings.json"), .. Files(".claude/hooks", "*.mjs")],
         _ => throw new ArgumentOutOfRangeException(nameof(source))

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ARV-063: reads ZAP JSON reports, writes a summary table and fails on High risk alerts that security/zap-triage.json
-// does not accept. Used by tests/zap/zap.spec.ts and by the dev deployment job of .github/workflows/security-zap.yml.
+// does not accept. Used by tests/zap/zap.spec.ts and by the dev deployment job of github_archived/workflows/security-zap.yml.
 //
 //   node scripts/zap-findings.mjs <summary.md> <scan>=<report.json> [<scan>=<report.json> ...]
 //

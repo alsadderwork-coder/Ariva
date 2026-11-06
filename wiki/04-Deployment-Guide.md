@@ -709,7 +709,9 @@ The packages an image carries (ARV-096). Every .NET image build copies `nuget.co
 
 ### 6.6 Release to k8s-dev from GitHub
 
-Until the dev cluster moves to Dalil Azure, the dev release runs from GitHub Actions (`.github/workflows/release-dev.yml`) with the images the `images` workflow pushes to `ghcr.io/alsadderwork-coder/ariva/<service>`. The Azure DevOps pipelines (`Build-k8s-*`, `Release-ariva-k8s-dev.yaml`) stay as they are for the move. Both use the same Helmfile and chart; the GitHub release only points `imageRepository` at GHCR and its pull secret at a GHCR token.
+Since 2026-11-06 GitHub's files are archived in `github_archived/` (ARV-295, owner decision: the repository and its pipelines move to Azure DevOps), so GitHub Actions runs nothing and Dependabot's version updates (`dependabot.yml`) stop; Dependabot alerts and security update pull requests, secret scanning and push protection are repository settings and keep running on what is pushed to GitHub until the owner turns them off. This section describes the dev release as GitHub ran it, the reference ARV-219 brings the Azure DevOps release to; until then no pipeline releases to k8s-dev.
+
+Until the archive, the dev release ran from GitHub Actions (`github_archived/workflows/release-dev.yml`) with the images the `images` workflow pushes to `ghcr.io/alsadderwork-coder/ariva/<service>`. The Azure DevOps pipelines (`Build-k8s-*`, `Release-ariva-k8s-dev.yaml`) stay as they are for the move. Both use the same Helmfile and chart; the GitHub release only points `imageRepository` at GHCR and its pull secret at a GHCR token.
 
 Once:
 
@@ -864,9 +866,9 @@ Ariva pins every third-party image it runs outside its own Dockerfiles by tag an
 - the integration tests' Testcontainers images;
 - the Playwright image CI renders the visual baselines with (its tag on the dev container's `FROM` line).
 
-Tests hold further copies of some pins: the AppHost model's expected digests, the chart tests' fixtures and the dynamic scan's ZAP image. `scripts/base-images.mjs --check` holds every copy of a pin to one digest, and to the charts' tag and digest for TimescaleDB and ClamAV. It refuses a copy that carries a digest or tag no pin has, and one digest under two tags of an image. Ariva's own images are scanned when built (`images.yml`), and Dependabot keeps their base images current.
+Tests hold further copies of some pins: the AppHost model's expected digests, the chart tests' fixtures and the dynamic scan's ZAP image. `scripts/base-images.mjs --check` holds every copy of a pin to one digest, and to the charts' tag and digest for TimescaleDB and ClamAV. It refuses a copy that carries a digest or tag no pin has, and one digest under two tags of an image. Ariva's own images were scanned when built (`images.yml`), and Dependabot kept their base images current (until ARV-295 archived its version updates; until ARV-220 a bump is by hand with `scripts/base-images.mjs --patches` and `--resolve`).
 
-The third-party images have a watch of their own: `.github/workflows/third-party-images.yml`. It has two parts:
+The third-party images have a watch of their own: `github_archived/workflows/third-party-images.yml` (archived by ARV-295, so it runs nowhere until ARV-220 ports it to Azure Pipelines; `node scripts/base-images.mjs --patches` runs its second part by hand). It has two parts:
 
 - **Scan.** Trivy scans every pinned image by its digest, every Monday, by hand (Actions, third-party-images, Run workflow), and on a pull request or a push to `main` that changes a file holding a pin. `--check` requires the workflow's triggers to cover every such file. The run fails on a high or critical vulnerability that has a fixed version, and when Trivy cannot scan. Its summary names the image, every place it is pinned and the time frames: critical 7 days and high 30 days from the day a fix is available (wiki 13 section 9).
 - **Patches.** Every Monday and by hand, each pinned line is compared with its registry. Pull requests and pushes do not run it: an upstream rebuild is not the fault of the change that runs next. The run fails in three cases:
@@ -874,7 +876,7 @@ The third-party images have a watch of their own: `.github/workflows/third-party
   - a tag names a new digest: a moving tag such as `redis:8.2-alpine` or ZAP's stable tag, or an image rebuilt under its version tag;
   - TimescaleDB has a newer line. The ha image publishes one tag per extension minor (`pg17-ts2.30`, `pg17-ts2.31`), and an older one stops moving once a newer one is out: `pg17-ts2.28` was last pushed on 28 July 2026, `pg17-ts2.29` on 9 September, and `pg17-ts2.31` has been out since 21 October. A watch on the old tag's digest alone would go quiet on the production database image.
 
-  A newer minor line of any other image (ClamAV 1.5, Redis 8.10) is a note, not a failure: moving to it is a decision, not a patch. The summary lists each line as `ok`, `BEHIND` (with the newer tag, digest or line) or `ERROR`. The Playwright image's line reads `-`: Dependabot proposes its releases on the dev container, together with `@playwright/test`.
+  A newer minor line of any other image (ClamAV 1.5, Redis 8.10) is a note, not a failure: moving to it is a decision, not a patch. The summary lists each line as `ok`, `BEHIND` (with the newer tag, digest or line) or `ERROR`. The Playwright image's line reads `-`: Dependabot proposed its releases on the dev container, together with `@playwright/test` (until ARV-295 archived its version updates; until ARV-220 a bump is by hand with `scripts/base-images.mjs --patches` and `--resolve`).
 
 What Trivy cannot see: it reads an image's distribution packages and its language packages (jars, Go binaries, .NET `deps.json`, npm and Python packages). Software installed any other way has nothing for it to match:
 - Redis in the `redis` images: built from source (`/usr/local/bin/redis-server`); no OS package names it.

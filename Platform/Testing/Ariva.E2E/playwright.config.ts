@@ -22,6 +22,11 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(here, '..', '..', '..');
 const configuration = process.env.ARIVA_E2E_CONFIGURATION || 'Debug';
 const isCi = !!process.env.CI;
+// ARV-295: no hosted pipeline runs since GitHub's workflows were archived, so the local gates are the gate: under them
+// (ARIVA_GATE, set by scripts/verify.mjs) and in an Azure DevOps pipeline (TF_BUILD) a run without its services, or with a
+// stray test.only, fails as it does in CI instead of skipping the suites that need them. Retries, workers, traces and server
+// reuse stay CI's own.
+const isGate = isCi || !!process.env.TF_BUILD || !!process.env.ARIVA_GATE;
 
 // Every .NET host writes its JSON log to this run's folder; global-teardown.ts fails the run if any line carries a
 // bearer token, a JWT or an unredacted access_token (ARV-007, CWE-532). The folder is per run, so a previous run's
@@ -82,20 +87,20 @@ if (remoteTargets.length > 0) {
 	);
 }
 
-// Sign-in (ARV-010a) needs the database; CI always provides one (ci.yml starts PostgreSQL), so a CI run without it is
-// a configuration error rather than a reason to skip the account tests.
-if (isCi && !databaseAvailable) {
-	throw new Error('CI runs need ARIVA_E2E_SCHEMA_UPDATE=true and the Database__* variables (see README.md)');
+// Sign-in (ARV-010a) needs the database; a gate always provides one (verify.mjs's environment, CI's PostgreSQL), so a gate
+// run without it is a configuration error rather than a reason to skip the account tests.
+if (isGate && !databaseAvailable) {
+	throw new Error('Gate and CI runs need ARIVA_E2E_SCHEMA_UPDATE=true and the Database__* variables (see README.md)');
 }
 
-// Sensor pushes are accepted only once they are in Kafka; CI starts one (ci.yml), so its absence there is an error.
-if (isCi && !process.env.ARIVA_E2E_KAFKA_BOOTSTRAP) {
-	throw new Error('CI runs need ARIVA_E2E_KAFKA_BOOTSTRAP (see README.md)');
+// Sensor pushes are accepted only once they are in Kafka; a gate provides one, so its absence there is an error.
+if (isGate && !process.env.ARIVA_E2E_KAFKA_BOOTSTRAP) {
+	throw new Error('Gate and CI runs need ARIVA_E2E_KAFKA_BOOTSTRAP (see README.md)');
 }
 
-// Every upload is scanned by clamd before it is stored (ARV-092b); CI starts one (ci.yml), so its absence there is an error.
-if (isCi && !process.env.ARIVA_E2E_CLAMD) {
-	throw new Error('CI runs need ARIVA_E2E_CLAMD (see README.md)');
+// Every upload is scanned by clamd before it is stored (ARV-092b); a gate provides one, so its absence there is an error.
+if (isGate && !process.env.ARIVA_E2E_CLAMD) {
+	throw new Error('Gate and CI runs need ARIVA_E2E_CLAMD (see README.md)');
 }
 
 // One random seed per run for the E2E account passwords (tests/support/accounts.ts). Set in the runner process before
@@ -417,7 +422,7 @@ export default defineConfig({
 	globalTeardown: './tests/support/global-teardown.ts',
 	outputDir: './test-results',
 	fullyParallel: true,
-	forbidOnly: isCi,
+	forbidOnly: isGate,
 	retries: isCi ? 1 : 0,
 	workers: isCi ? 2 : undefined,
 	timeout: 30_000,

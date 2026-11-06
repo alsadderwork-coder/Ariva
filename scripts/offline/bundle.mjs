@@ -355,8 +355,8 @@ export function main(argv) {
 // ---------------------------------------------------------------------------------------------
 // self-test (node scripts/verify.mjs security and CI): argument checks, the pinned third-party image, the web image's path,
 // and two end to end bundles verified by verify.mjs: a dry run, and a release whose cosign, ORAS and docker are stand-ins
-// (scripts/offline/stand-ins.mjs). The bundles need Helm (HELM or on PATH): required on GitHub Actions, skipped elsewhere
-// when Helm is missing.
+// (scripts/offline/stand-ins.mjs). The bundles need Helm (HELM or on PATH): required in a pipeline and under the local gates
+// (ARIVA_GATE, ARV-295), skipped elsewhere when Helm is missing.
 
 async function selfTest() {
   const standIns = path.join(HERE, 'stand-ins.mjs');
@@ -413,7 +413,8 @@ async function selfTest() {
 
   const helmFound = run('helm', ['version', '--short']).ok;
   if (!helmFound) {
-    if (process.env.GITHUB_ACTIONS) throw new Error('offline bundle self-test: helm not found; failing because this is GitHub Actions');
+    // ARV-295: a pipeline and the local gates (ARIVA_GATE, set by scripts/verify.mjs) fail closed.
+    if (process.env.GITHUB_ACTIONS || process.env.TF_BUILD || process.env.ARIVA_GATE) throw new Error('offline bundle self-test: helm not found (set HELM); failing because this is a gate (GITHUB_ACTIONS, TF_BUILD or ARIVA_GATE is set)');
     console.warn('offline bundle self-test: helm not found (set HELM); the end to end bundles are SKIPPED locally');
     console.log(`offline bundle self-test: ${checks} checks passed`);
     return 0;

@@ -20,7 +20,7 @@ on:
   pull_request:
     paths:
       - 'scripts/base-images.mjs'
-      - '.github/workflows/**'
+      - 'github_archived/workflows/**'
       - '.devcontainer/Dockerfile'
       - 'docker-compose.dev.yml'
       - 'Platform/Cloud/Ariva.AppHost/AppHost.cs'
@@ -34,7 +34,7 @@ on:
     branches: [main]
     paths:
       - 'scripts/base-images.mjs'
-      - '.github/workflows/**'
+      - 'github_archived/workflows/**'
       - '.devcontainer/Dockerfile'
       - 'docker-compose.dev.yml'
       - 'Platform/Cloud/Ariva.AppHost/AppHost.cs'

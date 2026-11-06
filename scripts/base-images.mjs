@@ -9,10 +9,11 @@
 //                                             VAR=value prefixes, shell wrappers, here-documents, ONBUILD, COPY scripts and
 //                                             a guarded tool anywhere in a command; not a script file a RUN runs), the
 //                                             pipelines that run the integration tests pin Testcontainers' Ryuk image, and
-//                                             CI's SDK steps install and run the images' SDK band (offline; CI gate)
+//                                             CI's SDK steps install and run the images' SDK band, and no live .github
+//                                             folder is back (ARV-295) (offline; the local gates' check)
 //   node scripts/base-images.mjs --resolve    finds the newest patch of each pinned line and its digest, and the current
 //                                             digest of each image run outside the chart (needs registry access and
-//                                             docker buildx; runs in .github/workflows/base-images.yml)
+//                                             docker buildx; ran in github_archived/workflows/base-images.yml)
 //   node scripts/base-images.mjs --resolve --write   also rewrites the FROM lines and every copy of the other pins
 //   node scripts/base-images.mjs --resolve --outside [--write]   the images run outside the chart only (a third-party bump;
 //                                             moves the tests' copies too, writes nothing while --check finds a problem)
@@ -21,8 +22,10 @@
 //   node scripts/base-images.mjs --patches    each pinned third-party line against its registry: a newer patch release, its
 //                                             tag moved to a new digest, or a newer TimescaleDB line (a newer minor line
 //                                             elsewhere is a note); exits 1 when one is behind (ARV-227, weekly in
-//                                             .github/workflows/third-party-images.yml)
-// Dependabot (docker ecosystem) keeps the Dockerfile digests current once they are pinned.
+//                                             github_archived/workflows/third-party-images.yml)
+// Dependabot (docker ecosystem) kept the Dockerfile digests current; its version updates are archived with GitHub's other files
+// (ARV-295), so until ARV-220 ports them to Azure DevOps the digests move only by hand: --patches finds a newer one and
+// --resolve --write moves it.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -30,6 +33,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * ARV-295: GitHub's workflows, archived on 2026-11-06 when the owner moved the repository and its pipelines to Azure DevOps.
+ * GitHub runs none of them. The checks below still read them, as the reference ARV-217 to ARV-221 port from, until each check
+ * moves to its Azure pipeline; the archive is deleted once none reads it (ARV-223).
+ */
+const GITHUB_WORKFLOWS = 'github_archived/workflows';
 // .private holds client material that nothing lists or reads (owner decision 2026-10-09, ARV-139c).
 const SKIP = ['node_modules', '.git', 'bin', 'obj', 'fixtures', 'build', '.svelte-kit', '.private'];
 
@@ -98,7 +107,7 @@ const RYUK_VARIABLE = 'TESTCONTAINERS_RYUK_CONTAINER_IMAGE';
 /** A line that runs the integration tests: dotnet on their assembly or project, or the project alone in a task's list. */
 const RYUK_RUNNER_LINES = [/\bdotnet\s+(?:test\s+)?\S*Ariva\.IntegrationTests\.(?:dll|csproj)\b/, /^\s*(?:projects:\s*)?['"]?\S*Ariva\.IntegrationTests\.csproj['"]?\s*$/];
 /** The files that must hold such a step (each found in every CI file; these two must not lose theirs). */
-const RYUK_RUNNERS = ['.github/workflows/ci.yml', 'Platform/Cloud/Ariva.Cicd/AzureDevOps/Common/Analyze-solution.yaml'];
+const RYUK_RUNNERS = [`${GITHUB_WORKFLOWS}/ci.yml`, 'Platform/Cloud/Ariva.Cicd/AzureDevOps/Common/Analyze-solution.yaml'];
 
 /**
  * AppHost resources allowed on a tag, each with the reason (resource name: reason). None today: TimescaleDB carries the chart's
@@ -110,7 +119,7 @@ const APPHOST_TAG_ONLY = {};
  * ARV-227: where --check and --resolve --outside look for further copies of a third-party pin (test expectations, the chart tests'
  * fixtures, the scan's ZAP image), with the files they read; the fixtures are read here although the FROM line search skips them.
  */
-const COPY_ROOTS = ['Platform', 'scripts', '.github', '.devcontainer'];
+const COPY_ROOTS = ['Platform', 'scripts', 'github_archived', '.devcontainer'];
 const COPY_SKIP = [...SKIP.filter((name) => name !== 'fixtures'), 'test-results', 'playwright-report', 'blob-report'];
 const COPY_NAMES = /\.(cs|ya?ml|ts|mjs|js|json|ps1|sh)$|^Dockerfile$/;
 
@@ -136,7 +145,7 @@ const INTEGRATION_IMAGES = [
  */
 function outsideFiles() {
 	const files = [['docker-compose.dev.yml', 'yaml'], [path.join('Platform', 'Cloud', 'Ariva.AppHost', 'AppHost.cs'), 'apphost']];
-	for (const dir of [path.join('.github', 'workflows'), path.join('Platform', 'Cloud', 'Ariva.Cicd', 'AzureDevOps')]) {
+	for (const dir of [GITHUB_WORKFLOWS, path.join('Platform', 'Cloud', 'Ariva.Cicd', 'AzureDevOps')]) {
 		const walk = (relative) => {
 			const full = path.join(ROOT, relative);
 			if (!fs.existsSync(full)) return;
@@ -466,7 +475,7 @@ function selfTestThirdPartyImages() {
 	if (newerPatch('2.9.0', ['2.10.0', '2.9.10', '2.9.9']) !== '2.9.10') failures.push('newerPatch compares patches as numbers, not text');
 	const pins = [
 		{ where: 'docker-compose.dev.yml:4', image: 'redis', tag: '8.2-alpine', digest: d('b') },
-		{ where: '.github/workflows/ci.yml:30', image: 'redis', tag: '8.2-alpine', digest: d('b') },
+		{ where: 'github_archived/workflows/ci.yml:30', image: 'redis', tag: '8.2-alpine', digest: d('b') },
 		{ where: 'ci.yml:40', image: 'ghcr.io/zaproxy/zaproxy', tag: '', digest: d('e') },
 		{ where: 'x.yml:1', image: 'redis', tag: '8.2-alpine', digest: '' },
 		{ where: 'AppHost.cs:9', resource: 'kafka', image: '', tag: '', digest: '' }
@@ -475,7 +484,7 @@ function selfTestThirdPartyImages() {
 	const expected = [
 		{ name: 'clamav/clamav:1.4.6', ref: `clamav/clamav:1.4.6@${d('5')}`, where: 'Platform/Cloud/Ariva.K8s/Helm/Charts/platform/values.yaml' },
 		{ name: 'ghcr.io/zaproxy/zaproxy', ref: `ghcr.io/zaproxy/zaproxy@${d('e')}`, where: 'ci.yml:40' },
-		{ name: 'redis:8.2-alpine', ref: `redis:8.2-alpine@${d('b')}`, where: 'docker-compose.dev.yml:4, .github/workflows/ci.yml:30' },
+		{ name: 'redis:8.2-alpine', ref: `redis:8.2-alpine@${d('b')}`, where: 'docker-compose.dev.yml:4, github_archived/workflows/ci.yml:30' },
 		{ name: 'timescale/timescaledb-ha:pg17-ts2.30', ref: `timescale/timescaledb-ha:pg17-ts2.30@${d('a')}`, where: 'Platform/Cloud/Ariva.K8s/Helm/Charts/timescaledb/values.yaml' }
 	];
 	const shown = JSON.stringify(listed.map(({ name, ref, where }) => ({ name, ref, where })));
@@ -523,7 +532,7 @@ function selfTestThirdPartyImages() {
 	], {});
 	if (!twoTags.some((problem) => problem.startsWith('apache/kafka has one digest (111111111111) under 2 tags (4.1.2, 4.1.0)'))) failures.push(`outsideImageProblems: one digest under two tags not reported: ${twoTags.join('; ')}`);
 	// The watch's paths filters: GitHub's globs, every pin file covered by each trigger.
-	for (const [glob, file, expected] of [['.github/workflows/**', '.github/workflows/ci.yml', true], ['Platform/Cloud/Ariva.K8s/Helm/Charts/*/values.yaml', 'Platform/Cloud/Ariva.K8s/Helm/Charts/platform/values.yaml', true], ['Platform/Cloud/Ariva.K8s/Helm/Charts/*/values.yaml', 'Platform/Cloud/Ariva.K8s/Helm/Charts/platform/sub/values.yaml', false], ['docker-compose.dev.yml', 'docker-compose_dev.yml', false]]) {
+	for (const [glob, file, expected] of [['github_archived/workflows/**', 'github_archived/workflows/ci.yml', true], ['Platform/Cloud/Ariva.K8s/Helm/Charts/*/values.yaml', 'Platform/Cloud/Ariva.K8s/Helm/Charts/platform/values.yaml', true], ['Platform/Cloud/Ariva.K8s/Helm/Charts/*/values.yaml', 'Platform/Cloud/Ariva.K8s/Helm/Charts/platform/sub/values.yaml', false], ['docker-compose.dev.yml', 'docker-compose_dev.yml', false]]) {
 		if (pathFilter(glob).test(file) !== expected) failures.push(`pathFilter(${glob}) on ${file}: expected ${expected}`);
 	}
 	const watch = `on:\n  pull_request:\n    paths:\n      - 'a/**'\n      - "b.yml" # pins\n  push:\n    branches: [main]\n    paths:\n      - 'a/**'\njobs:\n`;
@@ -775,7 +784,7 @@ export function sdkPinProblems(sdkTags, files) {
 			}
 		});
 		// A GitHub job that runs dotnet without setup-dotnet runs whatever SDK the runner has.
-		if (file.startsWith('.github/workflows/')) {
+		if (file.startsWith(`${GITHUB_WORKFLOWS}/`)) {
 			for (const job of workflowJobs(lines)) {
 				const runsDotnet = job.lines.some((entry) => !/^\s*#/.test(entry) && /(^|[\s;&|(])dotnet\s+(?:build|test|restore|run|publish|tool|pack|format|msbuild|list|\S+\.dll)\b/.test(entry));
 				const setsUp = job.lines.some((entry) => /\buses:\s*["']?actions\/setup-dotnet@/.test(entry));
@@ -870,7 +879,7 @@ function selfTestPipelinePins() {
 	for (const [name, files, expected] of [
 		['both set', runners(ci(env()), ado(env())), []],
 		['quoted value', runners(ci(env(`'${ryuk}'`)), ado(env(`"${ryuk}"`))), []],
-		['ci sets it in the count guard step only', runners(ci(''), ado(env())), [`.github/workflows/ci.yml:6: the step that runs the integration tests must set ${RYUK_VARIABLE} in its own env`]],
+		['ci sets it in the count guard step only', runners(ci(''), ado(env())), [`github_archived/workflows/ci.yml:6: the step that runs the integration tests must set ${RYUK_VARIABLE} in its own env`]],
 		['set at the job level only', runners(ci('').replace('    steps:\n', `    env:\n      ${RYUK_VARIABLE}: ${ryuk}\n    steps:\n`), ado(env())), ['ci.yml:8: the step that runs the integration tests must set']],
 		['azure devops without it', runners(ci(env()), ado('')), ['Analyze-solution.yaml:8: the step that runs the integration tests must set']],
 		['azure devops under inputs', runners(ci(env()), ado('', `          ${RYUK_VARIABLE}: ${ryuk}\n`)), ['Analyze-solution.yaml:9: the step that runs the integration tests must set']],
@@ -889,8 +898,8 @@ function selfTestPipelinePins() {
 		['no tag', runners(ci(env('testcontainers/ryuk@sha256:' + 'a'.repeat(64))), ado(env())), ['must be a literal image reference by tag and digest']],
 		['a registry with a port', runners(ci(env('registry.example:5000/testcontainers/ryuk:0.14.0@sha256:' + 'a'.repeat(64))), ado(env())), []],
 		['a short digest', runners(ci(env('testcontainers/ryuk:0.14.0@sha256:' + 'a'.repeat(63))), ado(env())), ['must be a literal image reference by tag and digest']],
-		['another workflow runs the suite', runners(ci(env()), ado(env()), [['.github/workflows/nightly.yml', 'jobs:\n  n:\n    steps:\n      - run: dotnet test Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj\n']]), ['nightly.yml:4: the step that runs the integration tests must set']],
-		['the runner step gone', runners(ci(env()).replace(/dotnet Platform\S+IntegrationTests\.dll/, 'true'), ado(env())), ['.github/workflows/ci.yml: no step runs the integration tests']],
+		['another workflow runs the suite', runners(ci(env()), ado(env()), [['github_archived/workflows/nightly.yml', 'jobs:\n  n:\n    steps:\n      - run: dotnet test Platform/Backplane/Ariva.IntegrationTests/Ariva.IntegrationTests.csproj\n']]), ['nightly.yml:4: the step that runs the integration tests must set']],
+		['the runner step gone', runners(ci(env()).replace(/dotnet Platform\S+IntegrationTests\.dll/, 'true'), ado(env())), ['github_archived/workflows/ci.yml: no step runs the integration tests']],
 		['a file gone', runners(ci(env()), null), ['Analyze-solution.yaml: missing']]
 	]) {
 		const found = ryukProblems(files).join('\n');
@@ -936,9 +945,9 @@ function selfTestPipelinePins() {
 		['a hold step with its own if', ['10.0.402'], [['ci.yml', setup("          dotnet-version: '10.0.4xx'\n", holdStep().replace('        env:\n', "        if: github.event_name == 'push'\n        env:\n"))]], ['must run whenever setup-dotnet does (the same if:)']],
 		['the same if on both', ['10.0.402'], [['ci.yml', "jobs:\n  a:\n    steps:\n      - if: matrix.language == 'csharp'\n        uses: actions/setup-dotnet@a98b\n        id: sdk\n        with:\n          dotnet-version: '10.0.4xx'\n" + holdStep().replace('        env:\n', "        if: matrix.language == 'csharp'\n        env:\n")]], []],
 		['an if on the setup only', ['10.0.402'], [['ci.yml', "jobs:\n  a:\n    steps:\n      - if: matrix.language == 'csharp'\n        uses: actions/setup-dotnet@a98b\n        id: sdk\n        with:\n          dotnet-version: '10.0.4xx'\n" + holdStep()]], ['must run whenever setup-dotnet does (the same if:)']],
-		['a job runs dotnet with no setup', ['10.0.402'], [['.github/workflows/x.yml', `${setup("          dotnet-version: '10.0.4xx'\n")}  other:\n    steps:\n      - run: dotnet test Ariva.slnx\n`]], ['.github/workflows/x.yml: job other runs dotnet without an actions/setup-dotnet step']],
-		['a job runs a test assembly with no setup', ['10.0.402'], [['.github/workflows/x.yml', 'jobs:\n  t:\n    steps:\n      - run: timeout 5m dotnet Tests/bin/Release/net10.0/Tests.dll\n']], ['job t runs dotnet without an actions/setup-dotnet step']],
-		['a job that only names dotnet in a comment', ['10.0.402'], [['.github/workflows/x.yml', 'jobs:\n  t:\n    steps:\n      # dotnet test would go here\n      - run: echo ok\n']], []],
+		['a job runs dotnet with no setup', ['10.0.402'], [['github_archived/workflows/x.yml', `${setup("          dotnet-version: '10.0.4xx'\n")}  other:\n    steps:\n      - run: dotnet test Ariva.slnx\n`]], ['github_archived/workflows/x.yml: job other runs dotnet without an actions/setup-dotnet step']],
+		['a job runs a test assembly with no setup', ['10.0.402'], [['github_archived/workflows/x.yml', 'jobs:\n  t:\n    steps:\n      - run: timeout 5m dotnet Tests/bin/Release/net10.0/Tests.dll\n']], ['job t runs dotnet without an actions/setup-dotnet step']],
+		['a job that only names dotnet in a comment', ['10.0.402'], [['github_archived/workflows/x.yml', 'jobs:\n  t:\n    steps:\n      # dotnet test would go here\n      - run: echo ok\n']], []],
 		['use dotnet on another major', ['10.0.402'], [['a.yaml', useDotNet("          version: '11.x'\n")]], ["UseDotNet's version 11.x must be 10.x, 10.0.x, 10.0.402"]],
 		['images on two bands', ['10.0.402', '10.0.110'], [], ['the Dockerfiles must build with SDKs of one feature band']],
 		['no SDK image', [], [], ['the Dockerfiles must build with SDKs of one feature band (found none)']]
@@ -1999,6 +2008,43 @@ function selfTestSigningJobs() {
 	}
 }
 
+/**
+ * ARV-295: GitHub runs what a .github folder holds (workflows with the repository's secrets, CODEOWNERS, the templates), and
+ * since the workflows were archived no check here reads that folder, so its return is refused: a file, a folder or a link,
+ * a dangling one included. Returns the problems for a repository root.
+ */
+function liveGithubProblems(root) {
+	return fs.lstatSync(path.join(root, '.github'), { throwIfNoEntry: false }) === undefined ? []
+		: [`.github exists: GitHub would run what it holds unchecked, since the checks read ${GITHUB_WORKFLOWS} (ARV-295); move it there, or port it to the Azure pipelines`];
+}
+
+function selfTestLiveGithub() {
+	const failures = [];
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-live-github-'));
+	try {
+		if (liveGithubProblems(root).length) failures.push('a root without .github reported');
+		fs.mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true });
+		fs.writeFileSync(path.join(root, '.github', 'workflows', 'x.yml'), 'on: push\n');
+		if (!liveGithubProblems(root).some((problem) => problem.startsWith('.github exists'))) failures.push('a .github folder not reported');
+		fs.rmSync(path.join(root, '.github'), { recursive: true });
+		// A link needs Developer Mode or administrator rights on Windows, a junction does not; without either the case is skipped there.
+		let linked = true;
+		try {
+			fs.symlinkSync(path.join(root, 'missing'), path.join(root, '.github'), process.platform === 'win32' ? 'junction' : undefined);
+		} catch (error) {
+			if (process.platform !== 'win32') throw error;
+			linked = false;
+		}
+		if (linked && !liveGithubProblems(root).length) failures.push('a dangling .github link not reported');
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+	if (failures.length) {
+		console.error(`base images: live .github self-test failed:\n  ${failures.join('\n  ')}`);
+		process.exit(1);
+	}
+}
+
 function check() {
 	const problems = [];
 	let count = 0;
@@ -2016,6 +2062,8 @@ function check() {
 	selfTestLockedNpm();
 	selfTestOutsideImages();
 	selfTestThirdPartyImages();
+	selfTestLiveGithub();
+	for (const problem of liveGithubProblems(ROOT)) problems.push(problem);
 	const readRepo = (file) => {
 		const full = path.join(ROOT, ...file.split('/'));
 		return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null;
@@ -2052,7 +2100,7 @@ function check() {
 			else if (line.follow === 'playwright' && from.tag !== playwrightTag()) problems.push(`${where}: ${from.ref} must be ${playwrightTag()}, the @playwright/test version of Ariva.E2E`);
 			if (!/^sha256:[0-9a-f]{64}$/.test(from.digest)) problems.push(`${where}: ${from.ref} must be pinned by digest (@sha256:...)`);
 			if (from.image === 'alpine/helm') {
-				const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8').match(/setup-helm@[^\n]*\n\s*with:\s*\n\s*version:\s*v(\d+\.\d+\.\d+)/)?.[1];
+				const ci = fs.readFileSync(path.join(ROOT, GITHUB_WORKFLOWS, 'ci.yml'), 'utf8').match(/setup-helm@[^\n]*\n\s*with:\s*\n\s*version:\s*v(\d+\.\d+\.\d+)/)?.[1];
 				if (ci !== from.tag) problems.push(`${where}: Helm ${from.tag} must be CI's Helm (${ci ?? 'not found in ci.yml'})`);
 			}
 			if (from.image === 'mcr.microsoft.com/playwright') {
@@ -2069,7 +2117,7 @@ function check() {
 	// other CI job and the offline bundle, which packages the charts; and every workflow that signs or verifies uses one cosign.
 	{
 		const workflow = (file) => {
-			const full = path.join(ROOT, '.github', 'workflows', file);
+			const full = path.join(ROOT, GITHUB_WORKFLOWS, file);
 			return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : null;
 		};
 		const helmsOf = (text) => [...text.matchAll(/setup-helm@[^\n]*\n\s*with:\s*\n\s*version:\s*v(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
@@ -2078,13 +2126,13 @@ function check() {
 			const text = workflow(file);
 			if (text === null) continue;
 			const helms = helmsOf(text);
-			if (helms.length === 0 || helms.some((version) => version !== ci)) problems.push(`.github/workflows/${file}: Helm ${helms.join(', ') || 'not found'} must be CI's Helm (${ci ?? 'not found in ci.yml'})`);
+			if (helms.length === 0 || helms.some((version) => version !== ci)) problems.push(`${GITHUB_WORKFLOWS}/${file}: Helm ${helms.join(', ') || 'not found'} must be CI's Helm (${ci ?? 'not found in ci.yml'})`);
 		}
 		const cosigns = ['images.yml', 'release-dev.yml', 'offline-bundle.yml'].flatMap((file) => [...(workflow(file) ?? '').matchAll(/cosign-release:\s*'?(v[\d.]+)'?/g)].map((m) => `${file} ${m[1]}`));
 		if (new Set(cosigns.map((entry) => entry.split(' ')[1])).size > 1) problems.push(`the workflows must use one cosign release: ${cosigns.join(', ')}`);
 		// ARV-127: no job that can sign as its workflow runs a package manager (signingJobProblems).
-		for (const file of fs.readdirSync(path.join(ROOT, '.github', 'workflows')).filter((name) => /\.ya?ml$/.test(name))) {
-			for (const problem of signingJobProblems(workflow(file))) problems.push(`.github/workflows/${file}: ${problem}`);
+		for (const file of fs.readdirSync(path.join(ROOT, GITHUB_WORKFLOWS)).filter((name) => /\.ya?ml$/.test(name))) {
+			for (const problem of signingJobProblems(workflow(file))) problems.push(`${GITHUB_WORKFLOWS}/${file}: ${problem}`);
 		}
 	}
 	// ARV-214: the pipelines that run the integration tests pin Testcontainers' Ryuk image, and CI builds with the images' SDK band.
@@ -2127,7 +2175,7 @@ function check() {
 	if (fs.existsSync(zapSpec)) {
 		const spec = fs.readFileSync(zapSpec, 'utf8');
 		const specZap = spec.match(/zapImage = '([^']+)'/)?.[1];
-		const workflowZap = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'security-zap.yml'), 'utf8').match(/ZAP_IMAGE:\s*(\S+)/)?.[1];
+		const workflowZap = fs.readFileSync(path.join(ROOT, GITHUB_WORKFLOWS, 'security-zap.yml'), 'utf8').match(/ZAP_IMAGE:\s*(\S+)/)?.[1];
 		if (!/^ghcr\.io\/zaproxy\/zaproxy@sha256:[0-9a-f]{64}$/.test(specZap ?? '')) problems.push(`tests/zap/zap.spec.ts: the ZAP image ${specZap} must be pinned by digest`);
 		if (specZap !== workflowZap) problems.push(`security-zap.yml: ZAP_IMAGE ${workflowZap} must be the scan's ${specZap}`);
 		const specNginx = spec.match(/nginxImage = '([^']+)'/)?.[1];
@@ -2142,8 +2190,8 @@ function check() {
 	const thirdParty = thirdPartyPins();
 	const copies = otherCopies(thirdParty);
 	for (const problem of copyProblems(copies, thirdParty)) problems.push(problem);
-	const watch = path.join(ROOT, '.github', 'workflows', 'third-party-images.yml');
-	if (!fs.existsSync(watch)) problems.push('.github/workflows/third-party-images.yml is missing: the weekly scan of the third-party images (ARV-227)');
+	const watch = path.join(ROOT, GITHUB_WORKFLOWS, 'third-party-images.yml');
+	if (!fs.existsSync(watch)) problems.push(`${GITHUB_WORKFLOWS}/third-party-images.yml is missing: the weekly scan of the third-party images (ARV-227)`);
 	else for (const problem of watchPathProblems([...new Set(thirdParty.map((pin) => pin.where.replace(/:\d+$/, '')))], workflowPaths(fs.readFileSync(watch, 'utf8')))) problems.push(problem);
 	for (const file of integrationSources()) {
 		for (const problem of integrationImageLiterals(file.split(path.sep).join('/'), fs.readFileSync(path.join(ROOT, file), 'utf8'))) problems.push(problem);
@@ -2155,7 +2203,7 @@ function check() {
 	}
 	const tagOnly = pins.filter((pin) => pin.resource && APPHOST_TAG_ONLY[pin.resource] && !pin.digest).map((pin) => `${pin.resource} (${APPHOST_TAG_ONLY[pin.resource]})`);
 	const integration = pins.filter((pin) => pin.where.startsWith(`${INTEGRATION_TESTS.split(path.sep).join('/')}/`)).length;
-	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged; ${runtimeChecked} runtime-deps images check their published runtime against their base; ${lockedRestores} image builds restore in locked mode with their whole closure; ${lockedNpmInstalls} image builds install npm packages with npm ci from their lock file; ${pins.length} images run outside the chart pinned by tag and digest (${integration} of them the integration tests')${tagOnly.length ? `, except on a tag: ${tagOnly.join(', ')}` : ''}; ${copies.length} further copies of third-party pins carry their digests; the ${RYUK_RUNNERS.length} pipelines that run the integration tests pin Testcontainers' Ryuk image; CI's .NET SDK steps name the images' SDK band; the local tools and the Aspire SDK are exact versions of one release.`);
+	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged; ${runtimeChecked} runtime-deps images check their published runtime against their base; ${lockedRestores} image builds restore in locked mode with their whole closure; ${lockedNpmInstalls} image builds install npm packages with npm ci from their lock file; ${pins.length} images run outside the chart pinned by tag and digest (${integration} of them the integration tests')${tagOnly.length ? `, except on a tag: ${tagOnly.join(', ')}` : ''}; ${copies.length} further copies of third-party pins carry their digests; the ${RYUK_RUNNERS.length} pipelines that run the integration tests pin Testcontainers' Ryuk image; CI's .NET SDK steps name the images' SDK band; the local tools and the Aspire SDK are exact versions of one release; no live .github folder.`);
 }
 
 /** The TimescaleDB chart's image tag and digest, the pin every other copy follows (null without the chart). */
@@ -2353,8 +2401,8 @@ function otherCopies(pins) {
 
 /**
  * The Playwright image CI renders the visual baselines with: pinned by digest in visual-browser.mjs, its tag on the dev container's
- * FROM line (check() holds the two to one digest). Scanned with the others; its newer releases come from Dependabot, with
- * @playwright/test.
+ * FROM line (check() holds the two to one digest). Scanned with the others; its newer releases came from Dependabot, with
+ * @playwright/test, whose version updates are archived (ARV-295): until ARV-220 they are bumped by hand.
  */
 function visualBrowserPins() {
 	const devcontainer = path.join(ROOT, '.devcontainer', 'Dockerfile');
@@ -2389,7 +2437,7 @@ async function patches() {
 	for (const image of thirdPartyImages()) {
 		const line = Object.hasOwn(OUTSIDE_LINES, image.image) ? OUTSIDE_LINES[image.image] : null;
 		if (!line) {
-			console.log(`-      ${image.name.padEnd(48)} newer releases through Dependabot (the dev container's FROM lines)`);
+			console.log(`-      ${image.name.padEnd(48)} newer releases by hand until ARV-220 ports Dependabot's updates (the dev container's FROM lines; ARV-295)`);
 			continue;
 		}
 		let result;
