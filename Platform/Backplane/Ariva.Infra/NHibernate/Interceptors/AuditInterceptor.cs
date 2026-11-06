@@ -40,7 +40,7 @@ internal sealed class AuditInterceptor(ICurrentUser currentUser, TimeProvider ti
             return false;
 
         var (userId, userName) = Caller();
-        var now = After(auditable.ModifiedOn ?? auditable.CreatedOn, Now());
+        var now = After(LastStamp(auditable.ModifiedOn, auditable.CreatedOn), Now());
 
         auditable.ModifiedById = userId;
         auditable.ModifiedBy = userName;
@@ -71,6 +71,10 @@ internal sealed class AuditInterceptor(ICurrentUser currentUser, TimeProvider ti
         var floor = Microseconds(previous);
         return Microseconds(now) > floor ? now : floor.AddTicks(TimeSpan.TicksPerMicrosecond);
     }
+
+    /// <summary>The row's last stamp: the later of its last change and its creation (a modification written by SQL may be earlier).</summary>
+    internal static DateTime? LastStamp(DateTime? modified, DateTime? created) =>
+        modified is null ? created : created is null || modified > created ? modified : created;
 
     private static DateTime Microseconds(DateTime at) => new(at.Ticks - (at.Ticks % TimeSpan.TicksPerMicrosecond), DateTimeKind.Utc);
 

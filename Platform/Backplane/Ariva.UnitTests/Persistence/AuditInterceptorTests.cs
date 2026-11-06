@@ -47,5 +47,16 @@ public sealed class AuditInterceptorTests
         AuditInterceptor.After(inMemory, Last.AddTicks(13)).Should().Be(Last.AddTicks(13), "past the last stamp's microsecond");
     }
 
+    [Fact]
+    public void LastStamp_Should_BeTheLaterOfTheChangeAndTheCreation_When_EitherIsSet()
+    {
+        AuditInterceptor.LastStamp(Last.AddMinutes(1), Last).Should().Be(Last.AddMinutes(1));
+        AuditInterceptor.LastStamp(Last.AddMinutes(-1), Last).Should().Be(Last, "a modification written by SQL earlier than the creation");
+        AuditInterceptor.LastStamp(null, Last).Should().Be(Last, "a row never changed");
+        AuditInterceptor.LastStamp(null, null).Should().BeNull();
+        AuditInterceptor.After(AuditInterceptor.LastStamp(Last.AddMinutes(-1), Last), Last.AddMinutes(-2))
+            .Should().Be(Last.AddTicks(TimeSpan.TicksPerMicrosecond), "never earlier than the creation");
+    }
+
     #endregion
 }
