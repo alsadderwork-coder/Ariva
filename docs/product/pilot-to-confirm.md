@@ -11,6 +11,8 @@ Columns:
 
 Page labels: `wiki/NN` is `wiki/NN-*.md`; section numbers are the page's own headings.
 
+Held at start (ARV-136a): a k8s-prd host refuses to start until each of these answers is set for k8s-prd: `Border:EgateCoupling:RejectLane` (TC-01), `Flights:ArrivalWave:Mix` (TC-02), `Stream:HandoverWindowSeconds`, `Stream:CensorAfterMinutes` and `Border:DeskFeed:StaleAfterSeconds` (TC-44), and `Kafka:Topics:Partitions` (TC-47). The reference defaults the other environments run on, and a value that still reads "To confirm", do not count ([wiki/04](../../wiki/04-Deployment-Guide.md) section 5). TC-03, TC-08 and TC-09 are a site's data, entered in the administration screens. The crossing debounce of TC-44 is not built yet (ARV-136).
+
 ## 1. Border authority (client)
 
 | ID | Question | Why it matters | Blocks | Sources |

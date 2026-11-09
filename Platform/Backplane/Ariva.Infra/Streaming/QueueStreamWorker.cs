@@ -59,6 +59,20 @@ public sealed class StreamSettings
     public int PushIntervalSeconds { get; init; } = 60;
 
     /// <summary>
+    /// ARV-136a (TC-44, formulas F6): the hand-over window, in seconds: a track that leaves one sensor's view and is picked up
+    /// by the next within this long is one person. Not set, the engine's reference value applies (30 seconds, Proposed); a
+    /// k8s-prd host refuses to start until it is set for k8s-prd (<c>GoLiveSettings</c>). From 0 to 1,800.
+    /// </summary>
+    public int? HandoverWindowSeconds { get; init; }
+
+    /// <summary>
+    /// ARV-136a (TC-44, formulas F6): the censoring timeout (T_censor), in minutes: an entrant seen this long without an exit is
+    /// censored. Not set, the engine's reference value applies (120 minutes, Proposed); a k8s-prd host refuses to start until
+    /// it is set for k8s-prd. From 1 to 1,440.
+    /// </summary>
+    public int? CensorAfterMinutes { get; init; }
+
+    /// <summary>
     /// How often the bin maturity sweep runs, in seconds (ARV-259b): one Stream replica a round counts the queue bins still
     /// provisional past their maturity. 60 by default, from 10 to 3,600.
     /// </summary>
@@ -93,16 +107,19 @@ public sealed class StreamSettings
 
     /// <summary>
     /// The zone settings for a site's queue zones: <paramref name="baseline"/> with the site's lateness and push interval
-    /// (ARV-148), so the live stream and a replay of the site run under the same settings.
+    /// (ARV-148), and the hand-over window and censoring timeout where set (ARV-136a), so the live stream, a replay of the
+    /// site and the bin maturity sweep run under the same settings.
     /// </summary>
     public ZoneProcessorSettings ZoneSettingsFor(string siteCode, ZoneProcessorSettings baseline)
     {
         ArgumentNullException.ThrowIfNull(baseline);
         var (lateness, push) = TimingOf(siteCode);
-        return baseline with
-        {
-            Engine = (baseline.Engine ?? new QueueEngineSettings()) with { Lateness = TimeSpan.FromSeconds(lateness), PushInterval = TimeSpan.FromSeconds(push) }
-        };
+        var engine = (baseline.Engine ?? new QueueEngineSettings()) with { Lateness = TimeSpan.FromSeconds(lateness), PushInterval = TimeSpan.FromSeconds(push) };
+        if (HandoverWindowSeconds is { } handover)
+            engine = engine with { HandoverWindow = TimeSpan.FromSeconds(handover) };
+        if (CensorAfterMinutes is { } censor)
+            engine = engine with { CensorAfter = TimeSpan.FromMinutes(censor) };
+        return baseline with { Engine = engine };
     }
 
     /// <summary>
@@ -145,6 +162,10 @@ public sealed class StreamSettings
             yield return "Stream:BinMaturitySweepSeconds is from 10 to 3,600.";
         if (BinMaturityLookbackHours is < 1 or > 168)
             yield return "Stream:BinMaturityLookbackHours is from 1 to 168.";
+        if (HandoverWindowSeconds is < 0 or > 1_800)
+            yield return "Stream:HandoverWindowSeconds is from 0 to 1,800.";
+        if (CensorAfterMinutes is < 1 or > 1_440)
+            yield return "Stream:CensorAfterMinutes is from 1 to 1,440.";
         foreach (var problem in TimingProblems("Stream", LatenessSeconds, PushIntervalSeconds))
             yield return problem;
         if ((Sites?.Count ?? 0) > MaxSites)

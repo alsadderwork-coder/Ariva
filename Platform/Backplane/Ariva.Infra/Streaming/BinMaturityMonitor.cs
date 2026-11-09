@@ -26,9 +26,13 @@ internal sealed class BinMaturityMonitor(StreamStore store, StreamSettings setti
     /// <summary>The last sweep's sites and counts this replica ran (tests and diagnostics); null while another replica sweeps.</summary>
     internal IReadOnlyList<(string Site, int Count)> Last { get; private set; }
 
-    /// <summary>How long after its end a bin is mature: the censoring timeout plus the longest lateness of any site.</summary>
+    /// <summary>
+    /// How long after its end a bin is mature: the censoring timeout the stream runs under (the engine's, or
+    /// <see cref="StreamSettings.CensorAfterMinutes"/> where set, ARV-136a) plus the longest lateness of any site.
+    /// </summary>
     internal TimeSpan MaturityDelay =>
-        ((zoneSettings ?? new ZoneProcessorSettings()).Engine ?? new QueueEngineSettings()).CensorAfter + TimeSpan.FromSeconds(settings.MaxLatenessSeconds);
+        (settings.ZoneSettingsFor(null, zoneSettings ?? new ZoneProcessorSettings()).Engine ?? new QueueEngineSettings()).CensorAfter +
+        TimeSpan.FromSeconds(settings.MaxLatenessSeconds);
 
     #endregion
 

@@ -1829,7 +1829,7 @@
       "description": "Several go-live values are 'To confirm' per site: e-gate reject lane, default lane mix, arrival-wave threshold, local time zone, nowcast staleness, engine parameters, partitions. Put the answers into the pilot's environment settings and refuse to start k8s-prd while a placeholder remains. Epic: Site onboarding and AMAN. CWEs to review: CWE-501.",
       "acceptanceCriteria": [
         "The pilot's values for TC-01, TC-02, TC-03, TC-08, TC-09, TC-44 and TC-47 live in the k8s-prd service settings and the site values file, with their source recorded",
-        "A k8s-prd host refuses to start when a setting still holds a 'To confirm' placeholder or a reference default flagged as such (unit test per host)",
+        "A k8s-prd host refuses to start when a setting still holds a 'To confirm' placeholder or a reference default flagged as such (unit test per host): built by ARV-136a for the settings (TC-01, TC-02, TC-44, TC-47); for TC-03, TC-08 and TC-09, which are a site's data, the go-live check of the site's data",
         "docs/product/pilot-to-confirm.md and the source pages updated for each answered item",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -1838,7 +1838,29 @@
       ],
       "priority": 51,
       "passes": false,
-      "notes": "Size S. Blocked on: TC-01, TC-02, TC-03, TC-08, TC-09, TC-44, TC-47 (border authority and Dalil answers). The start-up check itself can be built earlier with the placeholders.",
+      "notes": "Size S. Blocked on: TC-01, TC-02, TC-03, TC-08, TC-09, TC-44, TC-47 (border authority and Dalil answers). The start-up check itself can be built earlier with the placeholders. 2026-11-09: the start-up check split into ARV-136a (built with the placeholders, as this note allowed). Left here: the answers, the check of the data items (TC-03 the arrival-wave alert threshold, TC-08 a site's time zone, TC-09 a display's staleness) and TC-44's crossing debounce, which is not built.",
+      "dependsOn": [
+        "ARV-098"
+      ]
+    },
+    {
+      "id": "ARV-136a",
+      "title": "[E15] A k8s-prd host refuses to start on unconfirmed go-live settings",
+      "description": "Split from ARV-136 on 2026-11-09: the start-up check, built with the placeholders while the answers (TC-01, TC-02, TC-44, TC-47) are awaited. A k8s-prd host takes a go-live setting only when it is set for k8s-prd (a k8s-prd settings file, an environment variable or the command line), never from the code's defaults or the environment-neutral settings files, and never a value still reading 'To confirm'. TC-44's engine values, code constants until now, become settings. Epic: Site onboarding and AMAN. CWEs to review: CWE-501.",
+      "acceptanceCriteria": [
+        "Ariva.Api.Common's GoLiveSettings lists the go-live settings (TC-01 Border:EgateCoupling:RejectLane, TC-02 Flights:ArrivalWave:Mix, TC-44 Stream:HandoverWindowSeconds, Stream:CensorAfterMinutes and Border:DeskFeed:StaleAfterSeconds, TC-47 Kafka:Topics:Partitions), and every host's Program.cs checks them right after its environment check",
+        "A k8s-prd host refuses to start when a go-live setting is not set, is blank, still reads 'To confirm' (any case or spacing), comes from any source other than a *.k8s-prd.json file, an environment variable or the command line (the code's defaults, appsettings.base.json, appsettings.service.json, a local file, an in-memory source), or has a shape the binder would answer with the code's default (a section where one value belongs; for the lane mix a value of its own, a missing or an unknown part); the message names each setting and its item, never a value; other environments start on the reference defaults",
+        "The hand-over window, the censoring timeout (also in the bin maturity sweep) and T_stale are applied from their settings when set and keep the engines' reference values otherwise; each is held to the engine's range",
+        "Unit tests: the check's cases (each source, each shape, the placeholder), one real start per host in k8s-prd refused with an answer missing and started with every answer, one case per host on the settings it ships, the Program.cs order (after the environment check, before any command), the test hosts' answers covering every setting, and the new settings' ranges and application",
+        "docs/product/pilot-to-confirm.md, wiki 04 section 5 and formulas F6 and F10 say where each answer goes",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 51,
+      "passes": true,
+      "notes": "Size M (the engine values had to become settings first). Split from ARV-136 on 2026-11-09.",
       "dependsOn": [
         "ARV-098"
       ]

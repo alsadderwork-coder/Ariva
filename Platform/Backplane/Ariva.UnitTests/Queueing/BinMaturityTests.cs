@@ -116,6 +116,17 @@ public sealed class BinMaturityTests
     }
 
     [Fact]
+    public void MaturityDelay_Should_TakeTheStreamsCensoringTimeout_When_TheStreamSetsIt()
+    {
+        // ARV-136a (TC-44): the worker runs the stream's censoring timeout, so the sweep counts from the same one.
+        var settings = Bind(("Stream:Enabled", "true"), ("Stream:CensorAfterMinutes", "60"), ("Stream:Sites:DMO:LatenessSeconds", "300"));
+
+        Monitor(settings).MaturityDelay.Should().Be(TimeSpan.FromMinutes(60) + TimeSpan.FromSeconds(300));
+        Monitor(settings, new ZoneProcessorSettings { Engine = new QueueEngineSettings { CensorAfter = TimeSpan.FromMinutes(45) } })
+            .MaturityDelay.Should().Be(TimeSpan.FromMinutes(60) + TimeSpan.FromSeconds(300), "the stream's setting, as the worker applies it to the zones");
+    }
+
+    [Fact]
     public void Monitor_Should_EndASweepWithinAMinute_When_ItRuns()
     {
         Monitor(new StreamSettings()).RunTimeout.Should().Be(TimeSpan.FromMinutes(1));

@@ -52,6 +52,13 @@ public sealed record DeskFeedSettings
     /// </summary>
     public int RhythmWindowMinutes { get; init; } = 15;
 
+    /// <summary>
+    /// ARV-136a (TC-44, formulas F10): T_stale, in seconds: a desk's signal source silent this long counts as absent. Not set,
+    /// the engine's reference value applies (2 minutes, Proposed: twice a 60-second heartbeat); a k8s-prd host refuses to start
+    /// until it is set for k8s-prd (<c>GoLiveSettings</c>). From 10 to 3,600.
+    /// </summary>
+    public int? StaleAfterSeconds { get; init; }
+
     public IEnumerable<string> Problems()
     {
         if (PollSeconds is < 1 or > 300)
@@ -68,19 +75,28 @@ public sealed record DeskFeedSettings
             yield return $"{SectionName}:RhythmPauseMultiple is 2 to 20.";
         if (RhythmWindowMinutes is < 5 or > 60)
             yield return $"{SectionName}:RhythmWindowMinutes is 5 to 60.";
+        if (StaleAfterSeconds is < 10 or > 3_600)
+            yield return $"{SectionName}:StaleAfterSeconds is 10 to 3,600.";
     }
 
     /// <summary>
-    /// The desk engine's settings: the reference values with this feed's lateness, the sensor T1 (ARV-116) and the pause
-    /// multiple of the transaction rhythm (ARV-149).
+    /// The desk engine's settings: the reference values with this feed's lateness, the sensor T1 (ARV-116), the pause
+    /// multiple of the transaction rhythm (ARV-149) and T_stale where set (ARV-136a).
     /// </summary>
-    public DeskStateSettings Engine => new()
+    public DeskStateSettings Engine
     {
-        Lateness = TimeSpan.FromSeconds(LatenessSeconds),
-        MaxLate = TimeSpan.FromMinutes(15),
-        SensorPauseAfter = TimeSpan.FromSeconds(SensorPauseSeconds),
-        RhythmPauseMultiple = RhythmPauseMultiple
-    };
+        get
+        {
+            var engine = new DeskStateSettings
+            {
+                Lateness = TimeSpan.FromSeconds(LatenessSeconds),
+                MaxLate = TimeSpan.FromMinutes(15),
+                SensorPauseAfter = TimeSpan.FromSeconds(SensorPauseSeconds),
+                RhythmPauseMultiple = RhythmPauseMultiple
+            };
+            return StaleAfterSeconds is { } stale ? engine with { StaleAfter = TimeSpan.FromSeconds(stale) } : engine;
+        }
+    }
 
     /// <summary>
     /// The sensor-only desk engine's settings (ARV-117a): the published engine's, with at most

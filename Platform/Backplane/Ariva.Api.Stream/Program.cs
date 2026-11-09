@@ -44,6 +44,8 @@ builder.Configuration
     .AddCommandLine(args);
 // ARV-098: the settings must name this host's own environment, or the host does not start.
 ArivaEnvironment.EnsureConfigured(builder.Configuration, environment);
+// ARV-136a: k8s-prd does not start on a go-live setting nobody confirmed (docs/product/pilot-to-confirm.md).
+GoLiveSettings.EnsureConfirmed(builder.Configuration, environment);
 
 #endregion
 

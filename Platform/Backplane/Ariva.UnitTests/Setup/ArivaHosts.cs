@@ -55,6 +55,26 @@ public static class ArivaHosts
     /// </summary>
     public const string ProductionCollector = "https://127.0.0.1:9";
 
+    /// <summary>
+    /// ARV-136a: an answer for every go-live setting (<see cref="Ariva.Api.Common.Hosting.GoLiveSettings.All"/>), each a valid
+    /// value of its setting (the engines' reference values, the reference lane mix), which every k8s-prd host here is given
+    /// as the release's k8s-prd settings would give them. A test of the go-live check removes one.
+    /// </summary>
+    public static IReadOnlyList<(string Key, string Value)> GoLiveAnswers { get; } =
+    [
+        ("Border:EgateCoupling:RejectLane", "VIS"),
+        ("Flights:ArrivalWave:Mix:Cit", "0.35"),
+        ("Flights:ArrivalWave:Mix:Res", "0.20"),
+        ("Flights:ArrivalWave:Mix:Vis", "0.35"),
+        ("Flights:ArrivalWave:Mix:Crw", "0.02"),
+        ("Flights:ArrivalWave:Mix:Trf", "0.08"),
+        ("Flights:ArrivalWave:Mix:EGateShare", "0.40"),
+        ("Stream:HandoverWindowSeconds", "30"),
+        ("Stream:CensorAfterMinutes", "120"),
+        ("Border:DeskFeed:StaleAfterSeconds", "120"),
+        ("Kafka:Topics:Partitions", "6")
+    ];
+
     /// <summary>The log pseudonym key a host started here in k8s-prd hashes with (ARV-091a): base64 of the bytes 1 to 32, the tests' own.</summary>
     public const string ProductionPseudonymKey = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
 
@@ -315,6 +335,10 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
             // MalwareScan__Host until ARV-092c gives it a clamd.
             builder.UseSetting("MalwareScan:Host", "127.0.0.1");
             builder.UseSetting("MalwareScan:Port", "9");
+            // k8s-prd refuses to start until every go-live setting is set for k8s-prd (ARV-136a): the answers, as the release's
+            // settings would give them (UseSetting reaches the host as its command line, a k8s-prd source).
+            foreach (var (goLiveKey, goLiveValue) in ArivaHosts.GoLiveAnswers)
+                builder.UseSetting(goLiveKey, goLiveValue);
         }
         // Nor a database readiness check, which would answer 503 here: the probes' authorization is what these hosts
         // test; the check itself is covered by ServiceDefaultsTests (ARV-066).

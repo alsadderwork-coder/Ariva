@@ -5985,3 +5985,58 @@ Project `Ariva.UnitTests` has the following vulnerable packages
   - Stryker reads `--mutate "file{a..b}"` as character offsets, not lines.
   - NuGet's up-to-date check skips a locked restore whose project files did not change, and so compares nothing; force the restore that is meant to catch drift.
   - A gate run beside the mutation run went out of memory (the kernel killed a .NET process at about 6 GB) and filled the disk. Run them one after the other on this machine.
+
+## 2026-11-09: ARV-136a [E15] A k8s-prd host refuses to start on unconfirmed go-live settings
+
+- Split from ARV-136 (backlog/prd-phase1.json). ARV-136's first criterion needs the border authority's and Dalil's answers (TC-01, TC-02, TC-03, TC-08, TC-09, TC-44, TC-47), so the start-up check was built with the placeholders, as its note allowed. ARV-136 keeps the answers, the data items and the crossing debounce.
+- What changed:
+  - `Ariva.Api.Common/Hosting/GoLiveSettings.cs` lists the go-live settings, each with its item and its shape:
+    - TC-01 `Border:EgateCoupling:RejectLane`
+    - TC-02 `Flights:ArrivalWave:Mix`, with its six parts: Cit, Res, Vis, Crw, Trf, EGateShare
+    - TC-44 `Stream:HandoverWindowSeconds`, `Stream:CensorAfterMinutes` and `Border:DeskFeed:StaleAfterSeconds`
+    - TC-47 `Kafka:Topics:Partitions`
+  - `EnsureConfirmed` runs in every host's Program.cs right after `ArivaEnvironment.EnsureConfigured`, before any setting is bound and before any command (Main's migrate, topics, break-glass and stored-names commands, Stream's replay). In k8s-prd it refuses to start when a setting:
+    - is not set, or is blank;
+    - still reads "To confirm" (any case, spacing collapsed);
+    - has a shape the binder would answer with the code's default: a section where one value belongs, or for the lane mix a value of its own, a missing or an unknown part;
+    - or comes from anything but a k8s-prd source. Only the environment variables, the command line, a `*.k8s-prd.json` file, and a chained configuration whose own source is one of those confirm a value. The code's defaults, `appsettings.base.json`, `appsettings.service.json`, a developer's local file and in-memory sources do not.
+  - The message names each setting and its item, never a value. Other environments run on the reference defaults.
+  - TC-44's values were code constants and are now settings, applied only when set, so development, the tests and the golden replays keep the engines' reference values:
+    - `StreamSettings.HandoverWindowSeconds` (0 to 1,800) and `CensorAfterMinutes` (1 to 1,440), applied in `ZoneSettingsFor`, so the live stream, a replay and the bin maturity sweep (`BinMaturityMonitor.MaturityDelay`) run the same engine;
+    - `DeskFeedSettings.StaleAfterSeconds` (10 to 3,600) as the desk engine's T_stale.
+  - TC-47 shows why the check matters: the base file's 6 partitions was a reference value that k8s-prd inherited silently.
+  - `ArivaHosts` (the unit tests' in-process hosts) gives every k8s-prd host `GoLiveAnswers`, a valid answer for every setting, as the release would.
+- Tests:
+  - `GoLiveSettingsTests`, 54 cases:
+    - each source, refused or confirming: base, service, local, appsettings.json, k8s-dev, a ".bak" name, in-memory, the command line, the environment variables (under a prefix of the test's own), k8s-prd files in any case, chained both ways, and a configuration that is not a root;
+    - each shape: one value, the mix's missing, unknown and nested parts, and the mix given as one value;
+    - the placeholder in four spellings, and blank values;
+    - EnsureConfirmed in each environment;
+    - the answers table covering every setting;
+    - per host (the five), the settings it ships (all six refused, the partitions as a reference default), a real k8s-prd start refused with an answer missing and started with every answer, and the Program.cs order.
+  - Added to the existing classes: StreamTimingSettingsTests (the two engine values applied, kept when unset, held to their ranges), BinMaturityTests (the sweep takes the stream's censoring timeout) and DeskFeedRhythmSettingsTests (T_stale applied, held to the engine's range).
+- Docs:
+  - wiki 04 section 5: where the answers go (`base-appsettings-secret`, which the migration and topics jobs mount too), the sources and the shapes.
+  - docs/product/pilot-to-confirm.md: what is held at start; the data items; the debounce not built.
+  - formulas F6 and F10: the setting names.
+  - cwe-controls.md: the CWE-501 row.
+  - decisions.md: the 2026-11-09 entry, four points Proposed for the owner.
+- Files:
+  - Platform/Backplane/Ariva.Api.Common/Hosting/GoLiveSettings.cs (new), the five hosts' Program.cs, Ariva.Infra/Streaming/QueueStreamWorker.cs (StreamSettings), Ariva.Infra/Streaming/BinMaturityMonitor.cs, Ariva.Infra/Border/DeskFeed.cs
+  - Platform/Backplane/Ariva.UnitTests/Hosting/GoLiveSettingsTests.cs (new), Setup/ArivaHosts.cs, Logging/LogShippingTests.cs, Queueing/StreamTimingSettingsTests.cs, Queueing/BinMaturityTests.cs, Desks/DeskFeedRhythmSettingsTests.cs
+  - docs/product/pilot-to-confirm.md, docs/product/decisions.md, docs/domain/formulas.md, docs/security/cwe-controls.md, wiki/04-Deployment-Guide.md
+  - backlog/prd-phase1.json (ARV-136a filed and passing; ARV-136's second criterion and notes updated), backlog/progress.md
+- Gates: `node scripts/verify.mjs story --base 575fc5b` on the story's tree (wide, Ariva.Api.Common changed: full integration and E2E, the Release proof): every step passed but integration. Unit 8955 of 8955, Release 47 of 47, security scan and self-tests, chart security with helm, docs rules, E2E 949 passed (API and functional), no secret in the artifacts. Integration 974 of 1000 passed, 1 skipped, 25 failed: all 25 are the Faults tests whose Toxiproxy image (ghcr.io/shopify/toxiproxy:2.12.0 by digest) this session cannot pull (DockerImageNotFoundException), recorded as blocked since ARV-263; none touches the start-up check. The first run found 4 LogShippingTests failing on the new check (the one-shot commands' tests started k8s-prd without the answers); fixed by `GoLiveCommandLine()` and run again.
+- Security review: security-reviewer PASS in round 2 (CWE-501, CWE-120).
+  - Round 1 FAIL. Its findings, all taken:
+    - (High) Every in-process k8s-prd test host refused to start, breaking 78 security tests (PodTransport, ForwardedHeaders, ErrorHandling, OpenApi, CollectorTrust, SecurityEventLog, OtlpExport, MalwareScanSettings), the evidence of eight Met ASVS rows. Fixed by `ArivaHosts.GoLiveAnswers`, with a real start test per host.
+    - (M) Whether a setting was one value or a section was guessed from the data, so a k8s-prd source could set one share of the mix, a child of a one-value setting or the mix as a string, and pass while the code's defaults ran. Fixed by declared shapes.
+    - (L) The code refused two named files, where the docs promised that only k8s-prd sources count. Fixed by an allowlist.
+    - (L) The order test did not prove the check precedes every command. Fixed.
+    - (I) Placeholder spacing. Fixed.
+  - Round 2 PASS, conditional on the gate. Its two non-blocking notes were taken before the final gate run: `ProductionPseudonymKey`'s summary moved back to its constant in ArivaHosts.cs, and a test of the environment variable path.
+- Gotchas:
+  - A start-up check on the hosts' settings needs the test hosts to carry the answers: every in-process k8s-prd host in the unit tests goes through `ArivaHosts`, so a new k8s-prd start rule needs a line there, or dozens of unrelated security tests fail.
+  - The configuration binder runs the code's default whenever a value has the wrong shape: a section under a one-value key, a string where a section belongs, a part left out. A check of "is it set" must check the shape too.
+  - Three of the seven pilot items (TC-03, TC-08, TC-09) are a site's data in the database, not settings; a start-up check of the configuration cannot see them.
+  - The one-shot commands' tests (`LogShippingTests`: the migration, topics, stored-names and replay commands in k8s-prd) run the hosts' `Program.Main` directly, not through `ArivaHosts`, so they pass the go-live answers on the command line, as the release's jobs mount them; the first gate run failed those four, which the story's own test runs had not included.

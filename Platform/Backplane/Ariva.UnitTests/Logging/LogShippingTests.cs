@@ -351,7 +351,7 @@ public sealed partial class LogShippingTests : IDisposable
     [Fact]
     public async Task TopicsJob_Should_Succeed_When_ProductionHasNoCollectorAndNoKey()
     {
-        var exit = await RunAsync<Ariva.Api.Main._IAssemblyMark>(["--provision-topics", $"--environment={Production}", "--Kafka:Enabled=false"]);
+        var exit = await RunAsync<Ariva.Api.Main._IAssemblyMark>(["--provision-topics", $"--environment={Production}", "--Kafka:Enabled=false", .. GoLiveCommandLine()]);
 
         exit.Should().Be(0, "with Kafka off the job's only path ends in success, with no collector and no key in the settings");
     }
@@ -359,7 +359,7 @@ public sealed partial class LogShippingTests : IDisposable
     [Fact]
     public async Task ReplayCommand_Should_ReachItsOwnArgumentCheck_When_ProductionHasNoCollectorAndNoKey()
     {
-        var exit = await RunAsync<Ariva.Api.Stream._IAssemblyMark>(["--replay", $"--environment={Production}", $"--Database:RootCertificate={DatabaseCa()}"]);
+        var exit = await RunAsync<Ariva.Api.Stream._IAssemblyMark>(["--replay", $"--environment={Production}", $"--Database:RootCertificate={DatabaseCa()}", .. GoLiveCommandLine()]);
 
         exit.Should().Be(2, "the replay refuses its missing arguments itself (exit 2), so it started without a collector or a key");
     }
@@ -411,8 +411,15 @@ public sealed partial class LogShippingTests : IDisposable
         "--Database:Host=127.0.0.1",
         $"--Database:Port={database.Port}",
         $"--Database:RootCertificate={DatabaseCa()}",
-        "--Kafka:Enabled=false"
+        "--Kafka:Enabled=false",
+        .. GoLiveCommandLine()
     ];
+
+    /// <summary>
+    /// The go-live answers as command line settings: a k8s-prd command refuses to run without them (ARV-136a), and the
+    /// release's jobs mount them with the shared k8s-prd settings, as the hosts do.
+    /// </summary>
+    private static string[] GoLiveCommandLine() => [.. ArivaHosts.GoLiveAnswers.Select(answer => $"--{answer.Key}={answer.Value}")];
 
     /// <summary>A CA certificate (PEM) in the test's folder, for the pinned database CA the k8s-prd commands check before they connect.</summary>
     private string DatabaseCa()

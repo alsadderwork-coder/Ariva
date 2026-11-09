@@ -22,6 +22,37 @@ public sealed class DeskFeedRhythmSettingsTests
         settings.SensorEngine.RhythmPauseMultiple.Should().Be(4, "the sensor-only engine has no desk that follows the rhythm, whatever its settings");
     }
 
+    [Fact]
+    public void Engine_Should_TakeTStale_When_TheFeedSetsIt()
+    {
+        // ARV-136a (TC-44): T_stale, which a k8s-prd host takes only when confirmed; not set, the engine's reference value.
+        new DeskFeedSettings().Engine.StaleAfter.Should().Be(TimeSpan.FromMinutes(2), "the reference value (Proposed: twice a 60-second heartbeat)");
+        var settings = new DeskFeedSettings { StaleAfterSeconds = 90 };
+
+        settings.Problems().Should().BeEmpty();
+        settings.Engine.StaleAfter.Should().Be(TimeSpan.FromSeconds(90));
+        settings.SensorEngine.StaleAfter.Should().Be(TimeSpan.FromSeconds(90), "the sensor-only engine takes the published engine's");
+        settings.Engine.Problems().Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(9, false)]
+    [InlineData(10, true)]
+    [InlineData(3_600, true)]
+    [InlineData(3_601, false)]
+    public void Problems_Should_HoldTStaleToTheEnginesRange_When_TheFeedSetsIt(int seconds, bool accepted)
+    {
+        var settings = new DeskFeedSettings { StaleAfterSeconds = seconds };
+
+        if (accepted)
+        {
+            settings.Problems().Should().BeEmpty();
+            settings.Engine.Problems().Should().BeEmpty("the engine takes the same range");
+        }
+        else
+            settings.Problems().Should().Contain("Border:DeskFeed:StaleAfterSeconds is 10 to 3,600.");
+    }
+
     [Theory]
     [InlineData(1.99, 15, "RhythmPauseMultiple")]
     [InlineData(20.01, 15, "RhythmPauseMultiple")]

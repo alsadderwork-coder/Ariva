@@ -229,7 +229,7 @@ A bin b is final when all of these hold, and provisional otherwise:
 2. Every track that entered in b has an outcome (`Exited`, `Abandoned`, `Fragmented` or `Censored`). This is D4's "everyone who entered has exited", made explicit for tracks that never exit.
 3. The zone's data quality for the bin is known (a sensor outage covering an entry or exit line makes the bin `Unknown`; it still becomes final, with that flag). Since ARV-259e1 the stream marks such bins `Unknown` through the minutes known to be out, as it marks device outages `Degraded` (condition 1 keeps them provisional until then), so only a spell's first mark can find a bin already final, which then asks for a recomputation and revision r + 1 (F11).
 
-Timeout (Proposed, To confirm): T_censor = 120 min by default, configurable per zone profile. A bin finalised with censored tracks is flagged `Degraded` if censored tracks exceed 5% of its entries (threshold Proposed).
+Timeout (Proposed, To confirm): T_censor = 120 min by default, configurable per zone profile. Set for a deployment as `Stream:CensorAfterMinutes`, and the hand-over window (30 s by default) as `Stream:HandoverWindowSeconds` (ARV-136a): a k8s-prd host refuses to start until both are set for k8s-prd, and the bin maturity sweep counts from the same T_censor. A bin finalised with censored tracks is flagged `Degraded` if censored tracks exceed 5% of its entries (threshold Proposed).
 
 Revisions: a late event, a correction or a recomputation produces revision r + 1 of the bin; results are upserted by (zone, bin start, revision) and earlier revisions are kept. Each revision records `ZoneProfileVersion`.
 
@@ -444,7 +444,7 @@ Evaluation at time t (first matching row wins):
 
 A desk whose only sources are AMAN's session and transactions (no staff or service zone) takes rows 5a to 5f below instead of rows 4 to 7 (ARV-149, Proposed for the KPI annex: "AMAN-only desks: the transaction rhythm").
 
-Parameters: T1 and T2 per site (examples 3 and 10 min; assumptions to tune in the pilot). AMAN's own "on break" session status maps to `Paused` (Proposed). T_stale is To confirm (Proposed: 2 x the source's expected heartbeat interval, and for AMAN the feed heartbeat on the `aman.feed` topics).
+Parameters: T1 and T2 per site (examples 3 and 10 min; assumptions to tune in the pilot). AMAN's own "on break" session status maps to `Paused` (Proposed). T_stale is To confirm (Proposed: 2 x the source's expected heartbeat interval, and for AMAN the feed heartbeat on the `aman.feed` topics); set for a deployment as `Border:DeskFeed:StaleAfterSeconds` (ARV-136a, 10 to 3,600 s; 120 s by default), which a k8s-prd host must have set for k8s-prd.
 
 Throughput: n_open counts `Idle` and `Serving` only. `Paused`, `Closed` and `Unknown` do not count. Any `Unknown` desk flags the lane's bins `Degraded`.
 

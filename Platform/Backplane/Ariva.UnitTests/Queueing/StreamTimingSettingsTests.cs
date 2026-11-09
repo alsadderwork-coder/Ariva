@@ -150,4 +150,46 @@ public sealed class StreamTimingSettingsTests
         settings.Problems().Should().ContainSingle().Which.Should().Contain("at most 500 sites");
         new StreamSettings { Sites = settings.Sites.Take(StreamSettings.MaxSites).ToDictionary(StringComparer.Ordinal) }.Problems().Should().BeEmpty();
     }
+
+    [Fact]
+    public void ZoneSettingsFor_Should_TakeTheHandoverWindowAndCensoringTimeout_When_TheStreamSetsThem()
+    {
+        // ARV-136a (TC-44): the two engine values a k8s-prd host takes only when confirmed; not set, the baseline's stay.
+        var baseline = new ZoneProcessorSettings { Engine = new QueueEngineSettings { HandoverWindow = TimeSpan.FromSeconds(10), CensorAfter = TimeSpan.FromMinutes(30) } };
+        var settings = Bind(("Stream:HandoverWindowSeconds", "45"), ("Stream:CensorAfterMinutes", "90"));
+
+        settings.Problems().Should().BeEmpty();
+        settings.ZoneSettingsProblems(baseline).Should().BeEmpty();
+        var engine = settings.ZoneSettingsFor("DMO", baseline).Engine;
+        engine.HandoverWindow.Should().Be(TimeSpan.FromSeconds(45));
+        engine.CensorAfter.Should().Be(TimeSpan.FromMinutes(90));
+        var unset = new StreamSettings().ZoneSettingsFor("DMO", baseline).Engine;
+        unset.HandoverWindow.Should().Be(TimeSpan.FromSeconds(10), "not set, the baseline's value stays");
+        unset.CensorAfter.Should().Be(TimeSpan.FromMinutes(30));
+        new QueueEngineSettings().HandoverWindow.Should().Be(TimeSpan.FromSeconds(30), "the engine's reference value (Proposed)");
+        new QueueEngineSettings().CensorAfter.Should().Be(TimeSpan.FromMinutes(120));
+    }
+
+    [Theory]
+    [InlineData("Stream:HandoverWindowSeconds", "-1", "Stream:HandoverWindowSeconds is from 0 to 1,800.")]
+    [InlineData("Stream:HandoverWindowSeconds", "1801", "Stream:HandoverWindowSeconds is from 0 to 1,800.")]
+    [InlineData("Stream:CensorAfterMinutes", "0", "Stream:CensorAfterMinutes is from 1 to 1,440.")]
+    [InlineData("Stream:CensorAfterMinutes", "1441", "Stream:CensorAfterMinutes is from 1 to 1,440.")]
+    public void Problems_Should_RefuseTheEngineValue_When_ItIsOutOfRange(string key, string value, string problem)
+    {
+        Bind((key, value)).Problems().Should().Contain(problem);
+    }
+
+    [Theory]
+    [InlineData("Stream:HandoverWindowSeconds", "0")]
+    [InlineData("Stream:HandoverWindowSeconds", "1800")]
+    [InlineData("Stream:CensorAfterMinutes", "1")]
+    [InlineData("Stream:CensorAfterMinutes", "1440")]
+    public void Problems_Should_AcceptTheEngineValue_When_ItIsAtItsBounds(string key, string value)
+    {
+        var settings = Bind((key, value));
+
+        settings.Problems().Should().BeEmpty();
+        settings.ZoneSettingsProblems(new ZoneProcessorSettings()).Should().BeEmpty("the engine takes the same range");
+    }
 }
