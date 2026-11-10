@@ -363,7 +363,7 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
         await AirportAsync(admin, "QXG");
         var storage = (SwitchableFileStorage)_host.Provider.GetRequiredService<IFileStorage>();
 
-        // The plan files are written last, after the topology, mappings and profile: the first is stored, the second fails.
+        // The plan files are written before the import's transaction (ARV-294): the first is stored, the second fails.
         storage.Arm(failAt: 2);
         try
         {
@@ -886,6 +886,8 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
         // Without the site row lock, imports that overlap would all see the site empty and the losers would fail on the
         // terminal's unique index (TerminalTaken); with it, each later one waits and finds the winner's records, or answers
         // SiteBusy when the winner held the row past the bounded wait (ARV-250).
+        var storage = (SwitchableFileStorage)_host.Provider.GetRequiredService<IFileStorage>();
+        storage.Arm(failAt: 0);
         var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ =>
             _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCFK", Request(bundle), "QXK", Ct))));
 
@@ -894,6 +896,47 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
             || r.ErrorMessages.SequenceEqual(new[] { SiteConfigurationErrors.SiteBusy }));
         (await _host.ReadAsync<long>("SELECT count(*) FROM terminal WHERE site_code = @secret", secret: "XCFK")).Should().Be(1);
         (await _host.ReadAsync<long>("SELECT count(*) FROM zone_profile WHERE site_code = @secret", secret: "XCFK")).Should().Be(1);
+        // ARV-294 (the security review's A7): each import wrote its plan's file before the site's row; a loser's rollback removes its own.
+        List<string> written;
+        lock (storage.Saved)
+            written = [.. storage.Saved];
+        var kept = (await StorageKeysAsync("XCFK")).Should().ContainSingle().Subject;
+        written.Should().HaveCount(4, "one file each, written before the lock").And.Contain(kept);
+        (await StoredAsync(storage, kept)).Should().BeTrue("the winner's file stays");
+        foreach (var lost in written.Where(key => key != kept))
+            (await StoredAsync(storage, lost)).Should().BeFalse("a refused import's file goes with its rollback");
+    }
+
+    /// <summary>
+    /// ARV-294 (CWE-400): no transaction waits on the disk. The export reads its plan's file after its snapshot ends and the import writes
+    /// it before it takes the site's row: at each file operation no session of the database is idle in a transaction. The bundle imports
+    /// whole, the file under a key of its own.
+    /// </summary>
+    [Fact]
+    public async Task ExportAndImport_Should_DoTheirFileWorkOutsideAnyTransaction_When_ABundleTravels()
+    {
+        var admin = await AdministratorAsync("tx");
+        await SourceAsync(admin, "XCRT", "QRT");
+        await SiteAsync(admin, "XCRU");
+        await AirportAsync(admin, "QRU");
+        var storage = (SwitchableFileStorage)_host.Provider.GetRequiredService<IFileStorage>();
+        var database = fixture.ConnectionString(await _host.DatabaseAsync());
+        var seen = new List<string>();
+        storage.Probe = async work => seen.Add(await ProbingFileStorage.TransactionsAsync(database, work));
+        SiteConfigurationExportViewModel exported;
+        try
+        {
+            exported = Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ExportAsync("XCRT", Ct)));
+            Ok(await _host.AsCallerAsync(admin, s => Configuration(s).ImportAsync("XCRU", Request(exported.Bundle), "QRU", Ct)));
+        }
+        finally
+        {
+            storage.Probe = null;
+        }
+
+        seen.Should().Equal(["read: 0 in transaction", "save: 0 in transaction"], "the export's file read after its snapshot, the import's write before its lock");
+        exported.Counts.FloorPlans.Should().Be(1);
+        (await StorageKeysAsync("XCRU")).Should().ContainSingle().Which.Should().NotBe((await StorageKeysAsync("XCRT")).Single(), "a key of its own");
     }
 
     [Fact]
@@ -1148,12 +1191,16 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
 
         public List<string> Saved { get; } = [];
 
+        /// <summary>ARV-294: runs with "save" or "read" before each write and read (a test looks at the database meanwhile); none by default.</summary>
+        public Func<string, Task> Probe { get; set; }
+
         /// <summary>Starts counting writes again; the write numbered <paramref name="failAt"/> (from 1) fails, none for 0.</summary>
         public void Arm(int failAt)
         {
             _failAt = failAt;
             _writes = 0;
-            Saved.Clear();
+            lock (Saved)
+                Saved.Clear();
         }
 
         /// <summary>No write fails any more; the keys stored so far stay recorded.</summary>
@@ -1161,13 +1208,22 @@ public sealed class SiteConfigurationTests(PostgresFixture fixture) : IAsyncDisp
 
         public async Task SaveAsync(string key, Stream content, CancellationToken ct = default)
         {
-            if (_failAt > 0 && ++_writes == _failAt)
+            if (Probe is { } probe)
+                await probe("save");
+            // Since ARV-294 imports write their files before the site's lock, so concurrent imports write at once.
+            if (_failAt > 0 && Interlocked.Increment(ref _writes) == _failAt)
                 throw new IOException("The test's storage refuses this write.");
             await _inner.SaveAsync(key, content, ct);
-            Saved.Add(key);
+            lock (Saved)
+                Saved.Add(key);
         }
 
-        public Task<Stream> OpenReadAsync(string key, CancellationToken ct = default) => _inner.OpenReadAsync(key, ct);
+        public async Task<Stream> OpenReadAsync(string key, CancellationToken ct = default)
+        {
+            if (Probe is { } probe)
+                await probe("read");
+            return await _inner.OpenReadAsync(key, ct);
+        }
 
         public Task DeleteAsync(string key, CancellationToken ct = default) => _inner.DeleteAsync(key, ct);
     }

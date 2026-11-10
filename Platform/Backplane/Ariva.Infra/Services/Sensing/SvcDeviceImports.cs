@@ -89,7 +89,9 @@ internal sealed class SvcDeviceImports(
                 passing.Add(new DeviceImportRowViewModel(row.Row, row.Code, row.Family, row.Model, row.Terminal, row.Level, row.QueueZone));
             }
 
-            UnitOfWork.PromiseNotToCommit();
+            // ARV-294 (CWE-400): the dry run is rolled back now, its site lock with it, before the token and the audit entry's own
+            // connection, so no transaction waits on either.
+            await RollBackBeforeOwnAuditAsync(logger);
             var token = table.Errors.Count == 0 && CurrentUser.Id is { } user ? _tokens.Issue(sha, siteCode, user, UtcNow) : null;
             await WriteOwnAuditAsync("Previewed", siteCode,
                 ImportAudit.Summary(Kind, token is null ? "refused rows" : "previewed", null, sha, table.Rows, passing.Count, table.Errors.Count, 0));
@@ -103,7 +105,7 @@ internal sealed class SvcDeviceImports(
         }
         catch (Exception)
         {
-            UnitOfWork.PromiseNotToCommit();
+            await RollBackBeforeOwnAuditAsync(logger);
             await TryWriteOwnAuditAsync("Failed", siteCode, ImportAudit.Summary(Kind, "failed", "preview", sha, 0, 0, 0, 0));
             throw;
         }
@@ -111,7 +113,8 @@ internal sealed class SvcDeviceImports(
 
     private async Task<Result<DeviceImportPreviewViewModel>> RefusePreviewAsync(string siteCode, string sha, string error)
     {
-        UnitOfWork.PromiseNotToCommit();
+        // ARV-294 (CWE-400): rolled back first, the site lock with it, so no transaction waits on the audit entry's own connection.
+        await RollBackBeforeOwnAuditAsync(logger);
         await TryWriteOwnAuditAsync("Previewed", siteCode, ImportAudit.Summary(Kind, "refused", error, sha, 0, 0, 0, 0));
         return Result.Error<DeviceImportPreviewViewModel>(error);
     }
@@ -181,7 +184,7 @@ internal sealed class SvcDeviceImports(
         }
         catch (Exception)
         {
-            UnitOfWork.PromiseNotToCommit();
+            await RollBackBeforeOwnAuditAsync(logger);
             await TryWriteOwnAuditAsync("Failed", siteCode, ImportAudit.Summary(Kind, "failed", "commit", sha, 0, 0, 0, 0));
             throw;
         }
@@ -189,7 +192,8 @@ internal sealed class SvcDeviceImports(
 
     private async Task<Result<DeviceImportCommitViewModel>> RefuseCommitAsync(string siteCode, string sha, string error)
     {
-        UnitOfWork.PromiseNotToCommit();
+        // ARV-294 (CWE-400): rolled back first, the site lock with it, so no transaction waits on the audit entry's own connection.
+        await RollBackBeforeOwnAuditAsync(logger);
         await TryWriteOwnAuditAsync("Refused", siteCode, ImportAudit.Summary(Kind, "refused", error, sha, 0, 0, 0, 0));
         return Result.Error<DeviceImportCommitViewModel>(error);
     }

@@ -98,9 +98,7 @@ internal sealed class SvcAdvertisingMedia(
         if (refusal is not null)
             return Result.Error<AdvertisingMediaViewModel>(refusal);
 
-        // Advisory lock class 1421, one per site's library: uploads of one site count its items one at a time.
-        await ExecuteCommandAsync<LockRow>("""SELECT 1 AS "Value" FROM (SELECT pg_advisory_xact_lock(1421, hashtext(:site))) l""",
-            new Dictionary<string, object> { ["site"] = siteCode }, ct);
+        // A full library is refused before anything is written; the count under the lock below is the one that holds.
         if (await Query<AdvertisingMedia>().CountAsync(m => m.SiteCode == siteCode, ct) >= AdvertisingMedia.MaxItemsPerSite)
             return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.LibraryFull);
 
@@ -108,10 +106,23 @@ internal sealed class SvcAdvertisingMedia(
             Convert.ToHexStringLower(SHA256.HashData(stored.Bytes)), stored.WidthPixels, stored.HeightPixels,
             string.IsNullOrWhiteSpace(upload.FileName) ? null : upload.FileName.Trim(), stored.DurationMilliseconds);
         var item = new AdvertisingMedia(siteCode, file, details, uploader);
+        // ARV-294 (CWE-400): the file first, before the transaction's first statement and so before the library's lock (a key of its
+        // own), so no transaction waits on the disk; the unit of work removes it on any rollback.
         var key = item.StorageKey;
         RegisterPostRollbackAction(() => storage.DeleteAsync(key));
         await using (var content = new MemoryStream(stored.Bytes, writable: false))
             await storage.SaveAsync(key, content, ct);
+
+        // Advisory lock class 1421, one per site's library: uploads of one site count its items one at a time.
+        await ExecuteCommandAsync<LockRow>("""SELECT 1 AS "Value" FROM (SELECT pg_advisory_xact_lock(1421, hashtext(:site))) l""",
+            new Dictionary<string, object> { ["site"] = siteCode }, ct);
+        if (await Query<AdvertisingMedia>().CountAsync(m => m.SiteCode == siteCode, ct) >= AdvertisingMedia.MaxItemsPerSite)
+        {
+            // Filled meanwhile by another upload: the lock's transaction commits (nothing of this upload in it), then the file goes.
+            RegisterPostCommitAction(() => storage.DeleteAsync(key));
+            return Result.Error<AdvertisingMediaViewModel>(AdvertisingMediaErrors.LibraryFull);
+        }
+
         await SaveAsync(item, ct);
         await audit.RecordAsync($"{Target}.Uploaded", Target, item.Id, siteCode, null, item.AuditSummary(), ct);
         return new Result<AdvertisingMediaViewModel>(View(item, await TodayAsync(siteCode, ct)));

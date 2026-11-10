@@ -2594,7 +2594,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 324,
-      "passes": false,
+      "passes": true,
       "notes": "Size M. Phase 3. Found by ARV-292's inventory (2026-11-05). Low: the 960 s limit already bounds a lost session; this narrows it. The email change alters a delivery guarantee, so its trade-off goes to the owner in decisions.md. No sign-in code. Optional (ARV-292 review, recommendation 10): the migration login has no keepalives; a lost migration job's session is bounded by its statement timeout and the server's TCP only.",
       "dependsOn": [
         "ARV-292"

@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using Ariva.Core;
 using Ariva.Core.Alerting;
@@ -219,5 +220,84 @@ public sealed class EmailTests
         other.Sent(now.AddMinutes(1));
         var suppress = () => other.Suppress("late");
         suppress.Should().Throw<InvalidOperationException>("sent is final");
+    }
+
+    [Fact]
+    public void Claim_Should_HoldTheEmailUntilItsEndAndLetOnlyThatClaimMarkIt_When_ARoundClaimsIt()
+    {
+        // ARV-294: a claim moves the email's next attempt to the claim's end (so no other round finds it due) and marks it with the
+        // claimed reason; only the claim that ends at that time still holds it, and the outcome replaces both.
+        var now = new DateTime(2026, 11, 5, 10, 0, 0, DateTimeKind.Utc);
+        var until = now.AddMinutes(9);
+        var email = new EmailMessage(EmailKind.AlertRaised, Guid.NewGuid(), "DMO", "border@ariva.test", "s", "b", now);
+
+        email.Claim(until);
+
+        email.Should().Match<EmailMessage>(e => e.Status == EmailStatus.Pending && e.NextAttemptUtc == until && e.Reason == EmailMessage.ClaimedReason && e.Attempts == 0);
+        email.IsClaimedUntil(until).Should().BeTrue();
+        email.IsClaimedUntil(until.AddSeconds(1)).Should().BeFalse("another claim's end");
+        email.Sent(now.AddMinutes(1));
+        email.Should().Match<EmailMessage>(e => e.Status == EmailStatus.Sent && e.Reason == null && e.Attempts == 1);
+        email.IsClaimedUntil(until).Should().BeFalse("a sent email is held by no claim");
+        var again = () => email.Claim(until.AddMinutes(9));
+        again.Should().Throw<InvalidOperationException>("a sent email stays sent");
+
+        var local = new EmailMessage(EmailKind.AlertRaised, Guid.NewGuid(), "DMO", "border@ariva.test", "s", "b", now);
+        var notUtc = () => local.Claim(DateTime.SpecifyKind(until, DateTimeKind.Unspecified));
+        notUtc.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void Release_Should_PutTheEmailBackAsItWasWithoutAnAttempt_When_ItsRoundDidNotTryIt()
+    {
+        var now = new DateTime(2026, 11, 5, 10, 0, 0, DateTimeKind.Utc);
+        var email = new EmailMessage(EmailKind.AlertRaised, Guid.NewGuid(), "DMO", "border@ariva.test", "s", "b", now);
+        email.Failed("SMTP connection lost.", now, 8);
+        var due = email.NextAttemptUtc;
+
+        email.Claim(now.AddMinutes(10));
+        email.Release(due, "SMTP connection lost.");
+
+        email.Should().Match<EmailMessage>(e => e.Status == EmailStatus.Pending && e.NextAttemptUtc == due && e.Reason == "SMTP connection lost." && e.Attempts == 1);
+        email.IsClaimedUntil(now.AddMinutes(10)).Should().BeFalse();
+        email.Claim(now.AddMinutes(20));
+        email.Failed("SMTP refused the message: SmtpCommandException", now.AddMinutes(2), 8);
+        email.Should().Match<EmailMessage>(e => e.Attempts == 2 && e.NextAttemptUtc == now.AddMinutes(4) && e.Reason == "SMTP refused the message: SmtpCommandException");
+    }
+
+    [Fact]
+    public void ClaimLength_Should_OutlastTheRoundsLastMessage_When_TheRelayIsAtItsSlowest()
+    {
+        // ARV-294 (CWE-362): a round begins no message after its send window, and the message begun last takes at most six exchanges at
+        // the SMTP timeout, so its claim (with a minute for the replicas' clocks) runs out only after it: no other round takes it before.
+        EmailSender.ClaimLength(new SmtpSettings()).Should().Be(TimeSpan.FromMinutes(9), "5 min + 6 x 30 s + 1 min");
+        EmailSender.ClaimLength(new SmtpSettings { TimeoutSeconds = 300 }).Should().Be(TimeSpan.FromMinutes(36), "5 min + 6 x 300 s + 1 min");
+        EmailSender.ClaimLength(new SmtpSettings { TimeoutSeconds = 1 })
+            .Should().BeGreaterThan(EmailSender.SendWindow + TimeSpan.FromSeconds(MailKitTransport.ExchangesPerMessage));
+        EmailSender.SendWindow.Should().BeLessThan(EmailSenderWorker.DefaultRunTimeout, "the run's own timeout never cuts the window short by default");
+    }
+
+    [Fact]
+    public void Transports_Should_EachTakeTheSendOptionsThemselves_When_AHostShipsThem()
+    {
+        // ARV-294 (the security review's A5): the interface's default options overload drops the early outcome and the budget, so every
+        // transport a host ships implements it itself; one that did not would leave a report's send without its total budget.
+        Assembly[] shipped =
+        [
+            typeof(Ariva.Infra._IAssemblyMark).Assembly, typeof(Ariva.Di.Extensions.EmailExtensions).Assembly, typeof(Ariva.Api.Common.Hubs.HubSessionSweeper).Assembly,
+            typeof(Ariva.Api.Main._IAssemblyMark).Assembly, typeof(Ariva.Api.Ingest._IAssemblyMark).Assembly, typeof(Ariva.Api.Stream._IAssemblyMark).Assembly,
+            typeof(Ariva.Api.Cronz._IAssemblyMark).Assembly, typeof(Ariva.Api.Integration._IAssemblyMark).Assembly
+        ];
+        var withOptions = typeof(IEmailTransport).GetMethod(nameof(IEmailTransport.SendAsync), [typeof(IReadOnlyList<OutgoingEmail>), typeof(EmailSendOptions), typeof(CancellationToken)]);
+        withOptions.Should().NotBeNull();
+
+        var transports = shipped.SelectMany(a => a.GetTypes()).Where(t => t.IsClass && !t.IsAbstract && typeof(IEmailTransport).IsAssignableFrom(t)).ToList();
+
+        transports.Should().Contain(typeof(MailKitTransport));
+        foreach (var transport in transports)
+        {
+            var map = transport.GetInterfaceMap(typeof(IEmailTransport));
+            map.TargetMethods[Array.IndexOf(map.InterfaceMethods, withOptions)].DeclaringType.Should().Be(transport, $"{transport.Name} takes the outcome and the budget itself");
+        }
     }
 }

@@ -274,7 +274,7 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         (await ScalarAsync<long>(runtime, Query.AppliedScripts)).Should().BeGreaterThan(0);
         (await ScalarAsync<string>(runtime, Query.TempFileLimit)).Should().Be("1GB", "ARV-290: the job capped the runtime login's temporary files (Database:TempFileLimitMegabytes, 1,024 by default)");
         (await ScalarAsync<string>(owner, Query.TempFileLimit)).Should().Be("-1", "the migration login keeps no cap");
-        (await ScalarAsync<string>(runtime, Query.IdleLimit)).Should().Be("16min", "ARV-292: the job limited the runtime login's idle transactions");
+        (await ScalarAsync<string>(runtime, Query.IdleLimit)).Should().Be("5min", "ARV-292: the job limited the runtime login's idle transactions (300 s by default since ARV-294)");
         (await ScalarAsync<string>(owner, Query.IdleLimit)).Should().Be("0", "the migration login keeps no limit");
         var ddl = async () => await ScalarAsync<object>(runtime, Query.CreateTable);
         (await ddl.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);

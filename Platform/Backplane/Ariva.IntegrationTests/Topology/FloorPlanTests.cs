@@ -10,6 +10,7 @@ using Ariva.IntegrationTests.Setup;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Ariva.IntegrationTests.Topology;
 
@@ -17,7 +18,7 @@ namespace Ariva.IntegrationTests.Topology;
 /// ARV-018 against PostgreSQL with script 0010: a second upload replaces the first in one transaction (the partial
 /// unique index allows one live plan per level), a level with a live plan cannot be deleted, concurrent uploads for one level queue on the level row instead of
 /// failing, and every change is audited. ARV-201: a PNG or JPEG plan carrying EXIF, XMP, text and a trailing page is
-/// stored and served without them, with its pixel size and calibration as uploaded.
+/// stored and served without them, with its pixel size and calibration as uploaded. ARV-294: the file is written outside any transaction.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class FloorPlanTests(PostgresFixture fixture) : IAsyncDisposable
@@ -48,6 +49,33 @@ public sealed class FloorPlanTests(PostgresFixture fixture) : IAsyncDisposable
         var level = await _host.AsCallerAsync(admin, s => topology(s).CreateLevelAsync(new CreateLevelRequest(terminal.Data.Id, "L0", "Ground", 0, 100, 50), Ct));
         level.HasErrors.Should().BeFalse(string.Join(", ", level.ErrorMessages ?? []));
         return (admin, level.Data.Id);
+    }
+
+    /// <summary>
+    /// ARV-294 (CWE-400): an upload writes its file before its transaction takes the site's and the level's rows, so no transaction and
+    /// no lock waits on the disk: at each write no session of the database is idle in a transaction. A second upload still replaces the
+    /// first (the level's row taken after the write).
+    /// </summary>
+    [Fact]
+    public async Task Upload_Should_WriteTheFileOutsideAnyTransaction_When_APlanIsUploaded()
+    {
+        var (admin, level) = await LevelAsync("tx");
+        await using var host = new AccountsHost(fixture, database: TestDatabase.Administration,
+            configure: services => services.Replace(ServiceDescriptor.Singleton<IFileStorage, ProbingFileStorage>()));
+        await host.CreateUserAsync("it.plan.probe");
+        var database = fixture.ConnectionString(await host.DatabaseAsync());
+        var storage = (ProbingFileStorage)host.Provider.GetRequiredService<IFileStorage>();
+        var seen = new List<string>();
+        storage.Probe = async work => seen.Add(await ProbingFileStorage.TransactionsAsync(database, work));
+
+        var first = await host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcFloorPlans>().UploadAsync(level, Upload("first"), Ct));
+        var second = await host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcFloorPlans>().UploadAsync(level, Upload("second"), Ct));
+
+        first.HasErrors.Should().BeFalse(string.Join(", ", first.ErrorMessages ?? []));
+        second.HasErrors.Should().BeFalse(string.Join(", ", second.ErrorMessages ?? []));
+        seen.Should().Equal(["save: 0 in transaction", "save: 0 in transaction"], "each file is written before its transaction's first statement");
+        (await _host.ReadAsync<long>("SELECT count(*) FROM floor_plan WHERE level_id = @id AND deleted_on IS NULL", level)).Should().Be(1, "the second replaced the first");
+        (await host.AsCallerAsync(admin, s => s.GetRequiredService<ISvcFloorPlans>().GetAsync(level, Ct))).Data.OriginalFileName.Should().Be("second.svg");
     }
 
     [Theory]

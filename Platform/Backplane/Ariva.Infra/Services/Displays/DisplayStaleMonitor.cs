@@ -24,7 +24,13 @@ internal sealed class DisplayStaleMonitor(IServiceScopeFactory scopes, DisplayMe
     #region Properties
 
     /// <summary>One minute: a sweep is one read of the enabled displays and one Redis read per zone they show.</summary>
-    public TimeSpan RunTimeout { get; init; } = TimeSpan.FromMinutes(1);
+    public TimeSpan RunTimeout { get; init; } = DefaultRunTimeout;
+
+    /// <summary>
+    /// The run timeout a host runs with. The sweep's Redis reads come inside its leader lock's transaction, so ARV-294's idle transaction
+    /// budget counts it (<see cref="Settings.IdleTransactionBudget"/>).
+    /// </summary>
+    public static readonly TimeSpan DefaultRunTimeout = TimeSpan.FromMinutes(1);
 
     /// <summary>A minute between sweeps: the shortest stale threshold a display takes (60 seconds).</summary>
     public TimeSpan Interval { get; init; } = TimeSpan.FromMinutes(1);

@@ -28,7 +28,9 @@ namespace Ariva.Infra.Services.Topology;
 /// audit entry holds a part's content. ARV-122b: devices, alert rules and displays travel without any credential,
 /// calibration, access setting, escalation contact or pairing secret; each device is registered through the registration
 /// path itself (its rules, its credential issuing, its audit entry) in the import's transaction, and its new credential is
-/// answered once and never logged.
+/// answered once and never logged. ARV-294 (CWE-400): no transaction waits on the disk or on a second connection: an export reads the
+/// plans' files after its snapshot ends, an import writes them before it takes the site's row (a rollback removes them), and a
+/// refusal ends the import's transaction before its audit entry is written.
 /// </summary>
 internal sealed class SvcSiteConfiguration(
     IUnitOfWork unitOfWork,
@@ -54,7 +56,8 @@ internal sealed class SvcSiteConfiguration(
             return Result.Error<SiteConfigurationExportViewModel>(TopologyErrors.NotFound);
 
         // One snapshot for every read, so a change committed during the export cannot split the bundle.
-        if (!UnitOfWork.StorageProvider.IsTransactionActive())
+        var snapshot = !UnitOfWork.StorageProvider.IsTransactionActive();
+        if (snapshot)
             await UnitOfWork.StorageProvider.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
 
         var source = await SourceAsync(siteCode, ct);
@@ -80,6 +83,12 @@ internal sealed class SvcSiteConfiguration(
         };
         if (parts.Values.Any(part => part.Length > SiteConfigurationLimits.MaxJsonPartBytes))
             return await RefuseExportAsync(siteCode, SiteConfigurationErrors.TooLargeToExport, ct);
+
+        // ARV-294 (CWE-400): every record is read, so the snapshot ends here (it wrote nothing) and no transaction waits on the disk
+        // while the plans' files are read. A plan replaced meanwhile has its old file removed after that change commits: the read then
+        // finds it missing and the export is refused (FloorPlanFileUnreadable), as for a file lost from storage, and is asked again.
+        if (snapshot)
+            await UnitOfWork.StorageProvider.RollbackTransactionAsync(ct);
 
         // Files are read one at a time against the bundle's budget; one beyond it stops the export before it is read.
         long size = parts.Values.Sum(part => (long)SiteConfigurationLimits.Base64Length(part.Length));
@@ -223,6 +232,14 @@ internal sealed class SvcSiteConfiguration(
         if (airports.Count != codes.Count)
             return await RefuseImportAsync(siteCode, SiteConfigurationErrors.UnknownAirport, bundle);
 
+        // The plan and its floor plans need no lock (the bundle and the airports alone); their refusals still come in the order below.
+        var planned = SiteConfigurationTransfer.Plan(siteCode, content.Data, airports.ToDictionary(a => a.IataCode, StringComparer.Ordinal), airportCode);
+        var (floorPlans, floorPlanRefusal) = planned.HasErrors ? (null, null) : FloorPlansOf(planned.Data);
+        // ARV-294 (CWE-400): the plans' files before the import's transaction takes the site's row, so no transaction and no lock waits
+        // on the disk; every refusal below rolls back, which removes them.
+        if (floorPlans is not null)
+            await StoreFilesAsync(floorPlans, ct);
+
         // Two imports of one site queue on its row; the second sees the first's records once it holds the lock. The wait is
         // bounded (ARV-250): an import holds the host's one upload permit while it waits, so past the wait it answers SiteBusy.
         if (!await TryLockSiteAsync(siteCode, SiteConfigurationLimits.SiteLockWait, ct))
@@ -230,7 +247,6 @@ internal sealed class SvcSiteConfiguration(
         if (!await IsEmptyAsync(siteCode, ct))
             return await RefuseImportAsync(siteCode, SiteConfigurationErrors.SiteNotEmpty, bundle);
 
-        var planned = SiteConfigurationTransfer.Plan(siteCode, content.Data, airports.ToDictionary(a => a.IataCode, StringComparer.Ordinal), airportCode);
         if (planned.HasErrors)
             return await RefuseImportAsync(siteCode, planned.ErrorMessages.First(), bundle);
         var plan = planned.Data;
@@ -248,25 +264,10 @@ internal sealed class SvcSiteConfiguration(
                 return await RefuseImportAsync(siteCode, SiteConfigurationErrors.InvalidAlertRules, bundle);
         }
 
-        // ARV-018 again: each file typed by its bytes, SVG sanitised, rasters within their bounds, the name without a path.
-        var floorPlans = new List<(FloorPlan Plan, byte[] Bytes)>();
-        foreach (var item in plan.FloorPlans)
-        {
-            var file = FloorPlanFiles.Inspect(item.File);
-            var fileName = SvcFloorPlans.SafeFileName(item.Row.FileName);
-            if (file is null || fileName is null)
-                return await RefuseImportAsync(siteCode, SiteConfigurationErrors.FloorPlanFileRefused, bundle);
-            try
-            {
-                floorPlans.Add((new FloorPlan(item.Level, $"{Guid.CreateVersion7():N}.{file.Extension}", file.ContentType, file.Bytes.Length,
-                    Convert.ToHexStringLower(SHA256.HashData(file.Bytes)), fileName, file.WidthPixels, file.HeightPixels,
-                    item.Row.MetresPerPixel, item.Row.OriginX, item.Row.OriginY), file.Bytes));
-            }
-            catch (ArgumentException)
-            {
-                return await RefuseImportAsync(siteCode, SiteConfigurationErrors.InvalidFloorPlans, bundle);
-            }
-        }
+        // ARV-018 again (checked before the lock, above): each file typed by its bytes, SVG sanitised, rasters within their bounds,
+        // the name without a path.
+        if (floorPlanRefusal is not null)
+            return await RefuseImportAsync(siteCode, floorPlanRefusal, bundle);
 
         // Display codes are unique among the live displays of the deployment, not the site (script 0035). Checked after the
         // bundle's checks above and before anything is written; the registration path's own device rules run later, after
@@ -352,7 +353,50 @@ internal sealed class SvcSiteConfiguration(
             plan.PortableGeometryHash, plan.Counts, credentials, plan.DevicesNeedingAccessSettings, plan.RulesNeedingEscalationContact, notes, linesOutOfReach));
     }
 
-    /// <summary>Parents before children; queue zones before the zones that hang off them; each file stored before its record, removed on rollback.</summary>
+    /// <summary>
+    /// ARV-018 again: each plan's file typed by its bytes, SVG sanitised, rasters within their bounds, the name without a path; the
+    /// plans with the bytes to store, or the refusal.
+    /// </summary>
+    private static (List<(FloorPlan Plan, byte[] Bytes)> Plans, string Refusal) FloorPlansOf(SiteConfigurationPlan plan)
+    {
+        var floorPlans = new List<(FloorPlan Plan, byte[] Bytes)>();
+        foreach (var item in plan.FloorPlans)
+        {
+            var file = FloorPlanFiles.Inspect(item.File);
+            var fileName = SvcFloorPlans.SafeFileName(item.Row.FileName);
+            if (file is null || fileName is null)
+                return (null, SiteConfigurationErrors.FloorPlanFileRefused);
+            try
+            {
+                floorPlans.Add((new FloorPlan(item.Level, $"{Guid.CreateVersion7():N}.{file.Extension}", file.ContentType, file.Bytes.Length,
+                    Convert.ToHexStringLower(SHA256.HashData(file.Bytes)), fileName, file.WidthPixels, file.HeightPixels,
+                    item.Row.MetresPerPixel, item.Row.OriginX, item.Row.OriginY), file.Bytes));
+            }
+            catch (ArgumentException)
+            {
+                return (null, SiteConfigurationErrors.InvalidFloorPlans);
+            }
+        }
+
+        return (floorPlans, null);
+    }
+
+    /// <summary>
+    /// ARV-294: each plan's file under its own new key, outside any transaction, each removed when the import rolls back (a refusal, a
+    /// failure, a failed commit).
+    /// </summary>
+    private async Task StoreFilesAsync(List<(FloorPlan Plan, byte[] Bytes)> floorPlans, CancellationToken ct)
+    {
+        foreach (var (floorPlan, bytes) in floorPlans)
+        {
+            var key = floorPlan.StorageKey;
+            RegisterPostRollbackAction(() => storage.DeleteAsync(key));
+            await using var content = new MemoryStream(bytes, writable: false);
+            await storage.SaveAsync(key, content, ct);
+        }
+    }
+
+    /// <summary>Parents before children; queue zones before the zones that hang off them; each file stored before the import's transaction (<see cref="StoreFilesAsync"/>).</summary>
     private async Task SaveAsync(SiteConfigurationPlan plan, List<(FloorPlan Plan, byte[] Bytes)> floorPlans, CancellationToken ct)
     {
         foreach (var terminal in plan.Terminals)
@@ -374,14 +418,8 @@ internal sealed class SvcSiteConfiguration(
                 await SaveAsync(line, ct);
         }
 
-        foreach (var (floorPlan, bytes) in floorPlans)
-        {
-            var key = floorPlan.StorageKey;
-            RegisterPostRollbackAction(() => storage.DeleteAsync(key));
-            await using (var content = new MemoryStream(bytes, writable: false))
-                await storage.SaveAsync(key, content, ct);
+        foreach (var (floorPlan, _) in floorPlans)
             await SaveAsync(floorPlan, ct);
-        }
 
         // ARV-122b: alert rules without escalation contacts, displays unpaired (no credential).
         foreach (var rule in plan.AlertRules)
@@ -412,7 +450,10 @@ internal sealed class SvcSiteConfiguration(
     /// </summary>
     private async Task<Result<SiteConfigurationImportViewModel>> RefuseImportAsync(string siteCode, string error, OpenedSiteBundle bundle, bool failed = false)
     {
-        UnitOfWork.PromiseNotToCommit();
+        // ARV-294 (CWE-400): the import's transaction ends first (rolled back, with the site's row and the files it stored), so neither
+        // it nor its locks wait while the audit entry's own connection opens and writes.
+        await RollBackBeforeOwnAuditAsync(logger);
+
         try
         {
             await WriteOwnAuditAsync(failed ? $"{Target}.ImportFailed" : $"{Target}.ImportRefused", siteCode,

@@ -125,17 +125,18 @@ public sealed partial class DatabaseSettings
     /// (<c>idle_in_transaction_session_timeout</c>, set on the login by the migration job through script 0070). A host whose
     /// connection is lost on the network leaves its session idle in its transaction with its locks (a report delivery's row, the
     /// deliveries' report slot) until the server notices; past this the server ends the session, its locks go and nothing of its
-    /// transaction commits. 960 (Proposed, docs/security/costly-operations.md): above every transaction a host holds open while it
-    /// waits on other work, the longest a request on a transfer endpoint (900 s) and an alert email round that sends its batch in
-    /// its claim (780 s); a host refuses to start when its own settings allow a longer wait (<see cref="IdleTransactionBudget"/>),
-    /// and a host and the migration job outside <see cref="MinIdleInTransactionTimeoutSeconds"/> to
-    /// <see cref="MaxIdleInTransactionTimeoutSeconds"/> (two hours, so every value the other settings allow can be covered: the
-    /// transfer requests' 3,600 s, a report's send at an SMTP timeout of 300 s). Set it once, in the base settings: each host checks
-    /// its own copy against its own waits, and the migration job sets the login from its copy. It is a user setting, so the runtime
-    /// login can change it for its own sessions: it bounds a lost client, not a compromised host (docs/security/costly-operations.md
-    /// section 16). ARV-294 shortens the two longest waits so the limit can come down.
+    /// transaction commits. 300 since ARV-294 (Proposed, docs/security/costly-operations.md section 16; 960 before): ARV-294 shortened
+    /// every transaction a host holds open while it waits on other work so that none passes
+    /// <see cref="IdleTransactionBudget.MaxWaitSeconds"/> (240 s) at any value the other settings allow, the longest a report's send
+    /// within its budget (180 s) at the defaults and a Data Protection key ring load that creates a key (240 s) at the settings' maxima. A host refuses to start
+    /// when its own settings allow a longer wait (<see cref="IdleTransactionBudget"/>) or when the limit the server applies to its
+    /// login is not above it (<see cref="Timescale.IdleTransactionLimitGate"/>), and a host and the migration job outside
+    /// <see cref="MinIdleInTransactionTimeoutSeconds"/> to <see cref="MaxIdleInTransactionTimeoutSeconds"/>. Set it once, in the base
+    /// settings: each host checks its own copy against its own waits, and the migration job sets the login from its copy. It is a user
+    /// setting, so the runtime login can change it for its own sessions: it bounds a lost client, not a compromised host
+    /// (docs/security/costly-operations.md section 16).
     /// </summary>
-    public int IdleInTransactionTimeoutSeconds { get; init; } = 960;
+    public int IdleInTransactionTimeoutSeconds { get; init; } = 300;
 
     /// <summary>
     /// ARV-292: TCP keepalives on the runtime login's sessions (<c>tcp_keepalives_idle</c>, <c>_interval</c>, <c>_count</c>, script

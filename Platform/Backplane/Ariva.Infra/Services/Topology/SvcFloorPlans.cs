@@ -18,7 +18,8 @@ namespace Ariva.Infra.Services.Topology;
 /// Floor plans (ARV-018). The level must be live and inside the caller's sites (404 otherwise). An upload is read to at
 /// most 20 MB, scanned for malware (ARV-092b, <see cref="UploadScreening"/>), inspected by its bytes, sanitised when SVG,
 /// stored under a generated key and recorded; the previous plan of the level is soft deleted and its file removed after
-/// commit. Changes are audited.
+/// commit. Changes are audited. ARV-294 (CWE-400): the file is written before the transaction takes its locks, so no transaction and
+/// no lock waits on the disk; a rollback removes it.
 /// </summary>
 internal sealed class SvcFloorPlans(
     IUnitOfWork unitOfWork,
@@ -92,6 +93,13 @@ internal sealed class SvcFloorPlans(
             return Result.Error<FloorPlanViewModel>(rule.Rule);
         }
 
+        // ARV-294: the file first, before the transaction's first write and so before its locks (a key of its own, so concurrent
+        // uploads never meet here); the unit of work removes it on any rollback, the transaction's or a failed write's.
+        var storedKey = plan.StorageKey;
+        RegisterPostRollbackAction(() => storage.DeleteAsync(storedKey));
+        await using (var content = new MemoryStream(file.Bytes, writable: false))
+            await storage.SaveAsync(plan.StorageKey, content, ct);
+
         // ARV-154: the site's row first (a site configuration import holds it while it checks that the site is empty), then
         // the level's: concurrent uploads for one level queue here instead of racing to the unique index.
         await ShareSiteAsync(level.SiteCode, ct);
@@ -100,10 +108,6 @@ internal sealed class SvcFloorPlans(
             new Dictionary<string, object> { ["id"] = levelId },
             ct);
         var previous = await Query<FloorPlan>().Where(p => p.Level.Id == levelId).ToListAsync(ct);
-        var storedKey = plan.StorageKey;
-        RegisterPostRollbackAction(() => storage.DeleteAsync(storedKey));
-        await using (var content = new MemoryStream(file.Bytes, writable: false))
-            await storage.SaveAsync(plan.StorageKey, content, ct);
 
         foreach (var old in previous)
         {

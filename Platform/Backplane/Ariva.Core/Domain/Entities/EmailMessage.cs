@@ -72,6 +72,43 @@ public class EmailMessage : EntityBase<EmailMessage>
         Reason = null;
     }
 
+    /// <summary>
+    /// ARV-294: the reason a pending email carries while a sending round holds its claim (<see cref="Claim"/>), so every round counts it
+    /// against the per-minute limit until it is marked or its claim runs out. Replaced by the outcome when the round marks it.
+    /// </summary>
+    public const string ClaimedReason = "Claimed by a sending round.";
+
+    /// <summary>
+    /// ARV-294: claimed by a sending round until <paramref name="claimedUntilUtc"/>, the claim committed before anything is sent: not due
+    /// before then, so no other round takes it, and marked by that round only while it still holds it (<see cref="IsClaimedUntil"/>).
+    /// A claim that runs out (the round's host gone between its send and its mark) leaves the email due again: sent again, once.
+    /// </summary>
+    public virtual void Claim(DateTime claimedUntilUtc)
+    {
+        EnsurePending();
+        if (claimedUntilUtc.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("A claim ends at a UTC time.", nameof(claimedUntilUtc));
+        NextAttemptUtc = claimedUntilUtc;
+        Reason = ClaimedReason;
+    }
+
+    /// <summary>ARV-294: whether the claim that ends at <paramref name="claimedUntilUtc"/> still holds this email (pending, not marked).</summary>
+    public virtual bool IsClaimedUntil(DateTime claimedUntilUtc) =>
+        Status == EmailStatus.Pending && NextAttemptUtc == claimedUntilUtc && string.Equals(Reason, ClaimedReason, StringComparison.Ordinal);
+
+    /// <summary>
+    /// ARV-294: a claimed email its round did not try (stopped between messages): due again as it was before its claim, with the reason it
+    /// had, and no attempt counted.
+    /// </summary>
+    public virtual void Release(DateTime nextAttemptUtc, string reason)
+    {
+        EnsurePending();
+        if (nextAttemptUtc.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("An attempt is due at a UTC time.", nameof(nextAttemptUtc));
+        NextAttemptUtc = nextAttemptUtc;
+        Reason = Clip(reason);
+    }
+
     /// <summary>A failed attempt: tried again after a growing delay, given up after <paramref name="maxAttempts"/>.</summary>
     public virtual void Failed(string reason, DateTime utcNow, int maxAttempts)
     {

@@ -26,10 +26,13 @@ namespace Ariva.Infra.Services.Reports;
 /// was (nothing written, its claim rolled back, no attempt counted) for a later round, and logged. ARV-291: a read that fails in the
 /// database (a statement timeout, a lost connection) leaves the delivery's transaction able only to roll back, so it throws
 /// <see cref="ReportReadFailedException"/> and the round counts the attempt in a transaction of its own
-/// (<see cref="CountFailedReadAsync"/>): the attempt limit ends a read that fails every time.
+/// (<see cref="CountFailedReadAsync"/>): the attempt limit ends a read that fails every time. ARV-294: the send has a total budget
+/// (<see cref="ReportSendBudget"/>, three minutes), its connection and authentication included: past it the send is ended where it is
+/// and the delivery counted as failed, so the transaction holding the row and the slot never waits longer on a slow relay.
 /// </summary>
 internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider timeProvider, ReportReader reader, IEmailTransport transport,
-    EmailSettings settings, Ariva.Infra.Settings.AuthSettings auth, ILogger<SvcReportDeliveries> logger) : SvcDb(unitOfWork), ISvcReportDeliveries
+    EmailSettings settings, Ariva.Infra.Settings.AuthSettings auth, ILogger<SvcReportDeliveries> logger, ReportSendBudget sendBudget = null)
+    : SvcDb(unitOfWork), ISvcReportDeliveries
 {
     /// <summary>The transaction advisory lock key of a delivery round (any constant no other lock uses).</summary>
     public const long RoundLock = 0x4152_5641_0060;
@@ -160,7 +163,10 @@ internal sealed class SvcReportDeliveries(IUnitOfWork unitOfWork, TimeProvider t
             return ReportDeliveryOutcome.Failed;
         }
 
-        var batch = await transport.SendAsync([email], ct);
+        // ARV-294: a total budget over the whole send (the round's token still stops it only before it begins). Past it the send is
+        // ended, its connection closed, and the delivery counted as failed below, so the row and the slot are freed at the commit.
+        using var budget = new CancellationTokenSource((sendBudget ?? ReportSendBudget.Default).Total);
+        var batch = await transport.SendAsync([email], new EmailSendOptions { Abort = budget.Token }, ct);
         // ARV-096e: a round cut before the send leaves the delivery pending, no attempt counted.
         if (batch.NotTried.Contains(row.Id))
         {

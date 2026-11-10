@@ -122,6 +122,25 @@ internal abstract class SvcDb(IUnitOfWork unitOfWork)
         return true;
     }
 
+    /// <summary>
+    /// ARV-294 (CWE-400): ends this unit of work's transaction now, rolled back (its locks go and its post-rollback actions run, the
+    /// files it stored removed among them), before the service writes an audit entry in a transaction of its own, so no transaction
+    /// waits while that second connection opens and writes. Nothing is committed afterwards. A rollback that fails is logged; the unit
+    /// of work rolls back again when it ends.
+    /// </summary>
+    protected async Task RollBackBeforeOwnAuditAsync(ILogger logger)
+    {
+        UnitOfWork.PromiseNotToCommit();
+        try
+        {
+            await UnitOfWork.RollbackAsync(CancellationToken.None);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger?.LogError(e, "A transaction could not be rolled back before its own audit entry was written; its unit of work rolls it back when it ends");
+        }
+    }
+
     protected void RegisterPostCommitAction(Func<Task> action) => UnitOfWork.RegisterPostCommitAction(action);
 
     protected void RegisterPostRollbackAction(Func<Task> action) => UnitOfWork.RegisterPostRollbackAction(action);

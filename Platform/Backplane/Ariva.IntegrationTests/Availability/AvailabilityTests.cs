@@ -135,17 +135,22 @@ public sealed class AvailabilityTests(PostgresFixture fixture) : IAsyncDisposabl
 
         public int Reads { get; private set; }
 
+        /// <summary>ARV-294: runs at each read, before it answers (a test looks at the database while the ledger waits on Redis).</summary>
+        public Func<Task> OnRead { get; set; }
+
         public void Fresh(string zoneKey, DateTime minuteUtc, DateTime publishedUtc) =>
             Values[zoneKey] = new LiveZoneSnapshot(zoneKey, minuteUtc, 4, true, false, 2, 2, null, false, publishedUtc);
 
         public Task PublishAsync(IReadOnlyCollection<LiveZoneSnapshot> snapshots, CancellationToken ct) => Task.CompletedTask;
 
-        public Task<LiveZoneSnapshot> GetAsync(string zoneKey, CancellationToken ct)
+        public async Task<LiveZoneSnapshot> GetAsync(string zoneKey, CancellationToken ct)
         {
             Reads++;
+            if (OnRead is { } probe)
+                await probe();
             if (Fail)
                 throw new TimeoutException("Redis is down");
-            return Task.FromResult(Values.GetValueOrDefault(zoneKey));
+            return Values.GetValueOrDefault(zoneKey);
         }
 
         public Task SubscribeAsync(Func<LiveZoneSnapshot, Task> handler, CancellationToken ct) => Task.CompletedTask;
@@ -340,6 +345,38 @@ public sealed class AvailabilityTests(PostgresFixture fixture) : IAsyncDisposabl
         (await ledger.SiteAsync("AVLIVE", Ct)).Minutes.Should().Be(1);
         (await ledger.SiteAsync("AVLIVE", Ct)).Minutes.Should().Be(0);
         (await RowsAsync("AVLIVE")).Select(r => (r.Minute, r.State)).Should().Equal((Utc(10, 1, 7, 57), "Available"), (Utc(10, 1, 7, 58), "Available"));
+    }
+
+    /// <summary>
+    /// ARV-294 (CWE-400): the ledger reads its Redis snapshots before its site's transaction begins, so no transaction (and not the site's
+    /// lock) waits on Redis: at every read no session of the database is idle in a transaction and no site lock (class 50) is held; the
+    /// snapshots read first still decide the live minute (Available).
+    /// </summary>
+    [Fact]
+    public async Task Ledger_Should_ReadTheLiveSnapshotsBeforeTheSiteLock_When_ItDecidesALiveMinute()
+    {
+        await PlantSiteAsync("AVPRE", "AVQ", "Asia/Dubai", Utc(9, 1, 0, 0), "Q1", "Q2");
+        var snapshots = new FakeSnapshots();
+        var ledger = await LedgerAsync(snapshots);
+        Host.Clock.Advance(TimeSpan.FromSeconds(30));
+        await PlantMinutesAsync("AVPRE", "Q1", Utc(10, 1, 7, 50), Utc(10, 1, 8, 10));
+        await PlantMinutesAsync("AVPRE", "Q2", Utc(10, 1, 7, 50), Utc(10, 1, 8, 10));
+        snapshots.Fresh("AVPRE/Q1", Utc(10, 1, 7, 59), Utc(10, 1, 8, 0));
+        snapshots.Fresh("AVPRE/Q2", Utc(10, 1, 7, 59), Utc(10, 1, 8, 0));
+        var seen = new List<string>();
+        snapshots.OnRead = async () => seen.Add(await ScalarAsync<string>("""
+            SELECT (SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND state LIKE 'idle in transaction%')
+                   || ' idle in transaction, '
+                   || (SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 50 AND objsubid = 2 AND granted
+                         AND database = (SELECT oid FROM pg_database WHERE datname = current_database()))
+                   || ' site locks'
+            """));
+
+        var pass = await ledger.SiteAsync("AVPRE", Ct);
+
+        seen.Should().Equal(["0 idle in transaction, 0 site locks", "0 idle in transaction, 0 site locks"], "each zone read once, before the pass's transaction");
+        pass.Should().Be(new AvailabilitySitePass(1, 1, 0, 0, 0));
+        (await RowsAsync("AVPRE")).Should().ContainSingle().Which.State.Should().Be("Available", "the snapshots read before the lock decide the live minute");
     }
 
     [Fact]

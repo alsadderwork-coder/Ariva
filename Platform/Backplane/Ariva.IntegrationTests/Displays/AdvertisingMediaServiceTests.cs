@@ -15,6 +15,7 @@ using Ariva.IntegrationTests.Security;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 using SkiaSharp;
 
@@ -147,6 +148,34 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
         var approved = await _host.AsCallerAsync(approver, s => Media(s).ApproveAsync(site, item.Id, new ApproveAdvertisingMediaRequest(item.ReviewToken), Ct));
         approved.HasErrors.Should().BeFalse(string.Join(", ", approved.ErrorMessages ?? []));
         return approved.Data;
+    }
+
+    /// <summary>
+    /// ARV-294 (CWE-400): an upload writes its file before its transaction takes the library's lock (advisory class 1421), so no
+    /// transaction and no lock waits on the disk: at the write no session of the database is idle in a transaction. The item is kept
+    /// as a draft, its file under its key.
+    /// </summary>
+    [Fact]
+    public async Task Upload_Should_WriteTheFileBeforeTheLibraryLock_When_AnItemIsUploaded()
+    {
+        var manager = await ManagerAsync("it.media.probe");
+        await using var host = new AccountsHost(fixture, database: TestDatabase.AdvertisingMedia,
+            configure: services => services.Replace(ServiceDescriptor.Singleton<IFileStorage, ProbingFileStorage>()));
+        await host.CreateUserAsync("it.media.probe.host");
+        var database = fixture.ConnectionString(await host.DatabaseAsync());
+        var storage = (ProbingFileStorage)host.Provider.GetRequiredService<IFileStorage>();
+        var seen = new List<string>();
+        storage.Probe = async work => seen.Add(await ProbingFileStorage.TransactionsAsync(database, work));
+
+        var created = await host.AsCallerAsync(manager, s => Media(s).UploadAsync("DMO", Upload(Png(), "probe.png"), Ct));
+
+        created.HasErrors.Should().BeFalse(string.Join(", ", created.ErrorMessages ?? []));
+        seen.Should().Equal(["save: 0 in transaction"], "the file is written before the transaction's first statement");
+        created.Data.Status.Should().Be("Draft");
+        var key = await _host.ReadAsync<string>("SELECT storage_key FROM advertising_media WHERE id = @id", created.Data.Id);
+        storage.Probe = null;
+        await using var stored = await storage.OpenReadAsync(key, Ct);
+        stored.Should().NotBeNull("the file is under the item's key");
     }
 
     [Fact]
@@ -315,11 +344,28 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
         (await ApproveAsShownAsync(approver, "DMO", item.Id)).HasErrors.Should().BeFalse("approved once looked at again");
     }
 
+    /// <summary>
+    /// Two uploads race for a library's last place: one takes it. ARV-294 (the security review's R2): both pass the full library check
+    /// before their files are written (held together at the write), so both write; the one refused under the library's lock removes
+    /// its file once its transaction commits, and only the winner's file is left.
+    /// </summary>
     [Fact]
     public async Task Upload_Should_KeepALibraryToItsLimit_When_TwoUploadsRaceForItsLastPlace()
     {
         var first = await ManagerAsync("it.media.cap.first", "MED3");
         var second = await ManagerAsync("it.media.cap.second", "MED3");
+        await using var host = new AccountsHost(fixture, database: TestDatabase.AdvertisingMedia,
+            configure: services => services.Replace(ServiceDescriptor.Singleton<IFileStorage, ProbingFileStorage>()));
+        await host.CreateUserAsync("it.media.cap.host");
+        var storage = (ProbingFileStorage)host.Provider.GetRequiredService<IFileStorage>();
+        var arrived = 0;
+        var together = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        storage.Probe = async _ =>
+        {
+            if (Interlocked.Increment(ref arrived) == 2)
+                together.TrySetResult();
+            await together.Task.WaitAsync(TimeSpan.FromSeconds(30), Ct);
+        };
         (await _host.ReadAsync<int>(
             """
             INSERT INTO advertising_media (id, site_code, storage_key, content_type, size_bytes, sha256, width_pixels, height_pixels, advertiser, campaign,
@@ -331,13 +377,21 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
             """)).Should().Be(1);
 
         var results = await Task.WhenAll(
-            _host.AsCallerAsync(first, s => Media(s).UploadAsync("MED3", Upload(Png()), Ct)),
-            _host.AsCallerAsync(second, s => Media(s).UploadAsync("MED3", Upload(Png()), Ct)));
+            host.AsCallerAsync(first, s => Media(s).UploadAsync("MED3", Upload(Png()), Ct)),
+            host.AsCallerAsync(second, s => Media(s).UploadAsync("MED3", Upload(Png()), Ct)));
+        storage.Probe = null;
 
         results.Count(r => !r.HasErrors).Should().Be(1, "one upload takes the last place");
         results.Single(r => r.HasErrors).ErrorMessages.Should().Equal(AdvertisingMediaErrors.LibraryFull);
         (await _host.ReadAsync<long>("SELECT count(*) FROM advertising_media WHERE site_code = 'MED3'")).Should().Be(AdvertisingMedia.MaxItemsPerSite);
-        (await _host.AsCallerAsync(first, s => Media(s).UploadAsync("MED3", Upload(Png()), Ct))).ErrorMessages.Should().Equal(AdvertisingMediaErrors.LibraryFull);
+        var kept = await _host.ReadAsync<string>("SELECT storage_key FROM advertising_media WHERE id = @id", results.Single(r => !r.HasErrors).Data.Id);
+        var written = storage.Saved.ToList();
+        written.Should().HaveCount(2, "both passed the check before the write").And.Contain(kept);
+        await using (var winner = await storage.OpenReadAsync(kept, Ct))
+            winner.Should().NotBeNull("the winner's file stays");
+        (await storage.OpenReadAsync(written.Single(key => key != kept), Ct)).Should().BeNull("the refused upload's file is removed after its commit");
+        (await host.AsCallerAsync(first, s => Media(s).UploadAsync("MED3", Upload(Png()), Ct))).ErrorMessages.Should().Equal(AdvertisingMediaErrors.LibraryFull);
+        storage.Saved.Should().HaveCount(2, "a full library is refused before anything is written");
     }
 
     [Fact]

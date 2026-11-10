@@ -1,4 +1,5 @@
 using System.Data;
+using System.Diagnostics;
 using Ariva.Core;
 using Ariva.Core.Domain.Entities;
 using Ariva.Core.Domain.Enums;
@@ -111,109 +112,314 @@ public sealed class AlertEmails(IUnitOfWork unitOfWork, EmailSettings settings, 
     }
 }
 
-/// <summary>What one sending round did: sent, given up, to be retried, and held back because the recipient may no longer be told.</summary>
-public sealed record EmailRound(int Sent, int Failed, int Retrying, int Withheld = 0);
+/// <summary>
+/// What one sending round did: sent, given up, to be retried, and held back because the recipient may no longer be told. ARV-294:
+/// <paramref name="Unmarked"/> emails had an outcome the round could not record (the database did not answer, or the claim had run
+/// out); each stays claimed until its claim runs out and is then sent again, once.
+/// </summary>
+public sealed record EmailRound(int Sent, int Failed, int Retrying, int Withheld = 0, int Unmarked = 0);
 
 /// <summary>
-/// Sends the emails that are due (ARV-040), in one transaction, one replica at a time (a transaction advisory lock; a
-/// replica that does not get it skips the round), so <see cref="EmailSettings.MaxPerMinute"/> holds over all of them:
-/// claims at most what that limit leaves with <c>FOR UPDATE SKIP LOCKED</c>, sends, and marks each sent, to retry after
-/// a growing delay, or given up after <see cref="EmailSettings.MaxAttempts"/>. A row is data from the database, not an
-/// instruction (CWE-501): it is sent only while its recipient is still an enabled person (not break-glass) holding the
-/// alert's site and the role the email is for (for an alert on a border-only metric, a border role: <see cref="BorderAlerts"/>,
-/// ARV-181b2, so a row written before that story, by hand or for an alert changed in the database is held back too);
-/// otherwise it is held back. The reason kept for a failure names the error type, never the message or the server's
-/// reply. Delivery is at least once.
+/// Sends the emails that are due (ARV-040) in three steps, so no transaction waits on the relay (ARV-294, CWE-400): the claim, one
+/// replica at a time (a transaction advisory lock; a replica that does not get it skips the round), takes at most what
+/// <see cref="EmailSettings.MaxPerMinute"/> leaves (the emails sent in the last minute and those other rounds hold count) with
+/// <c>FOR UPDATE SKIP LOCKED</c>, marks each claimed until <see cref="ClaimLength"/> from now and commits; the batch is then sent
+/// outside any transaction; and each email is marked, as soon as the relay has answered for it, in a short transaction of its own:
+/// sent, to retry after a growing delay, given up after <see cref="EmailSettings.MaxAttempts"/>, or, when the round stopped before
+/// it, released as it was. A mark lands only while the round's own claim still holds the email (CWE-362): a claim is never taken by
+/// another round before it runs out, and a round begins no message once <see cref="SendWindow"/> from its start has passed (the
+/// claim's own time counted in it; a claim that commits after the window sends nothing and releases its emails), so its last message
+/// ends within its claim. A row is data from the database, not an instruction (CWE-501): it is sent only while its recipient is still an
+/// enabled person (not break-glass) holding the alert's site and the role the email is for (for an alert on a border-only metric, a
+/// border role: <see cref="BorderAlerts"/>, ARV-181b2, so a row written before that story, by hand or for an alert changed in the
+/// database is held back too); otherwise it is held back. The reason kept for a failure names the error type, never the message or
+/// the server's reply. Delivery is at least once (docs/product/decisions.md, ARV-294): an email the relay accepted is marked sent, or,
+/// when its host is gone between the send and the mark (or the mark cannot be written), sent once more after its claim runs out.
 /// </summary>
-public sealed class EmailSender(IUnitOfWork unitOfWork, IEmailTransport transport, EmailSettings settings)
+public sealed class EmailSender(IUnitOfWork unitOfWork, IServiceScopeFactory scopes, IEmailTransport transport, EmailSettings settings, SmtpSettings smtp,
+    ILogger<EmailSender> logger)
 {
-    /// <summary>The transaction advisory lock key of the sending round (any constant no other lock uses).</summary>
+    #region Constants
+
+    /// <summary>The transaction advisory lock key of the sending round's claim (any constant no other lock uses).</summary>
     public const long RoundLock = 0x4152_5641_0040;
+
+    /// <summary>The most emails one round claims.</summary>
+    public const int MaxPerRound = 100;
+
+    /// <summary>
+    /// ARV-294: how long after its start a round may begin messages, the time its claim takes included (the security review's R1: a
+    /// claim that waited for its connection or its statements leaves that much less); the rest are released for the next round. Its
+    /// run timeout (or the host's stop) ends it sooner.
+    /// </summary>
+    public static readonly TimeSpan SendWindow = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// ARV-294: what a claim keeps beyond its round's last message: for the replicas' clocks to differ, for the moment between the
+    /// round's clock reading and its start, and for the last email's mark (its own connection and short transaction).
+    /// </summary>
+    public static readonly TimeSpan ClockMargin = TimeSpan.FromMinutes(1);
+
+    #endregion
+
+    #region Fields
+
+    private TimeSpan _window = SendWindow;
+
+    #endregion
+
+    #region Properties
+
+    /// <summary>The send window of this round's sender: <see cref="SendWindow"/>, or shorter when a test sets it (a longer value is clamped to it).</summary>
+    internal TimeSpan Window
+    {
+        get => _window;
+        set => _window = value < SendWindow ? value : SendWindow;
+    }
 
     private IStorageProvider Storage => unitOfWork.StorageProvider;
 
+    #endregion
+
+    #region Methods
+
+    /// <summary>
+    /// ARV-294: how long a round's claim holds its emails: the send window from the round's start (the claim's own time within it), then
+    /// the longest the message begun last may take (<see cref="MailKitTransport.ExchangesPerMessage"/> exchanges at
+    /// <c>Email:Smtp:TimeoutSeconds</c>), then the margin for the clocks, the round's start and the last mark (<see cref="ClockMargin"/>).
+    /// Nine minutes at the defaults, 36 at an SMTP timeout of 300 s: an email whose round's host was lost waits this long to be sent again.
+    /// </summary>
+    public static TimeSpan ClaimLength(SmtpSettings smtp)
+    {
+        ArgumentNullException.ThrowIfNull(smtp);
+        return SendWindow + TimeSpan.FromSeconds(MailKitTransport.ExchangesPerMessage * smtp.TimeoutSeconds) + ClockMargin;
+    }
+
     public async Task<EmailRound> SendDueAsync(DateTime now, CancellationToken ct)
+    {
+        // The window runs from here, before the claim: the time the claim takes (a connection from the pool, its statements) comes out
+        // of the window, never out of the claim's margin (CWE-362, the security review's R1).
+        var started = Stopwatch.GetTimestamp();
+        var claim = await ClaimAsync(now, ct);
+        if (claim.Emails.Count == 0)
+            return new EmailRound(0, 0, 0, claim.Withheld);
+
+        var tally = new Tally();
+        var left = Window - Stopwatch.GetElapsedTime(started);
+        if (left <= TimeSpan.Zero)
+        {
+            // The claim committed after the window: no message is begun, each email released as it was, for the next round.
+            foreach (var email in claim.Emails)
+                await ReleaseAsync(email, tally);
+            logger.LogWarning("Email round: its claim committed after the send window; {Released} emails released for the next round", claim.Emails.Count);
+            return new EmailRound(0, 0, 0, claim.Withheld, tally.Unmarked);
+        }
+
+        // Outside any transaction: the claim is committed, so the relay's pace holds no row, no lock and no connection.
+        var decided = new HashSet<Guid>();
+        using var window = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        window.CancelAfter(left);
+        var outgoing = claim.Emails.Select(e => new OutgoingEmail(e.Id, e.Recipient, e.Subject, e.Body)).ToList();
+        // Each email is marked as soon as the relay has answered for it, so a host lost during the batch sends again only the one in
+        // flight. A transport that throws (the host stopping in the middle) leaves the rest claimed until their claim runs out.
+        var batch = await transport.SendAsync(outgoing, new EmailSendOptions
+        {
+            Outcome = async (id, failure) =>
+            {
+                if (decided.Add(id))
+                    await MarkAsync(claim.Of(id), failure, now, tally);
+            }
+        }, window.Token);
+
+        foreach (var email in claim.Emails.Where(e => !decided.Contains(e.Id)))
+        {
+            // ARV-096e: a round cut before this email stopped between messages; it is released as it was, no attempt counted.
+            if (batch.NotTried.Contains(email.Id))
+                await ReleaseAsync(email, tally);
+            else
+                await MarkAsync(email, batch.Failures.GetValueOrDefault(email.Id), now, tally);
+        }
+
+        if (tally.Unmarked > 0)
+            logger.LogWarning("Email round: {Unmarked} emails the relay answered for could not be marked; each is sent again once its claim runs out", tally.Unmarked);
+        return new EmailRound(tally.Sent, tally.Failed, tally.Retrying, claim.Withheld, tally.Unmarked);
+    }
+
+    /// <summary>
+    /// The claim, in one short transaction under the round lock: the per-minute room, the due emails (held back when their recipient
+    /// may no longer be told), each claimed, committed before anything is sent. Statements only: nothing inside it waits on other work.
+    /// </summary>
+    private async Task<Claimed> ClaimAsync(DateTime now, CancellationToken ct)
     {
         if (!Storage.IsTransactionActive())
             await Storage.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
-        var locked = await Storage.ExecuteSqlAsync<LockRow>("""SELECT pg_try_advisory_xact_lock(:key) AS "Taken" """,
-            new Dictionary<string, object> { ["key"] = RoundLock }, ct);
-        if (!locked.Single().Taken)
-            return new EmailRound(0, 0, 0);
-        var minuteAgo = now.AddMinutes(-1);
-        var sentLastMinute = await Storage.Query<EmailMessage>().CountAsync(m => m.Status == EmailStatus.Sent && m.SentUtc > minuteAgo && m.SentUtc <= now, ct);
-        var budget = Math.Min(100, settings.MaxPerMinute - sentLastMinute);
-        if (budget <= 0)
-            return new EmailRound(0, 0, 0);
+        try
+        {
+            var locked = await Storage.ExecuteSqlAsync<LockRow>("""SELECT pg_try_advisory_xact_lock(:key) AS "Taken" """,
+                new Dictionary<string, object> { ["key"] = RoundLock }, ct);
+            if (!locked.Single().Taken)
+                return await NothingAsync();
+            var minuteAgo = now.AddMinutes(-1);
+            var length = ClaimLength(smtp);
+            var latest = now + length;
+            var sentLastMinute = await Storage.Query<EmailMessage>().CountAsync(m => m.Status == EmailStatus.Sent && m.SentUtc > minuteAgo && m.SentUtc <= now, ct);
+            // Held by rounds still sending (another replica's, or this one's before a restart): they count until marked or run out. A
+            // claim further ahead than any round takes is not counted, so a planted row cannot hold the limit down (CWE-501).
+            var inFlight = await Storage.Query<EmailMessage>().CountAsync(m => m.Status == EmailStatus.Pending && m.Reason == EmailMessage.ClaimedReason &&
+                m.NextAttemptUtc > now && m.NextAttemptUtc <= latest, ct);
+            var budget = Math.Min(MaxPerRound, settings.MaxPerMinute - sentLastMinute - inFlight);
+            if (budget <= 0)
+                return await NothingAsync();
 
-        // Claimed with whether the recipient may still be told: the same people the email was written for.
-        var due = await Storage.ExecuteSqlAsync<DueRow>("""
-            SELECT m.id AS "Id", EXISTS (
-                SELECT 1 FROM "user" u
-                JOIN user_role r ON r.user_id = u.id
-                LEFT JOIN user_site s ON s.user_id = u.id AND s.site_code = a.site_code
-                WHERE lower(u.email) = lower(m.recipient) AND NOT u.is_disabled AND NOT u.is_break_glass AND (u.all_sites OR s.site_code IS NOT NULL)
-                  AND ((m.kind = 'AlertRaised' AND (r.role_code = a.owner_role
-                        OR (a.owner_role IS NULL AND r.role_code IN ('BorderShiftSupervisor', 'TerminalDutyManager', 'HandlerStationManager'))))
-                    OR (m.kind = 'AlertEscalated' AND r.role_code = a.escalate_to_role))
-                  AND (a.metric NOT IN (:borderMetrics) OR r.role_code IN (:borderRoles))) AS "Eligible"
-            FROM email_message m JOIN alert a ON a.id = m.alert_id
-            WHERE m.status = 'Pending' AND m.next_attempt_utc <= :now
-            ORDER BY m.created_utc LIMIT :limit FOR UPDATE OF m SKIP LOCKED
-            """, new Dictionary<string, object>
-        {
-            ["now"] = now,
-            ["limit"] = budget,
-            ["borderMetrics"] = BorderAlerts.MetricNames,
-            ["borderRoles"] = BorderAlerts.Roles
-        }, ct);
-        if (due.Count == 0)
-            return new EmailRound(0, 0, 0);
-        var emails = new List<EmailMessage>();
-        var withheld = 0;
-        foreach (var row in due)
-        {
-            if (await Storage.GetAsync<EmailMessage>(row.Id, ct) is not { Status: EmailStatus.Pending } email)
-                continue;
-            if (row.Eligible)
+            // Claimed with whether the recipient may still be told: the same people the email was written for.
+            var due = await Storage.ExecuteSqlAsync<DueRow>("""
+                SELECT m.id AS "Id", EXISTS (
+                    SELECT 1 FROM "user" u
+                    JOIN user_role r ON r.user_id = u.id
+                    LEFT JOIN user_site s ON s.user_id = u.id AND s.site_code = a.site_code
+                    WHERE lower(u.email) = lower(m.recipient) AND NOT u.is_disabled AND NOT u.is_break_glass AND (u.all_sites OR s.site_code IS NOT NULL)
+                      AND ((m.kind = 'AlertRaised' AND (r.role_code = a.owner_role
+                            OR (a.owner_role IS NULL AND r.role_code IN ('BorderShiftSupervisor', 'TerminalDutyManager', 'HandlerStationManager'))))
+                        OR (m.kind = 'AlertEscalated' AND r.role_code = a.escalate_to_role))
+                      AND (a.metric NOT IN (:borderMetrics) OR r.role_code IN (:borderRoles))) AS "Eligible"
+                FROM email_message m JOIN alert a ON a.id = m.alert_id
+                WHERE m.status = 'Pending' AND m.next_attempt_utc <= :now
+                ORDER BY m.created_utc LIMIT :limit FOR UPDATE OF m SKIP LOCKED
+                """, new Dictionary<string, object>
             {
-                emails.Add(email);
-            }
-            else
-            {
-                email.Suppress("The recipient no longer holds the role, the site or an enabled account with this address.");
-                withheld++;
-            }
-        }
+                ["now"] = now,
+                ["limit"] = budget,
+                ["borderMetrics"] = BorderAlerts.MetricNames,
+                ["borderRoles"] = BorderAlerts.Roles
+            }, ct);
+            if (due.Count == 0)
+                return await NothingAsync();
 
-        var batch = emails.Count == 0
-            ? EmailBatch.Tried(new Dictionary<Guid, string>())
-            : await transport.SendAsync([.. emails.Select(e => new OutgoingEmail(e.Id!.Value, e.Recipient, e.Subject, e.Body))], ct);
-        int sent = 0, failed = 0, retrying = 0;
-        foreach (var email in emails)
-        {
-            // ARV-096e: a round cut before this email stopped between messages; it stays Pending, no attempt counted.
-            if (batch.NotTried.Contains(email.Id!.Value))
-                continue;
-            if (batch.Failures.TryGetValue(email.Id!.Value, out var reason))
+            // Whole seconds, so the claim reads back from the database exactly as it was written (it names the claim in each mark).
+            var claimedUntil = new DateTime(latest.Ticks - (latest.Ticks % TimeSpan.TicksPerSecond), DateTimeKind.Utc);
+            var emails = new List<ClaimedEmail>();
+            var withheld = 0;
+            foreach (var row in due)
             {
-                email.Failed(reason, now, settings.MaxAttempts);
-                if (email.Status == EmailStatus.Failed)
-                    failed++;
+                if (await Storage.GetAsync<EmailMessage>(row.Id, ct) is not { Status: EmailStatus.Pending } email)
+                    continue;
+                if (row.Eligible)
+                {
+                    // A claim that ran out (its round's host lost) left its own reason: nothing to give back on a release.
+                    var reason = string.Equals(email.Reason, EmailMessage.ClaimedReason, StringComparison.Ordinal) ? null : email.Reason;
+                    emails.Add(new ClaimedEmail(email.Id.Value, email.Recipient, email.Subject, email.Body, claimedUntil, email.NextAttemptUtc, reason));
+                    email.Claim(claimedUntil);
+                }
                 else
-                    retrying++;
+                {
+                    email.Suppress("The recipient no longer holds the role, the site or an enabled account with this address.");
+                    withheld++;
+                }
             }
-            else
+
+            unitOfWork.PromiseToCommit();
+            await unitOfWork.EndAsync(CancellationToken.None);
+            return new Claimed(emails, withheld);
+        }
+        catch
+        {
+            await unitOfWork.RollbackAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    private async Task<Claimed> NothingAsync()
+    {
+        await unitOfWork.RollbackAsync(CancellationToken.None);
+        return new Claimed([], 0);
+    }
+
+    /// <summary>The outcome of one email, in a scope and transaction of its own, while its round's claim still holds it.</summary>
+    private Task MarkAsync(ClaimedEmail email, string failure, DateTime now, Tally tally) =>
+        WithinClaimAsync(email, message =>
+        {
+            if (failure is null)
             {
-                email.Sent(now);
-                sent++;
+                message.Sent(now);
+                tally.Sent++;
+                return;
+            }
+
+            message.Failed(failure, now, settings.MaxAttempts);
+            if (message.Status == EmailStatus.Failed)
+                tally.Failed++;
+            else
+                tally.Retrying++;
+        }, tally);
+
+    /// <summary>An email the round did not try: due again as before its claim, its reason as it was, no attempt counted.</summary>
+    private Task ReleaseAsync(ClaimedEmail email, Tally tally) =>
+        WithinClaimAsync(email, message => message.Release(email.DueUtc, email.Reason), tally);
+
+    /// <summary>
+    /// One short transaction: the row locked while it is still pending and held by this claim, the change, the commit. Whatever the
+    /// round's token says (the relay has answered), bounded by the command timeout. A claim that no longer holds the row, or a
+    /// transaction that fails, leaves the email as it is and counts it unmarked.
+    /// </summary>
+    private async Task WithinClaimAsync(ClaimedEmail email, Action<EmailMessage> change, Tally tally)
+    {
+        try
+        {
+            await using var scope = scopes.CreateAsyncScope();
+            var work = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            try
+            {
+                var storage = work.StorageProvider;
+                await storage.BeginTransactionAsync(IsolationLevel.ReadCommitted, CancellationToken.None);
+                var held = await storage.ExecuteSqlAsync<IdRow>("""
+                    SELECT id AS "Id" FROM email_message WHERE id = :id AND status = 'Pending' AND next_attempt_utc = :until AND reason = :claimed FOR UPDATE
+                    """, new Dictionary<string, object> { ["id"] = email.Id, ["until"] = email.ClaimedUntil, ["claimed"] = EmailMessage.ClaimedReason },
+                    CancellationToken.None);
+                var message = held.Count == 1 ? await storage.GetAsync<EmailMessage>(email.Id, CancellationToken.None) : null;
+                if (message is null || !message.IsClaimedUntil(email.ClaimedUntil))
+                {
+                    await work.RollbackAsync(CancellationToken.None);
+                    logger.LogWarning("Email {EmailId}: its claim no longer holds it, so its outcome is not recorded", email.Id);
+                    tally.Unmarked++;
+                    return;
+                }
+
+                change(message);
+                work.PromiseToCommit();
+                await work.EndAsync(CancellationToken.None);
+            }
+            catch
+            {
+                await work.RollbackAsync(CancellationToken.None);
+                throw;
             }
         }
+#pragma warning disable CA1031 // a mark that fails is logged; the email stays claimed and is sent again once its claim runs out
+        catch (Exception e)
+#pragma warning restore CA1031
+        {
+            logger.LogError(e, "Email {EmailId}: its outcome could not be recorded; it is sent again once its claim runs out", email.Id);
+            tally.Unmarked++;
+        }
+    }
 
-        // What the relay accepted is recorded even when the round was cut meanwhile, so it is never sent again (ARV-096e).
-        await Storage.FlushAsync(CancellationToken.None);
-        unitOfWork.PromiseToCommit();
-        return new EmailRound(sent, failed, retrying, withheld);
+    #endregion
+
+    /// <summary>What the claim took: the emails to send, each with its claim and what it was before, and how many it held back.</summary>
+    private sealed record Claimed(IReadOnlyList<ClaimedEmail> Emails, int Withheld)
+    {
+        public ClaimedEmail Of(Guid id) => Emails.First(e => e.Id == id);
+    }
+
+    /// <summary>A claimed email: what goes on the wire, its claim, and when it was due and why before it (to release it as it was).</summary>
+    private sealed record ClaimedEmail(Guid Id, string Recipient, string Subject, string Body, DateTime ClaimedUntil, DateTime DueUtc, string Reason);
+
+    private sealed class Tally
+    {
+        public int Sent { get; set; }
+        public int Failed { get; set; }
+        public int Retrying { get; set; }
+        public int Unmarked { get; set; }
     }
 
     private sealed class LockRow
@@ -226,12 +432,17 @@ public sealed class EmailSender(IUnitOfWork unitOfWork, IEmailTransport transpor
         public Guid Id { get; set; }
         public bool Eligible { get; set; }
     }
+
+    private sealed class IdRow
+    {
+        public Guid Id { get; set; }
+    }
 }
 
 /// <summary>
 /// Sends due emails every <see cref="EmailSettings.PollSeconds"/> in Ariva.Api.Integration. A round ends at
-/// <see cref="RunTimeout"/> (ARV-096e) between messages: the message the relay is taking is finished, the emails it accepted are
-/// committed as sent and the rest stay pending for the next round, so a cut never sends an email twice.
+/// <see cref="RunTimeout"/> (ARV-096e) between messages: the message the relay is taking is finished, each email it accepted is
+/// marked sent in a transaction of its own (ARV-294) and the rest are released for the next round, so a cut never sends an email twice.
 /// </summary>
 public sealed class EmailSenderWorker(IServiceScopeFactory scopes, EmailSettings settings, TimeProvider timeProvider, ILogger<EmailSenderWorker> logger)
     : BackgroundService, IBoundedRuns
@@ -239,7 +450,7 @@ public sealed class EmailSenderWorker(IServiceScopeFactory scopes, EmailSettings
     /// <summary>Ten minutes: a slow relay's round is cut between messages and goes on in the next round from what is left.</summary>
     public TimeSpan RunTimeout { get; init; } = DefaultRunTimeout;
 
-    /// <summary>The run timeout a host runs with (ARV-292: its idle transaction budget counts it, <see cref="Settings.IdleTransactionBudget"/>).</summary>
+    /// <summary>The run timeout a host runs with. Since ARV-294 no transaction of the round is open while it sends (<see cref="EmailSender"/>).</summary>
     public static readonly TimeSpan DefaultRunTimeout = TimeSpan.FromMinutes(10);
 
     /// <summary>One round under the run timeout (tests).</summary>
@@ -249,8 +460,9 @@ public sealed class EmailSenderWorker(IServiceScopeFactory scopes, EmailSettings
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         try
         {
+            // ARV-294: the round commits its claim and each mark itself, each mark whatever the run's token says (ARV-096e); this ends
+            // what is left of the scope's unit of work (nothing to commit).
             var round = await scope.ServiceProvider.GetRequiredService<EmailSender>().SendDueAsync(timeProvider.GetUtcNow().UtcDateTime, ct);
-            // Committed whatever the run's token says: the emails the relay accepted must be recorded as sent (ARV-096e).
             await unitOfWork.EndAsync(CancellationToken.None);
             return round;
         }
@@ -269,9 +481,9 @@ public sealed class EmailSenderWorker(IServiceScopeFactory scopes, EmailSettings
             try
             {
                 var round = await RunOnceAsync(stoppingToken);
-                if (round.Failed + round.Retrying + round.Withheld > 0)
-                    logger.LogWarning("Email round: {Sent} sent, {Retrying} to retry, {Failed} given up, {Withheld} held back", round.Sent, round.Retrying, round.Failed,
-                        round.Withheld);
+                if (round.Failed + round.Retrying + round.Withheld + round.Unmarked > 0)
+                    logger.LogWarning("Email round: {Sent} sent, {Retrying} to retry, {Failed} given up, {Withheld} held back, {Unmarked} not marked", round.Sent,
+                        round.Retrying, round.Failed, round.Withheld, round.Unmarked);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

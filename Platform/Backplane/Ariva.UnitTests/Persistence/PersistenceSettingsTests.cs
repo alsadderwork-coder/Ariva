@@ -319,67 +319,157 @@ public sealed class PersistenceSettingsTests
     [InlineData(0, false)]
     public void IdleInTransactionTimeout_Should_BeRefusedOutsideItsBounds_When_Configured(int seconds, bool valid)
     {
-        // ARV-292: the runtime login's limit on a session idle in a transaction, set on the login by the migration job; 960 s by default.
+        // ARV-292: the runtime login's limit on a session idle in a transaction, set on the login by the migration job; ARV-294: 300 s by
+        // default (960 s before), the lowest the bounds allow.
         var check = new DatabaseSettings { IdleInTransactionTimeoutSeconds = seconds }.EnsureValidLimits;
 
         if (valid)
             check.Should().NotThrow();
         else
             check.Should().Throw<InvalidOperationException>().WithMessage("Database:IdleInTransactionTimeoutSeconds is a whole number of seconds from 300 to 7,200 (ARV-292).");
-        new DatabaseSettings().IdleInTransactionTimeoutSeconds.Should().Be(960);
+        new DatabaseSettings().IdleInTransactionTimeoutSeconds.Should().Be(300).And.Be(DatabaseSettings.MinIdleInTransactionTimeoutSeconds);
+    }
+
+    /// <summary>Every setting a wait of <see cref="IdleTransactionBudget"/> reads, at the greatest value its bounds allow, or the transfers' and the relay's, which no wait reads any more.</summary>
+    private static IConfiguration Maxima(string limit = null)
+    {
+        var values = new Dictionary<string, string>
+        {
+            ["Database:CommandTimeoutSeconds"] = DatabaseSettings.MaxCommandTimeoutSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Database:ConnectTimeoutSeconds"] = DatabaseSettings.MaxConnectTimeoutSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Kafka:Outbox:PassSeconds"] = Ariva.Infra.Messaging.OutboxRelaySettings.MaxPassSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Kafka:Consumers:HandlerTimeoutSeconds"] = Ariva.Infra.Messaging.ConsumerSettings.MaxHandlerTimeoutSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Email:Smtp:TimeoutSeconds"] = "300",
+            ["Security:RequestTimeouts:TransferSeconds"] = "3600"
+        };
+        if (limit is not null)
+            values["Database:IdleInTransactionTimeoutSeconds"] = limit;
+        return new ConfigurationBuilder().AddInMemoryCollection(values).Build();
     }
 
     [Fact]
     public void IdleTransactionBudget_Should_StayBelowTheDefaultLimit_When_EveryWaitTakesItsDefault()
     {
-        // ARV-292: the inventory's waits at their settings' defaults, the longest a request on a transfer endpoint (900 s) and an
-        // alert email round sending its batch inside its claim (600 + 6 x 30 = 780 s); the default limit is above every one.
+        // ARV-294: the inventory's waits at their settings' defaults: a report's send within its budget (180 s), a staffing pass's inputs
+        // within theirs and one connection (120 + 15), an alert evaluation tick (120 + 15 + 6), an outbox pass (60 + 4), a consumer (70 + 15),
+        // a key ring load that creates a key (three calls of 15 + 30) and a display stale sweep (60 + 6); the default limit (300 s) is
+        // above every one.
         var budget = IdleTransactionBudget.FromConfiguration(new ConfigurationBuilder().Build(), new DatabaseSettings());
 
-        budget.Waits.Select(wait => wait.Seconds).Should().Equal(900, 780, 450, 255, 141, 64, 70);
-        budget.Longest.Seconds.Should().Be(900);
+        budget.Waits.Select(wait => wait.Seconds).Should().Equal(180, 135, 141, 64, 85, 135, 66);
+        budget.Longest.Seconds.Should().Be(180);
+        budget.Longest.What.Should().Be("a scheduled report's send, its delivery row and the report slot held");
         budget.ProblemWith(new DatabaseSettings().IdleInTransactionTimeoutSeconds).Should().BeNull();
-        IdleTransactionBudget.DefaultTransferSeconds.Should().Be(new Ariva.Api.Common.Settings.RequestTimeoutsSettings().TransferSeconds, "the budget reads the same default");
-        IdleTransactionBudget.TransferSecondsKey.Should().Be(Ariva.Api.Common.Settings.RequestTimeoutsSettings.SectionName + ":TransferSeconds");
+    }
+
+    [Fact]
+    public void IdleTransactionBudget_Should_KeepEveryWaitWithin240Seconds_When_EverySettingIsAtItsMaximum()
+    {
+        // ARV-294: recomputed at every setting's maximum (command 300 s, connection 60 s, outbox pass 120 s, consumer 120 s, the relay's
+        // 300 s and the transfers' 3,600 s, which no wait reads now): the report's 180 s, the staffing pass's 120 + 60, the alert
+        // evaluation's 120 + 60 + 6, the outbox's 120 + 4, the consumer's 120 + 60, a key ring load's three calls of 50 + 30 (the
+        // security review's R4: each connection opens within 50 s) and the sweep's 66. Before ARV-294 the same settings gave 3,600 s (a transfer), 2,400 s (an email round),
+        // 4,500 s (a report), 2,460 s (staffing) and 1,080 s (a key ring load, three calls of 60 + 300).
+        var configuration = Maxima();
+        var budget = IdleTransactionBudget.FromConfiguration(configuration, DatabaseSettings.FromConfiguration(configuration));
+
+        budget.Waits.Select(wait => wait.Seconds).Should().Equal(180, 180, 186, 124, 180, 240, 66);
+        budget.Waits.Should().OnlyContain(wait => wait.Seconds <= IdleTransactionBudget.MaxWaitSeconds);
+        budget.Longest.Seconds.Should().Be(240).And.BeLessThan(DatabaseSettings.MinIdleInTransactionTimeoutSeconds);
+        budget.Longest.What.Should().Be("a Data Protection key ring load inside a transaction (read, store a new key, read again)");
+        IdleTransactionBudget.MaxWaitSeconds.Should().BeLessThan(DatabaseSettings.MinIdleInTransactionTimeoutSeconds);
+        budget.ProblemWith(DatabaseSettings.MinIdleInTransactionTimeoutSeconds).Should().BeNull("the lowest limit covers every value the settings allow");
+    }
+
+    [Fact]
+    public void IdleTransactionBudget_Should_HoldEachBoundToTheCodeThatSetsIt_When_Computed()
+    {
+        // ARV-294: the fixed parts of the waits are the code's own bounds, each at most the 240 s with the longest connection open.
+        Ariva.Infra.Services.Reports.ReportSendBudget.DefaultSeconds.Should().Be(180).And.BeLessThanOrEqualTo(IdleTransactionBudget.MaxWaitSeconds);
+        Ariva.Infra.Services.Reports.ReportSendBudget.Default.Total.Should().Be(TimeSpan.FromSeconds(180));
+        (Ariva.Infra.Staffing.StaffingRecommendations.InputBudgetSeconds + DatabaseSettings.MaxConnectTimeoutSeconds).Should().BeLessThanOrEqualTo(IdleTransactionBudget.MaxWaitSeconds);
+        IdleTransactionBudget.RedisOperationSeconds.Should().Be((int)Ariva.Infra.Live.RedisLiveSnapshots.OperationTimeout.TotalSeconds);
+        Ariva.Infra.Services.Displays.DisplayStaleMonitor.DefaultRunTimeout.Should().Be(TimeSpan.FromMinutes(1));
+        Ariva.Infra.Alerting.AlertEvaluationWorker.DefaultRunTimeout.Should().Be(TimeSpan.FromMinutes(2));
+        Ariva.Infra.DataProtection.PostgresXmlRepository.KeyRingCommandSeconds.Should().Be(30);
+        Ariva.Infra.DataProtection.PostgresXmlRepository.KeyRingConnectSeconds.Should().Be(50);
+        Ariva.Infra.DataProtection.PostgresXmlRepository.CommandTimeoutSeconds(new DatabaseSettings { CommandTimeoutSeconds = 300 }).Should().Be(30);
+        Ariva.Infra.DataProtection.PostgresXmlRepository.CommandTimeoutSeconds(new DatabaseSettings()).Should().Be(30, "the shipped default, unchanged");
+        Ariva.Infra.DataProtection.PostgresXmlRepository.CommandTimeoutSeconds(new DatabaseSettings { CommandTimeoutSeconds = 10 }).Should().Be(10, "a shorter command timeout stays as it is");
+        Ariva.Infra.DataProtection.PostgresXmlRepository.ConnectTimeoutSeconds(new DatabaseSettings { ConnectTimeoutSeconds = 60 }).Should().Be(50);
+        Ariva.Infra.DataProtection.PostgresXmlRepository.ConnectTimeoutSeconds(new DatabaseSettings()).Should().Be(15, "the shipped default, unchanged");
+        new DatabaseSettings().ConnectTimeoutSeconds.Should().BeLessThan(Ariva.Infra.DataProtection.PostgresXmlRepository.KeyRingConnectSeconds);
+        (IdleTransactionBudget.KeyRingLoadCalls * (Ariva.Infra.DataProtection.PostgresXmlRepository.KeyRingConnectSeconds + Ariva.Infra.DataProtection.PostgresXmlRepository.KeyRingCommandSeconds))
+            .Should().BeLessThanOrEqualTo(IdleTransactionBudget.MaxWaitSeconds, "a key ring load that creates a key: read, store, read again");
     }
 
     [Theory]
-    [InlineData("Email:Smtp:TimeoutSeconds", "60", "an alert email round, its batch sent inside its claim, 960 s from Email:Smtp:TimeoutSeconds")]
-    [InlineData("Security:RequestTimeouts:TransferSeconds", "1200", "a request on a transfer endpoint (an upload, a site configuration import or export), 1,200 s from Security:RequestTimeouts:TransferSeconds")]
-    [InlineData("Database:CommandTimeoutSeconds", "119", "a staffing pass reading its inputs on a second connection, 967 s from Database:CommandTimeoutSeconds")]
-    [InlineData("Kafka:Outbox:PassSeconds", "120", null)]
-    [InlineData("Kafka:Consumers:HandlerTimeoutSeconds", "120", null)]
-    public void AddArivaPersistence_Should_RefuseToStart_When_AWaitOfTheHostCouldPassTheIdleLimit(string key, string value, string named)
+    [InlineData("Email:Smtp:TimeoutSeconds", "300")]
+    [InlineData("Security:RequestTimeouts:TransferSeconds", "3600")]
+    [InlineData("Database:CommandTimeoutSeconds", "300")]
+    [InlineData("Database:ConnectTimeoutSeconds", "60")]
+    [InlineData("Kafka:Outbox:PassSeconds", "120")]
+    [InlineData("Kafka:Consumers:HandlerTimeoutSeconds", "120")]
+    public void AddArivaPersistence_Should_StartAtTheDefaultLimit_When_ASettingIsAtItsMaximum(string key, string value)
     {
-        // ARV-292: a host whose own settings allow a transaction to wait longer than the server would let it stay idle stops at start,
-        // naming the wait and its setting; the Kafka bounds' maxima (124 s, 120 s) stay below the lowest limit (300 s).
+        // ARV-294: before it, the email round at an SMTP timeout of 60 s, a transfer of 1,200 s or a command timeout of 119 s refused to
+        // start under the 960 s limit; now no value of any of them makes a wait pass 240 s, so every host starts at 300 s.
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string> { [key] = value }).Build();
 
         var add = () => new ServiceCollection().AddArivaPersistence(configuration);
 
-        if (named is null)
-        {
-            add.Should().NotThrow();
-            IdleTransactionBudget.FromConfiguration(configuration, new DatabaseSettings()).Waits.Select(wait => wait.Seconds).Should().Contain(key.EndsWith("PassSeconds", StringComparison.Ordinal) ? 124 : 120,
-                "the budget reads the Kafka setting it names");
-        }
-        else
-            add.Should().Throw<InvalidOperationException>().WithMessage($"Database:IdleInTransactionTimeoutSeconds (960 s) must be above the longest a transaction of this host may wait on other work: {named} (ARV-292).*");
+        add.Should().NotThrow();
     }
 
     [Fact]
-    public void AddArivaPersistence_Should_Start_When_TheLimitIsRaisedAboveALongerWait()
+    public void AddArivaPersistence_Should_StartAndRegisterTheBudgetAndTheGate_When_EverySettingIsAtItsMaximum()
     {
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+        var services = new ServiceCollection();
+
+        services.AddArivaPersistence(Maxima(limit: "300"));
+
+        services.Should().ContainSingle(d => d.ServiceType == typeof(IdleTransactionBudget)).Which.ImplementationInstance.Should().BeOfType<IdleTransactionBudget>()
+            .Which.Longest.Seconds.Should().Be(240, "the host's own budget, from its settings");
+        services.Should().ContainSingle(d => d.ServiceType == typeof(Microsoft.Extensions.Hosting.IHostedService) && d.ImplementationType == typeof(Ariva.Infra.Timescale.IdleTransactionLimitGate));
+    }
+
+    [Theory]
+    [InlineData(15, false)]
+    [InlineData(50, false)]
+    [InlineData(51, true)]
+    [InlineData(60, true)]
+    public void KeyRingConnectionString_Should_BeTheHostsOwnUnlessItsConnectTimeoutPassesTheBound_When_Built(int connectSeconds, bool bounded)
+    {
+        // ARV-294 (the sign-in freeze): at the shipped connection timeout (15 s) and up to 50 s the key ring uses the hosts' connection
+        // string itself, so the same pool and nothing changes; above it only the connection timeout is bounded, to 50 s.
+        var settings = new DatabaseSettings { ConnectTimeoutSeconds = connectSeconds };
+
+        var keyRing = Ariva.Infra.DataProtection.PostgresXmlRepository.KeyRingConnectionString(settings);
+
+        var built = new NpgsqlConnectionStringBuilder(keyRing);
+        built.Timeout.Should().Be(Math.Min(connectSeconds, 50));
+        if (bounded)
         {
-            ["Email:Smtp:TimeoutSeconds"] = "300",
-            ["Security:RequestTimeouts:TransferSeconds"] = "3600",
-            ["Database:IdleInTransactionTimeoutSeconds"] = "7200"
-        }).Build();
+            built.Remove("Timeout");
+            var hosts = new NpgsqlConnectionStringBuilder(settings.BuildConnectionString());
+            hosts.Remove("Timeout");
+            built.ConnectionString.Should().Be(hosts.ConnectionString, "only the connection timeout differs");
+        }
+        else
+        {
+            keyRing.Should().Be(settings.BuildConnectionString(), "the hosts' own connection string, so the same pool");
+        }
+    }
 
-        var add = () => new ServiceCollection().AddArivaPersistence(configuration);
+    [Fact]
+    public void ProblemWith_Should_NameTheLongestWaitAndItsSetting_When_TheLimitIsNotAboveIt()
+    {
+        // The check AddArivaPersistence makes, should a wait come to pass a limit the bounds allow: it names the wait and its setting.
+        var configuration = Maxima();
+        var budget = IdleTransactionBudget.FromConfiguration(configuration, DatabaseSettings.FromConfiguration(configuration));
 
-        add.Should().NotThrow("600 + 6 x 300 = 2,400 s, a report's 15 x 300 = 4,500 s and the transfer's 3,600 s stay below 7,200 s: every value the settings allow can be covered");
+        budget.ProblemWith(240).Should().Be("Database:IdleInTransactionTimeoutSeconds (240 s) must be above the longest a transaction of this host may wait on other work: a Data Protection key ring load inside a transaction (read, store a new key, read again), 240 s from Database:ConnectTimeoutSeconds (ARV-292). Raise the limit or lower that setting.");
+        budget.ProblemWith(241).Should().BeNull();
     }
 
     [Fact]

@@ -26,11 +26,14 @@ public static class PersistenceExtensions
         EnsureProductionTransport(settings, configuration);
         // ARV-096d: a command or statement timeout out of range stops the host (and the migration job, which builds it) at start.
         settings.EnsureValidLimits();
-        // ARV-292: and an idle transaction limit that a wait this host's settings allow could pass.
-        var budget = IdleTransactionBudget.FromConfiguration(configuration, settings).ProblemWith(settings.IdleInTransactionTimeoutSeconds);
-        if (budget is not null)
-            throw new InvalidOperationException(budget);
+        // ARV-292: and an idle transaction limit that a wait this host's settings allow could pass (ARV-294: none passes 240 s, so the
+        // lowest limit, 300 s, covers every value the settings allow; this holds the next wait to it).
+        var budget = IdleTransactionBudget.FromConfiguration(configuration, settings);
+        var tooShort = budget.ProblemWith(settings.IdleInTransactionTimeoutSeconds);
+        if (tooShort is not null)
+            throw new InvalidOperationException(tooShort);
         services.AddSingleton(settings);
+        services.AddSingleton(budget);
         // ARV-104g1: the validation reader login (Database:ValidationReader), apart from the runtime login. Configured in the
         // clusters for api-main and the migration job only; held by the validation service, the migrator and the guard.
         services.AddSingleton(ValidationReaderSettings.FromConfiguration(configuration));
@@ -63,6 +66,8 @@ public static class PersistenceExtensions
             services.AddHostedService<DevelopmentMigrationService>();
         if (settings.VerifySchemaOnStartup)
             services.AddHostedService<SchemaVersionGate>();
+        // ARV-294: then the server's own idle transaction limit on the runtime login (SHOW), above this host's longest wait.
+        services.AddHostedService<IdleTransactionLimitGate>();
         // After the two above (hosted services start in order): a host refuses to start when the validation reader login is
         // misconfigured next to its own, or when its runtime login holds ariva_validation_reader (ARV-104g1, CWE-269).
         services.AddHostedService<ValidationReaderGuard>();

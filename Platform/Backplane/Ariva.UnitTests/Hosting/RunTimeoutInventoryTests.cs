@@ -39,6 +39,7 @@ public sealed class RunTimeoutInventoryTests
         ["Ariva.Infra.Timescale.DevelopmentMigrationService"] = "vm-local only: migrates at start, its scripts without a timeout by design (as the migration job)",
         ["Ariva.Infra.Timescale.SchemaVersionGate"] = "one read at start within the database command timeout",
         ["Ariva.Infra.Timescale.ValidationReaderGuard"] = "checks the validation reader's settings at start",
+        ["Ariva.Infra.Timescale.IdleTransactionLimitGate"] = "one SHOW at start within the database command timeout (ARV-294)",
         ["Ariva.Infra.Storage.UploadScanStartNotice"] = "writes one line at start",
         ["Ariva.Infra.Security.DevelopmentUserSeed"] = "vm-local only: seeds the development accounts at start",
         ["Ariva.Infra.Services.Seed.DemoSeedService"] = "demo only: seeds the demo topology once at start, a bounded number of attempts",

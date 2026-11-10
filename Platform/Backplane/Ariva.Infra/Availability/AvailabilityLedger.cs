@@ -26,7 +26,10 @@ public sealed record AvailabilitySitePass(int Minutes, int Available, int Unavai
 /// DO NOTHING: the first decision of a minute stands, so a second run or replica writes nothing twice).
 /// <para>
 /// Inputs are the database (the zone profile in force at each minute, the queue_minute rows, the site's calendar) and the
-/// live snapshots in Redis (<see cref="ILiveSnapshotStore"/>), read once per pass. No HTTP call to any host.
+/// live snapshots in Redis (<see cref="ILiveSnapshotStore"/>), read once per pass, before the pass's transaction begins and so
+/// before the site's lock (ARV-294, CWE-400: no transaction waits on Redis): the snapshots of every queue zone of the profiles in
+/// force over the live window, a superset of what the cursor leaves to decide. A zone of a profile published between that read and
+/// the lock has no snapshot in this pass and counts as stale, as when Redis has none. No HTTP call to any host.
 /// </para>
 /// <para>
 /// Order: minutes still in their live window are decided first, with Redis; the backlog behind the site's cursor (after
@@ -140,6 +143,12 @@ public sealed class AvailabilityLedger(DatabaseSettings database, ILiveSnapshotS
         var liveStart = AvailabilityRule.EarliestLive(now, settings);
 
         await using var connection = await OpenAsync(ct);
+        // ARV-294: Redis first, outside any transaction (a statement on its own, then the reads), once per pass; a failed read leaves the
+        // zones without a snapshot (stale), and is logged.
+        var (liveSnapshots, redisFailed) = redisDown || liveStart > latest
+            ? (new Dictionary<string, SnapshotTimes>(StringComparer.Ordinal), redisDown)
+            : await SnapshotsAsync((await ProfilesAsync(connection, null, siteCode, liveStart, latest + TimeSpan.FromMinutes(1), ct))
+                .SelectMany(p => p.ZoneKeys).Distinct(StringComparer.Ordinal), siteCode, ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
         var site = new NpgsqlParameter("site", siteCode);
         var locked = await ReadAsync(connection, transaction, "SELECT pg_try_advisory_xact_lock(50, hashtext(@site))", [site], r => r.GetBoolean(0), ct);
@@ -219,10 +228,9 @@ public sealed class AvailabilityLedger(DatabaseSettings database, ILiveSnapshotS
             }
         }
 
-        // Redis only for live minutes, once per pass; a failed read leaves the zones without a snapshot (stale), and is logged.
-        var (liveSnapshots, redisFailed) = live.Count > 0 && !redisDown
-            ? await SnapshotsAsync(profiles.Where(p => live.Any(p.InForce)).SelectMany(p => p.ZoneKeys).Distinct(StringComparer.Ordinal), siteCode, ct)
-            : ([], redisDown);
+        // The snapshots read before the lock serve the live minutes only; a pass without live minutes reports Redis as before.
+        if (live.Count == 0)
+            redisFailed = redisDown;
 
         var rowsToWrite = new List<LedgerRow>(all.Count);
         var liveSet = live.ToHashSet();

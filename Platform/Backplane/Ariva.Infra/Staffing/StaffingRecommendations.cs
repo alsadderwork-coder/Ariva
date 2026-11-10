@@ -45,6 +45,15 @@ public sealed class StaffingRecommendations(IServiceScopeFactory scopes, Databas
     /// <summary>The advisory lock class of a site's pass (two-key form; 25, 26, 37, 38, 41, 42, 49 and 50 are taken).</summary>
     public const int LockClass = 51;
 
+    /// <summary>
+    /// ARV-294 (CWE-400): the most a site's inputs may take to read, on their second connection, while the pass's transaction holds the
+    /// site's lock. The reads take 68 to 285 ms (ARV-124a); against a stalled database each statement would otherwise wait its own
+    /// command timeout (eight of them, up to 40 minutes at <c>Database:CommandTimeoutSeconds</c> 300). Past this the read is cancelled
+    /// and the site's pass fails, tried again by the next run; a connection being opened when it ends finishes within the connection
+    /// timeout first.
+    /// </summary>
+    public const int InputBudgetSeconds = 120;
+
     /// <summary>One run over the sites, in site code order.</summary>
     public async Task<StaffingRun> RunAsync(CancellationToken ct = default)
     {
@@ -119,9 +128,16 @@ public sealed class StaffingRecommendations(IServiceScopeFactory scopes, Databas
         await using (var scope = scopes.CreateAsyncScope())
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            // ARV-294: the inputs within their budget, so the lock's transaction never waits on them longer.
+            using var inputs = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            inputs.CancelAfter(TimeSpan.FromSeconds(InputBudgetSeconds));
             try
             {
-                read = await scope.ServiceProvider.GetRequiredService<StaffingInputs>().ReadAsync(siteCode, now, settings, ct);
+                read = await scope.ServiceProvider.GetRequiredService<StaffingInputs>().ReadAsync(siteCode, now, settings, inputs.Token);
+            }
+            catch (OperationCanceledException e) when (!ct.IsCancellationRequested && inputs.IsCancellationRequested)
+            {
+                throw new TimeoutException($"The staffing inputs of the site took longer than their budget of {InputBudgetSeconds} s (ARV-294).", e);
             }
             finally
             {

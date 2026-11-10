@@ -239,6 +239,39 @@ public interface IEmailTransport
     /// nor refused, to go in a later round.
     /// </summary>
     Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct);
+
+    /// <summary>
+    /// ARV-294: as above, with <paramref name="options"/>: each email's outcome reported as soon as the relay has answered for it
+    /// (<see cref="EmailSendOptions.Outcome"/>), and a total budget that ends the batch where it is, a message the relay is taking
+    /// included (<see cref="EmailSendOptions.Abort"/>). A transport without its own (a test's recorder) sends as above: no outcome
+    /// early, no budget.
+    /// </summary>
+    Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, EmailSendOptions options, CancellationToken ct) => SendAsync(emails, ct);
+}
+
+/// <summary>
+/// ARV-294 (CWE-400): how a batch is sent beyond the round's token. <see cref="Outcome"/> lets the alert email round mark each email in
+/// a short transaction of its own as soon as the relay answered for it; <see cref="Abort"/> is a scheduled report's total budget, so its
+/// transaction never waits on a slow relay for longer than that budget.
+/// </summary>
+public sealed record EmailSendOptions
+{
+    /// <summary>Neither an early outcome nor a budget.</summary>
+    public static readonly EmailSendOptions None = new();
+
+    /// <summary>
+    /// Called once for each email the batch decided, as soon as it is decided: with null when the relay took it, or with the reason it
+    /// was refused (the reason <see cref="EmailBatch.Failures"/> holds too). Never called for an email not tried.
+    /// </summary>
+    public Func<Guid, string, Task> Outcome { get; init; }
+
+    /// <summary>
+    /// Ends the batch where it is once cancelled, the message the relay is taking included (its connection is closed): that email and
+    /// every one after it are refused with <see cref="MailKitTransport.BudgetReason"/>, for a later round. A relay that took the cut
+    /// message just before its connection closed gets it again from that round (at least once). Unlike the round's token, which never
+    /// cuts a message once begun.
+    /// </summary>
+    public CancellationToken Abort { get; init; }
 }
 
 /// <summary>What a batch did: the emails refused, each with its reason, and those not tried; every other email was sent.</summary>
@@ -256,13 +289,35 @@ public sealed record EmailBatch(IReadOnlyDictionary<Guid, string> Failures, IRea
 /// </summary>
 public sealed class MailKitTransport(EmailSettings settings, SmtpSettings smtp) : IEmailTransport
 {
-    public async Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
+    /// <summary>
+    /// The SMTP exchanges one message can take once begun: MailKit bounds each network read or write by <c>Email:Smtp:TimeoutSeconds</c>,
+    /// not a whole send (the envelope, the data, its reply, then QUIT). The alert email round's claim outlasts them (ARV-294).
+    /// </summary>
+    public const int ExchangesPerMessage = 6;
+
+    /// <summary>ARV-294: the reason of an email the batch's budget ended (<see cref="EmailSendOptions.Abort"/>).</summary>
+    public const string BudgetReason = "SMTP send ended at its time budget.";
+
+    public Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct) => SendAsync(emails, EmailSendOptions.None, ct);
+
+    public async Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, EmailSendOptions options, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(emails);
+        ArgumentNullException.ThrowIfNull(options);
         var failures = new Dictionary<Guid, string>();
         var notTried = new HashSet<Guid>();
         if (emails.Count == 0)
             return new EmailBatch(failures, notTried);
+        var abort = options.Abort;
+
+        async Task Decide(Guid id, string failure)
+        {
+            if (failure is not null)
+                failures[id] = failure;
+            if (options.Outcome is { } outcome)
+                await outcome(id, failure);
+        }
+
         // ARV-226: a client whose handshake downloads no certificate and checks no revocation.
         using var client = new SmtpRelayClient { Timeout = smtp.TimeoutSeconds * 1000, CheckCertificateRevocation = false };
         var security = smtp.Security switch
@@ -271,22 +326,33 @@ public sealed class MailKitTransport(EmailSettings settings, SmtpSettings smtp) 
             "None" when smtp.AllowInsecure => SecureSocketOptions.None,
             _ => SecureSocketOptions.StartTls
         };
-        try
+        // The connection and its authentication end at the round's token or the budget, whichever comes first.
+        using (var opening = CancellationTokenSource.CreateLinkedTokenSource(ct, abort))
         {
-            await client.ConnectAsync(smtp.Host, smtp.Port, security, ct);
-            if (!string.IsNullOrEmpty(smtp.Username))
-                await client.AuthenticateAsync(smtp.Username, smtp.Password ?? string.Empty, ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            // Stopped before any message began: none was tried.
-            return new EmailBatch(failures, emails.Select(e => e.Id).ToHashSet());
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            foreach (var email in emails)
-                failures[email.Id] = "SMTP connection failed: " + e.GetType().Name;
-            return new EmailBatch(failures, notTried);
+            try
+            {
+                await client.ConnectAsync(smtp.Host, smtp.Port, security, opening.Token);
+                if (!string.IsNullOrEmpty(smtp.Username))
+                    await client.AuthenticateAsync(smtp.Username, smtp.Password ?? string.Empty, opening.Token);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Stopped before any message began: none was tried.
+                return new EmailBatch(failures, emails.Select(e => e.Id).ToHashSet());
+            }
+            catch (OperationCanceledException) when (abort.IsCancellationRequested)
+            {
+                // ARV-294: the budget ran out before any message began: each is refused, for a later round.
+                foreach (var email in emails)
+                    await Decide(email.Id, BudgetReason);
+                return new EmailBatch(failures, notTried);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                foreach (var email in emails)
+                    await Decide(email.Id, "SMTP connection failed: " + e.GetType().Name);
+                return new EmailBatch(failures, notTried);
+            }
         }
 
         foreach (var email in emails)
@@ -298,37 +364,53 @@ public sealed class MailKitTransport(EmailSettings settings, SmtpSettings smtp) 
                 continue;
             }
 
+            // ARV-294: the budget ended the batch; this email and the rest are refused, for a later round.
+            if (abort.IsCancellationRequested)
+            {
+                await Decide(email.Id, BudgetReason);
+                continue;
+            }
+
             if (!EmailAddresses.IsValid(email.Recipient))
             {
-                failures[email.Id] = "Recipient address is not valid.";
+                await Decide(email.Id, "Recipient address is not valid.");
                 continue;
             }
 
             // A broken connection fails the rest of the batch for a later round, never the emails already sent.
             if (!client.IsConnected)
             {
-                failures[email.Id] = "SMTP connection lost.";
+                await Decide(email.Id, "SMTP connection lost.");
                 continue;
             }
 
             using var message = Build(settings, email);
+            string failure = null;
             try
             {
-                // Finished once begun, within the SMTP timeout of each exchange (see IEmailTransport).
-                await client.SendAsync(message, CancellationToken.None);
+                // Finished once begun, within the SMTP timeout of each exchange (see IEmailTransport), unless the budget ends it.
+                await client.SendAsync(message, abort);
+            }
+            catch (OperationCanceledException) when (abort.IsCancellationRequested)
+            {
+                // ARV-294: cut by the budget, its connection closed: refused for a later round (a relay that took it just before gets it again).
+                failure = BudgetReason;
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
-                failures[email.Id] = "SMTP refused the message: " + e.GetType().Name;
+                failure = "SMTP refused the message: " + e.GetType().Name;
             }
+
+            await Decide(email.Id, failure);
         }
 
         try
         {
-            if (client.IsConnected)
-                await client.DisconnectAsync(true, CancellationToken.None);
+            // QUIT within the budget too; a client the budget cut is closed when it is disposed.
+            if (client.IsConnected && !abort.IsCancellationRequested)
+                await client.DisconnectAsync(true, abort);
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e) when (e is not OperationCanceledException || abort.IsCancellationRequested)
         {
             // Every email has its outcome; a failed QUIT changes none of them.
         }

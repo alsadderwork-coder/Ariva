@@ -1,49 +1,54 @@
 using System.Globalization;
 using Ariva.Infra.Alerting;
+using Ariva.Infra.DataProtection;
 using Ariva.Infra.Messaging;
-using Ariva.Infra.Notifications;
+using Ariva.Infra.Services.Displays;
+using Ariva.Infra.Services.Reports;
+using Ariva.Infra.Staffing;
 using Microsoft.Extensions.Configuration;
 
 namespace Ariva.Infra.Settings;
 
 /// <summary>
-/// ARV-292 (CWE-400): the longest a transaction of a host may stay idle on the server while the host waits on other work, from
-/// that host's own settings, and the check that the runtime login's limit (<see cref="DatabaseSettings.IdleInTransactionTimeoutSeconds"/>,
-/// idle_in_transaction_session_timeout) is above it, so the server never ends a transaction a host is still working through. The
-/// waits are the inventory in docs/security/costly-operations.md (the database timeouts row): every other transaction a host
-/// holds is idle between statements for milliseconds.
+/// ARV-292, ARV-294 (CWE-400): the longest each transaction of a host may stay idle on the server while the host waits on other work,
+/// from that host's own settings, and the check that the runtime login's limit (<see cref="DatabaseSettings.IdleInTransactionTimeoutSeconds"/>,
+/// idle_in_transaction_session_timeout) is above the longest, so the server never ends a transaction a host is still working through.
+/// Since ARV-294 no wait passes <see cref="MaxWaitSeconds"/> at any value its settings allow: the alert email round sends outside its
+/// claim, the uploads and the site configuration transfer do their file work outside their transactions, the CSV imports and the site
+/// configuration import write their own audit entries after their transactions end, the availability ledger reads Redis before its
+/// lock, and a report's send, a staffing pass's inputs and a Data Protection key ring load each have a bound of their own. The waits
+/// are the inventory in docs/security/costly-operations.md section 16: every other transaction a host holds is idle between statements
+/// for milliseconds. Each host checks its configured limit against these at composition (Ariva.Di) and the server's own at start
+/// (<see cref="Timescale.IdleTransactionLimitGate"/>).
 /// </summary>
 public sealed record IdleTransactionBudget(IReadOnlyList<IdleTransactionWait> Waits)
 {
     #region Constants
 
     /// <summary>
-    /// The SMTP exchanges one message can take inside a transaction: MailKit bounds each network read or write by
-    /// <c>Email:Smtp:TimeoutSeconds</c>, not a whole send (the envelope, the data, its reply, then QUIT).
+    /// ARV-294: the most any wait below may take at any value its settings allow (the unit tests compute each at the settings' maxima),
+    /// a minute below the lowest limit a host may set (<see cref="DatabaseSettings.MinIdleInTransactionTimeoutSeconds"/>).
     /// </summary>
-    public const int SmtpExchangesPerMessage = 6;
-
-    /// <summary>
-    /// The SMTP network reads of a scheduled report's send, each bounded by the SMTP timeout (MailKit bounds an operation, not a
-    /// send): connect, greeting, EHLO, STARTTLS, two for the TLS handshake, EHLO again, authentication, MAIL, RCPT, DATA, the final
-    /// reply and QUIT, with one to spare for the attachment's writes.
-    /// </summary>
-    public const int SmtpExchangesPerReport = 15;
+    public const int MaxWaitSeconds = 240;
 
     /// <summary>The statements a staffing pass reads on its second connection while its site lock's transaction waits.</summary>
     public const int StaffingInputStatements = 8;
 
-    /// <summary>One live notice publish to Redis after a rule's commit, inside the alert evaluation's lock unit.</summary>
-    public const int RedisPublishSeconds = 6;
+    /// <summary>One Redis call (<c>RedisLiveSnapshots.OperationTimeout</c>): a live notice after a rule's commit, a snapshot read.</summary>
+    public const int RedisOperationSeconds = 6;
 
     /// <summary>The outbox relay's broker probe within its pass.</summary>
     public const int OutboxProbeSeconds = 4;
 
-    /// <summary>The section and default of the transfer endpoints' request timeout (Ariva.Api.Common's RequestTimeoutsSettings).</summary>
-    public const string TransferSecondsKey = "Security:RequestTimeouts:TransferSeconds";
+    /// <summary>
+    /// The key ring repository calls of one Data Protection key ring load that creates a key (the security review's R4): Data
+    /// Protection's key ring provider reads every element, stores the new key, then reads every element again; each call opens its own
+    /// connection (<c>PostgresXmlRepository</c>, within at most 50 s) and runs one statement (within at most 30 s).
+    /// </summary>
+    public const int KeyRingLoadCalls = 3;
 
-    /// <inheritdoc cref="TransferSecondsKey"/>
-    public const int DefaultTransferSeconds = 900;
+    /// <summary>What names a wait no setting moves.</summary>
+    public const string Fixed = "a fixed bound";
 
     #endregion
 
@@ -54,22 +59,25 @@ public sealed record IdleTransactionBudget(IReadOnlyList<IdleTransactionWait> Wa
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(database);
-        var smtp = configuration.GetSection(SmtpSettings.SectionName).Get<SmtpSettings>() ?? new SmtpSettings();
         var kafka = configuration.GetSection(KafkaSettings.SectionName).Get<KafkaSettings>() ?? new KafkaSettings();
-        var transfer = configuration.GetValue<int?>(TransferSecondsKey) ?? DefaultTransferSeconds;
+        var connect = database.ConnectTimeoutSeconds;
+        var connectKey = $"{DatabaseSettings.SectionName}:{nameof(DatabaseSettings.ConnectTimeoutSeconds)}";
         return new IdleTransactionBudget(
         [
-            new("a request on a transfer endpoint (an upload, a site configuration import or export)", transfer, TransferSecondsKey),
-            new("an alert email round, its batch sent inside its claim", (int)EmailSenderWorker.DefaultRunTimeout.TotalSeconds + SmtpExchangesPerMessage * smtp.TimeoutSeconds,
-                $"{SmtpSettings.SectionName}:{nameof(SmtpSettings.TimeoutSeconds)}"),
-            new("a scheduled report's send, its delivery row and the report slot held", SmtpExchangesPerReport * smtp.TimeoutSeconds,
-                $"{SmtpSettings.SectionName}:{nameof(SmtpSettings.TimeoutSeconds)}"),
-            new("a staffing pass reading its inputs on a second connection", StaffingInputStatements * database.CommandTimeoutSeconds + database.ConnectTimeoutSeconds,
-                $"{DatabaseSettings.SectionName}:{nameof(DatabaseSettings.CommandTimeoutSeconds)}"),
-            new("an alert evaluation tick in its lock unit", (int)AlertEvaluationWorker.DefaultRunTimeout.TotalSeconds + database.ConnectTimeoutSeconds + RedisPublishSeconds,
-                $"{DatabaseSettings.SectionName}:{nameof(DatabaseSettings.ConnectTimeoutSeconds)}"),
+            // The whole send within its budget (connection, authentication, message), whatever Email:Smtp:TimeoutSeconds says.
+            new("a scheduled report's send, its delivery row and the report slot held", ReportSendBudget.DefaultSeconds, Fixed),
+            // Eight statements at the command timeout, cut at the inputs' budget, and one connection opened (not cut by a token).
+            new("a staffing pass reading its inputs on a second connection",
+                Math.Min(StaffingInputStatements * database.CommandTimeoutSeconds, StaffingRecommendations.InputBudgetSeconds) + connect, connectKey),
+            new("an alert evaluation tick in its lock unit", (int)AlertEvaluationWorker.DefaultRunTimeout.TotalSeconds + connect + RedisOperationSeconds, connectKey),
             new("an outbox relay pass", kafka.Outbox.PassSeconds + OutboxProbeSeconds, $"{KafkaSettings.SectionName}:Outbox:{nameof(OutboxRelaySettings.PassSeconds)}"),
-            new("a consumer inside its inbox transaction", kafka.Consumers.HandlerTimeoutSeconds, $"{KafkaSettings.SectionName}:Consumers:{nameof(ConsumerSettings.HandlerTimeoutSeconds)}")
+            // The attempt's token ends the consumer's statements; a second connection being opened then ends at the connection timeout.
+            new("a consumer inside its inbox transaction", kafka.Consumers.HandlerTimeoutSeconds + connect,
+                $"{KafkaSettings.SectionName}:Consumers:{nameof(ConsumerSettings.HandlerTimeoutSeconds)}"),
+            // Three calls (read, store, read again), each a connection opened and one statement within the key ring's own bounds.
+            new("a Data Protection key ring load inside a transaction (read, store a new key, read again)",
+                KeyRingLoadCalls * (PostgresXmlRepository.ConnectTimeoutSeconds(database) + PostgresXmlRepository.CommandTimeoutSeconds(database)), connectKey),
+            new("a display stale sweep reading the live snapshots under its leader lock", (int)DisplayStaleMonitor.DefaultRunTimeout.TotalSeconds + RedisOperationSeconds, Fixed)
         ]);
     }
 

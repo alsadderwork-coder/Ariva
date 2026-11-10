@@ -18,7 +18,8 @@ namespace Ariva.IntegrationTests.Persistence;
 /// set by the migration job through script 0070), so its locks go: a report delivery's row and the deliveries' report slot,
 /// which another session then takes, and nothing of its transaction commits. A transaction whose idle stretches each stay below
 /// the limit commits however long it lasts in all. The migration job sets the limit and the TCP keepalives on the runtime login
-/// only. Roles are cluster-wide, so every test uses login names of its own.
+/// only. ARV-294: a host refuses to start when the limit the server applies to its runtime login is not above its longest wait. Roles
+/// are cluster-wide, so every test uses login names of its own.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
@@ -172,6 +173,45 @@ public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
         (await ScalarAsync(asRuntime, "SHOW idle_in_transaction_session_timeout")).Should().Be("20min", "unchanged");
     }
 
+    /// <summary>
+    /// ARV-294 (the ARV-292 review's recommendation 8): a host reads at start the idle transaction limit the server applies to its
+    /// runtime login (SHOW, on a session of that login) and refuses to start when it is not above its longest wait (a report's send
+    /// within its budget, 180 s, at the defaults), so a limit set from another copy of the settings, or by hand, is caught: 100 s and
+    /// 180 s refuse, naming the wait; 181 s and the default 300 s start; and a login with no limit (0) starts too.
+    /// </summary>
+    [Fact]
+    public async Task Gate_Should_RefuseToStart_When_TheServersLimitOnTheRuntimeLoginIsNotAboveTheLongestWait()
+    {
+        var database = await postgres.CreateDatabaseAsync(TestDatabase.SessionLimitGate);
+        var admin = postgres.ConnectionString(database);
+        await new SqlScriptRunner(admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
+        const string login = "it_sl_gate";
+        var password = Secret();
+        await ExecuteAsync(admin, "SELECT ariva_ensure_runtime_login(@name, @password)", ("name", login), ("password", password));
+        var settings = DatabaseSettings.FromConfiguration(Configuration(database, login, password, idleSeconds: 300, verifySchema: true));
+        var budget = IdleTransactionBudget.FromConfiguration(new ConfigurationBuilder().Build(), settings);
+        budget.Longest.Seconds.Should().Be(180);
+
+        async Task<Exception> StartWith(int idleSeconds)
+        {
+            if (idleSeconds > 0)
+                await ExecuteAsync(admin, "SELECT ariva_set_runtime_session_limits(@name, @idle, 60, 10, 6)", ("name", login), ("idle", idleSeconds));
+            // A new session of the login takes the limit just set.
+            NpgsqlConnection.ClearAllPools();
+            return await Record.ExceptionAsync(() => new IdleTransactionLimitGate(settings, budget, NullLogger<IdleTransactionLimitGate>.Instance).StartAsync(Ct));
+        }
+
+        (await StartWith(0)).Should().BeNull("no limit on the login ends no transaction");
+        (await StartWith(100)).Should().BeOfType<InvalidOperationException>().Which.Message.Should().Be(
+            "The runtime login's idle_in_transaction_session_timeout on the server (100 s) must be above the longest a transaction of this host may wait on other work: "
+            + "a scheduled report's send, its delivery row and the report slot held, 180 s (ARV-294). Run the migration job with Database:IdleInTransactionTimeoutSeconds (300 s), "
+            + "or set the login's limit above that wait.");
+        (await StartWith(180)).Should().BeOfType<InvalidOperationException>("a limit equal to the longest wait is not above it");
+        (await StartWith(181)).Should().BeNull();
+        (await StartWith(300)).Should().BeNull("the default");
+        (await ScalarAsync(postgres.ConnectionString(database, login, password), "SHOW idle_in_transaction_session_timeout")).Should().Be("5min", "what the gate read");
+    }
+
     /// <summary>Whether another runtime session takes the delivery's row and the report slot without waiting.</summary>
     private static async Task<string> TryTakeAsync(string asRuntime)
     {
@@ -188,9 +228,10 @@ public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
         return $"{(rowTaken ? "row taken" : "row locked")}, {(slotTaken ? "slot taken" : "slot held")}";
     }
 
-    private IConfiguration Configuration(string database, string runtime, string password, int idleSeconds) =>
+    private IConfiguration Configuration(string database, string runtime, string password, int idleSeconds, bool verifySchema = false) =>
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
         {
+            ["Database:VerifySchemaOnStartup"] = verifySchema ? "true" : "false",
             ["Database:Host"] = postgres.Hostname,
             ["Database:Port"] = postgres.Port.ToString(CultureInfo.InvariantCulture),
             ["Database:Name"] = database,

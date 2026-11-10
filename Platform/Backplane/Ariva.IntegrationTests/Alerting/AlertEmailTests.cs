@@ -29,6 +29,9 @@ namespace Ariva.IntegrationTests.Alerting;
 /// address past the hourly limit is held back; Ariva.Api.Integration's sender sends what is due within the per-minute limit,
 /// without two replicas taking the same email, retries a refused email later and gives it up after its attempts; what
 /// reaches the server has one recipient and no header a value added; and the runtime role cannot delete or forge one.
+/// ARV-294: a round claims and commits, sends outside any transaction and marks each email in a transaction of its own; two rounds
+/// at once never send the same email, an email whose round's host was lost between the send and the mark is sent again once, a claim
+/// that commits after the send window sends nothing, and a row planted as claimed far ahead takes nothing of the per-minute limit.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
@@ -59,7 +62,7 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
     }
 
     private AccountsHost Host(int perHour = 1000, int perMinute = 60, int attempts = 8, int? port = null, TestDatabase database = TestDatabase.AlertEmails,
-        TimeSpan? sendTime = null, int smtpTimeoutSeconds = 5)
+        int smtpTimeoutSeconds = 5, Func<IEmailTransport, IEmailTransport> wrap = null)
     {
         _host = new AccountsHost(fixture, new Dictionary<string, string>
         {
@@ -73,9 +76,8 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
             // The sending side, as Ariva.Api.Integration registers it, against the sink.
             services.AddSingleton(new SmtpSettings { Host = "127.0.0.1", Port = port ?? _sink.Port, Security = "None", AllowInsecure = true, TimeoutSeconds = smtpTimeoutSeconds });
             services.AddSingleton<MailKitTransport>();
-            services.AddSingleton<IEmailTransport>(provider => sendTime is { } slow
-                ? new SlowTransport(provider.GetRequiredService<MailKitTransport>(), slow)
-                : provider.GetRequiredService<MailKitTransport>());
+            services.AddSingleton<IEmailTransport>(provider =>
+                wrap is null ? provider.GetRequiredService<MailKitTransport>() : wrap(provider.GetRequiredService<MailKitTransport>()));
             services.AddScoped<EmailSender>();
         });
         return _host;
@@ -348,63 +350,300 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
     }
 
     /// <summary>
-    /// ARV-292: the round sends its whole batch inside its claim, so its transaction sits idle on the server while the relay takes
-    /// the messages. On a database whose sessions may stay idle in a transaction for 3 s, a batch of 1 s commits (the emails are
-    /// Sent), and one of 5 s has the session ended by the server: nothing of the round commits (the emails stay Pending, so a
-    /// later round sends them again, as the relay already took them) and the round lock is free at once.
+    /// ARV-292, ARV-294: on a database whose sessions may stay idle in a transaction for 3 s, a round whose relay takes 1 s or 5 s for
+    /// the batch commits either way: since ARV-294 the claim commits before the batch goes, so no transaction of the round is open while
+    /// the relay takes it (ARV-292's round of 5 s was ended by the server, its email left Pending and sent again). While the relay takes
+    /// the message, no session is idle in a transaction, the round lock is free, and the email is claimed until its claim's end.
     /// </summary>
     [Theory]
-    [InlineData(1, true)]
-    [InlineData(5, false)]
-    public async Task Round_Should_CommitOrBeEndedByTheIdleLimit_When_ItsBatchTakesLessOrMoreThanTheLimit(int sendSeconds, bool commits)
+    [InlineData(1)]
+    [InlineData(5)]
+    public async Task Round_Should_SendOutsideItsClaimAndMarkTheEmailSent_When_ItsBatchTakesLessOrMoreThanTheIdleLimit(int sendSeconds)
     {
-        Host(database: TestDatabase.EmailRoundIdle, sendTime: TimeSpan.FromSeconds(sendSeconds));
-        var database = await _host.DatabaseAsync();
+        var probes = new List<string>();
+        var database = string.Empty;
+        // The relay takes the batch for the whole delay; the probe looks at the database at its end, just before the relay answers.
+        Host(database: TestDatabase.EmailRoundIdle, wrap: inner => new ProbingTransport(inner, TimeSpan.FromSeconds(sendSeconds), async () =>
+            probes.Add(await ProbeAsync(database))));
+        database = await _host.DatabaseAsync();
         await IdleLimitAsync(database);
-        var site = commits ? "EIS" : "EIL";
+        var site = sendSeconds == 1 ? "EIS" : "EIL";
+        var recipient = $"idle.{site.ToLowerInvariant()}@ariva.test";
         var now = new DateTime(2026, 11, 5, 10, 0, 0, DateTimeKind.Utc);
-        var manager = await _host.CreateUserAsync($"it.idle.{site.ToLowerInvariant()}", roles: [RoleCodes.TerminalDutyManager], allSites: true);
-        (await _host.ReadAsync<int>("UPDATE \"user\" SET email = @secret WHERE id = @id RETURNING 1", manager, $"idle.{site.ToLowerInvariant()}@ariva.test")).Should().Be(1);
-        var alert = Guid.NewGuid();
+        var alert = await SeedEmailsAsync(database, site, now, recipient);
+
+        var round = await SendAsync(now.AddMinutes(1));
+
+        round.Should().Be(new EmailRound(1, 0, 0));
+        probes.Should().Equal($"idle in transaction: 0, round lock: free, claimed until {now.AddMinutes(1) + EmailSender.ClaimLength(new SmtpSettings { TimeoutSeconds = 5 }):O}");
+        _sink.Received.Should().ContainSingle(message => message.To.Single() == recipient, "the relay took the message once");
+        (await EmailsAsync(alert)).Should().ContainSingle().Which.Should().Match<Row>(r => r.Status == "Sent" && r.Attempts == 1 && r.Reason == null,
+            "marked sent in a short transaction of its own, after the batch, whatever its length");
+    }
+
+    /// <summary>
+    /// ARV-294 (CWE-362): two rounds sending at once (two replicas a minute apart, the relay slow enough for the first to be still
+    /// sending) never send the same email: the first claims the three a minute allows; once it has marked one, the second has the room
+    /// the first's claims in flight leave, and takes it from the emails the first did not claim (the first's are not due while claimed);
+    /// a round while both send takes none of theirs either. Each email reaches the relay once and is marked sent.
+    /// </summary>
+    [Fact]
+    public async Task Rounds_Should_NeverSendTheSameEmailTwice_When_TwoRunAtOnce()
+    {
+        Host(database: TestDatabase.EmailRoundClaims, perMinute: 3);
+        var database = await _host.DatabaseAsync();
+        var now = new DateTime(2026, 11, 6, 9, 0, 0, DateTimeKind.Utc);
+        string[] recipients = ["claim.one@ariva.test", "claim.two@ariva.test", "claim.three@ariva.test", "claim.four@ariva.test", "claim.five@ariva.test"];
+        var alert = await SeedEmailsAsync(database, "ECT", now, recipients);
+        // Two seconds a message: the first round sends its three over about six seconds, each marked as the relay answers.
+        _sink.DataDelay = TimeSpan.FromSeconds(2);
+
+        var first = SendAsync(now.AddMinutes(1));
+        await WaitUntilAsync(async () => await CountAsync(database, "Sent") >= 1);
+        var whileFirstSends = await CountAsync(database, "Claimed");
+        var second = await SendAsync(now.AddMinutes(2));
+        var firstRound = await first;
+
+        whileFirstSends.Should().BeInRange(1, 2, "the first round still held some of its three claims when the second began");
+        firstRound.Should().Be(new EmailRound(3, 0, 0), "it sent the three it claimed");
+        second.Sent.Should().BeInRange(1, 2, "the room the first's claims in flight left, taken from the emails the first did not claim");
+        _sink.Received.Select(m => m.To.Single()).Should().OnlyHaveUniqueItems("no email reached the relay twice").And.HaveCount(3 + second.Sent);
+
+        // A later round sends what is left, once each.
+        _sink.DataDelay = TimeSpan.Zero;
+        (await SendAsync(now.AddMinutes(10))).Sent.Should().Be(2 - second.Sent);
+        _sink.Received.Select(m => m.To.Single()).Should().BeEquivalentTo(recipients, "each email reached the relay exactly once");
+        (await EmailsAsync(alert)).Should().HaveCount(5).And.OnlyContain(r => r.Status == "Sent" && r.Attempts == 1 && r.Reason == null);
+    }
+
+    /// <summary>
+    /// ARV-294: the delivery guarantee written down in docs/product/decisions.md. A host lost between the relay's answer and the mark
+    /// (here a transport that throws once the relay has taken the batch, so no mark is written) leaves the email claimed: no round sends
+    /// it while its claim holds, and the first round after the claim runs out sends it once more and marks it sent. So an email the
+    /// relay accepted is marked sent, or sent again at most once after such a loss; nothing sends it a third time.
+    /// </summary>
+    [Fact]
+    public async Task Round_Should_SendAnEmailAgainOnlyOnce_When_ItsHostIsLostBetweenTheSendAndTheMark()
+    {
+        var lost = true;
+        Host(database: TestDatabase.EmailRoundClaims, wrap: inner => new LosingTransport(inner, () => lost));
+        var database = await _host.DatabaseAsync();
+        var now = new DateTime(2026, 11, 7, 9, 0, 0, DateTimeKind.Utc);
+        const string recipient = "claim.lost@ariva.test";
+        var alert = await SeedEmailsAsync(database, "ECL", now, recipient);
+        var claim = now.AddMinutes(1) + EmailSender.ClaimLength(new SmtpSettings { TimeoutSeconds = 5 });
+
+        var crashed = () => SendAsync(now.AddMinutes(1));
+        await crashed.Should().ThrowAsync<IOException>("the host is gone before it marks the email");
+        lost = false;
+
+        _sink.Received.Should().ContainSingle("the relay took it");
+        (await EmailsAsync(alert)).Should().ContainSingle().Which.Should().Match<Row>(r => r.Status == "Pending" && r.Attempts == 0 && r.Reason == EmailMessage.ClaimedReason
+            && r.NextAttemptUtc == claim, "still claimed: no mark was written");
+        (await SendAsync(now.AddMinutes(5))).Should().Be(new EmailRound(0, 0, 0), "no round sends it while its claim holds");
+        (await SendAsync(claim.AddSeconds(-1))).Sent.Should().Be(0);
+        _sink.Received.Should().ContainSingle();
+
+        (await SendAsync(claim)).Should().Be(new EmailRound(1, 0, 0), "the claim ran out: sent again, once, and marked");
+        (await SendAsync(claim.AddHours(1))).Sent.Should().Be(0);
+        _sink.Received.Select(m => m.To.Single()).Should().Equal([recipient, recipient], "sent twice in all: the lost round's and the one after its claim");
+        (await EmailsAsync(alert)).Should().ContainSingle().Which.Should().Match<Row>(r => r.Status == "Sent" && r.Attempts == 1 && r.Reason == null);
+    }
+
+    /// <summary>
+    /// ARV-294 (CWE-362, the security review's R1): the send window runs from the round's start, so a claim that commits late (here its
+    /// write waits for the emails table, which a session of the test holds past the round's one second window, as a slow pool or a
+    /// loaded database could hold it) leaves no time to send: the round begins no message and releases each email as it was (pending,
+    /// no attempt, no reason, due when it was), and the next round sends them.
+    /// </summary>
+    [Fact]
+    public async Task Round_Should_SendNothingAndReleaseItsEmails_When_ItsClaimCommitsAfterTheSendWindow()
+    {
+        Host(database: TestDatabase.EmailRoundClaims);
+        var database = await _host.DatabaseAsync();
+        var now = new DateTime(2026, 11, 8, 9, 0, 0, DateTimeKind.Utc);
+        var alert = await SeedEmailsAsync(database, "ECW", now, "claim.late.one@ariva.test", "claim.late.two@ariva.test");
+        var before = await EmailsAsync(alert);
+
+        EmailRound late;
+        await using (var holder = new NpgsqlConnection(fixture.ConnectionString(database)))
+        {
+            await holder.OpenAsync(Ct);
+            await using var transaction = await holder.BeginTransactionAsync(Ct);
+            await using (var hold = new NpgsqlCommand("LOCK TABLE email_message IN SHARE MODE", holder, transaction))
+                await hold.ExecuteNonQueryAsync(Ct);
+            var round = _host.AsCallerAsync(null, s =>
+            {
+                var sender = s.GetRequiredService<EmailSender>();
+                sender.Window = TimeSpan.FromSeconds(1);
+                return sender.SendDueAsync(now.AddMinutes(1), Ct);
+            });
+            // The claim reads, then its write waits for the table: held two seconds more, past the window, then let go.
+            await WaitUntilAsync(() => WaitingOnEmailsAsync(database));
+            await Task.Delay(TimeSpan.FromSeconds(2), Ct);
+            await transaction.RollbackAsync(Ct);
+            late = await round;
+        }
+
+        late.Should().Be(new EmailRound(0, 0, 0), "no message is begun once the window has passed, and each release is written");
+        _sink.Received.Should().BeEmpty();
+        (await EmailsAsync(alert)).Should().Equal(before, "released as they were");
+        (await SendAsync(now.AddMinutes(2))).Should().Be(new EmailRound(2, 0, 0), "the next round sends them");
+    }
+
+    /// <summary>
+    /// ARV-294 (CWE-501, the security review's R3): a row is data, not an instruction. A pending email planted with the claimed reason and
+    /// a claim ending a month ahead (further than any round's claim reaches) is not counted against the per-minute limit, so a round keeps
+    /// its whole budget (two a minute here: both other emails go), and the planted email is not sent while its planted claim stands.
+    /// </summary>
+    [Fact]
+    public async Task Round_Should_KeepItsWholeBudget_When_ARowIsPlantedAsClaimedFarAhead()
+    {
+        Host(database: TestDatabase.EmailRoundClaims, perMinute: 2);
+        var database = await _host.DatabaseAsync();
+        var now = new DateTime(2026, 11, 9, 9, 0, 0, DateTimeKind.Utc);
+        const string planted = "claim.planted@ariva.test";
+        string[] budgeted = ["claim.budget.one@ariva.test", "claim.budget.two@ariva.test"];
+        var alert = await SeedEmailsAsync(database, "ECP", now, [planted, .. budgeted]);
+        var far = now.AddDays(30);
         await using (var connection = new NpgsqlConnection(fixture.ConnectionString(database)))
         {
             await connection.OpenAsync(Ct);
-            await using var seed = new NpgsqlCommand("""
-                INSERT INTO site (id, code, name) VALUES (gen_random_uuid(), @site, 'Idle limit');
-                INSERT INTO alert_rule (id, site_code, code, name, scope_zones, metric, comparator, sustain_minutes, clear_after_minutes, severity, notify_by_email, enabled)
-                VALUES (@rule, @site, 'R-901', 'Offline', 'A-VIS', 'SensorOffline', 'IsTrue', 1, 1, 'Warning', true, true);
-                INSERT INTO alert (id, site_code, rule_id, rule_code, rule_name, zone_name, device_code, metric, severity, raised_utc, raised_value, state)
-                VALUES (@alert, @site, @rule, 'R-901', 'Offline', 'A-VIS', 'S-01', 'SensorOffline', 'Warning', @now, 1, 'Raised');
-                INSERT INTO email_message (id, kind, alert_id, site_code, recipient, subject, body, status, attempts, created_utc, next_attempt_utc)
-                VALUES (gen_random_uuid(), 'AlertRaised', @alert, @site, @recipient, '[Ariva] Offline', 'A-VIS is offline.', 'Pending', 0, @now, @now);
-                """, connection);
+            // As the runtime role may write it (reason and next attempt are among its sending columns, script 0023).
+            await using var plant = new NpgsqlCommand("UPDATE email_message SET reason = @claimed, next_attempt_utc = @far WHERE alert_id = @alert AND recipient = @to", connection);
+            plant.Parameters.AddWithValue("claimed", EmailMessage.ClaimedReason);
+            plant.Parameters.AddWithValue("far", far);
+            plant.Parameters.AddWithValue("alert", alert);
+            plant.Parameters.AddWithValue("to", planted);
+            (await plant.ExecuteNonQueryAsync(Ct)).Should().Be(1);
+        }
+
+        (await SendAsync(now.AddMinutes(1))).Should().Be(new EmailRound(2, 0, 0), "the planted claim takes none of the minute's two");
+        (await SendAsync(now.AddMinutes(10))).Sent.Should().Be(0);
+
+        _sink.Received.Select(m => m.To.Single()).Should().BeEquivalentTo(budgeted, "each of the other two once");
+        (await EmailsAsync(alert)).Single(r => r.Recipient == planted).Should().Match<Row>(r => r.Status == "Pending" && r.Attempts == 0
+            && r.Reason == EmailMessage.ClaimedReason && r.NextAttemptUtc == far, "left as planted, never sent");
+    }
+
+    /// <summary>Whether a session of the database waits for a lock on the emails table (the round's claim, held by the test).</summary>
+    private async Task<bool> WaitingOnEmailsAsync(string database)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(database));
+        await connection.OpenAsync(Ct);
+        await using var waiting = new NpgsqlCommand("SELECT count(*)::int FROM pg_locks WHERE NOT granted AND relation = 'email_message'::regclass", connection);
+        return (int)await waiting.ExecuteScalarAsync(Ct) > 0;
+    }
+
+    /// <summary>A site, a terminal duty manager of all sites for each address, an alert of a rule that notifies by email and one pending email to each, written as the evaluation writes them.</summary>
+    private async Task<Guid> SeedEmailsAsync(string database, string site, DateTime now, params string[] recipients)
+    {
+        foreach (var recipient in recipients)
+        {
+            var manager = await _host.CreateUserAsync("it." + recipient.Split('@')[0], roles: [RoleCodes.TerminalDutyManager], allSites: true);
+            (await _host.ReadAsync<int>("UPDATE \"user\" SET email = @secret WHERE id = @id RETURNING 1", manager, recipient)).Should().Be(1);
+        }
+
+        var alert = Guid.NewGuid();
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(database));
+        await connection.OpenAsync(Ct);
+        await using (var seed = new NpgsqlCommand("""
+            INSERT INTO site (id, code, name) VALUES (gen_random_uuid(), @site, 'Email rounds');
+            INSERT INTO alert_rule (id, site_code, code, name, scope_zones, metric, comparator, sustain_minutes, clear_after_minutes, severity, notify_by_email, enabled)
+            VALUES (@rule, @site, 'R-901', 'Offline', 'A-VIS', 'SensorOffline', 'IsTrue', 1, 1, 'Warning', true, true);
+            INSERT INTO alert (id, site_code, rule_id, rule_code, rule_name, zone_name, device_code, metric, severity, raised_utc, raised_value, state)
+            VALUES (@alert, @site, @rule, 'R-901', 'Offline', 'A-VIS', 'S-01', 'SensorOffline', 'Warning', @now, 1, 'Raised');
+            """, connection))
+        {
             seed.Parameters.AddWithValue("site", site);
             seed.Parameters.AddWithValue("rule", Guid.NewGuid());
             seed.Parameters.AddWithValue("alert", alert);
             seed.Parameters.AddWithValue("now", now);
-            seed.Parameters.AddWithValue("recipient", $"idle.{site.ToLowerInvariant()}@ariva.test");
             await seed.ExecuteNonQueryAsync(Ct);
         }
 
-        var round = await Record.ExceptionAsync(() => SendAsync(now.AddMinutes(1)));
-
-        var rows = await EmailsAsync(alert);
-        _sink.Received.Should().ContainSingle(message => message.To.Single() == $"idle.{site.ToLowerInvariant()}@ariva.test", "the relay took the message either way");
-        if (commits)
+        for (var i = 0; i < recipients.Length; i++)
         {
-            round.Should().BeNull();
-            rows.Should().ContainSingle().Which.Status.Should().Be("Sent", "a batch within the limit commits");
-            return;
+            await using var email = new NpgsqlCommand("""
+                INSERT INTO email_message (id, kind, alert_id, site_code, recipient, subject, body, status, attempts, created_utc, next_attempt_utc)
+                VALUES (gen_random_uuid(), 'AlertRaised', @alert, @site, @recipient, '[Ariva] Offline', 'A-VIS is offline.', 'Pending', 0, @created, @created)
+                """, connection);
+            email.Parameters.AddWithValue("alert", alert);
+            email.Parameters.AddWithValue("site", site);
+            email.Parameters.AddWithValue("recipient", recipients[i]);
+            email.Parameters.AddWithValue("created", now.AddSeconds(i));
+            await email.ExecuteNonQueryAsync(Ct);
         }
 
-        round.Should().NotBeNull("the round's commit fails on the ended session");
-        rows.Should().ContainSingle().Which.Status.Should().Be("Pending", "nothing of the round committed");
-        await using var other = new NpgsqlConnection(fixture.ConnectionString(database));
-        await other.OpenAsync(Ct);
-        await using var transaction = await other.BeginTransactionAsync(Ct);
-        await using var take = new NpgsqlCommand("SELECT pg_try_advisory_xact_lock(@key)", other, transaction);
+        return alert;
+    }
+
+    /// <summary>The emails of the database with a status, or claimed by a round now ("Claimed": pending with the claimed reason).</summary>
+    private async Task<int> CountAsync(string database, string status)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(database));
+        await connection.OpenAsync(Ct);
+        await using var count = new NpgsqlCommand("""
+            SELECT count(*)::int FROM email_message
+            WHERE (@status = 'Claimed' AND status = 'Pending' AND reason = @claimed) OR (@status <> 'Claimed' AND status = @status)
+            """, connection);
+        count.Parameters.AddWithValue("status", status);
+        count.Parameters.AddWithValue("claimed", EmailMessage.ClaimedReason);
+        return (int)await count.ExecuteScalarAsync(Ct);
+    }
+
+    /// <summary>
+    /// What the database holds while the relay takes the batch: the sessions idle in a transaction, whether another session takes the
+    /// round lock, and the claim the pending emails carry.
+    /// </summary>
+    private async Task<string> ProbeAsync(string database)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(database));
+        await connection.OpenAsync(Ct);
+        await using var idle = new NpgsqlCommand("""
+            SELECT count(*)::int FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND state LIKE 'idle in transaction%'
+            """, connection);
+        var idleCount = (int)await idle.ExecuteScalarAsync(Ct);
+        await using var transaction = await connection.BeginTransactionAsync(Ct);
+        await using var take = new NpgsqlCommand("SELECT pg_try_advisory_xact_lock(@key)", connection, transaction);
         take.Parameters.AddWithValue("key", EmailSender.RoundLock);
-        (await take.ExecuteScalarAsync(Ct)).Should().Be(true, "the round lock went with the ended session");
+        var free = (bool)await take.ExecuteScalarAsync(Ct);
+        await using var claimed = new NpgsqlCommand("SELECT max(next_attempt_utc) FROM email_message WHERE status = 'Pending' AND reason = @claimed", connection, transaction);
+        claimed.Parameters.AddWithValue("claimed", EmailMessage.ClaimedReason);
+        var until = DateTime.SpecifyKind((DateTime)await claimed.ExecuteScalarAsync(Ct), DateTimeKind.Utc);
+        await transaction.RollbackAsync(Ct);
+        return $"idle in transaction: {idleCount}, round lock: {(free ? "free" : "held")}, claimed until {until:O}";
+    }
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (!await condition())
+        {
+            DateTime.UtcNow.Should().BeBefore(deadline, "the round gets there within seconds");
+            await Task.Delay(20, Ct);
+        }
+    }
+
+    /// <summary>A transport whose relay takes the batch for a while, then runs a probe, then sends it through the inner transport.</summary>
+    private sealed class ProbingTransport(IEmailTransport inner, TimeSpan delay, Func<Task> probe) : IEmailTransport
+    {
+        public async Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
+        {
+            await Task.Delay(delay, CancellationToken.None);
+            await probe();
+            return await inner.SendAsync(emails, ct);
+        }
+    }
+
+    /// <summary>A transport whose host is lost once the relay has taken the batch: it throws instead of answering, so no email is marked.</summary>
+    private sealed class LosingTransport(IEmailTransport inner, Func<bool> lost) : IEmailTransport
+    {
+        public async Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
+        {
+            var batch = await inner.SendAsync(emails, ct);
+            return lost() ? throw new IOException("The host was lost after the relay took the batch.") : batch;
+        }
     }
 
     /// <summary>The idle round database's sessions may stay idle in a transaction for 3 s (set once, before the round's sessions open).</summary>
@@ -427,16 +666,6 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
         finally
         {
             IdleGate.Release();
-        }
-    }
-
-    /// <summary>A transport whose relay takes a while for each batch (the delay, then the inner transport).</summary>
-    private sealed class SlowTransport(IEmailTransport inner, TimeSpan delay) : IEmailTransport
-    {
-        public async Task<EmailBatch> SendAsync(IReadOnlyList<OutgoingEmail> emails, CancellationToken ct)
-        {
-            await Task.Delay(delay, CancellationToken.None);
-            return await inner.SendAsync(emails, ct);
         }
     }
 
@@ -770,7 +999,7 @@ public sealed class AlertEmailTests(PostgresFixture fixture) : IAsyncDisposable
                 await take.ExecuteNonQueryAsync(Ct);
             }
 
-            (await SendAsync(first.AddMinutes(2))).Should().Be(new EmailRound(0, 0, 0), "one replica sends at a time, so the per-minute limit holds over all of them");
+            (await SendAsync(first.AddMinutes(2))).Should().Be(new EmailRound(0, 0, 0), "one replica claims at a time, so the per-minute limit holds over all of them");
             await transaction.RollbackAsync(Ct);
         }
 

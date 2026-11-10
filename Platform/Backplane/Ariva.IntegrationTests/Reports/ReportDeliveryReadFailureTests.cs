@@ -20,7 +20,8 @@ namespace Ariva.IntegrationTests.Reports;
 /// has it), in another the waiting session is terminated (its connection lost), in a third the host's command timeout ends it. The database ends the delivery's transaction with
 /// its statement, so the round rolls it back and counts the attempt in a transaction of its own: Failed with the fixed reason, round
 /// by round, up to <see cref="ISvcReportDeliveries.MaxAttempts"/>, after which no round tries it. A delivery left as it was by a busy
-/// slot (ARV-234) still counts none, and a read that succeeds in a later round sends the report.
+/// slot (ARV-234) still counts none, and a read that succeeds in a later round sends the report. ARV-294: a send past its total budget
+/// (a relay that answers slowly) is counted as failed too, its row and the slot freed.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class ReportDeliveryReadFailureTests(PostgresFixture fixture) : IAsyncDisposable
@@ -248,6 +249,46 @@ public sealed class ReportDeliveryReadFailureTests(PostgresFixture fixture) : IA
         (await HeldSlotsAsync(host)).Should().BeEmpty("no report slot is held");
         (await host.ReadAsync<int>("SELECT count(*)::int FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'"))
             .Should().Be(0);
+    }
+
+    /// <summary>
+    /// ARV-294 (CWE-400): a scheduled report's send has a total budget, so its transaction (the delivery's row and the deliveries' report
+    /// slot) never waits on a slow relay past it. Here the relay takes the message and answers 30 s later, well within the SMTP timeout
+    /// of each exchange (60 s), and the budget is 2 s: the send is ended at the budget, the delivery is counted as failed with the
+    /// budget's reason, and its row and the slot are free at once; the next round, with a prompt relay, sends it.
+    /// </summary>
+    [Fact]
+    public async Task Round_Should_CountTheSendAsFailedAndFreeItsRowAndSlot_When_TheRelayAnswersSlowerThanTheSendBudget()
+    {
+        await using var relay = new SmtpSink { DataDelay = TimeSpan.FromSeconds(30) };
+        var host = new AccountsHost(fixture, Settings(), TestDatabase.ReportSendBudget, services =>
+        {
+            Configure(services);
+            services.Replace(ServiceDescriptor.Singleton(new SmtpSettings { Host = "127.0.0.1", Port = relay.Port, Security = "None", AllowInsecure = true, TimeoutSeconds = 60 }));
+            services.Replace(ServiceDescriptor.Singleton<IEmailTransport, MailKitTransport>());
+            services.AddSingleton(new ReportSendBudget(TimeSpan.FromSeconds(2)));
+        });
+        _host = host;
+        var admin = await SiteAsync(host, "RSB", "it.budget.slow", "budget.slow@ariva.test");
+        var schedule = await ScheduleAsync(host, admin, "RSB", "Slow relay");
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        var run = await RunAsync(host);
+
+        watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(15), "the send ended at its 2 s budget, not at the relay's 30 s or the 60 s SMTP timeout");
+        run.Should().Be(new ReportDeliveryRun(1, 0, 0, 1), "counted as failed");
+        (await StatusAsync(host, schedule)).Should().Be($"Failed:1:{MailKitTransport.BudgetReason}");
+        (await host.ReadAsync<int>("SELECT count(*)::int FROM (SELECT id FROM report_delivery WHERE schedule_id = @id FOR UPDATE SKIP LOCKED) free", schedule))
+            .Should().Be(1, "the delivery's row is free");
+        (await HeldSlotsAsync(host)).Should().BeEmpty("no report slot is held");
+        (await host.ReadAsync<int>("SELECT count(*)::int FROM pg_stat_activity WHERE datname = current_database() AND state LIKE 'idle in transaction%'"))
+            .Should().Be(0, "no transaction is left waiting");
+        _logs.Entries.Should().Contain(e => e.Contains("failed (attempt 1)", StringComparison.Ordinal));
+        relay.Connections.Should().Be(1, "the budget ended the send on its connection, after the message began");
+
+        relay.DataDelay = TimeSpan.Zero;
+        (await RunAsync(host)).Sent.Should().Be(1, "a later round sends it");
+        (await StatusAsync(host, schedule)).Should().Be("Sent:2:");
     }
 
     #region Helpers

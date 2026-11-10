@@ -36,8 +36,8 @@ public sealed class RequestTimeoutsSettings
     /// ends the read on any protocol; and over HTTP/1.x the body must arrive at 32 KB a second or more after 10 seconds (408
     /// below), so the largest, 20 MB and the form's framing, is in within about 11 minutes. A video above about 28 MB outlasts
     /// the default at that rate: an installation that raises <c>Advertising:Videos:MaxMegabytes</c> raises this with it (about
-    /// 33 s a MB). Since ARV-292 a value of 960 s or more also needs <c>Database:IdleInTransactionTimeoutSeconds</c> raised above it in
-    /// the base settings (an upload's transaction can wait this long), or the host does not start.
+    /// 33 s a MB). Since ARV-294 no transaction of these requests is open across its file work (the files are written before their
+    /// transactions and read after them), so this value does not bound <c>Database:IdleInTransactionTimeoutSeconds</c> (ARV-292).
     /// </summary>
     public int TransferSeconds { get; set; } = 900;
 
