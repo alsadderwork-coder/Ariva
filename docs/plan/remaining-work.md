@@ -20,7 +20,7 @@ ASVS 5.0 Level 2 (`docs/security/asvs-l2.md`): 158 of the 203 requirements that 
 | Story | What it does | Notes |
 |---|---|---|
 | ARV-236 | Bump the third-party pins ARV-227's first weekly check found behind | Built and committed 2026-10-23 (pins bumped, TimescaleDB 2.31 with `update-extensions`, story gate and full E2E pass, security review PASS); `passes` waits for the AppHost started once and an image scan (registry pull limits in the build session), the ZAP baseline workflow and a `third-party-images.yml` run (GitHub, after `main` is fast-forwarded); the superuser use of `update-extensions` waits for the owner (decisions.md, 2026-10-23) |
-| ARV-244 | A restore refuses a backup of another TimescaleDB version, and restores it through that version | Filed by ARV-236: a backup restores only into its own TimescaleDB version, and the restore compares nothing; until it is built, wiki 04 section 10.4 gives the manual steps; before the pilot |
+| ARV-244 | A restore refuses a backup of another TimescaleDB version, and restores it through that version | Built 2026-11-10 and changed after its security review, pending the story gate (its integration test, `TimescaleVersionRestoreTests`, not yet run) and the owner's decision on its superuser statements (docs/product/decisions.md, 2026-11-10 ARV-244 entry); filed by ARV-236; before the pilot |
 | ARV-124b | 24-hour soak and catch-up after a 30-minute stream outage | ARV-230 done; needs a machine doing nothing else for a day, with disk for a day of Kafka and TimescaleDB growth; its numbers and ARV-124a's answer TC-33 (node sizes) |
 
 ## 2. Waiting for the owner to lift the sign-in freeze

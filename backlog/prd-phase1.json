@@ -2156,7 +2156,7 @@
         "docs and wiki pages affected by the change are updated (wiki 04 section 10.4, wiki 10 section 4.13; node scripts/verify.mjs docs passes)"
       ],
       "priority": 42,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-23 by ARV-236. Medium: a restore during an incident fails on any backup older than the last database image bump, so before the pilot. Until then wiki 04 section 10.4 and the ARV-236 release note give the manual steps. Size S.",
       "dependsOn": [
         "ARV-236"

@@ -42,6 +42,12 @@
 //   refusal comes before any kubectl step (CWE-269, CWE-345, CWE-367).
 // - The table of contents check in the pod (kinds, names and owners; not the SQL) and ariva-db.sh check after the restore
 //   are defence in depth, never the gate.
+// - ARV-244 (CWE-345): a restore goes through the TimescaleDB version the backup was taken at, and that version comes from
+//   the signed manifest (database.extensions.timescaledb, read only after its signature verified) or, with --sha256, from the
+//   dump itself, as the pod's check-dump pass reads it from the verified copy; never from an option or an unsigned file. It
+//   must be a plain dotted number (2.31.0) or the restore is refused, the manifest's before any kubectl step; check-dump compares
+//   the manifest's with the dump's own and reports the dump's, which must then be the manifest's, and only then does the restore
+//   pass get it (--timescaledb-version).
 // - Commands are argument arrays started without a shell; every name is checked against a strict pattern first (CWE-78).
 // - The Data Protection certificate's private key is never read: keyring takes certificates only (their SHA-256).
 
@@ -59,6 +65,10 @@ const POD_SCRIPT = '/tmp/ariva-db.sh';
 const SIGNATURE_NAMESPACE = 'ariva-backup';
 const MANIFEST_FORMAT = 'ariva-backup-set/1';
 const VERIFIED_COPY = '@verified-copy';
+// ARV-244: stands in a planned argument array for the dump's TimescaleDB version, known only once the manifest is verified or
+// the check pass has reported it.
+const DUMP_VERSION = '@timescaledb-version';
+const DUMP_VERSION_REPORT_BYTES = 4096;
 
 // The programs this tool starts. The self-test replaces kubectl and age with stand-ins; ssh-keygen is always the real one.
 const TOOLS = { kubectl: ['kubectl'], age: ['age'], 'ssh-keygen': ['ssh-keygen'] };
@@ -84,7 +94,9 @@ export const PATTERNS = {
   sha256: /^[0-9a-f]{64}$/,
   principal: /^[A-Za-z0-9._@+-]{1,128}$/,
   extension: /^[a-z_][a-z0-9_]{0,62}$/,
-  setting: /^[a-z_][a-z0-9_]{0,62}(\.[a-z_][a-z0-9_]{0,62})?$/
+  setting: /^[a-z_][a-z0-9_]{0,62}(\.[a-z_][a-z0-9_]{0,62})?$/,
+  // ARV-244: a TimescaleDB version, a plain dotted number as ariva-db.sh's valid_version takes it.
+  version: /^[0-9]{1,6}(\.[0-9]{1,6}){1,3}$/
 };
 
 export class UsageError extends Error {}
@@ -231,12 +243,18 @@ export function plan(o, now = new Date()) {
     }
     case 'restore': {
       const identity = localPath(o.identity, '--identity');
+      const secure = secureStep(o, 'database');
+      // ARV-244: the check pass compares the signed manifest's TimescaleDB version with the dump's own (with --sha256 there is
+      // none to give) and reports the dump's; the restore pass gets the version that report confirmed.
+      const signedVersion = secure.manifest === undefined ? [] : ['--timescaledb-version', DUMP_VERSION];
       return {
         steps: [
-          secureStep(o, 'database'),
+          secure,
           { kind: 'run', ...copyScript(o) },
-          { kind: 'decrypt', identity, file: VERIFIED_COPY, into: inPod(o, true, ['check-dump', '--input', '-', ...allowedExtensions(o)]), label: 'check' },
-          { kind: 'decrypt', identity, file: VERIFIED_COPY, into: inPod(o, true, ['restore', '--input', '-', '--dump-checked', ...checkOptions(o)]), label: 'restore' }
+          { kind: 'decrypt', identity, file: VERIFIED_COPY, into: inPod(o, true, ['check-dump', '--input', '-', ...signedVersion, ...allowedExtensions(o)]), label: 'check',
+            reportsVersion: true },
+          { kind: 'decrypt', identity, file: VERIFIED_COPY, into: inPod(o, true, ['restore', '--input', '-', '--dump-checked', '--timescaledb-version', DUMP_VERSION,
+            ...checkOptions(o)]), label: 'restore' }
         ]
       };
     }
@@ -373,9 +391,17 @@ function shown(value) {
   return typeof value === 'string' && /^[\x20-\x7e]{1,200}$/.test(value) ? value : '(not given)';
 }
 
+// ARV-244: a TimescaleDB version as data (the signed manifest's, or the check pass's report): a plain dotted number, else
+// refused. The value itself is never printed when it is not one.
+function dumpVersion(value, what) {
+  if (typeof value !== 'string' || !PATTERNS.version.test(value)) throw new Refused(`${what} is not a plain dotted number (for example 2.31.0): refused`);
+  return value;
+}
+
 // Verifies the manifest's signature against the allowed signers, on private copies of what was read, so the bytes that
-// are verified are the bytes that are used. Returns the expected SHA-256 of the input file, or refuses.
-function verifiedSha256(step, folder) {
+// are verified are the bytes that are used. Returns the expected SHA-256 of the input file and, for the database backup, the
+// TimescaleDB version it was taken at (ARV-244), or refuses.
+function verifiedManifest(step, folder) {
   const manifest = readCapped(step.manifest, 1 << 20, 'the manifest');
   const signature = readCapped(step.signature, 64 << 10, 'the manifest\'s signature');
   const allowed = readCapped(step.allowedSigners, 1 << 20, 'the allowed signers file');
@@ -420,7 +446,13 @@ function verifiedSha256(step, folder) {
         : `the signed manifest is a backup of the namespace ${shown(set.namespace)}, not ${step.namespace}; pass --force-namespace to restore it here: refused`);
     OUT.log(`--force-namespace: a set of ${shown(set.namespace)} goes into ${step.namespace}`);
   }
-  return entry.sha256;
+  if (step.label !== 'database') return { sha256: entry.sha256 };
+  const recorded = set.database?.extensions?.timescaledb;
+  if (recorded === undefined || recorded === null)
+    throw new Refused('the signed manifest names no TimescaleDB version (database.extensions.timescaledb), which the restore goes through: refused');
+  const timescaledb = dumpVersion(recorded, 'the signed manifest\'s TimescaleDB version (database.extensions.timescaledb)');
+  OUT.log(`TimescaleDB of the backup: ${timescaledb} (the signed manifest's); the restore checks the dump records it, creates the extension at it when the image's differs, and updates it afterwards`);
+  return { sha256: entry.sha256, timescaledb };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -437,6 +469,43 @@ function start([cmd, args], stdio) {
     child.on('close', code => resolve(code));
   });
   return { child, done };
+}
+
+// ARV-244: a planned argument array with the dump's TimescaleDB version in place of DUMP_VERSION; refused when it is not known
+// (neither a verified manifest nor the check pass gave it) or not a plain dotted number.
+export function withDumpVersion([cmd, args], state) {
+  if (!args.includes(DUMP_VERSION)) return [cmd, args];
+  if (state.timescaledb === undefined)
+    throw new Refused('the dump\'s TimescaleDB version is not known (neither the signed manifest nor the dump\'s check gave it): refused');
+  const version = dumpVersion(state.timescaledb, 'the dump\'s TimescaleDB version');
+  return [cmd, args.map(a => (a === DUMP_VERSION ? version : a))];
+}
+
+// What a child writes to stdout, up to a bound; more than that is read and dropped (so the child never blocks) and reported.
+function boundedOutput(stream, maxBytes) {
+  return new Promise(resolve => {
+    const chunks = [];
+    let size = 0;
+    stream.on('data', chunk => {
+      size += chunk.length;
+      if (size <= maxBytes) chunks.push(chunk);
+    });
+    stream.on('close', () => resolve(size > maxBytes ? null : Buffer.concat(chunks).toString('latin1')));
+  });
+}
+
+// ARV-244: the check pass's report of the TimescaleDB version the dump records, one line "timescaledb <version>". Given the
+// signed manifest's, the two must agree; otherwise (--sha256) it becomes the restore's version.
+export function reportedVersion(text, expected) {
+  const match = typeof text === 'string' ? /^timescaledb ([^\n]{1,40})\n?$/.exec(text) : null;
+  if (!match) throw new Refused('the dump\'s check did not report the TimescaleDB version the dump records (one line "timescaledb <version>"): refused before the restore');
+  const version = dumpVersion(match[1], 'the TimescaleDB version the dump\'s check reported');
+  if (expected !== undefined && version !== expected)
+    throw new Refused(`the dump records TimescaleDB ${version}, its signed manifest ${expected}: refused before the restore`);
+  OUT.log(expected === undefined
+    ? `TimescaleDB of the backup: ${version} (read from the dump, whose SHA-256 you gave); the restore creates the extension at it when the image's differs, and updates it afterwards`
+    : `the dump records TimescaleDB ${version}, as its signed manifest says`);
+  return version;
 }
 
 async function expectZero(label, ...codes) {
@@ -498,7 +567,10 @@ async function runStep(step, state) {
       // Before anything leaves this machine: the expected hash from a verified signature (or the operator's own log), then a
       // private copy whose own hash must match; only that copy is decrypted afterwards.
       state.folder ??= privateFolder();
-      const expected = step.sha256 ?? verifiedSha256(step, state.folder);
+      const verified = step.sha256 === undefined ? verifiedManifest(step, state.folder) : { sha256: step.sha256 };
+      const expected = verified.sha256;
+      // ARV-244: with --sha256 the version is the dump's own, which the check pass reports (below).
+      if (verified.timescaledb !== undefined) state.timescaledb = verified.timescaledb;
       const copy = path.join(state.folder, 'verified.age');
       fs.copyFileSync(step.file, copy, fs.constants.COPYFILE_EXCL);
       fs.chmodSync(copy, 0o600);
@@ -511,10 +583,13 @@ async function runStep(step, state) {
     case 'decrypt': {
       const file = step.file === VERIFIED_COPY ? state.copy : step.file;
       if (!file) throw new Error('no verified copy to decrypt');
+      const into = withDumpVersion(step.into, state);
       const age = start(['age', ['--decrypt', '--identity', step.identity, file]], ['ignore', 'pipe', 'inherit']);
-      const sink = start(step.into, ['pipe', 'inherit', 'inherit']);
+      const sink = start(into, ['pipe', step.reportsVersion ? 'pipe' : 'inherit', 'inherit']);
+      const report = step.reportsVersion ? boundedOutput(sink.child.stdout, DUMP_VERSION_REPORT_BYTES) : undefined;
       age.child.stdout.pipe(sink.child.stdin);
       await expectZero(step.label, age.done, sink.done);
+      if (report) state.timescaledb = reportedVersion(await report, state.timescaledb);
       return;
     }
     default:
@@ -542,11 +617,12 @@ export async function main(argv) {
   const p = plan(o);
   if (o.plan) {
     // ARV-183 review: a restore from a signed manifest verifies it here first (a private folder, no cluster) and prints the
-    // verifying key and what the set is, or refuses as the restore would; nothing is decrypted or sent.
+    // verifying key and what the set is (since ARV-244 its TimescaleDB version too), or refuses as the restore would; nothing
+    // is decrypted or sent.
     for (const step of p.steps.filter(s => s.kind === 'secure' && s.manifest !== undefined)) {
       const folder = privateFolder();
       try {
-        verifiedSha256(step, folder);
+        verifiedManifest(step, folder);
       } finally {
         removeFolder(folder);
       }
@@ -579,7 +655,8 @@ if (remote[0] === 'dd') {
   await readAll();
   if (process.env.ARIVA_OPS_FAKE_SWAP) fs.writeFileSync(process.env.ARIVA_OPS_FAKE_SWAP, 'a file put in place of the verified one');
 } else if (remote[0] === 'bash' && remote[2] === 'manifest') {
-  process.stdout.write(JSON.stringify({ format: 'ariva-backup-manifest/1', database: 'ariva', takenUtc: '2026-10-15T03:04:05Z' }));
+  process.stdout.write(JSON.stringify({ format: 'ariva-backup-manifest/1', database: 'ariva', takenUtc: '2026-10-15T03:04:05Z',
+    extensions: { plpgsql: '1.0', timescaledb: '2.30.2', timescaledb_toolkit: '1.25.0' } }));
 } else if (remote[0] === 'bash' && remote[2] === 'backup') {
   process.stdout.write('pg_dump custom archive');
 } else if (remote[0] === 'tar' && remote.includes('-cf')) {
@@ -587,6 +664,11 @@ if (remote[0] === 'dd') {
 } else {
   const data = await readAll();
   record({ received: remote[0] === 'tar' ? 'tar' : remote[2], sha256: crypto.createHash('sha256').update(data).digest('hex') });
+  // ARV-244: check-dump reports the version the dump records: the one it was given when it matched, else the dump's own.
+  if (remote[2] === 'check-dump') {
+    const given = remote.indexOf('--timescaledb-version');
+    process.stdout.write(process.env.ARIVA_OPS_FAKE_REPORT ?? \`timescaledb \${given > 0 ? remote[given + 1] : '2.30.2'}\\n\`);
+  }
 }
 `;
 
@@ -618,7 +700,9 @@ async function selfTest() {
     ['context', ['dev', 'arn:aws:eks:me-central-1:123:cluster/ariva', 'user@cluster'], ['-x', 'a b', 'a;b', '']],
     ['login', ['ariva_app'], ['Ariva', 'a-b', "x';--"]],
     ['filesRoot', ['/app/data/files'], ['app/data', '/app/../etc', '/app data', '/']],
-    ['sha256', ['a'.repeat(64)], ['A'.repeat(64), 'a'.repeat(63), 'g'.repeat(64)]]
+    ['sha256', ['a'.repeat(64)], ['A'.repeat(64), 'a'.repeat(63), 'g'.repeat(64)]],
+    // ARV-244: a TimescaleDB version, a plain dotted number of two to four parts.
+    ['version', ['2.31.0', '2.30.2', '2.17', '1.2.3.4'], ['2.31.0-dev', '2', '2.31.0.', 'v2.31.0', ' 2.31.0', '2.31.0\n', '2..31', '1.2.3.4.5', "2.31.0';--", '$(id)', '']]
   ]) {
     for (const value of good) ok(check(kind, value) === value, `${kind} accepts ${value}`);
     for (const value of bad) refuses(() => check(kind, value), `${kind} refuses ${value}`);
@@ -718,7 +802,27 @@ async function selfTest() {
     assert.deepEqual(restorePlan.steps.map(s => s.kind), ['secure', 'run', 'decrypt', 'decrypt']); checks++;
     ok(restorePlan.steps[0].signature === path.resolve('m.json.sig'), 'the signature is read beside the manifest');
     ok(restorePlan.steps.filter(s => s.kind === 'decrypt').every(s => s.file === VERIFIED_COPY), 'both passes decrypt the verified copy only');
-    assert.deepEqual(restorePlan.steps[3].into[1].slice(-7), [POD_SCRIPT, 'restore', '--input', '-', '--dump-checked', '--runtime-login', 'ariva_app']); checks++;
+    assert.deepEqual(restorePlan.steps[3].into[1].slice(-9), [POD_SCRIPT, 'restore', '--input', '-', '--dump-checked', '--timescaledb-version', DUMP_VERSION,
+      '--runtime-login', 'ariva_app']); checks++;
+    // ARV-244: from a signed manifest the check pass is given its TimescaleDB version to compare, and reports the dump's.
+    assert.deepEqual(restorePlan.steps[2].into[1].slice(-6), [POD_SCRIPT, 'check-dump', '--input', '-', '--timescaledb-version', DUMP_VERSION]); checks++;
+    ok(restorePlan.steps[2].reportsVersion === true && restorePlan.steps[3].reportsVersion === undefined, 'the check pass reports the version, the restore pass gets it');
+    // The placeholder is filled only with a known, plain dotted version.
+    assert.deepEqual(withDumpVersion(['kubectl', ['restore', '--timescaledb-version', DUMP_VERSION]], { timescaledb: '2.30.2' }),
+      ['kubectl', ['restore', '--timescaledb-version', '2.30.2']]); checks++;
+    assert.deepEqual(withDumpVersion(['kubectl', ['check']], {}), ['kubectl', ['check']]); checks++;
+    for (const state of [{}, { timescaledb: '2.30.2 --dump-checked' }, { timescaledb: ['2.30.2'] }]) {
+      assert.throws(() => withDumpVersion(['kubectl', ['restore', '--timescaledb-version', DUMP_VERSION]], state), Refused, JSON.stringify(state)); checks++;
+    }
+    // The check pass's report: one line, a plain dotted version, the signed manifest's when one was given.
+    OUT.log = () => {};
+    ok(reportedVersion('timescaledb 2.30.2\n', undefined) === '2.30.2' && reportedVersion('timescaledb 2.30.2', '2.30.2') === '2.30.2', 'a report of the dump\'s version');
+    for (const [report, expected] of [['', undefined], [null, undefined], ['timescaledb\n', undefined], ['timescaledb 2.30.2-dev\n', undefined],
+      ['timescaledb 2.30.2\ntimescaledb 2.31.0\n', undefined], ['TimescaleDB 2.30.2\n', undefined], ['timescaledb $(id)\n', undefined],
+      ['timescaledb 2.31.0\n', '2.30.2']]) {
+      assert.throws(() => reportedVersion(report, expected), Refused, JSON.stringify(report)); checks++;
+    }
+    OUT.log = saved.out;
     for (const p of [backupPlan, restorePlan]) {
       for (const step of p.steps) {
         for (const cmd of [step.cmd, step.from, step.into].filter(Boolean)) {
@@ -806,12 +910,33 @@ async function selfTest() {
     ok(restored.filter(c => c.received === 'check-dump' || c.received === 'restore').every(c => c.sha256 === sha('pg_dump custom archive'))
       && restored.some(c => c.received === 'restore'), 'the pod receives the backed-up dump in both passes');
     ok(fs.readdirSync(tmpRoot).length === 0, 'the private folder is removed after a restore');
+    // ARV-244: the signed manifest's TimescaleDB version goes to the check pass, which compares it with the dump's own, and then
+    // to the restore pass.
+    const remoteOf = (list, command) => list.find(c => c.tool === 'kubectl' && c.remote[0] === 'bash' && c.remote[2] === command)?.remote ?? [];
+    assert.deepEqual(remoteOf(restored, 'check-dump').slice(2), ['check-dump', '--input', '-', '--timescaledb-version', '2.30.2']); checks++;
+    ok(remoteOf(restored, 'restore').join(' ').includes('restore --input - --dump-checked --timescaledb-version 2.30.2'), 'the restore pass gets the signed manifest\'s version');
+    ok(logged.some(line => line.startsWith('TimescaleDB of the backup: 2.30.2 (the signed manifest\'s);'))
+      && logged.includes('the dump records TimescaleDB 2.30.2, as its signed manifest says'), 'the version is printed, and the dump\'s check confirmed it');
     clear();
     await main(['files-restore', '--namespace', 'ariva', '--in', tarFile, '--identity', identity, ...signed()]);
     ok(calls().some(c => c.received === 'tar' && c.sha256 === sha('tar archive')), 'the files restore receives the backed-up tar');
     clear();
     await main(restore(['--sha256', sha256File(dump)]));
     ok(calls().some(c => c.received === 'restore'), 'a SHA-256 from the operator\'s own log is the one alternative');
+    // ARV-244: with --sha256 there is no signed version: the check pass is given none, reports the dump's own, and the restore
+    // pass gets that.
+    clear();
+    logged.length = 0;
+    process.env.ARIVA_OPS_FAKE_REPORT = 'timescaledb 2.29.1\n';
+    try {
+      await main(restore(['--sha256', sha256File(dump)]));
+    } finally {
+      delete process.env.ARIVA_OPS_FAKE_REPORT;
+    }
+    const fromDump = calls();
+    ok(remoteOf(fromDump, 'check-dump').length > 0 && !remoteOf(fromDump, 'check-dump').includes('--timescaledb-version'), 'with --sha256 the check pass is given no version');
+    ok(remoteOf(fromDump, 'restore').join(' ').includes('restore --input - --dump-checked --timescaledb-version 2.29.1'), 'the restore pass gets the version read from the dump');
+    ok(logged.some(line => line.startsWith('TimescaleDB of the backup: 2.29.1 (read from the dump, whose SHA-256 you gave);')), 'the version read from the dump is printed');
 
     // Refusals: each before any kubectl step, each leaving no private folder.
     const refused = async (argv, pattern, what) => {
@@ -868,12 +993,53 @@ async function selfTest() {
     ok(calls().some(c => c.received === 'restore'), '--force-namespace restores a set from before ARV-183');
     const restorePlan183 = plan(parse(['restore', '--namespace', 'ariva', '--in', 'x.dump.age', '--identity', 'id', '--sha256', 'a'.repeat(64),
       '--allow-extension', 'pg_stat_statements', '--allow-login', 'replicator', '--allow-setting', 'work_mem']));
-    assert.deepEqual(restorePlan183.steps.at(-1).into[1].slice(-10), ['restore', '--input', '-', '--dump-checked', '--allow-extension', 'pg_stat_statements',
-      '--allow-login', 'replicator', '--allow-setting', 'work_mem'], 'the restore\'s own check lets what is allowed pass'); checks++;
+    assert.deepEqual(restorePlan183.steps.at(-1).into[1].slice(-12), ['restore', '--input', '-', '--dump-checked', '--timescaledb-version', DUMP_VERSION,
+      '--allow-extension', 'pg_stat_statements', '--allow-login', 'replicator', '--allow-setting', 'work_mem'], 'the restore\'s own check lets what is allowed pass'); checks++;
     assert.deepEqual(restorePlan183.steps.at(-2).into[1].slice(-5), ['check-dump', '--input', '-', '--allow-extension', 'pg_stat_statements'],
       'the dump\'s check lets the allowed extension\'s entries pass (ARV-183 review)'); checks++;
     await refused(['files-restore', '--namespace', 'ariva', '--in', tarFile, '--identity', identity, ...signed(path.join(older, 'm.json'))],
       /names no namespace/, 'a files archive of a set that names no namespace');
+
+    // ARV-244: a signed manifest without a TimescaleDB version, or with one that is not a plain dotted number, is refused before
+    // any kubectl step; the files restore needs none.
+    const withVersion = (name, version) => {
+      const changed = JSON.parse(text);
+      if (version === undefined) delete changed.database.extensions.timescaledb;
+      else changed.database.extensions.timescaledb = version;
+      const folder = elsewhere(name, { 'm.json': JSON.stringify(changed, null, 2) + '\n' });
+      keygen(['-Y', 'sign', '-f', path.join(temp, 'key-a'), '-n', SIGNATURE_NAMESPACE, path.join(folder, 'm.json')]);
+      return path.join(folder, 'm.json');
+    };
+    await refused(restore(signed(withVersion('manifest-no-version', undefined))), /names no TimescaleDB version \(database\.extensions\.timescaledb\)/,
+      'a signed manifest without a TimescaleDB version');
+    for (const [index, version] of ['2.30.2-dev', '2.30.2; DROP EXTENSION timescaledb', '2.30.2 --allow-login x', '$(id)', '2', '1.2.3.4.5', ' 2.30.2', '', 2302,
+      ['2.30.2']].entries()) {
+      await refused(restore(signed(withVersion(`manifest-bad-version-${index}`, version))),
+        /TimescaleDB version \(database\.extensions\.timescaledb\) is not a plain dotted number/, `a signed manifest's TimescaleDB version ${JSON.stringify(version)}`);
+    }
+    clear();
+    await main(['files-restore', '--namespace', 'ariva', '--in', tarFile, '--identity', identity, ...signed(withVersion('files-no-version', undefined))]);
+    ok(calls().some(c => c.received === 'tar'), 'the files restore needs no TimescaleDB version');
+
+    // ARV-244: what the check pass reports, refused after it and before the restore pass: no report, a version that is not a
+    // plain dotted number, two versions, a report past its bound, and (signed) another version than the manifest's.
+    const refusedAfterCheck = async (argv, report, pattern, what) => {
+      clear();
+      process.env.ARIVA_OPS_FAKE_REPORT = report;
+      try {
+        await assert.rejects(main(argv), pattern, what);
+      } finally {
+        delete process.env.ARIVA_OPS_FAKE_REPORT;
+      }
+      ok(calls().some(c => c.received === 'check-dump') && remoteOf(calls(), 'restore').length === 0, `${what}: refused after the check pass, before the restore pass`);
+      ok(fs.readdirSync(tmpRoot).length === 0, `${what}: no private folder left behind`);
+    };
+    for (const [report, what] of [['', 'no report'], ['timescaledb 2.29.1-dev\n', 'a version with a suffix'], ['timescaledb 2.29.1 --allow-login x\n', 'an option after the version'],
+      ['timescaledb 2.29.1\ntimescaledb 2.30.2\n', 'two versions'], ['timescaledb 2.29.1\n' + 'x'.repeat(DUMP_VERSION_REPORT_BYTES), 'a report past its bound']]) {
+      await refusedAfterCheck(restore(['--sha256', sha256File(dump)]), report, /did not report the TimescaleDB version|is not a plain dotted number/, `--sha256 and ${what}`);
+    }
+    await refusedAfterCheck(restore(signed()), 'timescaledb 2.31.0\n', /the dump records TimescaleDB 2\.31\.0, its signed manifest 2\.30\.2: refused before the restore/,
+      'a dump whose check reports another version than its signed manifest');
 
     // ARV-183 review: allowed-signers lines ssh-keygen reads as a pattern (or a certificate authority) for ops-a, though a looser
     // reading saw a plain name or a comment, so a manifest signed by the foreign key b would verify as ops-a; refused whatever
@@ -894,7 +1060,8 @@ async function selfTest() {
     logged.length = 0;
     await main([...restore(signed()), '--plan']);
     ok(logged.some(line => line === `manifest signature verified: signed by ops-a with the key ${fingerprintOf('a')}`)
-      && logged.some(line => line.startsWith('backup set: namespace ariva, taken 2026-10-15T03:04:05Z (UTC), database ariva;')), '--plan prints the verified preview');
+      && logged.some(line => line.startsWith('backup set: namespace ariva, taken 2026-10-15T03:04:05Z (UTC), database ariva;'))
+      && logged.some(line => line.startsWith('TimescaleDB of the backup: 2.30.2 (the signed manifest\'s);')), '--plan prints the verified preview, the TimescaleDB version included');
     ok(calls().length === 0 && fs.readdirSync(tmpRoot).length === 0, '--plan starts nothing and leaves no private folder');
     await refused(['restore', '--namespace', 'ariva-other', '--in', dump, '--identity', identity, ...signed(), '--plan'], /a backup of the namespace ariva, not ariva-other/,
       '--plan of another namespace\'s set');

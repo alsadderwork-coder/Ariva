@@ -399,13 +399,18 @@ public sealed partial class OpsScriptTests
     {
         // ARV-126, ARV-236 and ARV-290 (CWE-269): the database superuser runs TimescaleDB's restore mode steps, the extensions' update and one grant,
         // each a constant statement in a quoted heredoc with no psql variable, option or command string that could carry a value,
-        // and pg_restore of a dump whose origin the signed manifest decides. Nothing else runs as the superuser.
+        // and pg_restore of a dump whose origin the signed manifest decides. ARV-244: a restore of an older TimescaleDB's dump also
+        // drops the image's extension from the empty database and creates it at the dump's version, the one psql variable a
+        // superuser statement takes (validated as a plain dotted number and found among the versions the image ships first).
+        // Nothing else runs as the superuser.
         var text = Script.Value;
         var calls = SuperuserCall().Matches(text).ToList();
 
         calls.Select(call => call.Groups["sql"].Value.Trim()).Should().BeEquivalentTo(
             ["SELECT public.timescaledb_pre_restore();", "SELECT public.timescaledb_post_restore();", "ALTER EXTENSION timescaledb UPDATE;",
              "ALTER EXTENSION timescaledb_toolkit UPDATE;",
+             // ARV-244: the empty database's extension at the dump's version, each statement the first of its session.
+             "DROP EXTENSION timescaledb;", "CREATE EXTENSION timescaledb SCHEMA public VERSION :'version';",
              // ARV-290: SET on the temporary file cap for ariva_migration, the group role the migration login holds (grant-settings).
              "GRANT SET ON PARAMETER temp_file_limit TO ariva_migration;",
              // ARV-183: check reads the settings files, views only the superuser may read; its review: with nothing named through
@@ -413,7 +418,15 @@ public sealed partial class OpsScriptTests
              // every file but the server's postgresql.conf, what the files say and what the server applied from them.
              "SELECT pg_catalog.regexp_replace(x.line, '[[:cntrl:]]', '?', 'g') FROM (SELECT coalesce(s.name, 'an unreadable entry') OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) s.sourcefile AS line FROM pg_catalog.pg_file_settings s WHERE s.sourcefile OPERATOR(pg_catalog.<>) pg_catalog.current_setting('config_file') UNION SELECT s.name OPERATOR(pg_catalog.||) '|' OPERATOR(pg_catalog.||) s.sourcefile FROM pg_catalog.pg_settings s WHERE s.sourcefile OPERATOR(pg_catalog.<>) pg_catalog.current_setting('config_file')) x ORDER BY 1;"],
             "each superuser session runs one fixed statement");
-        calls.Select(call => call.Groups["args"].Value.Trim()).Should().OnlyContain(args => args.Length == 0 || args == "--tuples-only --no-align");
+        calls.Select(call => call.Groups["args"].Value.Trim()).Should().OnlyContain(args => args.Length == 0 || args == "--tuples-only --no-align"
+            || args == "--set=version=\"$version\"");
+        // ARV-244: the version variable reaches the creation of the extension only, which names it as a quoted literal.
+        calls.Where(call => call.Groups["args"].Value.Contains("--set=", StringComparison.Ordinal)).Select(call => call.Groups["sql"].Value.Trim()).Should()
+            .Equal("CREATE EXTENSION timescaledb SCHEMA public VERSION :'version';");
+        text.Should().Contain("valid_version() { [[ \"$1\" =~ ^[0-9]{1,6}(\\.[0-9]{1,6}){1,3}$ ]]; }", "the version is a plain dotted number before it reaches psql");
+        // Its review: both commands that take the option (check-dump and restore) validate it, and nothing else reads it.
+        Regex.Matches(text, Regex.Escape("--timescaledb-version) (($# >= 2)) || usage; valid_version \"$2\" || die ")).Count.Should().Be(2);
+        Regex.Matches(text, Regex.Escape("--timescaledb-version)")).Count.Should().Be(2);
         calls.Select(call => call.Groups["prefix"].Value.Trim()).Should().OnlyContain(prefix => prefix.Length == 0 || prefix == "PGOPTIONS='-c lock_timeout=30s'",
             "nothing but a startup option precedes a call on its line, so the update stays its session's first statement");
         Regex.Matches(text, @"\bas_superuser\b").Count.Should().Be(calls.Count + 1, "as_superuser is defined once and called only as above");
@@ -437,8 +450,12 @@ public sealed partial class OpsScriptTests
             "PGPASSWORD=\"$MIGRATION_PASSWORD\" PGAPPNAME=ariva-ops PGCONNECT_TIMEOUT=15 psql --no-psqlrc --quiet --no-password \\",
             "PGOPTIONS=\"${PGOPTIONS:+$PGOPTIONS }-c search_path=pg_catalog,pg_temp\" PGAPPNAME=ariva-ops psql --no-psqlrc --quiet --no-password --set=ON_ERROR_STOP=1 \\",
             "PGPASSWORD=\"$MIGRATION_PASSWORD\" PGAPPNAME=ariva-ops pg_dump \"${args[@]}\"",
-            "toc=\"$(pg_restore --list)\" || die \"the input is not a custom-format dump\"",
-            "toc=\"$(pg_restore --list \"$input\")\" || die \"$input is not a custom-format dump\"",
+            // ARV-244: the dump's table of contents and its TimescaleDB catalog's metadata rows, from one pass over stdin or from a
+            // file; its review: each reader a background process the script can stop, each read bounded by head through a FIFO.
+            "pg_restore --data-only --schema=_timescaledb_catalog --table=metadata --file=- <\"$folder/dump\" >\"$folder/rows\" &",
+            "pg_restore --list <\"$folder/list\" >\"$folder/entries\" &",
+            "pg_restore --data-only --schema=_timescaledb_catalog --table=metadata --file=- \"$input\" >\"$folder/rows\" &",
+            "pg_restore --list \"$input\" >\"$folder/entries\" &",
             "PGAPPNAME=ariva-ops pg_restore \"${args[@]}\"",
             "PGAPPNAME=ariva-ops pg_restore \"${args[@]}\" \"$input\""
         ]);

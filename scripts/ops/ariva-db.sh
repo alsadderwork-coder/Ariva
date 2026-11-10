@@ -10,13 +10,20 @@
 # Commands (stdout carries data only: a dump, a manifest or a report; messages go to stderr):
 #   backup [--output FILE|-]        pg_dump (custom format) as the migration login; "-" (the default) streams to stdout
 #   manifest                        JSON about the database (versions, scripts, key ring certificates); no secret
-#   check-dump [--input FILE|-] [--allow-extension NAME]...
+#   check-dump [--input FILE|-] [--allow-extension NAME]... [--timescaledb-version VERSION]
 #                                   reads a dump's table of contents (kinds, names, owners; not the SQL) and refuses one
-#                                   this script would not restore
-#   restore --input FILE [--runtime-login NAME] [--reader-login NAME] [--allow-extension NAME]... [--allow-login NAME]...
-#           [--allow-setting NAME]...
-#                                   restores a dump into an empty database (see the order below)
-#   restore --input - --dump-checked [...]   the same from stdin, after check-dump has read the same stream
+#                                   this script would not restore; since ARV-244 also reads the TimescaleDB version the dump
+#                                   records (its _timescaledb_catalog.metadata row), refuses a dump that records none or
+#                                   another than the one given, and prints it on stdout ("timescaledb 2.31.0")
+#   restore --input FILE [--timescaledb-version VERSION] [--runtime-login NAME] [--reader-login NAME] [--allow-extension NAME]...
+#           [--allow-login NAME]... [--allow-setting NAME]...
+#                                   restores a dump into an empty database (see the order below); since ARV-244 into the
+#                                   TimescaleDB version the dump records: refused before anything changes when the image does
+#                                   not ship it, created at it first when the database has another, updated to the image's
+#                                   after the restore (as update-extensions does)
+#   restore --input - --dump-checked --timescaledb-version VERSION [...]
+#                                   the same from stdin, after check-dump has read the same stream; VERSION is the signed
+#                                   manifest's, or the one check-dump printed (ariva-ops.mjs passes it)
 #   check [--runtime-login NAME] [--reader-login NAME] [--allow-extension NAME]... [--allow-login NAME]... [--allow-setting NAME]...
 #                                   owners, the runtime role's privileges, members of Ariva's roles, no C, untrusted-language
 #                                   or SECURITY DEFINER function (but Ariva's retention purge exactly as script 0054 ships
@@ -102,7 +109,13 @@
 # when planted_objects finds nothing. Every superuser session runs with the search path pinned to the
 # system catalog by a startup option, which no setting of the database owner overrides, and the restore mode functions are
 # named with their schema (ARV-183 review). grant-settings is one more (ARV-290): one constant GRANT SET ON PARAMETER of
-# temp_file_limit to ariva_migration, the group role the migration login holds, which only a superuser may give. Nothing
+# temp_file_limit to ariva_migration, the group role the migration login holds, which only a superuser may give. A restore of
+# a dump taken under an older TimescaleDB (ARV-244) adds two in the empty database, before restore mode: DROP EXTENSION
+# timescaledb, the extension the image created, and CREATE EXTENSION timescaledb in schema public (where the image has it)
+# at the dump's version, each the first and
+# only statement of a session of its own (a session that loaded one version's library cannot create another); the version
+# reaches it only as a psql variable (:'version'), after it passed valid_version and was found among the versions the image
+# ships, with its own install script and library. After the restore the update is update-extensions' own. Nothing
 # else runs as the superuser. The runtime login is never in a backup: the
 # migration job
 # (api-main --migrate) creates it after a restore with the deployment's own password.
@@ -114,7 +127,10 @@
 # ARV-263's review check-dump takes TimescaleDB's data only for the tables a dump of it carries (TIMESCALE_CATALOG_DATA) and
 # for chunks and TimescaleDB's own hypertables, and restore judges the jobs it brought while TimescaleDB's restore mode still
 # keeps the scheduler away (restore_job_gate): a job that would run otherwise than this release makes it keeps the database
-# in restore mode and stops the restore, since a job runs as its owner as soon as that mode ends.
+# in restore mode and stops the restore, since a job runs as its owner as soon as that mode ends. The TimescaleDB version a
+# restore creates the extension at (ARV-244) comes from the same places: the signed manifest's, which check-dump compares with
+# the version the dump itself records, or with --sha256 the dump's own; never from an unsigned input. After pg_restore the
+# restored catalog must record that version too, or the database stays in restore mode.
 #
 # Inputs (CWE-78). Every value is checked against a strict pattern before use, every command is an argument array (no
 # eval, no shell given a command string, no string built into a command line), and values reach SQL only as psql
@@ -486,6 +502,8 @@ readonly ARIVA_SYSTEM_FUNCTIONS="17=a077d5c8f23e6197ffa3ba07f2e8cd7931441f7fe639
 # not a failure. check sets check_not_compared when it reported such a database, so that restore's last line says what to do.
 check_after_restore=0
 check_not_compared=0
+# ARV-244 review: set while a restore checks the restored database before the extensions' update (cmd_restore).
+check_before_update=0
 
 # The migration password stays in this shell; children get it only as PGPASSWORD of the migration login's connections.
 MIGRATION_PASSWORD="${ARIVA_MIGRATION_PASSWORD:-}"
@@ -506,6 +524,8 @@ valid_identifier() { [[ "$1" =~ ^[a-z_][a-z0-9_]{0,62}$ ]]; }
 valid_file() { [[ "$1" == "-" ]] || { [[ "$1" =~ ^/[A-Za-z0-9._/-]{1,255}$ ]] && [[ "$1" != *..* ]]; }; }
 valid_sha256() { [[ "$1" =~ ^[0-9A-Fa-f]{64}$ ]]; }
 valid_setting() { [[ "$1" =~ ^[a-z_][a-z0-9_]{0,62}(\.[a-z_][a-z0-9_]{0,62})?$ ]]; }
+# ARV-244: a TimescaleDB version as its releases are named, a plain dotted number (two to four parts), nothing else.
+valid_version() { [[ "$1" =~ ^[0-9]{1,6}(\.[0-9]{1,6}){1,3}$ ]]; }
 
 check_settings() {
   valid_identifier "$DATABASE" || die "the database name is not a plain lower-case identifier"
@@ -525,7 +545,8 @@ as_migration() {
 
 # psql as the database superuser over the local socket (peer authentication; the restore's TimescaleDB steps, the
 # extensions' update, check's read of the ALTER SYSTEM settings and grant-settings' grant only: OpsScriptTests holds every
-# call to one of six fixed statements). The search path is the system catalog's for the whole session, a startup option that wins over any
+# call to one of eight fixed statements, the only psql variable among them the restore's validated TimescaleDB version,
+# ARV-244). The search path is the system catalog's for the whole session, a startup option that wins over any
 # setting the database owner made (ALTER DATABASE ... SET search_path), so no object the migration login can create in a
 # schema of its own is picked up by a name in these statements (ARV-183 review); a caller's startup options come first.
 as_superuser() {
@@ -686,44 +707,201 @@ check_toc() {
   say "dump checked: $entries entries, every object owned by $LOGIN"
 }
 
-read_toc() {
-  local input="$1" toc
-  if [[ "$input" == "-" ]]; then
-    toc="$(pg_restore --list)" || die "the input is not a custom-format dump"
-    # Read the rest of the stream, so its writer (the decryption) authenticates all of it before the restore pass.
-    cat >/dev/null
-  else
-    [[ -f "$input" ]] || die "no dump at $input"
-    toc="$(pg_restore --list "$input")" || die "$input is not a custom-format dump"
+# ARV-244: a dump's table of contents (DUMP_TOC) and the TimescaleDB version it records (DUMP_TIMESCALEDB, empty when it
+# records none in the form read here). The version is the timescaledb_version row of _timescaledb_catalog.metadata, one of the
+# extension's configuration tables, whose rows pg_dump carries (all but uuid): the table of contents and the dump's EXTENSION
+# entry name no version (CREATE EXTENSION IF NOT EXISTS timescaledb WITH SCHEMA public). From stdin it is one pass: tee hands
+# the stream to a second pg_restore through a FIFO, and cat reads what is left, so the stream's writer (the decryption)
+# authenticates all of it before the restore pass. pg_restore reads the FIFO as its stdin, which it reads in order (given as a
+# file name it would seek). Its review: what both reads write goes through head into a private folder (mktemp, 0700, under
+# the pod's /tmp, an emptyDir of 64Mi whose overrun evicts the pod) and is refused past its bound, so a forged dump fills
+# neither /tmp nor the shell's memory. The metadata table's rows are about 1 KiB (64 KiB bound). The table of contents grows
+# with the chunks, measured in the review at about 400 bytes an uncompressed chunk and 750 a compressed one: at the retention
+# bounds' most (3650 days), sensing_event and device_health_event (compressed) and sensing_batch and lane_staffing (not) hold
+# 14,600 daily chunks, about 8.4 MB, the other hypertables about 0.3 MB, and each of the seven weekly ones without retention
+# adds about 21 KB a year, hence 16 MiB. The folder is removed before check_toc runs, so its here-strings (bash writes one
+# past a pipe's size to a temporary file under /tmp, one at a time) never sit beside it. Each reader is a background process
+# whose PID is kept, and the script waits for them, so TERM, HUP or INT stops every one of them and removes the folder
+# (stop_read_dump), from a file as from stdin.
+METADATA_MAX_BYTES=65536
+TOC_MAX_BYTES=16777216
+DUMP_TOC=""
+DUMP_TIMESCALEDB=""
+READ_FOLDER=""
+READ_PIDS=()
+stop_readers() {
+  local pid
+  for pid in "${READ_PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  READ_PIDS=()
+}
+
+# Also on an exit while readers run (a die, a failed command): none outlives the script, none is left on a FIFO.
+remove_read_folder() {
+  stop_readers
+  if [[ -n "$READ_FOLDER" ]]; then
+    rm -f "$READ_FOLDER/dump" "$READ_FOLDER/list" "$READ_FOLDER/rows" "$READ_FOLDER/entries" "$READ_FOLDER/toc" "$READ_FOLDER/metadata"
+    rmdir "$READ_FOLDER" 2>/dev/null || true
+    READ_FOLDER=""
   fi
-  printf '%s' "$toc"
+}
+
+# A signal while the dump is read: every reader stopped, the folder removed, and the script ends as the signal would.
+stop_read_dump() {
+  trap - HUP INT TERM
+  remove_read_folder
+  say "stopped while the dump was read: its readers were stopped and their folder removed; nothing was restored"
+  exit "$1"
+}
+
+read_dump() {
+  local input="$1" status=0 folder pid tee_pid=""
+  [[ "$input" == "-" || -f "$input" ]] || die "no dump at $input"
+  trap 'stop_read_dump 129' HUP
+  trap 'stop_read_dump 130' INT
+  trap 'stop_read_dump 143' TERM
+  READ_FOLDER="$(mktemp -d)" || die "cannot create a private folder under ${TMPDIR:-/tmp} for what the dump's reads write"
+  folder="$READ_FOLDER"
+  trap remove_read_folder EXIT
+  : >"$folder/toc"
+  : >"$folder/metadata"
+  # Every FIFO before any reader, so that no reader waits on one that a refusal never made.
+  mkfifo "$folder/rows" "$folder/entries" || die "cannot create the FIFOs the dump is read through in $folder"
+  [[ "$input" != "-" ]] || mkfifo "$folder/dump" "$folder/list" || die "cannot create the FIFOs the dump's stream is read through in $folder"
+  # Each opens its FIFOs itself (in the background), so none blocks the script; the explicit <&0 keeps tee on the stream.
+  head -c "$((METADATA_MAX_BYTES + 1))" <"$folder/rows" >"$folder/metadata" &
+  READ_PIDS+=("$!")
+  head -c "$((TOC_MAX_BYTES + 1))" <"$folder/entries" >"$folder/toc" &
+  READ_PIDS+=("$!")
+  if [[ "$input" == "-" ]]; then
+    pg_restore --data-only --schema=_timescaledb_catalog --table=metadata --file=- <"$folder/dump" >"$folder/rows" &
+    READ_PIDS+=("$!")
+    pg_restore --list <"$folder/list" >"$folder/entries" &
+    READ_PIDS+=("$!")
+    tee --output-error=warn-nopipe "$folder/dump" <&0 >"$folder/list" &
+    tee_pid="$!"
+    READ_PIDS+=("$tee_pid")
+    wait "$tee_pid" || status=1
+    cat <&0 >/dev/null &
+    READ_PIDS+=("$!")
+  else
+    pg_restore --data-only --schema=_timescaledb_catalog --table=metadata --file=- "$input" >"$folder/rows" &
+    READ_PIDS+=("$!")
+    pg_restore --list "$input" >"$folder/entries" &
+    READ_PIDS+=("$!")
+  fi
+  for pid in "${READ_PIDS[@]}"; do
+    [[ "$pid" != "$tee_pid" ]] || continue
+    wait "$pid" || status=1
+  done
+  READ_PIDS=()
+  # The signal traps stay until the folder is removed: a TERM taken by default between the two left the folder behind in the
+  # review's second round (the EXIT trap did not run in those runs).
+  (($(wc -c <"$folder/toc") <= TOC_MAX_BYTES)) \
+    || die "the dump's table of contents is larger than 16 MiB, more than this release's retention bounds produce at their most (about 9 MB): refused; nothing was restored"
+  (($(wc -c <"$folder/metadata") <= METADATA_MAX_BYTES)) \
+    || die "the dump's TimescaleDB catalog metadata (_timescaledb_catalog.metadata) is larger than 64 KiB, which TimescaleDB's is not: refused; nothing was restored"
+  if ((status != 0)); then
+    [[ "$input" == "-" ]] && die "the input is not a custom-format dump"
+    die "$input is not a custom-format dump"
+  fi
+  DUMP_TOC="$(<"$folder/toc")"
+  local metadata
+  metadata="$(<"$folder/metadata")"
+  remove_read_folder
+  trap - EXIT
+  trap - HUP INT TERM
+  DUMP_TIMESCALEDB="$(metadata_version "$metadata")"
+}
+
+# The value of the timescaledb_version row in the plain SQL pg_restore writes for _timescaledb_catalog.metadata's data (COPY
+# text: key, value and include_in_telemetry, tab-separated), across every COPY block of that table; empty unless exactly one
+# such row is there.
+metadata_version() {
+  local line copy=0 key value rest found="" rows=0
+  while IFS= read -r line; do
+    if ((copy == 0)); then
+      [[ "$line" == "COPY _timescaledb_catalog.metadata (key, value, "*") FROM stdin;" ]] && copy=1
+    elif [[ "$line" == '\.' ]]; then
+      copy=0
+    else
+      IFS=$'\t' read -r key value rest <<<"$line"
+      if [[ "$key" == timescaledb_version ]]; then
+        found="$value"
+        rows=$((rows + 1))
+      fi
+    fi
+  done <<<"$1"
+  ((rows == 1)) || found=""
+  printf '%s' "$found"
+}
+
+# ARV-244 (CWE-345): the dump's own TimescaleDB version, the one a restore creates the extension at; given one (the signed
+# manifest's, through ariva-ops.mjs), the two must agree. A value the dump holds is never printed unless it passed
+# valid_version.
+check_dump_version() {
+  local expected="$1"
+  [[ -n "$DUMP_TIMESCALEDB" ]] || die "the dump records no TimescaleDB version (no single timescaledb_version row in _timescaledb_catalog.metadata), so it cannot be restored into its own version; nothing was restored"
+  valid_version "$DUMP_TIMESCALEDB" || die "the TimescaleDB version the dump records is not a plain dotted number: refused; nothing was restored"
+  [[ -z "$expected" || "$expected" == "$DUMP_TIMESCALEDB" ]] \
+    || die "the dump records TimescaleDB $DUMP_TIMESCALEDB, not the $expected given (the signed manifest's): refused; nothing was restored"
+  say "the dump records TimescaleDB $DUMP_TIMESCALEDB"
 }
 
 cmd_check_dump() {
-  local input="-" extensions=()
+  local input="-" extensions=() expected=""
   while (($#)); do
     case "$1" in
       --input) (($# >= 2)) || usage; input="$2"; shift 2 ;;
       --allow-extension) (($# >= 2)) || usage; valid_identifier "$2" || die "--allow-extension must be a plain lower-case identifier"; extensions+=("$2"); shift 2 ;;
+      --timescaledb-version) (($# >= 2)) || usage; valid_version "$2" || die "--timescaledb-version must be a plain dotted number (for example 2.31.0)"
+        expected="$2"; shift 2 ;;
       *) usage ;;
     esac
   done
   valid_file "$input" || die "--input must be - or a plain absolute path"
   valid_identifier "$LOGIN" || die "set ARIVA_MIGRATION_LOGIN (or --login) to the migration login"
-  local toc
-  toc="$(read_toc "$input")"
-  check_toc "$toc" "${extensions[@]}"
+  read_dump "$input"
+  check_toc "$DUMP_TOC" "${extensions[@]}"
+  check_dump_version "$expected"
+  printf 'timescaledb %s\n' "$DUMP_TIMESCALEDB"
+}
+
+# ARV-244: refuses, before anything changes, a dump of a TimescaleDB version this image cannot restore into: one it does not
+# ship, that is one missing from pg_available_extension_versions or whose own install script or library the image lacks (an
+# older version can be listed there only as the end of a downgrade script, as 2.16.1 is in pg17-ts2.31, and creating it then
+# fails once the image's extension is dropped), or one it ships but cannot update to its own (no update path). A dump newer
+# than the image is one it does not ship: roll the image forward.
+require_shipped_version() {
+  local version="$1" shipped="$2" row available path sharedir libdir
+  [[ "$version" != "$shipped" ]] || return 0
+  row="$(as_migration_catalog --tuples-only --no-align --field-separator='|' --set=version="$version" <<'SQL'
+SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_available_extension_versions v WHERE v.name = 'timescaledb' AND v.version = :'version'),
+       EXISTS (SELECT 1 FROM pg_catalog.pg_extension_update_paths('timescaledb') u
+                 JOIN pg_catalog.pg_available_extensions a ON a.name = 'timescaledb' AND u.target = a.default_version
+                WHERE u.source = :'version' AND u.path IS NOT NULL);
+SQL
+)" || die "the TimescaleDB versions the image ships could not be read as $LOGIN"
+  IFS='|' read -r available path <<<"$row"
+  sharedir="$(pg_config --sharedir)" || die "pg_config is not on the PATH: run this script in the TimescaleDB pod"
+  libdir="$(pg_config --pkglibdir)" || die "pg_config is not on the PATH: run this script in the TimescaleDB pod"
+  if [[ "$available" != "t" || ! -f "$sharedir/extension/timescaledb--$version.sql" || ! -f "$libdir/timescaledb-$version.so" ]]; then
+    die "the dump is of TimescaleDB $version, which this image does not ship (it ships $shipped and older versions with their own library): restore it on a server whose image ships $version (wiki 04 section 10.4); nothing was changed"
+  fi
+  [[ "$path" == "t" ]] || die "the dump is of TimescaleDB $version, which this image ships but has no update from to its own $shipped: restore it on a server whose image ships $version (wiki 04 section 10.4); nothing was changed"
 }
 
 RESTORING=0
 # ARV-263 review: set while a restore has not yet had its jobs passed by restore_job_gate (from restore mode's start), so
 # that a restore refused, failed or stopped leaves the database in restore mode and none of the dump's jobs runs.
 KEEP_RESTORING=0
+# ARV-244 review: returns 1 when timescaledb_post_restore() failed, so a restore stops there, before any update or check.
 end_restore_mode() {
   if ((RESTORING == 1)); then
     RESTORING=0
     say "leaving TimescaleDB's restore mode"
-    as_superuser --tuples-only --no-align <<'SQL' >/dev/null || say "timescaledb_post_restore() failed; run it as the superuser before anything else"
+    as_superuser --tuples-only --no-align <<'SQL' >/dev/null || { say "timescaledb_post_restore() failed: TimescaleDB may still be in restore mode"; return 1; }
 SELECT public.timescaledb_post_restore();
 SQL
   fi
@@ -734,10 +912,69 @@ on_restore_exit() {
   if ((KEEP_RESTORING == 1)); then
     ((RESTORING == 0)) || say "the database stays in TimescaleDB's restore mode, so that no job of the dump runs before it is judged: drop it, and restore a backup you trust into an empty database (a new volume)."
   else
-    end_restore_mode
+    end_restore_mode || true
   fi
   if ((status != 0)); then
     say "the restore did not finish: the database is partly restored. Start again from an empty database (a new volume) after fixing the cause."
+  fi
+}
+
+# ARV-244 review: set from just before the image's TimescaleDB is dropped until the dump's version is created, so that a restore
+# that stops between the two (a failure, a signal) says the database may have no TimescaleDB left.
+REPLACING_EXTENSION=0
+on_replace_exit() {
+  local status=$?
+  if ((status != 0 && REPLACING_EXTENSION == 1)); then
+    say "the restore stopped after the image's TimescaleDB was dropped from $DATABASE and before the dump's version was created: the database may have no TimescaleDB extension, and nothing was restored. Start again from an empty database (a new volume)."
+  fi
+}
+
+# ARV-244 review (CWE-269): what CREATE EXTENSION timescaledb could collide with once the image's extension is dropped from the
+# empty database, so that a collision refuses the restore before the DROP rather than fails the CREATE after it: a function,
+# operator, type or schema outside the system's schemas that belongs to no extension (schema public excepted; a relation's
+# row type and an array type go with what they belong to, relations being judged by the empty database's own check). In an
+# empty database created by the chart there is none. One line per object.
+foreign_objects() {
+  as_migration_catalog --tuples-only --no-align <<'SQL'
+WITH members AS (
+    SELECT d.classid, d.objid FROM pg_catalog.pg_depend d
+     WHERE d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass AND d.deptype = 'e'),
+system AS (
+    SELECT n.oid FROM pg_catalog.pg_namespace n
+     WHERE n.nspname IN ('pg_catalog', 'information_schema', 'pg_toast') OR n.nspname LIKE 'pg\_temp\_%' OR n.nspname LIKE 'pg\_toast\_temp\_%')
+SELECT pg_catalog.regexp_replace(x.line, '[[:cntrl:]]', '?', 'g') FROM (
+    SELECT 'function ' || n.nspname || '.' || p.proname AS line
+      FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+     WHERE p.pronamespace NOT IN (SELECT oid FROM system)
+       AND NOT EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND m.objid = p.oid)
+    UNION
+    SELECT 'operator ' || n.nspname || '.' || o.oprname
+      FROM pg_catalog.pg_operator o JOIN pg_catalog.pg_namespace n ON n.oid = o.oprnamespace
+     WHERE o.oprnamespace NOT IN (SELECT oid FROM system)
+       AND NOT EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_operator'::pg_catalog.regclass AND m.objid = o.oid)
+    UNION
+    SELECT 'type ' || n.nspname || '.' || t.typname
+      FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+     WHERE t.typnamespace NOT IN (SELECT oid FROM system)
+       AND (t.typrelid = 0 OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid AND c.relkind = 'c'
+                                         AND NOT EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_class'::pg_catalog.regclass AND m.objid = c.oid)))
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type e WHERE e.typarray = t.oid)
+       AND NOT EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_type'::pg_catalog.regclass AND m.objid = t.oid)
+    UNION
+    SELECT 'schema ' || n.nspname
+      FROM pg_catalog.pg_namespace n
+     WHERE n.oid NOT IN (SELECT oid FROM system) AND n.nspname <> 'public'
+       AND NOT EXISTS (SELECT 1 FROM members m WHERE m.classid = 'pg_catalog.pg_namespace'::pg_catalog.regclass AND m.objid = n.oid)) x
+ ORDER BY 1;
+SQL
+}
+
+# ARV-244: set while a restore of an older TimescaleDB's dump updates the extensions, after restore mode ended.
+RESTORED_TIMESCALEDB=""
+on_update_exit() {
+  local status=$?
+  if ((status != 0)); then
+    say "the dump is restored at TimescaleDB $RESTORED_TIMESCALEDB, but the update to the image's versions did not finish and the restore's check did not run. Fix the cause above and run update-extensions (wiki 04 section 6.8), then check; objects or settings it refuses came with the dump, so treat the dump as untrusted (wiki 10 section 4.13)."
   fi
 }
 
@@ -784,11 +1021,13 @@ SQL
 }
 
 cmd_restore() {
-  local input="" checked=0 runtime="" reader="" extensions=() allowed=()
+  local input="" checked=0 runtime="" reader="" extensions=() allowed=() version=""
   while (($#)); do
     case "$1" in
       --input) (($# >= 2)) || usage; input="$2"; shift 2 ;;
       --dump-checked) checked=1; shift ;;
+      --timescaledb-version) (($# >= 2)) || usage; valid_version "$2" || die "--timescaledb-version must be a plain dotted number (for example 2.31.0)"
+        version="$2"; shift 2 ;;
       --runtime-login) (($# >= 2)) || usage; runtime="$2"; shift 2 ;;
       --reader-login) (($# >= 2)) || usage; reader="$2"; shift 2 ;;
       --allow-extension) (($# >= 2)) || usage; valid_identifier "$2" || die "--allow-extension must be a plain lower-case identifier"
@@ -806,10 +1045,12 @@ cmd_restore() {
   check_settings
   if [[ "$input" == "-" ]]; then
     ((checked == 1)) || die "a restore from stdin needs --dump-checked: run check-dump on the same stream first (ariva-ops.mjs does)"
+    [[ -n "$version" ]] || die "a restore from stdin needs --timescaledb-version, the dump's TimescaleDB version: the signed manifest's, or the one check-dump printed for the same stream (ariva-ops.mjs passes it)"
   else
-    local toc
-    toc="$(read_toc "$input")"
-    check_toc "$toc" "${extensions[@]}"
+    read_dump "$input"
+    check_toc "$DUMP_TOC" "${extensions[@]}"
+    check_dump_version "$version"
+    version="$DUMP_TIMESCALEDB"
   fi
 
   require_migration_login
@@ -818,14 +1059,34 @@ cmd_restore() {
 SELECT to_regclass('public.schema_version') IS NULL,
        (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
            AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')),
-       (SELECT extversion FROM pg_extension WHERE extname = 'timescaledb');
+       (SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'),
+       (SELECT default_version FROM pg_available_extensions WHERE name = 'timescaledb');
 SQL
 )"
-  local empty relations version
-  IFS='|' read -r empty relations version <<<"$state"
+  local empty relations installed shipped
+  IFS='|' read -r empty relations installed shipped <<<"$state"
   [[ "$empty" == "t" && "$relations" == "0" ]] || die "database $DATABASE is not empty ($relations relations in public); a restore goes into an empty database only"
-  [[ -n "$version" ]] || die "the timescaledb extension is not installed in $DATABASE; create it first (the chart's image does)"
-  say "restoring into $DATABASE (TimescaleDB $version), objects owned by $LOGIN"
+  [[ -n "$installed" ]] || die "the timescaledb extension is not installed in $DATABASE; create it first (the chart's image does), or, after a restore that stopped between dropping the image's TimescaleDB and creating the dump's version, start again from an empty database (a new volume)"
+  # ARV-244: TimescaleDB restores a dump only into the extension version it was taken at (its catalog travels as data).
+  require_shipped_version "$version" "$shipped"
+  local origin="the dump's"
+  [[ "$input" != "-" ]] || origin="the version given for the dump"
+  if [[ "$installed" == "$version" ]]; then
+    say "restoring into $DATABASE (TimescaleDB $version, $origin), objects owned by $LOGIN"
+  else
+    # ARV-244 review: before the image's extension is dropped, what would stop the restore later refuses it now, with nothing
+    # changed: what the extensions' update after the restore refuses (planted_objects, with no setting allowed: on a server
+    # restored with --allow-extension or --allow-setting the server's own extension or setting is refused here too), and any
+    # function, operator, type or schema that belongs to no extension, which CREATE EXTENSION could collide with.
+    local planted foreign
+    planted="$(planted_objects "")" || die "the database could not be read as $LOGIN before the image's TimescaleDB is replaced"
+    foreign="$(foreign_objects)" || die "the database could not be read as $LOGIN before the image's TimescaleDB is replaced"
+    if [[ -n "$planted$foreign" ]]; then
+      planted="$(printf '%s\n%s' "$planted" "$foreign" | LC_ALL=C sort -u | grep -v '^$' || true)"
+      die "refused before anything changes: ${planted//$'\n'/, }. A restore of a dump of another TimescaleDB version replaces the image's extension in the empty database and then updates it as the superuser, so the database holds nothing but the extensions' objects first (an extension or setting a DBA-provided server keeps on purpose included: restore such a backup on a server of the image of its own version, wiki 04 section 10.4). Give the restore an empty database (a new volume), and find out who created these (wiki 10 section 4.13)"
+    fi
+    say "restoring a dump of TimescaleDB $version into $DATABASE, which has $installed: the extension is created at $version first and updated to $shipped afterwards; objects owned by $LOGIN"
+  fi
 
   say "creating Ariva's group roles as $LOGIN"
   local privileged
@@ -854,6 +1115,40 @@ SQL
   members="$(extra_members "$runtime" "$reader")"
   [[ -z "$members" ]] || die "Ariva's group roles already have other members ($members); name this deployment's logins with --runtime-login and --reader-login, or restore into a server of its own"
 
+  # ARV-244: the empty database's extension at the dump's version. DROP refuses when anything depends on it (so the database
+  # was not empty); CREATE is the first and only statement of its own session, since a session that loaded one version's
+  # library cannot create another, and the version reaches it as a psql variable only, after valid_version and
+  # require_shipped_version. It names schema public, where the image creates it and the dump's entry has it: the superuser's
+  # session has pg_catalog as its search path, which an extension without a schema would be installed in. The toolkit is left
+  # at the image's version: a dump carries none of its rows and no Ariva object uses it.
+  if [[ "$installed" != "$version" ]]; then
+    # ARV-244 review: no other session of an Ariva login while the extension is replaced. The migration login owns the
+    # database, so a session of it could create, between the DROP and the CREATE, an object the CREATE collides with (a schema
+    # of TimescaleDB's name), and leave the database without TimescaleDB. Residual: a session opened after this check, in the
+    # moment between the two statements, which could still fail the CREATE (it says to start again from a new volume) or plant
+    # an object its install script might resolve (ARV-236's residual, narrowed to that moment).
+    require_no_ariva_sessions "nothing was dropped or restored"
+    REPLACING_EXTENSION=1
+    trap on_replace_exit EXIT
+    say "dropping the image's TimescaleDB $installed from the empty $DATABASE (superuser over the local socket, the session's first statement)"
+    PGOPTIONS='-c lock_timeout=30s' as_superuser <<'SQL' >/dev/null || { REPLACING_EXTENSION=0; die "the image's TimescaleDB could not be dropped from $DATABASE (an object depends on it, so the database is not empty, or its lock was not granted within 30 seconds, so a session holds it): nothing was restored; give the restore an empty database (a new volume)"; }
+DROP EXTENSION timescaledb;
+SQL
+    say "creating TimescaleDB $version in $DATABASE (superuser over the local socket, the session's first statement)"
+    PGOPTIONS='-c lock_timeout=30s' as_superuser --set=version="$version" <<'SQL' >/dev/null || die "TimescaleDB $version could not be created in $DATABASE after the image's extension was dropped: nothing was restored; start again from an empty database (a new volume)"
+CREATE EXTENSION timescaledb SCHEMA public VERSION :'version';
+SQL
+    local created
+    created="$(as_migration_catalog --tuples-only --no-align <<'SQL'
+SELECT extversion FROM pg_extension WHERE extname = 'timescaledb';
+SQL
+)"
+    # Its review: at another version the database has a TimescaleDB, so the exit message for a missing one is not said.
+    [[ "$created" == "$version" ]] || { [[ -z "$created" ]] || REPLACING_EXTENSION=0; die "TimescaleDB is not at $version in $DATABASE after its creation (another version, or none): nothing was restored; start again from an empty database (a new volume)"; }
+    REPLACING_EXTENSION=0
+    trap - EXIT
+  fi
+
   # ARV-263 review: from here on the database leaves restore mode only once restore_job_gate passed its jobs, so a restore
   # that fails or is stopped (an error in the dump's data, a signal) never starts a job nothing has judged.
   KEEP_RESTORING=1
@@ -870,6 +1165,15 @@ SQL
   else
     PGAPPNAME=ariva-ops pg_restore "${args[@]}" "$input"
   fi
+  # ARV-244: the restored catalog records the version the extension was created at (from stdin, the version given is the only
+  # one this pass knew); otherwise the database stays in restore mode, as for a refused job.
+  local restored
+  restored="$(as_migration_catalog --tuples-only --no-align <<'SQL'
+SELECT coalesce(regexp_replace(string_agg(m.value, ','), '[[:cntrl:]]', '?', 'g'), 'no version')
+  FROM _timescaledb_catalog.metadata m WHERE m.key = 'timescaledb_version';
+SQL
+)" || die "the restored TimescaleDB catalog could not be read as $LOGIN"
+  [[ "$restored" == "$version" ]] || die "the restored dump records TimescaleDB ${restored:0:80}, not $version, the version it was restored into (treat the dump or the version given as wrong)"
   local refused_jobs
   refused_jobs="$(restore_job_gate)" || die "the restored jobs could not be read as $LOGIN before TimescaleDB's scheduler starts"
   if [[ -n "$refused_jobs" ]]; then
@@ -877,18 +1181,37 @@ SQL
   fi
   say "TimescaleDB's jobs checked before its scheduler starts: each runs one of TimescaleDB's policies as the role this release gives it"
   KEEP_RESTORING=0
-  end_restore_mode
+  end_restore_mode || die "TimescaleDB's restore mode did not end (timescaledb_post_restore() failed above): the restore stops before the extensions' update and its check"
   trap - EXIT
+
+  local logins=()
+  [[ -z "$runtime" ]] || logins+=(--runtime-login "$runtime")
+  [[ -z "$reader" ]] || logins+=(--reader-login "$reader")
+  check_after_restore=1
+  # ARV-244: a dump of an older TimescaleDB, now restored at its own version, is updated to the image's as update-extensions
+  # updates a live database (its refusals first, each ALTER the first statement of its session), before the check, whose
+  # extension versions line would fail otherwise. A dump of the image's version skips this. Its review (ARV-263's rule, judge
+  # what the dump brought before it can run): the update runs TimescaleDB's update scripts as the superuser on the restored
+  # database, so check's lines judge it first and any failure stops the restore before the update, but the two lines only the
+  # update can make pass: extension versions, and extension members, which this release pins for the image's versions (before
+  # the update they are those of the dump's version, which the restore created from the image's own install script; a dump
+  # carries no member, only the extension's configuration rows, which the table of contents check has limited).
+  if [[ -n "$(extensions_behind)" ]]; then
+    RESTORED_TIMESCALEDB="$version"
+    say "checking the restored database before the extensions' update (every line of check but extension versions and extension members)"
+    check_before_update=1
+    cmd_check "${logins[@]}" "${allowed[@]}"
+    check_before_update=0
+    trap on_update_exit EXIT
+    update_extensions
+    trap - EXIT
+  fi
 
   say "updating planner statistics as $LOGIN"
   as_migration <<'SQL'
 SET client_min_messages = error;
 ANALYZE;
 SQL
-  local logins=()
-  [[ -z "$runtime" ]] || logins+=(--runtime-login "$runtime")
-  [[ -z "$reader" ]] || logins+=(--reader-login "$reader")
-  check_after_restore=1
   cmd_check "${logins[@]}" "${allowed[@]}"
   if ((check_not_compared)); then
     say "restore finished, but the backup is older than this release's scripts: the runtime role's privileges, the views and the schema are not compared yet. Next: run the migration job with api-main --migrate (the platform stays stopped), then check with --runtime-login, and start the hosts only when it passes; then restore the files and run keyring with the Data Protection certificate."
@@ -1518,6 +1841,15 @@ SQL
   local line failed=0
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
+    # ARV-244 review: before a restore's update, only the failures are printed, and the two lines the update makes pass are
+    # not counted (cmd_restore).
+    if ((check_before_update == 1)); then
+      if [[ "$line" == FAIL* && "$line" != "FAIL extension versions|"* && "$line" != "FAIL extension members|"* ]]; then
+        failed=1
+        printf 'FAIL  %s\n' "${line#FAIL }"
+      fi
+      continue
+    fi
     if [[ "$line" == FAIL* ]]; then
       failed=1
       printf 'FAIL  %s\n' "${line#FAIL }"
@@ -1526,6 +1858,11 @@ SQL
     fi
     [[ "$line" != *"|not compared:"* ]] || check_not_compared=1
   done <<<"$report"
+  if ((check_before_update == 1)); then
+    ((failed == 0)) || die "the restored database fails the check above before the extensions' update, which runs TimescaleDB's update scripts as the superuser on it: nothing was updated, and $DATABASE is restored at TimescaleDB $RESTORED_TIMESCALEDB. What it names came with the dump: treat the dump as untrusted (wiki 10 section 4.13), and restore a backup you trust into an empty database (a new volume)"
+    say "the restored database passes the check before the extensions' update (extension versions and members aside)"
+    return 0
+  fi
   ((failed == 0)) || die "check failed"
 }
 
@@ -2272,6 +2609,19 @@ SELECT a.usename || ' (' || count(*) || ')'
 SQL
 }
 
+# No session of an Ariva login on the database but this one: the hosts scaled to 0, whose pods may take a few seconds to end
+# after the scale (up to 10 here, then refused). $1: what the refusal leaves unchanged, for its message. ARV-236's update and,
+# since ARV-244's review, a restore before it replaces the image's TimescaleDB.
+require_no_ariva_sessions() {
+  local sessions attempt
+  for attempt in 1 2 3 4 5 6; do
+    sessions="$(ariva_sessions)"
+    [[ -n "$sessions" && "$attempt" -lt 6 ]] || break
+    sleep 2
+  done
+  [[ -z "$sessions" ]] || die "Ariva's logins still have sessions on $DATABASE: ${sessions//$'\n'/, }. Scale the Ariva deployments to 0 first (kubectl -n <namespace> scale deployment --all --replicas=0) and wait for their pods to end; $1"
+}
+
 # ARV-236: a newer image ships newer versions of the extensions, and the database keeps the one it has until the
 # extension's owner updates it. It runs with the Ariva deployments scaled to 0 (wiki 04 section 6.8): a connection that
 # loaded the old library is closed by TimescaleDB at its next statement (FATAL), and a long transaction would hold the
@@ -2280,29 +2630,30 @@ SQL
 # session of its own, since TimescaleDB loads its library at a session's first statement and refuses the update once the
 # old one is loaded ("cannot be updated after the old version has already been loaded"); psql without psqlrc sends nothing
 # before it, and lock_timeout (a startup option, not a statement) ends a wait for a lock after 30 seconds with nothing
-# changed. The statements are constants: no value reaches them.
+# changed. The statements are constants: no value reaches them. A restore of an older TimescaleDB's dump runs the same update
+# (update_extensions) once restore mode has ended (ARV-244).
 cmd_update_extensions() {
   (($# == 0)) || usage
   check_settings
   require_migration_login
-  local behind name installed shipped path planted
-  behind="$(extensions_behind)"
-  if [[ -z "$behind" ]]; then
+  if [[ -z "$(extensions_behind)" ]]; then
     say "TimescaleDB's extensions in $DATABASE are at the versions the image ships: nothing to update"
     return
   fi
+  update_extensions
+  say "done: TimescaleDB's extensions in $DATABASE are at the versions the image ships; scale the deployments back, run check, and take a new backup (a restore goes through the backup's own TimescaleDB version, which a later image may no longer ship)"
+}
+
+# The update itself, for update-extensions and a restore (above): its refusals, then each ALTER as the superuser.
+update_extensions() {
+  local behind name installed shipped path planted
+  behind="$(extensions_behind)"
+  [[ -n "$behind" ]] || return 0
   while IFS='|' read -r name installed shipped path; do
     [[ -n "$name" && "$path" != "t" ]] || continue
     die "$name $installed has no update to $shipped, the version the image ships: the image is older than the database's extension (for example a rollback of the database image after update-extensions); roll the image forward (wiki 18)"
   done <<<"$behind"
-  # The hosts scaled to 0: their pods may take a few seconds to end after the scale (up to 10 here, then refused).
-  local sessions attempt
-  for attempt in 1 2 3 4 5 6; do
-    sessions="$(ariva_sessions)"
-    [[ -n "$sessions" && "$attempt" -lt 6 ]] || break
-    sleep 2
-  done
-  [[ -z "$sessions" ]] || die "Ariva's logins still have sessions on $DATABASE: ${sessions//$'\n'/, }. Scale the Ariva deployments to 0 first (kubectl -n <namespace> scale deployment --all --replicas=0) and wait for their pods to end; nothing was changed"
+  require_no_ariva_sessions "nothing was changed"
   planted="$(planted_objects "")"
   [[ -z "$planted" ]] || die "refused before any statement as the superuser: ${planted//$'\n'/, }. The extensions' update scripts run as the superuser with the extension's schema on their search path, so objects named as the system's or TimescaleDB's own, outside the extensions, could run in their place. Find out who created them (wiki 10 section 4.13), remove them, then run update-extensions again"
   while IFS='|' read -r name installed shipped path; do
@@ -2324,7 +2675,6 @@ SQL
   done <<<"$behind"
   behind="$(extensions_behind)"
   [[ -z "$behind" ]] || die "an extension is still behind the image after its update: ${behind//$'\n'/, }"
-  say "done: TimescaleDB's extensions in $DATABASE are at the versions the image ships; scale the deployments back, run check, and take a new backup (a backup restores only into its own TimescaleDB version)"
 }
 
 # ARV-290: SET on temp_file_limit for the migration login, which the migration job needs to cap the runtime login's temporary
