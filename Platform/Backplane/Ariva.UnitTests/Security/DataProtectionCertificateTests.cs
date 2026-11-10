@@ -58,7 +58,37 @@ public sealed class DataProtectionCertificateTests : IDisposable
         {
             File.GetUnixFileMode(Path.Combine(directory, "dataprotection-dev.key"))
                 .Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.GetUnixFileMode(directory).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+                "ARV-209: a folder the development certificate creates is the current user's alone");
         }
+    }
+
+    [Fact]
+    public void CreatePrivate_Should_BeOwnerOnly_When_NothingIsWrittenYet()
+    {
+        // ARV-209: the development key's file is owner-only from the moment it exists, not once its key is in it.
+        var path = Path.Combine(Directory.CreateDirectory(Folder()).FullName, "dataprotection-dev.key");
+
+        using var created = DataProtectionCertificates.CreatePrivate(path);
+
+        created.Length.Should().Be(0, "nothing is written yet");
+        if (!OperatingSystem.IsWindows())
+            File.GetUnixFileMode(path).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite, "the file is owner-only before its first byte");
+    }
+
+    [Fact]
+    public void CreatePrivate_Should_ReplaceTheFileAndItsMode_When_AnEarlierRunLeftOneOthersMayRead()
+    {
+        var path = Path.Combine(Directory.CreateDirectory(Folder()).FullName, "dataprotection-dev.key");
+        File.WriteAllText(path, "left by an interrupted run");
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        using var created = DataProtectionCertificates.CreatePrivate(path);
+
+        created.Length.Should().Be(0, "the old file is gone, not reopened");
+        if (!OperatingSystem.IsWindows())
+            File.GetUnixFileMode(path).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite, "the old file's mode is not kept");
     }
 
     [Fact]

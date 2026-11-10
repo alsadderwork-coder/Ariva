@@ -151,6 +151,14 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if eq (toString .Values.buildNumber) "latest" }}
 {{- fail "buildNumber latest is not allowed; use a build number or the local tag" }}
 {{- end }}
+{{- if not (kindIs "map" (.Values.imageCredentials | default dict)) }}
+{{- fail "imageCredentials must be a map whose keys are all empty strings (ARV-209)" }}
+{{- end }}
+{{- range $key, $value := (.Values.imageCredentials | default dict) }}
+{{- if not (and (kindIs "string" $value) (empty $value)) }}
+{{- fail (printf "imageCredentials.%s is refused (ARV-209): Helm keeps every value in its release record, so any value but the empty string is refused. Create the pull secret dalilacr-secret out of band before the release (wiki 04 section 6.2) and leave every key empty" $key) }}
+{{- end }}
+{{- end }}
 {{- if and (eq (.Values.fileStorage.accessMode | default "ReadWriteOnce") "ReadWriteOnce") (or (gt (int (.Values.apiMainReplicas | default .Values.replicas)) 1) (gt (int (.Values.apiMainHpaMin | default 1)) 1) (gt (int (.Values.apiMainHpaMax | default 1)) 1)) }}
 {{- fail "api-main with more than one replica needs fileStorage.accessMode ReadWriteMany (the floor plan volume, ARV-018)" }}
 {{- end }}

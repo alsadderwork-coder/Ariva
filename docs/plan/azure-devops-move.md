@@ -68,7 +68,7 @@ If the push is refused with "non-fast-forward", someone pushed to `main` in betw
 | Dev release | `release-dev.yml`: by hand, from `main`, GitHub environment `k8s-dev` with the owner as reviewer, every image's signature verified and pinned by digest, checksum-pinned tools, TLS check, pod evidence | `K8s/Release-ariva-k8s-dev.yaml`: by hand, variable group `ariva`, unpinned kubectl and unchecked Helm, Helmfile and helm-diff, deploys the mutable tag `main`, no signature check, no approval |
 | Scheduled and other | Trivy and Semgrep scans, SBOM, CodeQL (when enabled), ZAP, mutation, dev environment smoke, base image proposals, Dependabot, offline bundle (signed with GitHub's OIDC identity), Claude review | none |
 
-The chart and Helmfile need no change for Azure: every values file already defaults `imageRepository` to `dalil.azurecr.io/ariva`, and the chart writes the `dalilacr-secret` pull secret for `dalil.azurecr.io` when the release passes `imageCredentials`.
+The chart and Helmfile need no change for Azure: every values file already defaults `imageRepository` to `dalil.azurecr.io/ariva`, and since ARV-209 the Azure DevOps release writes the `dalilacr-secret` pull secret for `dalil.azurecr.io` itself, from its variable group through a file, never as a Helm value (the chart refuses `imageCredentials`); keep that step when the release is ported (ARV-219).
 
 ### Decisions to take first
 

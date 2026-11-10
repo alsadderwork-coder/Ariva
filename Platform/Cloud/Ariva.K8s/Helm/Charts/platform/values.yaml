@@ -575,10 +575,11 @@ monitoring:
     scannerSignaturesStale: { enabled: true, minutes: 15, maxAgeHours: 48, severity: warning }
     scannerNotAnswering: { enabled: true, minutes: 20, severity: critical }
 
-# Registry credentials for dalilacr-secret. Leave the password empty to skip rendering the secret
-# (for example when it is created out of band). The release pipeline passes these with set flags.
+# ARV-209 (crypto inventory K40): the chart renders no registry pull secret and refuses registry credentials as values, which
+# Helm would keep in its release record in the namespace. Every workload pulls with the Secret dalilacr-secret (type
+# kubernetes.io/dockerconfigjson), created out of band before the release: by the Azure DevOps release from its pipeline
+# secrets, or by the operator for a site's mirror (wiki 04 section 6.2). username and password stay empty (validate.yaml).
 imageCredentials:
-  registry: dalil.azurecr.io
   username: ""
   password: ""
 

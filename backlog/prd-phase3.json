@@ -867,7 +867,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 300,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-19 from the ARV-094 documents (Low). The Azure DevOps path is optional (CLAUDE.md); the GitHub Actions path is unaffected.",
       "dependsOn": []
     },

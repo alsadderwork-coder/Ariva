@@ -80,7 +80,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
 import { checkManifests, COLLECTOR_CAS, collectorCaFindings, INSTANCE_ID, instanceIdFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
 	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients,
-	clamavDirectives, UPLOAD_SCAN, uploadScanFindings } from './checks.mjs';
+	clamavDirectives, releaseCredentialFindings, UPLOAD_SCAN, uploadScanFindings } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chart = path.resolve(here, '..', 'Helm', 'Charts', 'platform');
@@ -1114,6 +1114,109 @@ function instanceIdSelfTest() {
 	return { failures, count: INSTANCE_ID_CASES.length };
 }
 
+/**
+ * ARV-209: the release credential rule on sample command lines and pipeline fragments: each bad sample trips it exactly once and
+ * names no value, each good one (a Secret's name, a switch, an empty value that turns a chart's copy off, a build number, a
+ * neutral env var, another command's -f) trips nothing.
+ */
+function releaseCredentialSelfTest() {
+	const bad = ['--set imageCredentials.password=$(ACR-PASSWORD)', '--set-string db.token="planted-value"', '--set a=1,auth.secret=$(X)', '--state-values-set apiKey=$(K)',
+		'--set-file tls.key=/path/key.pem', '--set ingress.annotations.x=$(MY-SECRET-TOKEN)', '--set image.tag=${{ secrets.REGISTRY_TOKEN }}', '--set registry.password=$PASS',
+		'--set x.y=${ACR_PASSWORD}', 'helmfile template \\\n  --set releaseVersion=1 \\\n  --set a.password=$(P)', '--set=imageCredentials.password=planted-value',
+		// Any GitHub secret, whatever its name; an Azure variable the file does not declare (a variable group's); a credential's word
+		// anywhere in a shell variable's name; Helmfile's --args; a HelmDeploy task's overrideValues; a values file the pipeline
+		// writes; a flag folded onto the next line.
+		'--set image.tag=${{ secrets.ACR_PASS }}', '--set a.b=${{secrets.REGISTRY}}', "--set a.b=${{ secrets['REGISTRY'] }}", '--set a.b=$(ACR-PASS)', '--set a.b=$(TOKEN_VALUE)',
+		'--set a.b=$ACR_PASSWORD_B64', '--set a.b=$[variables.REGISTRY]', 'variables:\n  - group: acr\nsteps:\n  - script: helm template x . --set image.registry=$(ACR_HOST)',
+		"helmfile template --args '--set a.password=planted-value'", 'overrideValues: a.password=$(Build.BuildId)', 'overrideValues: |\n  replicas=1\n  a.password=planted-value',
+		'helm template x . -f $(Agent.TempDirectory)/v.yaml', 'helmfile template --state-values-file /tmp/values.yaml', 'helm template x . --values=_cicd/values.yaml',
+		'helm template x . --set\n  a.password=planted-value',
+		// Round 2 (F1a): a GitHub secret anywhere inside an expression, a comma or quotes inside it included.
+		"--set a.b=${{ secrets.ACR_PASSWORD || '' }}", "--set a.b=${{ format('{0}', secrets.REGISTRY) }}", '--set a.b=${{ fromJSON(secrets.REGISTRY).pw }}',
+		'--set a.b=${{ toJSON(secrets) }}', "--set 'a.b=${{ format('{0}', secrets.REGISTRY) }}'", "--set a=1,b.c=${{ format('{0},{1}', secrets.A, secrets.B) }}",
+		// F1b: an Azure variable inside a function of a runtime or template expression.
+		"--set a.b=$[ coalesce(variables.ACR, '') ]", "--set a.b=${{ coalesce(variables.ACR, '') }}", "--set a.b=$[ format('{0}', variables['ACR']) ]",
+		// F1c: a predefined variable that is a credential, in either case.
+		'--set a.b=$(System.AccessToken)', '--set a.b=$(system.accesstoken)',
+		// F1d: an inline variable whose value reads another, and one a variable group listed after it may set again.
+		'variables:\n  - name: REG\n    value: $(ACR-PASSWORD)\nsteps:\n  - script: helm template x . --set registry.x=$(REG)',
+		'variables:\n  - name: REG\n    value: "registry.example"\n  - group: acr\nsteps:\n  - script: helm template x . --set registry.x=$(REG)',
+		// F1e: a secret mapped through env under a neutral name (a step's, a job's, a flow mapping, one entry reading another), and
+		// a credential's word inside a run-on name.
+		'steps:\n  - script: helm template x . --set registry.x=$REG\n    env:\n      REG: $(ACR-PASSWORD)',
+		'jobs:\n  release:\n    env:\n      REG: ${{ secrets.ACR }}\n    steps:\n      - run: helm template x . --set registry.x=${REG}',
+		'steps:\n  - script: helm template x . --set registry.x="${REG:-}"\n    env: { REG: "$(ACR-PASSWORD)" }',
+		'env:\n  A: ${{ secrets.ACR }}\n  B: ${{ env.A }}\nsteps:\n  - run: helm template x . --set registry.x=$B',
+		'--set a.b=$ACRPASSWORD', '--set a.b=${REGTOKEN}', '--set a.b=$REGISTRY_PW', '--set a.b=$DOCKER_CRED', '--set a.b=${{ env.REGISTRY_CREDS }}', '--set a.b=$ACRPassword',
+		'--set registry.pw=planted-value', '--set docker.creds=planted-value',
+		// A script in YAML quotes and a shell's -c string are read as command lines.
+		'- script: "helm template x . --set a.password=planted-value"', "bash -c 'helm template x . -f $(Agent.TempDirectory)/v.yaml'",
+		// F2: a --set-file of a file the pipeline writes, under a neutral key.
+		'--set-file cfg.blob=$(Build.SourcesDirectory)/_cicd/appsettings.json', '--set-file cfg.blob=/etc/ariva/blob.json', '--set-file cfg.blob=_cicd/blob.json',
+		// F3: -f on a folded or literal block scalar's line or a plain scalar's continuation, standard input, a HelmDeploy task's
+		// valueFile and arguments (the task named on its dash line or below it), a Helmfile state file the pipeline writes,
+		// Helmfile's --values, a comma-separated list.
+		'- script: >\n    helm template x .\n    -f $(Agent.TempDirectory)/v.yaml', '- script: |\n    helm template x .\n    -f $(Agent.TempDirectory)/v.yaml',
+		'- script: helm template x .\n    -f $(Agent.TempDirectory)/v.yaml', 'helm template x . -f -', 'helm template x . --values=-',
+		'- task: HelmDeploy@1\n  inputs:\n    command: upgrade\n    valueFile: $(Agent.TempDirectory)/values.yaml',
+		'- task: HelmDeploy@1\n  inputs:\n    arguments: --values $(Build.SourcesDirectory)/_cicd/v.yaml',
+		'- task: HelmDeploy@1\n  inputs:\n    arguments: |\n      --timeout 10m\n      -f /tmp/values.yaml',
+		"- task: HelmDeploy@1\n  inputs:\n    arguments: '--set a.password=planted-value'",
+		'- displayName: Release\n  task: HelmDeploy@1\n  inputs:\n    arguments: -f $(Agent.TempDirectory)/v.yaml',
+		'helmfile -f $(Agent.TempDirectory)/state.yaml apply', 'helmfile --file=/tmp/state.yaml template', 'helmfile -f - apply',
+		'helmfile template --values $(Agent.TempDirectory)/v.yaml', 'helm template x . -f values.yaml,/tmp/extra.yaml',
+		// helm and helmfile through the variables that point at them; a short flag's value glued to it; a process substitution; a
+		// step named for a credential.
+		'"$HELM" template x . -f $(Agent.TempDirectory)/v.yaml', '${HELMFILE} -f /tmp/state.yaml apply', 'helm template x . -f$(Agent.TempDirectory)/v.yaml',
+		'helm template x . --set-file a.b=<(printf %s planted-value)', "helm template x . -f <(printf '%s' \"$VALUES\")", '--set a.b=${{ steps.creds.outputs.value }}'];
+	const good = ['--set imageCredentials.password=', '--set releaseVersion=$(Build.BuildNumber)', 'variables:\n  - name: BUILD_NUMBER\n    value: "1"\nsteps:\n  - script: helmfile template --state-values-set buildNumber=$(BUILD_NUMBER)', '--set monitoring.keyThreshold=3',
+		'--set=imageCredentials.username=', '--set podTls.caSecretName=ariva-ca', '--set ingresses[0].tokenInQuery=true', "--set-json 'cfg={\"a\":1}'",
+		// Other commands' -f, the repository's own values files, a predefined variable in a value.
+		'[ -f "$log" ] || continue', 'rm -f "$(Agent.TempDirectory)/kubeconfig"', 'docker build -f "${{ matrix.dockerfile }}" .', 'helm template x . -f values.yaml -f values-k8s-dev.yaml',
+		'helmfile -f helmfile.yaml.gotmpl template --set releaseVersion=$(Build.BuildNumber)',
+		// Round 2: a neutral env var with a literal value or a neutral GitHub variable, a predefined variable inside an expression,
+		// an inline variable with a literal value declared after the group, an expression without a secret, a predefined path in
+		// flags that take no values file, another command's -f - after a pipe, a literal block's next command, a repository file
+		// for --set-file, another task's arguments, and a comment.
+		'steps:\n  - script: helm template x . --set image.registry=$REGISTRY\n    env:\n      REGISTRY: ghcr.io/example/ariva',
+		"env:\n  NAMESPACE: ${{ vars.ARIVA_NAMESPACE || 'ariva' }}\nsteps:\n  - run: helm template x . --set namespaceOverride=$NAMESPACE",
+		"--set releaseVersion=$[ variables['Build.BuildNumber'] ]", 'variables:\n  - group: acr\n  - name: TAG\n    value: main\nsteps:\n  - script: helm template x . --set image.tag=$(TAG)',
+		"--set image.tag=${{ format('{0}-{1}', github.ref_name, github.run_number) }}",
+		'helm template x . --output-dir $(Agent.TempDirectory)/rendered --kubeconfig $(Agent.TempDirectory)/kubeconfig', 'helm template x . -f values.yaml | grep -f - patterns.txt',
+		'- script: |\n    helm template x . > out.yaml\n    rm -f "$(Agent.TempDirectory)/kubeconfig"', '--set-file cfg.rules=Platform/Cloud/Ariva.K8s/Helm/rules.yaml',
+		'- task: DotNetCoreCLI@2\n  inputs:\n    arguments: -f net10.0 --output $(Build.ArtifactStagingDirectory)', '- script: helm template x . # --set a.password=$(ACR-PASSWORD)'];
+	const failures = [];
+	for (const line of bad) {
+		const findings = releaseCredentialFindings(line, 'sample.yaml');
+		if (findings.length !== 1) failures.push(`release credentials: ${JSON.stringify(line)} gave ${findings.length} findings, not 1`);
+		if (findings.some((finding) => finding.includes('planted-value'))) failures.push(`release credentials: a finding quotes the value of ${JSON.stringify(line)}`);
+	}
+	for (const line of good) {
+		const findings = releaseCredentialFindings(line, 'sample.yaml');
+		if (findings.length) failures.push(`release credentials: ${JSON.stringify(line)} tripped the rule: ${findings.join('; ')}`);
+	}
+	if (releaseCredentialFindings('one\n  --set a=1 \\\n  --set b.password=$(P)', 'sample.yaml')[0]?.startsWith('sample.yaml:2:') !== true) failures.push('release credentials: a continued command is not numbered by its first line');
+	if (releaseCredentialFindings('steps:\n  - script: >\n      helm template x .\n      -f $(Agent.TempDirectory)/v.yaml', 'sample.yaml')[0]?.startsWith('sample.yaml:3:') !== true) failures.push('release credentials: a folded block\'s command is not numbered by its first line');
+	return { count: bad.length + good.length, failures };
+}
+
+/** ARV-209: the release files whose commands give Helm and Helmfile their values: the Azure DevOps pipelines and the archived GitHub workflows. */
+function releaseFiles() {
+	const root = path.resolve(here, '..', '..', '..', '..');
+	const files = [];
+	const walk = (dir) => {
+		if (!fs.existsSync(dir)) return;
+		for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+			const full = path.join(dir, entry.name);
+			if (entry.isDirectory()) walk(full);
+			else if (/\.ya?ml$/.test(entry.name)) files.push(full);
+		}
+	};
+	walk(path.join(root, 'Platform', 'Cloud', 'Ariva.Cicd', 'AzureDevOps'));
+	walk(path.join(root, 'github_archived', 'workflows'));
+	return files.map((full) => ({ full, name: path.relative(root, full).split(path.sep).join('/') }));
+}
+
 function selfTest() {
 	const good = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'good.yaml'), 'utf8')), { environment: 'k8s-prd' });
 	const bad = checkManifests(parse(fs.readFileSync(path.join(here, 'fixtures', 'bad.yaml'), 'utf8')), { environment: 'k8s-prd' });
@@ -1169,7 +1272,8 @@ function selfTest() {
 	const collectorCas = collectorCaSelfTest();
 	const scanning = uploadScanSelfTest();
 	const instances = instanceIdSelfTest();
-	const others = [...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
+	const credentials = releaseCredentialSelfTest();
+	const others = [...credentials.failures, ...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
 		...collectorCas.failures, ...scanning.failures, ...instances.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
@@ -1181,7 +1285,7 @@ function selfTest() {
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
-		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases and ${instances.count} instance id cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
+		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases ${instances.count} instance id cases and ${credentials.count} release credential cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen} and keeps no nginx configuration in its web root (${webRoot.count} cases); the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
 		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
@@ -1404,6 +1508,17 @@ if (process.argv.includes('--self-test')) {
 }
 
 selfTest();
+// ARV-209: no release file gives Helm or Helmfile a credential as a value (static, so it runs with or without helm).
+{
+	const files = releaseFiles();
+	const findings = files.flatMap(({ full, name }) => releaseCredentialFindings(fs.readFileSync(full, 'utf8'), name));
+	if (!files.some(({ name }) => name.endsWith('AzureDevOps/K8s/Release-ariva-k8s-dev.yaml'))) findings.push('the Azure DevOps release (Release-ariva-k8s-dev.yaml) was not found');
+	if (findings.length) {
+		console.error(`FAIL release credentials:\n  ${findings.join('\n  ')}`);
+		process.exit(1);
+	}
+	console.log(`PASS release credentials: ${files.length} release files give Helm and Helmfile no credential as a value (ARV-209)`);
+}
 if (!helmAvailable()) {
 	const message = 'chart-security: helm not found (set HELM or install Helm 3)';
 	// ARV-295: the local gates (ARIVA_GATE, set by scripts/verify.mjs) are the gate since no hosted pipeline runs, so they fail
@@ -1687,6 +1802,11 @@ for (const [label, file, sets, message, annotation] of [
 	['a negative operators share', 'values-k8s-dev.yaml', ['databaseConnections.operators=-1'], 'databaseConnections.operators must be a whole number'],
 	['production with trunk', 'values-k8s-prd.yaml', ['buildNumber=trunk']],
 	['the latest tag', 'values-k8s-dev.yaml', ['buildNumber=latest']],
+	// ARV-209: no registry credential as a value (Helm keeps it in its release record); the pull secret is created out of band.
+	['a registry password as a value', 'values-k8s-dev.yaml', ['imageCredentials.password=planted'], 'imageCredentials.password is refused (ARV-209)'],
+	['a registry user name as a value', 'values-k8s-prd.yaml', [PRD, 'imageCredentials.username=planted'], 'imageCredentials.username is refused (ARV-209)'],
+	['a registry password that is a number', 'values-k8s-dev.yaml', ['imageCredentials.password=0'], 'imageCredentials.password is refused (ARV-209)'],
+	['another registry credential key', 'values-k8s-dev.yaml', ['imageCredentials.token=planted'], 'imageCredentials.token is refused (ARV-209)'],
 	['production with the demo seed', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'demoSeed=true']],
 	['MQTT without its TLS secret', 'values-k8s-dev.yaml', ['mqtt.enabled=true', 'mqtt.tlsSecretName=']],
 	// ARV-104g1: the validation reader login's secret is named, and required in production.

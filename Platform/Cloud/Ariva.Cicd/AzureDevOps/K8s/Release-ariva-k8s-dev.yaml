@@ -1,7 +1,8 @@
 # Release Ariva to the k8s-dev namespace with helmfile.
 # Variable group "ariva" must hold (as secrets):
 #   JUPITER-KUBECONFIG-B64                 base64 kubeconfig for the cluster
-#   ACR-USERNAME, ACR-PASSWORD             registry credentials rendered into dalilacr-secret
+#   ACR-USERNAME, ACR-PASSWORD             registry credentials this pipeline writes into the pull secret dalilacr-secret
+#                                          (ARV-209: never a Helm value, which Helm keeps in its release record)
 #   ARIVA-K8S-DEV-BASE-APPSETTINGS         appsettings.base.k8s-dev.json content
 #   ARIVA-K8S-DEV-<SERVICE>-APPSETTINGS    appsettings.service.k8s-dev.json content per service
 #   ARIVA-K8S-DEV-DB-SUPERUSER-PASSWORD    TimescaleDB "postgres" superuser (database administrator only)
@@ -146,6 +147,52 @@ steps:
       DB_SUPERUSER_PASSWORD: $(ARIVA-K8S-DEV-DB-SUPERUSER-PASSWORD)
       DB_MIGRATION_PASSWORD: $(ARIVA-K8S-DEV-DB-MIGRATION-PASSWORD)
 
+  # ARV-209 (crypto inventory K40): the registry pull secret, written here from the pipeline's secrets and never given to
+  # Helm as a value (Helm keeps every value in its release record, readable by anyone who can read the namespace's Secrets).
+  # The credentials reach the step as environment variables (unset once the auth field is built) and the Secret through a
+  # file in the agent's temporary folder (0600, removed on exit), never through a command line; the docker config holds only
+  # the base64 auth field, so no character of the password needs JSON escaping. The Secret is applied server side under
+  # this release's own field manager, against the pipeline's cluster context, which writes no last-applied-configuration
+  # annotation. A client-side apply writes one, holding a whole copy of the Secret's data, and a server-side apply leaves an
+  # existing one in place; the archived GitHub release wrote dalilacr-secret with a client-side apply, so the step removes
+  # that annotation, or the old credential's copy would outlive its rotation. A secret an earlier release let the chart
+  # render is taken out of Helm's hands (its ownership annotations and label removed, resource-policy keep), so the next
+  # upgrade, whose chart no longer renders it, does not delete it. Helm's earlier release records still hold the password
+  # that release was given: rotate it after the first release with this step (wiki 04 section 6.2), and never roll back to a
+  # revision older than it.
+  - script: |
+      set -e
+      export KUBECONFIG="$(Build.SourcesDirectory)/_cicd/jupiter-kube-config.yaml"
+      for name in ACR_USERNAME ACR_PASSWORD; do
+        value="${!name}"
+        # Written as \$\( so Azure DevOps does not read it as a macro.
+        if [[ -z "$value" || "$value" == \$\(* ]]; then
+          echo "##vso[task.logissue type=error]$name is not defined in the variable group"; exit 1
+        fi
+      done
+      if [[ "$ACR_USERNAME" == *:* ]]; then
+        echo "##vso[task.logissue type=error]ACR_USERNAME must not contain a colon"; exit 1
+      fi
+      umask 077
+      config="$(Agent.TempDirectory)/registry-dockerconfig.json"
+      trap 'rm -f "$config"' EXIT
+      auth="$(printf '%s:%s' "$ACR_USERNAME" "$ACR_PASSWORD" | base64 -w0)"
+      printf '{"auths":{"dalil.azurecr.io":{"auth":"%s"}}}' "$auth" > "$config"
+      unset auth value ACR_USERNAME ACR_PASSWORD
+      kubectl create secret generic dalilacr-secret --type=kubernetes.io/dockerconfigjson \
+        --from-file=.dockerconfigjson="$config" \
+        --namespace="$(NAMESPACE)" --dry-run=client -o yaml \
+        | kubectl apply --context="$(K8SCLUSTERCONTEXT)" --server-side --force-conflicts --field-manager=ariva-release -f -
+      rm -f "$config"
+      kubectl annotate secret dalilacr-secret --context="$(K8SCLUSTERCONTEXT)" --namespace="$(NAMESPACE)" --overwrite \
+        meta.helm.sh/release-name- meta.helm.sh/release-namespace- kubectl.kubernetes.io/last-applied-configuration- \
+        helm.sh/resource-policy=keep
+      kubectl label secret dalilacr-secret --context="$(K8SCLUSTERCONTEXT)" --namespace="$(NAMESPACE)" app.kubernetes.io/managed-by-
+    displayName: "Create the registry pull secret"
+    env:
+      ACR_USERNAME: $(ACR-USERNAME)
+      ACR_PASSWORD: $(ACR-PASSWORD)
+
   - script: |
       set -e
       export KUBECONFIG="$(Build.SourcesDirectory)/_cicd/jupiter-kube-config.yaml"
@@ -155,8 +202,6 @@ steps:
         --state-values-set buildNumber=$(BUILD_NUMBER) \
         --namespace $(NAMESPACE) \
         --kube-context $(K8SCLUSTERCONTEXT) \
-        --set releaseVersion=$(Build.BuildNumber) \
-        --set imageCredentials.username=$(ACR-USERNAME) \
-        --set imageCredentials.password=$(ACR-PASSWORD)
+        --set releaseVersion=$(Build.BuildNumber)
     # Applies the timescaledb release first (waited for), then ariva-platform with its migration and Kafka topics jobs.
     displayName: "Version and Release"

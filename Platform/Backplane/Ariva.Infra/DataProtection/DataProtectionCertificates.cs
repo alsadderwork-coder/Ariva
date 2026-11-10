@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using Microsoft.Extensions.Configuration;
 
 namespace Ariva.Infra.DataProtection;
@@ -111,7 +112,11 @@ public sealed class DataProtectionCertificates
 
         if (!File.Exists(certificatePath) || !File.Exists(keyPath))
         {
-            Directory.CreateDirectory(directory);
+            // A folder this creates is the current user's alone (0700); one that exists keeps its mode, the files are 0600.
+            if (OperatingSystem.IsWindows())
+                Directory.CreateDirectory(directory);
+            else
+                Directory.CreateDirectory(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             using var rsa = RSA.Create(3072);
             var request = new CertificateRequest("CN=Ariva Data Protection (development)", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyEncipherment | X509KeyUsageFlags.DataEncipherment, critical: true));
@@ -126,8 +131,26 @@ public sealed class DataProtectionCertificates
 
     private static void WritePrivate(string path, string content)
     {
-        File.WriteAllText(path, content);
+        using var stream = CreatePrivate(path);
+        using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+        writer.Write(content);
+    }
+
+    /// <summary>
+    /// ARV-209 (crypto inventory section 5 item 20): a new, empty file the current user alone may read and write (0600, or
+    /// narrower under the process's umask) from the moment it exists, so no byte of the development key is ever readable by
+    /// another account, as the development token key (<c>TokenKeys</c>). A file of that name left by an earlier, interrupted
+    /// run is removed first, so its mode is never kept; a file another process creates in between is not overwritten
+    /// (<see cref="FileMode.CreateNew"/> fails instead).
+    /// </summary>
+    /// <param name="path">The file to create.</param>
+    /// <returns>The file, open for writing.</returns>
+    internal static FileStream CreatePrivate(string path)
+    {
+        File.Delete(path);
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
         if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        return new FileStream(path, options);
     }
 }

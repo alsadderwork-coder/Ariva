@@ -2586,3 +2586,473 @@ export function uploadScanFindings(docs, { enabled, source = '', mirrorUrl = '',
 	}
 	return findings;
 }
+
+/**
+ * ARV-209 (crypto inventory K40; ASVS 5.0 V13.3.1): the flags through which a release gives Helm or Helmfile a value. Helm keeps
+ * every value in its release record (a Secret of the release's namespace), so a credential given this way outlives the run and
+ * is readable by anyone who may read the namespace's Secrets.
+ */
+export const RELEASE_VALUE_FLAGS = ['--set', '--set-string', '--set-file', '--set-json', '--set-literal', '--state-values-set', '--state-values-set-string'];
+
+/**
+ * A value key (its last part) that names a credential: one ending in password, passphrase, pwd, pw, secret, token, cred(s),
+ * credential(s) or key (adminPassword, clientSecret, apiToken, privateKey, registry.pw). A key that only mentions one before its
+ * end names something else: a Secret's name (caSecretName), a switch (tokenInQuery), a threshold (keyThreshold).
+ */
+const RELEASE_CREDENTIAL_KEY = /(?:password|passwd|passphrase|pwd|pw|secret|token|creds?|credentials?|key)$/i;
+
+/**
+ * The words of a variable's name that make it a credential's, wherever they stand in it (ACR_PASSWORD_B64, TOKEN_VALUE, ACR-PASS,
+ * REGISTRY_PW, DOCKER_CRED). A part written in one case only (ACRPASSWORD, REGTOKEN, accesstoken) shows no word boundary, so a
+ * credential's word anywhere inside it counts too; a part in mixed case is split at its capitals (AcrPassword, ACRPassword).
+ */
+const CREDENTIAL_WORDS = ['password', 'passwd', 'passphrase', 'pass', 'pwd', 'pw', 'secret', 'secrets', 'token', 'credential', 'credentials', 'cred', 'creds', 'key', 'apikey', 'pat', 'auth'];
+
+const nameParts = (name) => String(name).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').split(/[^A-Za-z0-9]+/).filter(Boolean);
+const namesCredential = (name) => nameParts(name).some((part) => {
+	const word = part.toLowerCase();
+	const oneCase = part === part.toUpperCase() || part === word;
+	return CREDENTIAL_WORDS.includes(word) || (oneCase && CREDENTIAL_WORDS.some((credential) => word.includes(credential)));
+});
+
+/**
+ * Azure DevOps predefined variables (Build.BuildNumber, System.DefaultWorkingDirectory, Agent.TempDirectory), exempt only when
+ * their name holds no credential's word: System.AccessToken is the pipeline's own token.
+ */
+const AZURE_PREDEFINED = /^(Build|System|Agent|Pipeline|Release|Environment|Resources|Strategy)\./i;
+
+/**
+ * The flags whose next argument is a values file: helm's -f and --values; Helmfile's --state-values-file and --values. Helmfile's
+ * -f and --file name its state file, which sets any value, so it is read with the same path test.
+ */
+const HELM_VALUES_FLAGS = ['-f', '--values', '--state-values-file'];
+const HELMFILE_VALUES_FLAGS = ['--state-values-file', '--values'];
+const HELMFILE_STATE_FLAGS = ['-f', '--file'];
+
+/** The words that end one shell command of a line and start the next. */
+const COMMAND_SEPARATORS = new Set(['|', '||', '&&', ';', '&']);
+
+/**
+ * The `${{ }}` and `$[ ]` expressions of a text, each with its start, its end and its body: a `${{` ends at the first `}}`, a
+ * `$[` at its matching `]`, and a single-quoted string inside one (`''` its quote) is skipped, so `${{ format('{0}', x) }}` and
+ * `$[ coalesce(variables.A, '') ]` are each one expression. One left open runs to the end of the text.
+ */
+function expressions(text) {
+	const found = [];
+	let i = 0;
+	while (i < text.length) {
+		const kind = text.startsWith('${{', i) ? '${{' : text.startsWith('$[', i) ? '$[' : null;
+		if (!kind) {
+			i++;
+			continue;
+		}
+		let j = i + kind.length;
+		let depth = 0;
+		let quoted = false;
+		for (; j < text.length; j++) {
+			const char = text[j];
+			if (quoted) {
+				if (char === "'") {
+					if (text[j + 1] === "'") j++;
+					else quoted = false;
+				}
+				continue;
+			}
+			if (char === "'") quoted = true;
+			else if (kind === '${{' && text.startsWith('}}', j)) break;
+			else if (kind === '$[' && char === '[') depth++;
+			else if (kind === '$[' && char === ']') {
+				if (depth === 0) break;
+				depth--;
+			}
+		}
+		const end = Math.min(text.length, j + (kind === '${{' ? 2 : 1));
+		found.push({ kind, start: i, end, body: text.slice(i + kind.length, Math.min(j, text.length)) });
+		i = end;
+	}
+	return found;
+}
+
+/** An expression's body with its single-quoted strings emptied, so only its identifiers are left to read. */
+const withoutStrings = (body) => body.replace(/'(?:[^']|'')*'/g, "''");
+
+/**
+ * A text cut at each separator character that is not escaped with a backslash and not inside an expression or a `$( )` macro, so
+ * `a=${{ format('{0}', x) }},b=1` gives two pairs.
+ */
+function splitOutside(text, separator) {
+	const spans = expressions(text);
+	const parts = [''];
+	for (let i = 0; i < text.length; i++) {
+		const span = spans.find((candidate) => candidate.start === i);
+		if (span) {
+			parts[parts.length - 1] += text.slice(span.start, span.end);
+			i = span.end - 1;
+			continue;
+		}
+		if (text.startsWith('$(', i)) {
+			const close = text.indexOf(')', i);
+			const end = close < 0 ? text.length : close + 1;
+			parts[parts.length - 1] += text.slice(i, end);
+			i = end - 1;
+			continue;
+		}
+		if (text[i] === separator && text[i - 1] !== '\\') parts.push('');
+		else parts[parts.length - 1] += text[i];
+	}
+	return parts;
+}
+
+/**
+ * A line's words as the shell reads them: whitespace splits outside quotes, a quoted part stays in its word, a backslash keeps the
+ * next character, and an expression stays one word whatever its quotes and spaces (its whitespace removed).
+ */
+function words(line) {
+	const text = line.replace(/\\(?= |$)/g, ' ');
+	const spans = expressions(text);
+	const result = [];
+	let current = '';
+	let started = false;
+	let quote = null;
+	for (let i = 0; i < text.length; i++) {
+		const span = spans.find((candidate) => candidate.start === i);
+		if (span) {
+			current += text.slice(span.start, span.end).replace(/\s+/g, '');
+			started = true;
+			i = span.end - 1;
+			continue;
+		}
+		const char = text[i];
+		if (char === '\\' && quote !== "'" && i + 1 < text.length) {
+			current += char + text[i + 1];
+			started = true;
+			i++;
+			continue;
+		}
+		if (quote) {
+			current += char;
+			if (char === quote) quote = null;
+			continue;
+		}
+		if (char === '"' || char === "'") {
+			quote = char;
+			current += char;
+			started = true;
+			continue;
+		}
+		if (/\s/.test(char)) {
+			if (started) result.push(current);
+			current = '';
+			started = false;
+			continue;
+		}
+		current += char;
+		started = true;
+	}
+	if (started) result.push(current);
+	return result;
+}
+
+const unquote = (value) => value.replace(/^["']|["']$/g, '');
+const indentOf = (line) => line.match(/^\s*/)[0].length;
+
+/**
+ * The variables a release file declares inline with a literal value (an Azure DevOps `variables:` list entry `- name: X`
+ * followed by `value:` holding no `$(`, `$[` or `${{`): a value read from one of them is the file's own text, not a secret. A
+ * variable group's (`- group:`) are not, and a group listed after a name may set it again (the later definition wins), so a
+ * group ends every name declared before it. Names are kept in lower case, as Azure DevOps reads them.
+ */
+function inlineVariables(text) {
+	const names = new Set();
+	const lines = text.split(/\r?\n/);
+	lines.forEach((line, index) => {
+		if (/^\s*-\s*group\s*:/.test(line)) {
+			names.clear();
+			return;
+		}
+		const name = line.match(/^\s*-\s*name:\s*['"]?([A-Za-z0-9_.-]+)['"]?\s*(?:#.*)?$/)?.[1];
+		if (!name) return;
+		const rest = lines.slice(index + 1);
+		const at = rest.findIndex((candidate) => candidate.trim() !== '' && !candidate.trim().startsWith('#'));
+		const valueLine = at < 0 ? null : rest[at].match(/^(\s*)value:\s*(.*)$/);
+		if (!valueLine) return;
+		// The value with the lines of its block scalar, if any.
+		const below = rest.slice(at + 1);
+		const end = below.findIndex((candidate) => candidate.trim() !== '' && indentOf(candidate) <= valueLine[1].length);
+		const value = [valueLine[2], ...below.slice(0, end < 0 ? below.length : end)].join('\n');
+		if (/\$\(|\$\[|\$\{\{/.test(value)) names.delete(name.toLowerCase());
+		else names.add(name.toLowerCase());
+	});
+	return names;
+}
+
+/**
+ * The env entries of a file, name and value: every `env:` block at any indentation (a step's, a job's, the workflow's), its
+ * direct children with their continuation lines, and a flow mapping `env: { A: b }`.
+ */
+function envEntries(text) {
+	const entries = [];
+	const lines = text.split(/\r?\n/);
+	lines.forEach((line, index) => {
+		const head = line.match(/^(\s*(?:-\s+)?)env:\s*(.*?)\s*$/);
+		if (!head) return;
+		const own = head[2].replace(/(^|\s)#.*$/, '').trim();
+		if (own.startsWith('{')) {
+			for (const pair of splitOutside(own.replace(/^\{|\}$/g, ''), ',')) {
+				const entry = pair.match(/^\s*['"]?([A-Za-z_][A-Za-z0-9_.-]*)['"]?\s*:\s*(.*)$/);
+				if (entry) entries.push({ name: entry[1], value: entry[2].trim() });
+			}
+			return;
+		}
+		if (own !== '') return;
+		const column = head[1].length;
+		const body = [];
+		for (const candidate of lines.slice(index + 1)) {
+			if (candidate.trim() !== '' && !candidate.trim().startsWith('#') && indentOf(candidate) <= column) break;
+			body.push(candidate);
+		}
+		const first = body.find((candidate) => candidate.trim() !== '' && !candidate.trim().startsWith('#'));
+		if (!first) return;
+		const childIndent = indentOf(first);
+		let current = null;
+		for (const candidate of body) {
+			const entry = indentOf(candidate) === childIndent ? candidate.match(/^\s*['"]?([A-Za-z_][A-Za-z0-9_.-]*)['"]?\s*:(?:\s+(.*))?$/) : null;
+			if (entry) {
+				current = { name: entry[1], value: entry[2] ?? '' };
+				entries.push(current);
+			} else if (current && candidate.trim() !== '') {
+				current.value += `\n${candidate}`;
+			}
+		}
+	});
+	return entries;
+}
+
+/**
+ * Why a value given to Helm reads a secret, or null:
+ * - a GitHub expression (`${{ }}`) whose body names the `secrets` context anywhere outside its strings, whatever the function
+ *   around it (`secrets.X || ''`, `format('{0}', secrets.X)`, `fromJSON(secrets.X).pw`, `toJSON(secrets)`);
+ * - an Azure DevOps variable: a `$(X)` macro, or `variables.X` or `variables['X']` anywhere inside a `$[ ]` or `${{ }}` body,
+ *   other than a predefined one whose name holds no credential's word or one the file declares inline with a literal value
+ *   (inlineVariables), since a variable group's may be named anything;
+ * - a variable an env entry of the file maps from a secret (envSecrets: `$NAME`, `${NAME}`, `$env:NAME`, `${{ env.NAME }}`);
+ * - any other variable (`${{ env.X }}`, `${{ steps.s.outputs.X }}`, `${{ parameters.X }}`, a shell `$X`, `${X}` or `${X:-}`)
+ *   any part of whose name holds a credential's word (namesCredential).
+ */
+function secretReference(value, inline, envSecrets) {
+	const spans = expressions(value);
+	for (const { kind, body } of spans) {
+		if (kind !== '${{' || !/\bsecrets\b/i.test(withoutStrings(body))) continue;
+		const named = body.match(/\bsecrets\s*(?:\.\s*([A-Za-z0-9_-]+)|\[\s*'([^']+)'\s*\])/i);
+		return named ? `the GitHub secret ${named[1] ?? named[2]}` : 'the GitHub secrets context';
+	}
+	const azure = [...value.matchAll(/\$\(([^)\s]+)\)/g)].map((match) => match[1]);
+	for (const { body } of spans) {
+		for (const match of body.matchAll(/\bvariables\s*(?:\.\s*([A-Za-z0-9_.-]*[A-Za-z0-9_])|\[\s*['"]([^'"]+)['"]\s*\])/gi)) azure.push(match[1] ?? match[2]);
+	}
+	for (const name of azure) {
+		if (AZURE_PREDEFINED.test(name) ? !namesCredential(name) : inline.has(name.toLowerCase())) continue;
+		return AZURE_PREDEFINED.test(name) ? `the predefined variable ${name}, whose name is a credential's`
+			: `the pipeline variable ${name}, which this file does not declare with a literal value (a variable group's may be a secret whatever its name)`;
+	}
+	const others = [];
+	for (const { kind, body } of spans) {
+		if (kind !== '${{') continue;
+		for (const match of body.matchAll(/\b(env|vars|inputs|steps|needs|jobs|github|matrix|strategy|runner|parameters)\s*(?:\.\s*([A-Za-z0-9_.-]*[A-Za-z0-9_])|\[\s*'([^']+)'\s*\])/gi)) {
+			others.push({ context: match[1].toLowerCase(), name: match[2] ?? match[3] });
+		}
+	}
+	for (const match of value.matchAll(/\$\{[#!]?([A-Za-z_][A-Za-z0-9_]*)/g)) others.push({ context: 'shell', name: match[1] });
+	for (const match of value.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) others.push({ context: 'shell', name: match[1] });
+	for (const match of value.matchAll(/\$env:([A-Za-z_][A-Za-z0-9_]*)/gi)) others.push({ context: 'shell', name: match[1] });
+	for (const { context, name } of others) {
+		if ((context === 'shell' || context === 'env') && envSecrets.has(name)) return `the variable ${name}, which an env entry of this file maps from a secret`;
+		// Every part of the name counts: a step or job named for a credential (steps.creds.outputs.value) gives one.
+		if (namesCredential(name)) return `the variable ${name}, whose name is a credential's`;
+	}
+	return null;
+}
+
+/**
+ * Why a file given to Helm or Helmfile is one the pipeline writes, or null: standard input (`-`), a process substitution
+ * (`<(...)`), a path with a variable, an absolute or home path, or the pipeline's `_cicd` folder; each comma-separated path is
+ * read.
+ */
+function pipelinePath(value) {
+	for (const one of value.split(',').map((part) => part.trim())) {
+		if (one === '-') return 'standard input';
+		if (one.startsWith('<(')) return 'a process substitution';
+		if (one.includes('$')) return 'a path with a variable';
+		if (/^[/~]|^[A-Za-z]:[\\/]|(^|[\\/])_cicd([\\/]|$)/.test(one)) return 'not a repository file';
+	}
+	return null;
+}
+
+/**
+ * ARV-209: the values a release file gives Helm or Helmfile that carry a credential, matched by the key's name and by what the
+ * value reads:
+ * - every pair of the value flags (RELEASE_VALUE_FLAGS, a comma-separated argument or one flag at a time, `--flag value` or
+ *   `--flag=value`, a comma inside an expression or a macro kept), of a HelmDeploy task's `overrideValues:` input (one line or a
+ *   block, pairs by comma or line), of Helmfile's `--args` string and of a HelmDeploy task's `arguments:` input (both read as
+ *   helm command lines): a key whose last part names a credential with any value but the empty one (which turns a chart's copy
+ *   off), any --set-file of such a key, a --set-file of a file the pipeline writes (pipelinePath), or a value that reads a
+ *   secret (secretReference, with the env entries the file maps from a secret);
+ * - a file the pipeline writes (pipelinePath) given to helm as a values file (`-f`, `--values`), to Helmfile as a values file
+ *   (`--state-values-file`, `--values`) or a state file (`-f`, `--file`), or as a HelmDeploy task's `valueFile:`, which may hold
+ *   anything: only the repository's own files are given to Helm.
+ * A values or state file flag counts only in a helm or helmfile command (a word of the shell command that is helm or helmfile,
+ * by name, by path or as `$HELM` and `$HELMFILE`), read per shell command of the line (`|`, `||`, `&&`, `;` and `&` end one), so
+ * test -f, rm -f and docker build -f name other files; a short flag may carry its value glued (`-fFILE`). Lines continued with
+ * a backslash are joined first, so are the lines of a folded block scalar (`>`), and a line that starts with a flag joins the
+ * line before it in a block scalar (`|` with no backslash) or as a `key: value` scalar's continuation; a flag at the end of a
+ * line takes the first word of the next. A quoted word with spaces (a YAML-quoted script, `bash -c '...'`) is read again as a
+ * command line, and a word starting with `#` ends the line (a comment). Each finding names the file, the line and the key or
+ * flag, never the value. Not covered, left to the review of the release file: a value a script assembles before the command (a
+ * variable holding a whole --set argument, an array of flags, an indirect `${!name}`, a command substitution's output, a value
+ * passed on through `$GITHUB_ENV` or `##vso[task.setvariable]` and read as a shell variable, a file the script writes under a
+ * repository path); a secret a step or job outputs under a neutral name; values given through another action's or task's inputs
+ * (a GitHub action's `with:`), a template the file includes, or a state file's own reads of the environment.
+ */
+export function releaseCredentialFindings(text, file) {
+	const findings = [];
+	const inline = inlineVariables(text);
+	// The env entries whose value reads a secret, to a fixed point (an entry may read another one's name).
+	const env = envEntries(text);
+	const envSecrets = new Set();
+	for (let changed = true; changed;) {
+		changed = false;
+		for (const { name, value } of env) {
+			if (!envSecrets.has(name) && secretReference(value, inline, envSecrets)) {
+				envSecrets.add(name);
+				changed = true;
+			}
+		}
+	}
+	const physical = text.split(/\r?\n/);
+	// The block scalars: a `key: |` or `key: >` line and the lines below it indented past the key.
+	const blockOf = new Array(physical.length).fill(null);
+	for (let index = 0; index < physical.length; index++) {
+		const header = physical[index].match(/^(\s*(?:-\s+)*)([A-Za-z0-9_.-]+|"[^"]*"|'[^']*')\s*:\s*([|>])[-+0-9]*\s*(?:#.*)?$/);
+		if (!header) continue;
+		const block = { header: index, key: unquote(header[2]), folded: header[3] === '>' };
+		let next = index + 1;
+		for (; next < physical.length && (physical[next].trim() === '' || indentOf(physical[next]) > header[1].length); next++) blockOf[next] = block;
+		index = next - 1;
+	}
+	// The logical lines, each numbered by its first physical line. scalar: a `key: value` line whose value (plain or quoted) a
+	// more-indented line may continue.
+	const scalarStart = /^\s*(?:-\s+)?(?:[A-Za-z0-9_.-]+|"[^"]*"|'[^']*')\s*:\s+(?![|>][-+0-9]*\s*(?:#.*)?$)[^\s#]/;
+	const lines = [];
+	physical.forEach((line, index) => {
+		const previous = lines.at(-1);
+		const block = blockOf[index];
+		const flagLed = /^\s*--?[A-Za-z]/.test(line);
+		const joins = previous && line.trim() !== '' && (previous.continued || (previous.block === block && block?.key !== 'overrideValues'
+			&& ((block && (block.folded || flagLed)) || (!block && flagLed && previous.scalar && indentOf(line) > previous.indent))));
+		if (joins) {
+			previous.text += ` ${line.trim()}`;
+			previous.continued = /\\$/.test(line);
+		} else {
+			lines.push({ text: line, number: index + 1, continued: /\\$/.test(line), block, indent: indentOf(line), scalar: !block && scalarStart.test(line) });
+		}
+	});
+	const keep = 'which Helm keeps in its release record; create the Secret out of band (ARV-209)';
+	const checkPair = (pair, flag, where) => {
+		const equals = pair.indexOf('=');
+		if (equals <= 0) return;
+		const key = pair.slice(0, equals).trim();
+		const value = unquote(pair.slice(equals + 1).trim());
+		const at = `${where}: ${flag} ${key}`;
+		const secret = () => secretReference(value, inline, envSecrets);
+		if (RELEASE_CREDENTIAL_KEY.test(key.split('.').pop()) && (value !== '' || flag === '--set-file')) findings.push(`${at} gives Helm a credential as a value, ${keep}`);
+		else if (flag === '--set-file' && pipelinePath(value)) findings.push(`${at} gives Helm a file the pipeline writes (${pipelinePath(value)}) as a value, ${keep}`);
+		else if (secret()) findings.push(`${at} gives Helm ${secret()} as a value, ${keep}`);
+	};
+	const fileFinding = (where, flag, value, tool, what) => {
+		const why = pipelinePath(value);
+		if (why) findings.push(`${where}: ${flag} gives ${tool} ${what} the pipeline writes (${why}), which may hold a secret Helm keeps in its release record; give only the repository's files and create Secrets out of band (ARV-209)`);
+	};
+	// helm and helmfile by name or path, or through the variables HELM and HELMFILE that point at them.
+	const commandOf = (segment) => segment.some((word) => /(^|\/)helmfile$|^\$\{?HELMFILE\}?$/.test(unquote(word))) ? 'helmfile'
+		: segment.some((word) => /(^|\/)helm$|^\$\{?HELM\}?$/.test(unquote(word))) ? 'helm' : null;
+	// forced: the command the words belong to ('helm' for --args and a HelmDeploy task's arguments), or null to read it from
+	// each shell command of the line.
+	const checkWords = (tokens, nextLine, where, forced) => {
+		const end = tokens.findIndex((token) => token.startsWith('#'));
+		const all = end < 0 ? tokens : tokens.slice(0, end);
+		const commandFrom = (from) => {
+			const stop = all.findIndex((token, index) => index >= from && COMMAND_SEPARATORS.has(token));
+			return forced ?? commandOf(all.slice(from, stop < 0 ? all.length : stop));
+		};
+		let command = commandFrom(0);
+		for (let i = 0; i < all.length; i++) {
+			const token = all[i];
+			if (COMMAND_SEPARATORS.has(token)) {
+				command = commandFrom(i + 1);
+				continue;
+			}
+			// `--flag value`, `--flag=value`, or a short flag's value glued to it (`-fvalues.yaml`, as helm's flag parser reads it).
+			const argumentOf = (flag) => {
+				if (token !== flag) return token.slice(token.startsWith(`${flag}=`) ? flag.length + 1 : flag.length);
+				if (i + 1 < all.length) return all[++i];
+				return nextLine?.()?.[0] ?? '';
+			};
+			const takes = (name) => token === name || token.startsWith(`${name}=`) || (/^-[A-Za-z]$/.test(name) && token.startsWith(name));
+			const valueFlag = RELEASE_VALUE_FLAGS.find((name) => token === name || token.startsWith(`${name}=`));
+			if (valueFlag) {
+				for (const pair of splitOutside(unquote(argumentOf(valueFlag)), ',')) checkPair(pair, valueFlag, where);
+				continue;
+			}
+			if (token === '--args' || token.startsWith('--args=')) {
+				checkWords(words(unquote(argumentOf('--args'))), null, where, 'helm');
+				continue;
+			}
+			// A quoted word with spaces: a script in YAML quotes or a shell's -c string, read as a command line of its own.
+			if (/^(["']).*\1$/s.test(token) && /\s/.test(token)) {
+				checkWords(words(token.slice(1, -1)), null, where, null);
+				continue;
+			}
+			if (!command) continue;
+			const stateFlag = command === 'helmfile' && HELMFILE_STATE_FLAGS.find(takes);
+			if (stateFlag) {
+				fileFinding(where, stateFlag, unquote(argumentOf(stateFlag)), 'Helmfile', 'a state file');
+				continue;
+			}
+			const fileFlag = (command === 'helmfile' ? HELMFILE_VALUES_FLAGS : HELM_VALUES_FLAGS).find(takes);
+			if (fileFlag) fileFinding(where, fileFlag, unquote(argumentOf(fileFlag)), command === 'helmfile' ? 'Helmfile' : 'Helm', 'a values file');
+		}
+	};
+	// A HelmDeploy task's step: the list item the line belongs to names the task.
+	const inHelmDeploy = (physicalIndex) => {
+		const indent = indentOf(physical[physicalIndex]);
+		let start = physicalIndex;
+		while (start >= 0 && !(/^\s*-\s/.test(physical[start]) && indentOf(physical[start]) < indent)) start--;
+		if (start < 0) return false;
+		const dash = indentOf(physical[start]);
+		for (let line = start; line < physical.length; line++) {
+			if (line > start && physical[line].trim() !== '' && indentOf(physical[line]) <= dash) break;
+			if (/^\s*(?:-\s+)?task:\s*['"]?HelmDeploy@/i.test(physical[line])) return true;
+		}
+		return false;
+	};
+	const consumed = new Set();
+	lines.forEach(({ text: joined, number }, index) => {
+		if (consumed.has(index)) return;
+		const where = `${file}:${number}`;
+		const input = joined.match(/^\s*(overrideValues|arguments|valueFile):\s*(.*)$/);
+		if (input && (input[1] !== 'arguments' || inHelmDeploy(number - 1))) {
+			// One line, or a block scalar: its lines below.
+			const own = input[2].trim();
+			const block = /^[|>][-+0-9]*\s*(?:#.*)?$/.test(own);
+			const body = block ? lines.map((line, at) => ({ line, at })).filter(({ line }) => line.block?.header === number - 1) : [];
+			for (const { at } of body) consumed.add(at);
+			const values = block ? body.map(({ line }) => line.text.trim()) : [unquote(own)];
+			if (input[1] === 'overrideValues') for (const pair of values.flatMap((line) => splitOutside(line, ','))) checkPair(pair, 'overrideValues', where);
+			else if (input[1] === 'arguments') checkWords(words(values.join(' ')), null, where, 'helm');
+			else for (const value of values) fileFinding(where, 'valueFile', unquote(value), 'Helm', 'a values file');
+			return;
+		}
+		checkWords(words(joined), () => (lines[index + 1] ? words(lines[index + 1].text) : []), where, null);
+	});
+	return findings;
+}
