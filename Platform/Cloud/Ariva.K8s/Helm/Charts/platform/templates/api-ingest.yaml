@@ -178,13 +178,10 @@ spec:
               value: {{ .Values.databaseConnections.poolSize.ingest | quote }}
             # This host's own database login (ARV-083a; databaseLogins.ingest): no other host's pod gets its secret
             {{- include "ariva-platform.hostLoginEnv" (list . "ingest") | nindent 12 }}
-            # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
-            - name: Kafka__SaslPassword
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.kafkaSecretName | default "ariva-kafka" }}
-                  key: password
-                  optional: true
+            # This host's own Kafka principal and Redis ACL user (ARV-083b; kafkaLogins.ingest, redisLogins.ingest): no other pod gets
+            # their secrets; optional outside k8s-prd, where Kafka may be plaintext and Redis without users
+            {{- include "ariva-platform.hostKafkaEnv" (list . "ingest") | nindent 12 }}
+            {{- include "ariva-platform.hostRedisEnv" (list . "ingest") | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: api-ingest-configmap

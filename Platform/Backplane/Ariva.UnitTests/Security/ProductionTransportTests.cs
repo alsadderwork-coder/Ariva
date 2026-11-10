@@ -145,7 +145,9 @@ public sealed class ProductionTransportTests : IDisposable
         {
             ["Redis:Enabled"] = enabled,
             ["Redis:ConnectionString"] = connection,
-            ["Redis:CaCertificatePath"] = ca switch { "ca" => _caPath, "missing" => Path.Combine(_folder, "absent.crt"), _ => "" }
+            ["Redis:CaCertificatePath"] = ca switch { "ca" => _caPath, "missing" => Path.Combine(_folder, "absent.crt"), _ => "" },
+            // ARV-083b: a k8s-prd host signs in as its own ACL user too (RedisAccessTests), given here so the transport alone decides.
+            ["Redis:Username"] = "ariva-main"
         });
 
         var add = () => new ServiceCollection().AddArivaCaching(configuration);

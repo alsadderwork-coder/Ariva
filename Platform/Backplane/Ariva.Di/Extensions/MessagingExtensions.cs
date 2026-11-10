@@ -26,14 +26,36 @@ namespace Ariva.Di.Extensions;
 /// </summary>
 public static partial class MessagingExtensions
 {
-    /// <summary>CWE-501: in production every event crosses the network authenticated and encrypted, or the host does not start.</summary>
-    internal static void EnsureProductionTransport(KafkaSettings settings, IConfiguration configuration)
+    /// <summary>
+    /// CWE-501: in production every event crosses the network authenticated and encrypted, or the host does not start. Since
+    /// ARV-083b (the owner's decision of 2026-11-10: a site's brokers always use the internal CA; CWE-295, CWE-287) also verified
+    /// against that CA alone, whose file must be there (<c>Kafka:SslCaLocation</c>, as ARV-082a pins PostgreSQL and Redis), and
+    /// signed in with a SASL mechanism and the host's own principal (<c>Kafka:SaslUsername</c> and <c>Kafka:SaslPassword</c>, from
+    /// its own secret; <see cref="KafkaAccess"/> lists its ACLs). The messages name settings, never a value.
+    /// </summary>
+    internal static void EnsureProductionTransport(KafkaSettings settings, IConfiguration configuration) =>
+        EnsureProductionTransport(settings, configuration, File.Exists);
+
+    /// <summary>As above, with the file check given (unit tests).</summary>
+    internal static void EnsureProductionTransport(KafkaSettings settings, IConfiguration configuration, Func<string, bool> fileExists)
     {
-        if (settings.Enabled && configuration["Application:Environment"] == "k8s-prd" &&
-            !string.Equals(settings.SecurityProtocol, "SaslSsl", StringComparison.OrdinalIgnoreCase))
-        {
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(fileExists);
+        if (!settings.Enabled || configuration["Application:Environment"] != "k8s-prd")
+            return;
+        if (!string.Equals(settings.SecurityProtocol, "SaslSsl", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Kafka in k8s-prd must use SecurityProtocol SaslSsl with a SASL mechanism and credentials.");
-        }
+        if (string.IsNullOrWhiteSpace(settings.SslCaLocation))
+            throw new InvalidOperationException(
+                "Kafka:SslCaLocation must name the internal CA's PEM file in k8s-prd: the brokers are verified against it, not the system store (ARV-083b).");
+        if (!fileExists(settings.SslCaLocation))
+            throw new InvalidOperationException("Kafka:SslCaLocation names a file that does not exist: mount the Kafka CA secret (ARV-083b).");
+        if (string.IsNullOrWhiteSpace(settings.SaslMechanism))
+            throw new InvalidOperationException("Kafka:SaslMechanism must be set in k8s-prd (ScramSha512): every host signs in to the brokers (ARV-083b).");
+        if (string.IsNullOrWhiteSpace(settings.SaslUsername) || string.IsNullOrEmpty(settings.SaslPassword))
+            throw new InvalidOperationException(
+                "Kafka:SaslUsername and Kafka:SaslPassword must be set in k8s-prd: each host signs in as its own principal, from its own secret (ARV-083b).");
     }
 
     /// <summary>
@@ -201,6 +223,11 @@ public static partial class MessagingExtensions
         var catalog = new EventCatalog([typeof(Ariva.Core._IAssemblyMark).Assembly, .. builder.EventAssemblies]);
         services.AddSingleton(settings);
         services.AddSingleton(catalog);
+        // ARV-083b: what this host consumes, whether Kafka is on or not, so its principal's ACLs (KafkaAccess) are held to it.
+        services.AddSingleton(new DeclaredConsumers([
+            .. builder.Consumers.Select(c => new DeclaredConsumer(c.Topic, $"ariva-{settings.ServiceName}.{c.Purpose}", Raw: false)),
+            .. builder.Streams.Select(s => new DeclaredConsumer(s.Topic, $"ariva-{settings.ServiceName}.{s.Purpose}", Raw: true))
+        ]));
         services.TryAddSingleton(TimeProvider.System);
         services.Replace(ServiceDescriptor.Singleton<IDomainEventOutbox, NHibernateDomainEventOutbox>());
         services.TryAddScoped<IInbox, PostgresInbox>();
@@ -366,15 +393,22 @@ public sealed class ArivaMessagingBuilder
 
     internal List<ConsumerRegistration> Consumers { get; } = [];
 
+    /// <summary>The topics this host reads with its own consumer, with the purpose of its group (ARV-083b: its principal reads them).</summary>
+    internal List<(string Topic, string Purpose)> Streams { get; } = [];
+
     /// <summary>
-    /// A topic this host reads with <c>PartitionedConsumer</c> (Ariva.Api.Stream); it must be a <see cref="KafkaTopics"/>
-    /// constant. Its unreadable records go to its dead-letter topic through the host's one producer, which needs no
-    /// registration per topic (ARV-167).
+    /// A topic this host reads with its own raw consumer (Ariva.Api.Stream's queue engine) in the group
+    /// <c>ariva-&lt;service&gt;.&lt;purpose&gt;</c>; it must be a <see cref="KafkaTopics"/> constant. Its unreadable records go to
+    /// its dead-letter topic through the host's one producer, which needs no registration per topic (ARV-167). Since ARV-083b
+    /// recorded with its group (<see cref="DeclaredConsumers"/>), so the host's principal is held to read it.
     /// </summary>
-    public ArivaMessagingBuilder StreamFrom(string topic)
+    public ArivaMessagingBuilder StreamFrom(string topic, string purpose)
     {
         if (!KafkaTopics.IsKnown(topic))
             throw new ArgumentException($"Unknown topic '{topic}'. Use a KafkaTopics constant.", nameof(topic));
+        if (purpose is null || !MessagingExtensions.PurposeRule().IsMatch(purpose))
+            throw new ArgumentException("A purpose is lowercase kebab case, for example 'queue-engine'.", nameof(purpose));
+        Streams.Add((topic, purpose));
         return this;
     }
 

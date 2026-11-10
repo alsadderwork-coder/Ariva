@@ -156,13 +156,10 @@ spec:
             {{- include "ariva-platform.hostLoginEnv" (list . "cronz") | nindent 12 }}
             # The availability ledger's own login (ARV-083a; databaseLogins.availability): only this host and the migration job
             {{- include "ariva-platform.availabilityLoginEnv" . | nindent 12 }}
-            # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
-            - name: Kafka__SaslPassword
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.kafkaSecretName | default "ariva-kafka" }}
-                  key: password
-                  optional: true
+            # This host's own Kafka principal and Redis ACL user (ARV-083b; kafkaLogins.cronz, redisLogins.cronz): no other pod gets
+            # their secrets; optional outside k8s-prd, where Kafka may be plaintext and Redis without users
+            {{- include "ariva-platform.hostKafkaEnv" (list . "cronz") | nindent 12 }}
+            {{- include "ariva-platform.hostRedisEnv" (list . "cronz") | nindent 12 }}
           envFrom:
             - configMapRef:
                 name: api-cronz-configmap

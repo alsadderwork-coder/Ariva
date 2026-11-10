@@ -102,9 +102,9 @@ public sealed class RedisLiveSnapshots(RedisConnection redis) : ILiveSnapshotSto
     /// </summary>
     public static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(6);
 
-    private string Key(string zoneKey) => $"{redis.Settings.InstanceName}live:zone:{zoneKey}";
+    private string Key(string zoneKey) => RedisNames.LiveZoneKey(redis.Settings.InstanceName, zoneKey);
 
-    private RedisChannel Channel => RedisChannel.Literal($"{redis.Settings.InstanceName}live:zones");
+    private RedisChannel Channel => RedisChannel.Literal(RedisNames.LiveZonesChannel(redis.Settings.InstanceName));
 
     public async Task PublishAsync(IReadOnlyCollection<LiveZoneSnapshot> snapshots, CancellationToken ct)
     {

@@ -97,15 +97,6 @@ public sealed class LiveRelay(ILiveSnapshotStore snapshots, IAlertNotices alerts
         }
     }
 
-    private async Task<bool> HoldLeaseAsync(RedisConnection redis)
-    {
-        var database = (await redis.GetAsync()).GetDatabase();
-        var key = $"{redis.Settings.InstanceName}live:relay";
-        // Take the lease if free, or extend it if it is ours.
-        var result = await database.ScriptEvaluateAsync(
-            "if redis.call('set', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[2]) then return 1 end " +
-            "if redis.call('get', KEYS[1]) == ARGV[1] then redis.call('pexpire', KEYS[1], ARGV[2]) return 1 end return 0",
-            [key], [_owner, (long)Lease.TotalMilliseconds]);
-        return (long)result == 1;
-    }
+    // Take the lease if free, or extend it if it is ours (ARV-083b: the script in Ariva.Infra, beside the ACL grant for it).
+    private Task<bool> HoldLeaseAsync(RedisConnection redis) => LiveRelayLease.HoldAsync(redis, _owner, Lease);
 }

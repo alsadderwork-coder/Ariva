@@ -26,13 +26,18 @@ public sealed class KafkaSettings
     /// </summary>
     public string SecurityProtocol { get; init; } = "Plaintext";
 
-    /// <summary>PEM file of the CA that signed the brokers' certificates (a Strimzi cluster CA), mounted from a secret.</summary>
+    /// <summary>
+    /// PEM file of the CA that signed the brokers' certificates (the site's internal CA, a Strimzi cluster CA), mounted from a
+    /// secret. Required in k8s-prd, with its file there (ARV-083b, the owner's decision of 2026-11-10).
+    /// </summary>
     public string SslCaLocation { get; init; }
 
     public string SaslMechanism { get; init; }
+
+    /// <summary>The host's own principal (ARV-083b; its ACLs: KafkaAccess), from the host's own secret (Kafka__SaslUsername).</summary>
     public string SaslUsername { get; init; }
 
-    /// <summary>From the Kubernetes secret (Kafka__SaslPassword), never from a committed file.</summary>
+    /// <summary>From the host's own Kubernetes secret (Kafka__SaslPassword), never from a committed or shared file.</summary>
     public string SaslPassword { get; init; }
 
     /// <summary>Creates missing topics (and their dead-letter topics) at startup; existing topics are never changed.</summary>

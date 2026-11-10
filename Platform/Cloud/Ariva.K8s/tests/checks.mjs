@@ -275,6 +275,122 @@ export function hostLoginFindings(docs, { hosts = false } = {}) {
 }
 
 /**
+ * ARV-083b (CWE-269, CWE-285, CWE-522; ASVS 5.0 V13.2.1, V13.2.2, V13.3.1): each API host signs in to Kafka and Redis with
+ * credentials of its own, and no pod holds another host's.
+ * - Each API host's .NET container gets Kafka__SaslUsername and Kafka__SaslPassword from one secret (keys username and password)
+ *   and Redis__Username and Redis__Password from another, each secret its own: no other host's, and not a database login's.
+ * - No workload but the host itself refers to a host's Kafka, Redis or database login secret (env, envFrom or a volume; the
+ *   database logins' own rule, hostLoginFindings, says which jobs may): the kafka-topics job may get api-main's Kafka principal
+ *   alone (when kafkaTopics.adminSecretName gives it none of its own), and nothing of Redis.
+ * - The Kafka password only where Kafka is used: Kafka__Sasl* only in the API hosts and the kafka-topics job, Redis__Username and
+ *   Password only in the API hosts, each from a secret (secretKeyRef), never a literal; in k8s-prd never optional.
+ * - The migration login's password (Database__Migration__Password) reaches the database-migration job alone, from its secret,
+ *   which no workload refers to but that job, the scheduled backup (CronJob/ariva-db-backup) and the TimescaleDB server itself
+ *   (StatefulSet/timescaledb, whose release owns the secret): base-appsettings-secret, which every pod mounts, holds no credential.
+ * - In k8s-prd the kafka-topics job signs in as a principal of its own (kafkaTopics.adminSecretName), never api-main's, so no
+ *   host's principal needs CREATE on the ariva. prefix (the ARV-083b review).
+ * With hosts (a whole render) every API host must be there with both credentials and the job with the migration password;
+ * without (a fixture), what is there is checked.
+ */
+const HOST_CREDENTIALS = [
+	{ label: 'Kafka principal', user: 'Kafka__SaslUsername', password: 'Kafka__SaslPassword' },
+	{ label: 'Redis user', user: 'Redis__Username', password: 'Redis__Password' }
+];
+const TOPICS_JOB = 'Job/kafka-topics';
+/** The workloads that may refer to the migration login's password secret: the job, the scheduled backup, the database server. */
+const MIGRATION_SECRET_READERS = new Set(['Job/database-migration', 'CronJob/ariva-db-backup', 'StatefulSet/timescaledb']);
+const KAFKA_ENV = /^Kafka__Sasl(Username|Password)$/;
+const REDIS_ENV = /^Redis__(Username|Password)$/;
+
+/** The secret a credential's two variables come from, keys username and password, or null. */
+function credentialSecret(container, user, password) {
+	const ref = (name) => (container.env ?? []).find((variable) => variable.name === name)?.valueFrom?.secretKeyRef;
+	const u = ref(user);
+	const p = ref(password);
+	return u && p && u.key === 'username' && p.key === 'password' && u.name && u.name === p.name ? { name: String(u.name), optional: u.optional === true || p.optional === true } : null;
+}
+
+export function hostCredentialFindings(docs, { environment, hosts = false } = {}) {
+	const findings = [];
+	const workloads = docs.filter((doc) => doc && typeof doc === 'object' && WORKLOADS.has(doc.kind))
+		.map((doc) => ({ id: `${doc.kind}/${doc.metadata?.name ?? '?'}`, pod: podSpecOf(doc) ?? {} }));
+	const hostContainer = (pod) => (pod.containers ?? []).find((container) => DOTNET_IMAGES.has(imageName(container.image ?? ''))) ?? (pod.containers ?? [])[0] ?? {};
+	const hasVariable = (container, pattern) => (container.env ?? []).some((variable) => pattern.test(variable.name ?? ''));
+	// Every secret a host owns, by name: its database login (ARV-083a), its Kafka principal and its Redis user.
+	const owners = new Map();
+	const hostIds = new Map(Object.keys(HOST_LOGIN_SECTIONS).map((host) => [`Deployment/${host}-deployment`, host]));
+	for (const [id, host] of hostIds) {
+		const workload = workloads.find((candidate) => candidate.id === id);
+		const database = workload ? loginSecret(hostContainer(workload.pod), 'Database__') : null;
+		if (database && !owners.has(database)) owners.set(database, { host, label: 'database login' });
+	}
+	for (const [id, host] of hostIds) {
+		const workload = workloads.find((candidate) => candidate.id === id);
+		if (!workload) {
+			if (hosts) findings.push(`${id}: not rendered; every API host signs in to Kafka and Redis as its own (ARV-083b)`);
+			continue;
+		}
+		const container = hostContainer(workload.pod);
+		for (const credential of HOST_CREDENTIALS) {
+			const secret = credentialSecret(container, credential.user, credential.password);
+			if (!secret) {
+				if (hosts || hasVariable(container, new RegExp(`^(${credential.user}|${credential.password})$`))) {
+					findings.push(`${id}: must get its own ${credential.label} (${credential.user} and ${credential.password}, keys username and password) from one secret (ARV-083b)`);
+				}
+				continue;
+			}
+			const owner = owners.get(secret.name);
+			if (owner) findings.push(`${id}: its ${credential.label} secret ${secret.name} is ${owner.host}'s ${owner.label} too; each host's credentials have secrets of their own (ARV-083b)`);
+			else owners.set(secret.name, { host, label: credential.label });
+			if (environment === 'k8s-prd' && secret.optional) findings.push(`${id}: k8s-prd must not mark its ${credential.label} secret optional (ARV-083b)`);
+		}
+	}
+	// The migration login's password: the job's own secret, which no host or the topics job may refer to.
+	const job = workloads.find((candidate) => candidate.id === 'Job/database-migration');
+	const migration = job ? (hostContainer(job.pod).env ?? []).find((variable) => variable.name === 'Database__Migration__Password') : null;
+	if (job && !migration?.valueFrom?.secretKeyRef?.name && (hosts || migration)) {
+		findings.push('Job/database-migration: must get the migration login\'s password (Database__Migration__Password) from its own secret (secretKeyRef; migration.passwordSecret), never base-appsettings-secret (ARV-083b)');
+	} else if (!job && hosts) {
+		findings.push('Job/database-migration: not rendered; the migration job alone gets the migration login\'s password (ARV-083b)');
+	}
+	const migrationSecret = migration?.valueFrom?.secretKeyRef?.name ? String(migration.valueFrom.secretKeyRef.name) : null;
+	for (const { id, pod } of workloads) {
+		const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
+		const host = hostIds.get(id);
+		for (const secret of new Set(secretReferences(pod))) {
+			const owner = owners.get(secret);
+			const topicsOnMain = id === TOPICS_JOB && owner?.host === 'api-main' && owner?.label === 'Kafka principal';
+			if (owner && owner.label !== 'database login' && owner.host !== host && !topicsOnMain) {
+				findings.push(`${id}: refers to ${owner.host}'s ${owner.label} secret ${secret}; a pod gets its own host's credentials only (ARV-083b)`);
+			}
+			if (topicsOnMain && environment === 'k8s-prd') {
+				findings.push(`${id}: k8s-prd signs the topics job in as a principal of its own (kafkaTopics.adminSecretName), never api-main's ${secret} (ARV-083b)`);
+			}
+			if (secret === migrationSecret && !MIGRATION_SECRET_READERS.has(id)) {
+				findings.push(`${id}: refers to the migration login's password secret ${secret}; only the database-migration job, the scheduled backup and the database server get it (ARV-083b)`);
+			}
+		}
+		if (!host && id !== TOPICS_JOB && containers.some((container) => hasVariable(container, KAFKA_ENV))) {
+			findings.push(`${id}: gets a Kafka credential; only the API hosts and the kafka-topics job sign in to Kafka (ARV-083b)`);
+		}
+		if (!host && containers.some((container) => hasVariable(container, REDIS_ENV))) {
+			findings.push(`${id}: gets a Redis credential; only the API hosts sign in to Redis (ARV-083b)`);
+		}
+		if (id !== 'Job/database-migration' && containers.some((container) => hasVariable(container, /^Database__Migration__Password$/))) {
+			findings.push(`${id}: gets the migration login's password; only the database-migration job does (ARV-083b)`);
+		}
+		for (const container of containers) {
+			for (const variable of container.env ?? []) {
+				if ((KAFKA_ENV.test(variable.name ?? '') || REDIS_ENV.test(variable.name ?? '') || variable.name === 'Database__Migration__Password') && !variable.valueFrom?.secretKeyRef) {
+					findings.push(`${id} container ${container.name}: ${variable.name}: a credential comes from its secret (secretKeyRef), never a literal (ARV-083b)`);
+				}
+			}
+		}
+	}
+	return findings;
+}
+
+/**
  * ARV-082a: the servers' CAs. Every workload that runs an Ariva .NET host against PostgreSQL and Redis (the API hosts and
  * the migration and topics jobs, which build the same host) mounts each CA, read-only and whole (a subPath mount never sees
  * a renewed CA), at the path the hosts read in k8s-prd (Database:RootCertificate, Redis:CaCertificatePath), from a secret
@@ -1352,6 +1468,8 @@ export function checkManifests(docs, { environment, hosts = false }) {
 	findings.push(...instanceIdFindings(docs, { hosts }));
 	// ARV-083a: each host's database login from its own secret, and the migration job alone with them all.
 	findings.push(...hostLoginFindings(docs, { hosts }));
+	// ARV-083b: each host's Kafka principal and Redis user from its own secrets, and the migration password the job's alone.
+	findings.push(...hostCredentialFindings(docs, { environment, hosts }));
 	return findings;
 }
 

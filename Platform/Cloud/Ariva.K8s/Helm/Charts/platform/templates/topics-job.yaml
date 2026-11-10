@@ -4,8 +4,9 @@
 #upgraded pods start (pre-upgrade), and after the release objects exist on the first install (post-install, as the
 #migration job). It creates the missing topics and their dead-letter topics with the ADR-0018 settings and never
 #changes an existing topic. With this job on, the hosts run with Kafka:ProvisionTopics false (api-main-configmap) and
-#never create topics. Their Kafka principal loses create rights only when kafkaTopics.adminSecretName gives the job a
-#principal of its own; without it the job uses the hosts' principal.
+#never create topics. api-main's principal loses create rights only when kafkaTopics.adminSecretName gives the job a
+#principal of its own; without it the job uses api-main's (ARV-083b: each host has its own, kafkaLogins). It gets no Redis
+#user and no database login: it uses neither.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -79,13 +80,8 @@ spec:
                   name: {{ .Values.kafkaTopics.adminSecretName }}
                   key: password
             {{- else }}
-            # The hosts' Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
-            - name: Kafka__SaslPassword
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.kafkaSecretName | default "ariva-kafka" }}
-                  key: password
-                  optional: true
+            # api-main's own principal (ARV-083b; kafkaLogins.main), which then needs the topics job's create rights too
+            {{- include "ariva-platform.hostKafkaEnv" (list . "main") | nindent 12 }}
             {{- end }}
           volumeMounts:
             - name: tmp

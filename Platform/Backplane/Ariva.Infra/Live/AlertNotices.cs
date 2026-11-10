@@ -95,7 +95,7 @@ public sealed class RedisAlertNotices(RedisConnection redis) : IAlertNotices
 {
     public const int MaxBytes = 4 * 1024;
 
-    private RedisChannel Channel => RedisChannel.Literal($"{redis.Settings.InstanceName}live:alerts");
+    private RedisChannel Channel => RedisChannel.Literal(RedisNames.LiveAlertsChannel(redis.Settings.InstanceName));
 
     public async Task PublishAsync(IReadOnlyCollection<AlertNotice> notices, CancellationToken ct)
     {

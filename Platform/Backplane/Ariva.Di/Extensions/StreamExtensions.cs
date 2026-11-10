@@ -41,12 +41,12 @@ public static class StreamExtensions
         return services;
     }
 
-    /// <summary>The sensing topics the queue worker reads raw, so that their dead-letter producers exist.</summary>
+    /// <summary>The sensing topics the queue worker reads raw, in its group (<c>ariva-stream.queue-engine</c>; ARV-083b: Stream's principal reads them).</summary>
     public static ArivaMessagingBuilder StreamQueueZones(this ArivaMessagingBuilder messaging)
     {
         ArgumentNullException.ThrowIfNull(messaging);
         foreach (var topic in QueueStreamWorker.Topics)
-            messaging.StreamFrom(topic);
+            messaging.StreamFrom(topic, QueueStreamWorker.Purpose);
         return messaging;
     }
 }

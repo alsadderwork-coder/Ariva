@@ -30,6 +30,9 @@ public static class CachingExtensions
         // ARV-082a (CWE-319, CWE-295): in production Redis is reached over TLS verified against the pinned internal CA, or the host does not start.
         if (environment == "k8s-prd" && redis.ProductionTransportProblem(File.Exists) is { } problem)
             throw new InvalidOperationException(problem);
+        // ARV-083b (CWE-269, CWE-287): and as the host's own ACL user, whose grants RedisAccess lists, never the default user.
+        if (environment == "k8s-prd" && redis.ProductionCredentialProblem() is { } credentials)
+            throw new InvalidOperationException(credentials);
         var minutes = int.TryParse(configuration["Cache:FusionCacheInMinutes"], out var configured) && configured > 0 ? configured : 5;
 
         var builder = services
@@ -37,7 +40,7 @@ public static class CachingExtensions
             .WithOptions(options =>
             {
                 options.CacheKeyPrefix = redis.InstanceName;
-                options.BackplaneChannelPrefix = $"{redis.InstanceName}{environment}";
+                options.BackplaneChannelPrefix = RedisNames.BackplaneChannelPrefix(redis.InstanceName, environment);
                 options.DistributedCacheCircuitBreakerDuration = TimeSpan.FromSeconds(2);
                 options.BackplaneCircuitBreakerDuration = TimeSpan.FromSeconds(2);
             })
@@ -74,9 +77,11 @@ public static class CachingExtensions
             .WithDistributedCache(provider =>
             {
                 var connection = provider.GetRequiredService<RedisConnection>();
+                // ARV-083b: the distributed level's keys under a prefix of their own ({instance}cache:), apart from the live keys,
+                // so each host's Redis ACL user is granted the cache without the live snapshots (RedisAccess).
                 return new RedisCache(new RedisCacheOptions
                 {
-                    InstanceName = redis.InstanceName,
+                    InstanceName = RedisNames.CacheKeyPrefix(redis.InstanceName),
                     ConnectionMultiplexerFactory = connection.GetAsync
                 });
             })

@@ -3,10 +3,25 @@
 #   JUPITER-KUBECONFIG-B64                 base64 kubeconfig for the cluster
 #   ACR-USERNAME, ACR-PASSWORD             registry credentials this pipeline writes into the pull secret dalilacr-secret
 #                                          (ARV-209: never a Helm value, which Helm keeps in its release record)
-#   ARIVA-K8S-DEV-BASE-APPSETTINGS         appsettings.base.k8s-dev.json content
+#   ARIVA-K8S-DEV-BASE-APPSETTINGS         appsettings.base.k8s-dev.json content, without any password or secret (ARV-083b: every
+#                                          pod mounts it, so every host and job refuses to start while it gives one; no user or
+#                                          password in Redis:ConnectionString either)
 #   ARIVA-K8S-DEV-<SERVICE>-APPSETTINGS    appsettings.service.k8s-dev.json content per service
 #   ARIVA-K8S-DEV-DB-SUPERUSER-PASSWORD    TimescaleDB "postgres" superuser (database administrator only)
-#   ARIVA-K8S-DEV-DB-MIGRATION-PASSWORD    TimescaleDB migration login; equals Database:Migration:Password in the base appsettings
+#   ARIVA-K8S-DEV-DB-MIGRATION-PASSWORD    TimescaleDB migration login; the migration job reads it from the timescaledb-credentials
+#                                          Secret this pipeline writes (key migration-password; the chart's migration.passwordSecret,
+#                                          ARV-083b), never from the base appsettings
+#   ARIVA-K8S-DEV-KAFKA-<HOST>-USERNAME, ARIVA-K8S-DEV-KAFKA-<HOST>-PASSWORD
+#   ARIVA-K8S-DEV-REDIS-<HOST>-USERNAME, ARIVA-K8S-DEV-REDIS-<HOST>-PASSWORD
+#                                          each host's own Kafka principal and Redis ACL user (ARV-083b), <HOST> one of MAIN,
+#                                          INGEST, STREAM, CRONZ and INTEGRATION, and for Kafka also TOPICS, the topics job's own
+#                                          principal: twenty-two variables, each name its own (letters, digits, dot, underscore,
+#                                          hyphen) and each password its own (no database password either), 16 printable ASCII
+#                                          characters or more without a space; this pipeline writes them into the Secrets
+#                                          ariva-kafka-<host>, ariva-kafka-topics and ariva-redis-<host>. Optional in k8s-dev (its brokers may be
+#                                          plaintext and its Redis without users): a pair left out entirely is skipped with a
+#                                          warning, half a pair fails the release. The site's administrators grant each the ACLs
+#                                          of wiki 04 section 6.2a
 #   ARIVA-K8S-DEV-DB-LOGIN-<LOGIN>-USERNAME, ARIVA-K8S-DEV-DB-LOGIN-<LOGIN>-PASSWORD
 #                                          each host's own database login and the availability ledger's (ARV-083a), <LOGIN> one
 #                                          of MAIN, INGEST, STREAM, CRONZ, INTEGRATION and AVAILABILITY: twelve variables, each
@@ -251,6 +266,106 @@ steps:
       DB_LOGIN_INTEGRATION_USERNAME: $(ARIVA-K8S-DEV-DB-LOGIN-INTEGRATION-USERNAME)
       DB_LOGIN_INTEGRATION_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-INTEGRATION-PASSWORD)
       DB_LOGIN_AVAILABILITY_USERNAME: $(ARIVA-K8S-DEV-DB-LOGIN-AVAILABILITY-USERNAME)
+      DB_LOGIN_AVAILABILITY_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-AVAILABILITY-PASSWORD)
+
+  # ARV-083b: each host's Kafka principal and Redis ACL user, one Secret each (the chart's kafkaLogins and redisLogins:
+  # ariva-kafka-<host> and ariva-redis-<host>, keys username and password), which only that host gets, and the topics job's own
+  # Kafka principal (ariva-kafka-topics, the chart's kafkaTopics.adminSecretName; k8s-dev uses it once that value names it,
+  # api-main's principal until then). As the host database login step above: the names and passwords reach the step as
+  # environment variables and each Secret through files in the agent's temporary folder (0600, removed on exit), never through a
+  # command line or the log (a failure names the variable, never its value), each Secret applied server side under this
+  # release's own field manager. Refused (the ARV-083b review): two principals or two Redis users with one name, and a password
+  # that is another credential's, the database passwords included. Optional in k8s-dev: a pair left out entirely is skipped (the
+  # chart's secrets are optional outside k8s-prd), half a pair fails.
+  - script: |
+      set -e
+      export KUBECONFIG="$(Build.SourcesDirectory)/_cicd/jupiter-kube-config.yaml"
+      umask 077
+      folder="$(Agent.TempDirectory)/host-credentials"
+      trap 'rm -rf "$folder"' EXIT
+      mkdir -p "$folder"
+      # Every password of the release seen so far: the database's, then each credential written below.
+      seen=()
+      for name in DB_SUPERUSER_PASSWORD DB_MIGRATION_PASSWORD DB_LOGIN_MAIN_PASSWORD DB_LOGIN_INGEST_PASSWORD DB_LOGIN_STREAM_PASSWORD \
+          DB_LOGIN_CRONZ_PASSWORD DB_LOGIN_INTEGRATION_PASSWORD DB_LOGIN_AVAILABILITY_PASSWORD; do
+        value="${!name}"
+        # Written as \$\( so Azure DevOps does not read it as a macro.
+        if [[ -n "$value" && "$value" != \$\(* ]]; then seen+=("$value"); fi
+      done
+      declare -A users=()
+      for pair in KAFKA:MAIN KAFKA:INGEST KAFKA:STREAM KAFKA:CRONZ KAFKA:INTEGRATION KAFKA:TOPICS \
+          REDIS:MAIN REDIS:INGEST REDIS:STREAM REDIS:CRONZ REDIS:INTEGRATION; do
+        kind="${pair%%:*}"
+        host="${pair##*:}"
+        user_variable="${kind}_${host}_USERNAME"
+        password_variable="${kind}_${host}_PASSWORD"
+        user="${!user_variable}"
+        password="${!password_variable}"
+        [[ "$user" == \$\(* ]] && user=""
+        [[ "$password" == \$\(* ]] && password=""
+        if [[ -z "$user" && -z "$password" ]]; then
+          echo "##vso[task.logissue type=warning]$user_variable and $password_variable are not defined: ariva-${kind,,}-${host,,} is not written"; continue
+        fi
+        if [[ -z "$user" || -z "$password" ]]; then
+          echo "##vso[task.logissue type=error]$user_variable and $password_variable are defined together or not at all"; exit 1
+        fi
+        if [[ ! "$user" =~ ^[A-Za-z0-9._-]{1,128}$ || "$user" == default ]]; then
+          echo "##vso[task.logissue type=error]$user_variable must be letters, digits, dot, underscore or hyphen, and never Redis's default user"; exit 1
+        fi
+        if [[ -n "${users[$kind:$user]:-}" ]]; then
+          echo "##vso[task.logissue type=error]$user_variable names what ${users[$kind:$user]} names: each principal and each Redis user has a name of its own"; exit 1
+        fi
+        users["$kind:$user"]="$user_variable"
+        # Printable ASCII without a space: the same password works in a SCRAM user and a Redis ACL rule.
+        if [ "${#password}" -lt 16 ] || ( LC_ALL=C; [[ "$password" =~ [^!-~] ]] ); then
+          echo "##vso[task.logissue type=error]$password_variable must have at least 16 printable ASCII characters without a space"; exit 1
+        fi
+        for other in "${seen[@]}"; do
+          if [[ "$other" == "$password" ]]; then
+            echo "##vso[task.logissue type=error]$password_variable is another credential's password: each has its own"; exit 1
+          fi
+        done
+        seen+=("$password")
+        printf '%s' "$user" > "$folder/username"
+        printf '%s' "$password" > "$folder/password"
+        kubectl create secret generic "ariva-${kind,,}-${host,,}" \
+          --from-file=username="$folder/username" --from-file=password="$folder/password" \
+          --namespace="$(NAMESPACE)" --dry-run=client -o yaml \
+          | kubectl apply --context="$(K8SCLUSTERCONTEXT)" --server-side --force-conflicts --field-manager=ariva-release -f -
+        rm -f "$folder/username" "$folder/password"
+      done
+      unset user password value seen users
+    displayName: "Create the host Kafka and Redis credential secrets"
+    env:
+      KAFKA_MAIN_USERNAME: $(ARIVA-K8S-DEV-KAFKA-MAIN-USERNAME)
+      KAFKA_MAIN_PASSWORD: $(ARIVA-K8S-DEV-KAFKA-MAIN-PASSWORD)
+      KAFKA_INGEST_USERNAME: $(ARIVA-K8S-DEV-KAFKA-INGEST-USERNAME)
+      KAFKA_INGEST_PASSWORD: $(ARIVA-K8S-DEV-KAFKA-INGEST-PASSWORD)
+      KAFKA_STREAM_USERNAME: $(ARIVA-K8S-DEV-KAFKA-STREAM-USERNAME)
+      KAFKA_STREAM_PASSWORD: $(ARIVA-K8S-DEV-KAFKA-STREAM-PASSWORD)
+      KAFKA_CRONZ_USERNAME: $(ARIVA-K8S-DEV-KAFKA-CRONZ-USERNAME)
+      KAFKA_CRONZ_PASSWORD: $(ARIVA-K8S-DEV-KAFKA-CRONZ-PASSWORD)
+      KAFKA_INTEGRATION_USERNAME: $(ARIVA-K8S-DEV-KAFKA-INTEGRATION-USERNAME)
+      KAFKA_INTEGRATION_PASSWORD: $(ARIVA-K8S-DEV-KAFKA-INTEGRATION-PASSWORD)
+      KAFKA_TOPICS_USERNAME: $(ARIVA-K8S-DEV-KAFKA-TOPICS-USERNAME)
+      KAFKA_TOPICS_PASSWORD: $(ARIVA-K8S-DEV-KAFKA-TOPICS-PASSWORD)
+      REDIS_MAIN_USERNAME: $(ARIVA-K8S-DEV-REDIS-MAIN-USERNAME)
+      REDIS_MAIN_PASSWORD: $(ARIVA-K8S-DEV-REDIS-MAIN-PASSWORD)
+      REDIS_INGEST_USERNAME: $(ARIVA-K8S-DEV-REDIS-INGEST-USERNAME)
+      REDIS_INGEST_PASSWORD: $(ARIVA-K8S-DEV-REDIS-INGEST-PASSWORD)
+      REDIS_STREAM_USERNAME: $(ARIVA-K8S-DEV-REDIS-STREAM-USERNAME)
+      REDIS_STREAM_PASSWORD: $(ARIVA-K8S-DEV-REDIS-STREAM-PASSWORD)
+      REDIS_CRONZ_USERNAME: $(ARIVA-K8S-DEV-REDIS-CRONZ-USERNAME)
+      REDIS_CRONZ_PASSWORD: $(ARIVA-K8S-DEV-REDIS-CRONZ-PASSWORD)
+      REDIS_INTEGRATION_USERNAME: $(ARIVA-K8S-DEV-REDIS-INTEGRATION-USERNAME)
+      REDIS_INTEGRATION_PASSWORD: $(ARIVA-K8S-DEV-REDIS-INTEGRATION-PASSWORD)
+      DB_SUPERUSER_PASSWORD: $(ARIVA-K8S-DEV-DB-SUPERUSER-PASSWORD)
+      DB_MIGRATION_PASSWORD: $(ARIVA-K8S-DEV-DB-MIGRATION-PASSWORD)
+      DB_LOGIN_MAIN_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-MAIN-PASSWORD)
+      DB_LOGIN_INGEST_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-INGEST-PASSWORD)
+      DB_LOGIN_STREAM_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-STREAM-PASSWORD)
+      DB_LOGIN_CRONZ_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-CRONZ-PASSWORD)
+      DB_LOGIN_INTEGRATION_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-INTEGRATION-PASSWORD)
       DB_LOGIN_AVAILABILITY_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-AVAILABILITY-PASSWORD)
 
   - script: |

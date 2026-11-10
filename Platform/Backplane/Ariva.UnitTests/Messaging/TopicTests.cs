@@ -357,19 +357,32 @@ public sealed class MessagingRegistrationTests
     [InlineData("k8s-dev", "Plaintext", false)]
     public void AddArivaMessaging_Should_RefuseUnauthenticatedKafka_When_InProduction(string environment, string protocol, bool refused)
     {
+        // ARV-083b: a k8s-prd host also needs the internal CA's file and its own principal, given here, so the protocol alone decides.
+        var ca = Path.Combine(Directory.CreateTempSubdirectory("ariva-kafka-ca-").FullName, "ca.crt");
+        File.WriteAllText(ca, "test");
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
         {
             ["Application:Environment"] = environment,
             ["Kafka:Enabled"] = "true",
             ["Kafka:SecurityProtocol"] = protocol,
-            ["Kafka:SaslMechanism"] = "ScramSha512"
+            ["Kafka:SaslMechanism"] = "ScramSha512",
+            ["Kafka:SslCaLocation"] = ca,
+            ["Kafka:SaslUsername"] = "ariva-main",
+            ["Kafka:SaslPassword"] = "kafka-secret-value"
         }).Build();
 
         var add = () => Ariva.Di.Extensions.MessagingExtensions.AddArivaMessaging(new ServiceCollection(), configuration);
 
-        if (refused)
-            add.Should().Throw<InvalidOperationException>().WithMessage("*SaslSsl*");
-        else
-            add.Should().NotThrow();
+        try
+        {
+            if (refused)
+                add.Should().Throw<InvalidOperationException>().WithMessage("*SaslSsl*");
+            else
+                add.Should().NotThrow();
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(ca), recursive: true);
+        }
     }
 }

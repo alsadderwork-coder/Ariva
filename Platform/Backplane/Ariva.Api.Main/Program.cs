@@ -56,6 +56,8 @@ builder.Configuration
 ArivaEnvironment.EnsureConfigured(builder.Configuration, environment);
 // ARV-136a: k8s-prd does not start on a go-live setting nobody confirmed (docs/product/pilot-to-confirm.md).
 GoLiveSettings.EnsureConfirmed(builder.Configuration, environment);
+// ARV-083b: a cluster's shared base settings (base-appsettings-secret, in every pod) carry no credential.
+SharedSettings.EnsureNoCredentials(builder.Configuration, environment);
 
 #endregion
 
@@ -161,7 +163,7 @@ if (redisSettings.Enabled)
     {
         // The cache's options (ARV-082a: TLS pinned to the internal CA in production), on a connection and channel prefix of the hub's own.
         options.Configuration = redisSettings.Options();
-        options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal(redisSettings.InstanceName + "signalr");
+        options.Configuration.ChannelPrefix = StackExchange.Redis.RedisChannel.Literal(Ariva.Infra.Caching.RedisNames.SignalRChannelPrefix(redisSettings.InstanceName));
     });
 builder.Services.AddScoped<Ariva.Infra.Live.LiveZoneDirectory>();
 builder.Services.AddHostedService<Ariva.Api.Main.Hubs.LiveRelay>();

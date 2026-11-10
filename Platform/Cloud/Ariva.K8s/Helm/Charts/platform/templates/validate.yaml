@@ -239,6 +239,64 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- fail (printf "databaseLogins.%s is not an Ariva host or the availability ledger (ARV-083a)" $key) }}
 {{- end }}
 {{- end }}
+{{- /* ARV-083b: each host's Kafka principal and Redis ACL user from a secret of its own, required in k8s-prd. */}}
+{{- if hasKey .Values "kafkaSecretName" }}
+{{- fail "kafkaSecretName is gone: each host has a Kafka principal of its own, from kafkaLogins.<host> (ARV-083b; wiki 04 section 6.2)" }}
+{{- end }}
+{{- $hostSecrets := concat $loginSecrets (list (toString .Values.validationReader.secretName) "base-appsettings-secret") }}
+{{- range $group := list "kafkaLogins" "redisLogins" }}
+{{- $map := index $.Values $group | default dict }}
+{{- if not (kindIs "map" $map) }}
+{{- fail (printf "%s must be a map of main, ingest, stream, cronz and integration to secret names, and optional (ARV-083b)" $group) }}
+{{- end }}
+{{- if not (kindIs "bool" (index $map "optional")) }}
+{{- fail (printf "%s.optional must be true or false (ARV-083b)" $group) }}
+{{- end }}
+{{- if and (eq $.Values.environment "k8s-prd") (index $map "optional") }}
+{{- fail (printf "k8s-prd needs every host's own secret: set %s.optional false (ARV-083b)" $group) }}
+{{- end }}
+{{- range $key := list "main" "ingest" "stream" "cronz" "integration" }}
+{{- $secret := toString (index $map $key | default "") }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" $secret) }}
+{{- fail (printf "%s.%s must name the secret of that host's own credentials (keys username and password; ARV-083b)" $group $key) }}
+{{- end }}
+{{- if has $secret $hostSecrets }}
+{{- fail (printf "%s.%s names a secret another credential uses: each host's Kafka principal and Redis user has a secret of its own (ARV-083b)" $group $key) }}
+{{- end }}
+{{- $hostSecrets = append $hostSecrets $secret }}
+{{- end }}
+{{- range $key, $secret := $map }}
+{{- if not (has $key (list "main" "ingest" "stream" "cronz" "integration" "optional")) }}
+{{- fail (printf "%s.%s is not an Ariva host (ARV-083b)" $group $key) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- /* ARV-083b review: the topics job signs in as a principal of its own, never a host's; in k8s-prd the job is on and has one,
+       so api-main's principal never needs CREATE on the ariva. prefix. */}}
+{{- $topics := .Values.kafkaTopics | default dict }}
+{{- $topicsSecret := toString ($topics.adminSecretName | default "") }}
+{{- if $topicsSecret }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" $topicsSecret) }}
+{{- fail "kafkaTopics.adminSecretName must name the secret of the topics job's own principal (keys username and password; ARV-083b)" }}
+{{- end }}
+{{- if has $topicsSecret $hostSecrets }}
+{{- fail "kafkaTopics.adminSecretName names a host's credentials or the appsettings secret: the topics job has a principal of its own (ARV-083b)" }}
+{{- end }}
+{{- end }}
+{{- if and (eq .Values.environment "k8s-prd") (not $topics.job) }}
+{{- fail "k8s-prd needs the kafka-topics job (kafkaTopics.job true): without it api-main provisions the topics at start and its principal would need CREATE on ariva. (ARV-083b)" }}
+{{- end }}
+{{- if and (eq .Values.environment "k8s-prd") (not $topicsSecret) }}
+{{- fail "k8s-prd needs the topics job's own Kafka principal: set kafkaTopics.adminSecretName (for example ariva-kafka-topics; ARV-083b)" }}
+{{- end }}
+{{- /* ARV-083b: the migration login's password from the job's own secret, never base-appsettings-secret. */}}
+{{- $migrationSecret := (.Values.migration | default dict).passwordSecret | default dict }}
+{{- if not (and (kindIs "map" $migrationSecret) (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" (toString ($migrationSecret.name | default ""))) (regexMatch "^[-._a-zA-Z0-9]{1,253}$" (toString ($migrationSecret.key | default "")))) }}
+{{- fail "migration.passwordSecret must name the secret and the key of the migration login's password (ARV-083b)" }}
+{{- end }}
+{{- if or (has (toString $migrationSecret.name) $hostSecrets) (eq (toString $migrationSecret.name) $topicsSecret) }}
+{{- fail "migration.passwordSecret names a host's credentials, the topics job's or the appsettings secret: the migration login's password has a secret of its own (ARV-083b)" }}
+{{- end }}
 {{- range $key, $name := dict "databaseCaSecretName" (.Values.databaseCaSecretName | default "ariva-database-ca") "redisCaSecretName" (.Values.redisCaSecretName | default "ariva-redis-ca") }}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" (toString $name)) }}
 {{- fail (printf "%s must be a Kubernetes secret name (a secret with the key ca.crt; ARV-082a)" $key) }}

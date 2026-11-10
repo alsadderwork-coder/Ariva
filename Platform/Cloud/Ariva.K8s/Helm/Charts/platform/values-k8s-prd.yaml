@@ -107,6 +107,22 @@ validationReader:
 # availability ledger, keys username and password, each login and password its own) must exist before the release; the
 # migration job ensures each login and the hosts start on their own (wiki/04, section 6.2).
 
+# Kafka principals and Redis ACL users (ARV-083b; values.yaml kafkaLogins and redisLogins): one secret each per API host (keys
+# username and password), required here; the site's Kafka and Redis administrators grant each principal and user the ACLs
+# wiki/04 section 6.2a lists before the release, and every host refuses to start without its own.
+kafkaLogins:
+  optional: false
+redisLogins:
+  optional: false
+
+# The topics job's own Kafka principal (ARV-083b review; values.yaml kafkaTopics): required here, so api-main's principal never
+# needs CREATE or DESCRIBE on the ariva. prefix; the job is on (validate.yaml refuses it off here, since api-main would then
+# provision at start with its own principal). The secret (keys username and password) must exist before the release; the
+# site's Kafka administrator grants that principal CREATE and DESCRIBE on the ariva. prefix (wiki/04, section 6.2a).
+kafkaTopics:
+  job: true
+  adminSecretName: ariva-kafka-topics
+
 # Retention periods (ARV-111a; values.yaml, docs/privacy/data-inventory.md): the migration job applies them after the scripts.
 # Raw sensing keeps the 90-day default until the contract's dispute window is known (TC-62); the relational periods are the
 # Proposed defaults (TC-66 to TC-68). Change them here, per environment, and the next release applies them.

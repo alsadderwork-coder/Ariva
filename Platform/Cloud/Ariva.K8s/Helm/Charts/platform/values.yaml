@@ -333,6 +333,14 @@ migration:
   enabled: true
   backoffLimit: 1
   activeDeadlineSeconds: 900
+  # The migration login's password (ARV-083b; CWE-522): from this secret and key, for the database-migration job alone, as
+  # Database__Migration__Password, so base-appsettings-secret, which every pod mounts, holds no credential (the hosts refuse to
+  # start in a cluster while it gives one: SharedSettings). By default the TimescaleDB release's own secret, which the
+  # scheduled backup reads too (backup.database.passwordSecret); for a site's own PostgreSQL, a secret of the operator's with
+  # the migration login's password. Kubernetes names (validate.yaml).
+  passwordSecret:
+    name: timescaledb-credentials
+    key: migration-password
   # Retention periods in whole days (ARV-111a, docs/privacy/data-inventory.md). After the scripts, the job sets each hypertable's
   # TimescaleDB retention policy and each relational period (table retention_period, which the Cronz retention job reads) to
   # these, with the migration login; the chart passes them as Database__Retention__* (environment variables win over the
@@ -381,12 +389,45 @@ databaseLogins:
   integration: ariva-db-login-integration
   availability: ariva-db-login-availability
 
+# Kafka principals (ARV-083b; CWE-269, CWE-285, CWE-287): each API host signs in to the site's brokers as a principal of its
+# own, granted only the topics it writes and reads and the consumer groups it joins (Ariva.Infra/Messaging/KafkaAccess.cs; the
+# kafka-acls commands in wiki/04, section 6.2a). Each secret below (keys username and password, the principal's SCRAM user and
+# password, each its own) is created out of band per environment; the chart passes it to that host alone as
+# Kafka__SaslUsername and Kafka__SaslPassword (and api-main's to the kafka-topics job when it has no principal of its own). No
+# other workload gets a Kafka credential. optional: true outside k8s-prd, where the brokers may be plaintext and a missing
+# secret leaves the host without SASL; k8s-prd sets false (validate.yaml refuses true there) and every host refuses to start
+# without its principal and the internal CA (Kafka:SslCaLocation, from the ariva-kafka-ca secret, kafkaCaSecretName; the owner's
+# decision of 2026-11-10).
+# kafkaSecretName, the one principal every host shared before ARV-083b, is refused.
+kafkaLogins:
+  main: ariva-kafka-main
+  ingest: ariva-kafka-ingest
+  stream: ariva-kafka-stream
+  cronz: ariva-kafka-cronz
+  integration: ariva-kafka-integration
+  optional: true
+
+# Redis ACL users (ARV-083b; CWE-269, CWE-285, CWE-287): each API host signs in to the site's Redis as a user of its own,
+# granted only the commands, key patterns and channels it uses (Ariva.Infra/Caching/RedisAccess.cs; the ACL SETUSER lines in
+# wiki/04, section 6.2a). Each secret below (keys username and password) is created out of band per environment and passed to
+# that host alone as Redis__Username and Redis__Password, which replace any user or password of Redis:ConnectionString. No other
+# workload gets a Redis credential. optional: true outside k8s-prd, where Redis may have no users (a missing secret leaves the
+# host on the connection string alone); k8s-prd sets false and every host refuses to start without its user (never "default").
+redisLogins:
+  main: ariva-redis-main
+  ingest: ariva-redis-ingest
+  stream: ariva-redis-stream
+  cronz: ariva-redis-cronz
+  integration: ariva-redis-integration
+  optional: true
+
 # Kafka topics Job (ARV-062): api-main --provision-topics as a Helm hook before each upgrade (after the first install).
 # It creates the missing ariva.* topics and their dead-letter topics, never changes an existing one, and fails the
 # release when the broker cannot be reached within activeDeadlineSeconds. While it is on, api-main runs with
 # Kafka:ProvisionTopics false. adminSecretName (keys username and password) gives the job its own SASL principal with
-# create rights on the ariva. prefix, so the hosts' principal can do without them (recommended in production); empty
-# uses the hosts' principal (kafkaSecretName), which then keeps create rights.
+# create rights on the ariva. prefix, so api-main's principal can do without them; required in k8s-prd, with the job on
+# (validate.yaml; the ARV-083b review), and never a host's secret. Empty (dev, demo) uses api-main's principal
+# (kafkaLogins.main, ARV-083b), which then keeps create rights.
 kafkaTopics:
   job: true
   adminSecretName: ""

@@ -453,6 +453,68 @@ Usage: {{- include "ariva-platform.hostLoginEnv" (list . "main") | nindent 12 }}
 {{- end }}
 
 {{/*
+A host's own Kafka principal (ARV-083b; values kafkaLogins): Kafka__SaslUsername and Kafka__SaslPassword from the secret
+kafkaLogins.<host> (keys username and password), optional as kafkaLogins.optional says (false in k8s-prd, validate.yaml, where
+the host refuses to start without them). Only that host gets it, and the kafka-topics job api-main's when it has no principal
+of its own (kafkaTopics.adminSecretName); the chart test fails if another workload does. KafkaAccess lists each principal's ACLs.
+Usage: {{- include "ariva-platform.hostKafkaEnv" (list . "main") | nindent 12 }}
+*/}}
+{{- define "ariva-platform.hostKafkaEnv" -}}
+{{- $root := index . 0 }}
+{{- $secret := index $root.Values.kafkaLogins (index . 1) }}
+- name: Kafka__SaslUsername
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret | quote }}
+      key: username
+      optional: {{ $root.Values.kafkaLogins.optional }}
+- name: Kafka__SaslPassword
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret | quote }}
+      key: password
+      optional: {{ $root.Values.kafkaLogins.optional }}
+{{- end }}
+
+{{/*
+A host's own Redis ACL user (ARV-083b; values redisLogins): Redis__Username and Redis__Password from the secret
+redisLogins.<host> (keys username and password), optional as redisLogins.optional says (false in k8s-prd, validate.yaml, where
+the host refuses to start without them). Only that host gets it; the chart test fails if another workload does. RedisAccess lists
+each user's commands, keys and channels.
+Usage: {{- include "ariva-platform.hostRedisEnv" (list . "main") | nindent 12 }}
+*/}}
+{{- define "ariva-platform.hostRedisEnv" -}}
+{{- $root := index . 0 }}
+{{- $secret := index $root.Values.redisLogins (index . 1) }}
+- name: Redis__Username
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret | quote }}
+      key: username
+      optional: {{ $root.Values.redisLogins.optional }}
+- name: Redis__Password
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret | quote }}
+      key: password
+      optional: {{ $root.Values.redisLogins.optional }}
+{{- end }}
+
+{{/*
+The migration login's password (ARV-083b; values migration.passwordSecret, the timescaledb-credentials secret's
+migration-password by default, which the scheduled backup reads too): Database__Migration__Password, for the database-migration
+job alone, so base-appsettings-secret, which every pod mounts, holds no credential. Never optional: without it the job, a
+pre-upgrade hook, stops before any script.
+*/}}
+{{- define "ariva-platform.migrationPasswordEnv" -}}
+- name: Database__Migration__Password
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.migration.passwordSecret.name | quote }}
+      key: {{ .Values.migration.passwordSecret.key | quote }}
+{{- end }}
+
+{{/*
 The availability ledger's own database login (ARV-083a; values databaseLogins.availability), for api-cronz, which runs the
 ledger, and the database-migration job, which creates it.
 */}}

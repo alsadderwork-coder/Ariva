@@ -59,6 +59,8 @@ spec:
           env:
             - name: DOTNET_ENVIRONMENT
               value: {{ .Values.environment | quote }}
+            # The migration login's password (ARV-083b; migration.passwordSecret): the job's alone, never base-appsettings-secret's
+            {{- include "ariva-platform.migrationPasswordEnv" . | nindent 12 }}
             # The validation reader login (ARV-104g1): the job creates or updates it (script 0049)
             {{- include "ariva-platform.validationReaderEnv" . | nindent 12 }}
             # Every host's database login and the availability ledger's (ARV-083a; databaseLogins): the job creates or updates

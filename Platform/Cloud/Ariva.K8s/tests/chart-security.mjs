@@ -84,7 +84,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
-import { BACKUP, BACKUP_RULES, backupFindings, checkManifests, COLLECTOR_CAS, collectorCaFindings, HOST_LOGIN_SECTIONS, hostLoginFindings, INSTANCE_ID, instanceIdFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
+import { BACKUP, BACKUP_RULES, backupFindings, checkManifests, COLLECTOR_CAS, collectorCaFindings, HOST_LOGIN_SECTIONS, hostCredentialFindings, hostLoginFindings, INSTANCE_ID, instanceIdFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
 	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients,
 	clamavDirectives, releaseCredentialFindings, UPLOAD_SCAN, uploadScanFindings, WEB_CERTIFICATE, webCertificateFindings } from './checks.mjs';
 
@@ -1275,6 +1275,107 @@ function hostLoginSelfTest() {
 }
 
 /**
+ * ARV-083b: the host login render with each host's Kafka principal and Redis user, the kafka-topics job on api-main's principal,
+ * and the migration job with the migration login's password from its own secret.
+ */
+function hostCredentialDocs() {
+	const pair = (user, password, secret, optional = true) => [{ name: user, valueFrom: { secretKeyRef: { name: secret, key: 'username', optional } } },
+		{ name: password, valueFrom: { secretKeyRef: { name: secret, key: 'password', optional } } }];
+	const docs = hostLoginDocs();
+	for (const host of API_HOSTS) {
+		const short = host.replace('api-', '');
+		loginEnv(docs, `${host}-deployment`).push(...pair('Kafka__SaslUsername', 'Kafka__SaslPassword', `ariva-kafka-${short}`),
+			...pair('Redis__Username', 'Redis__Password', `ariva-redis-${short}`));
+	}
+	docs.push({ kind: 'Job', metadata: { name: 'kafka-topics' }, spec: { template: { spec: { containers: [{ name: 'kafka-topics', image: 'r.example/ariva/api-main:1',
+		env: pair('Kafka__SaslUsername', 'Kafka__SaslPassword', 'ariva-kafka-main') }] } } } });
+	loginEnv(docs, 'database-migration').push({ name: 'Database__Migration__Password', valueFrom: { secretKeyRef: { name: 'timescaledb-credentials', key: 'migration-password' } } });
+	return docs;
+}
+const credentialVariable = (docs, name, variable) => loginEnv(docs, name).find((entry) => entry.name === variable);
+const simpleWorkload = (kind, name, image, env) => ({ kind, metadata: { name }, spec: { template: { spec: { containers: [{ name: 'app', image, env }] } } } });
+/** Every credential reference of the render required, as production renders them. */
+const requireAll = (docs) => { for (const doc of docs) for (const entry of doc.spec.template.spec.containers[0].env) if (entry.valueFrom?.secretKeyRef?.optional) entry.valueFrom.secretKeyRef.optional = false; };
+const onSecret = (docs, name, prefix, secret) => { for (const entry of loginEnv(docs, name).filter((item) => item.name.startsWith(prefix))) entry.valueFrom.secretKeyRef.name = secret; };
+
+/** ARV-083b: each change to the rendered credentials, the environment, and the findings it must give, no more (a whole render). */
+const HOST_CREDENTIAL_CASES = [
+	['a host reading another host\'s Kafka principal', 'k8s-dev', (docs) => { loginEnv(docs, 'api-ingest-deployment').push({ name: 'Extra', valueFrom: { secretKeyRef: { name: 'ariva-kafka-main', key: 'password' } } }); },
+		['Deployment/api-ingest-deployment: refers to api-main\'s Kafka principal secret ariva-kafka-main; a pod gets its own host\'s credentials only']],
+	['a host mounting another host\'s Redis user', 'k8s-dev', (docs) => { workloadOf(docs, 'api-stream-deployment').spec.template.spec.volumes = [{ name: 'x', secret: { secretName: 'ariva-redis-integration' } }]; },
+		['Deployment/api-stream-deployment: refers to api-integration\'s Redis user secret ariva-redis-integration']],
+	['a host mounting another host\'s database login', 'k8s-dev', (docs) => { workloadOf(docs, 'api-stream-deployment').spec.template.spec.volumes = [{ name: 'x', secret: { secretName: 'ariva-db-login-ingest' } }]; },
+		['Deployment/api-stream-deployment: refers to api-ingest\'s database login secret ariva-db-login-ingest']],
+	['a host with all three of another host\'s', 'k8s-dev', (docs) => { workloadOf(docs, 'api-cronz-deployment').spec.template.spec.volumes = ['ariva-kafka-ingest', 'ariva-redis-main', 'ariva-db-login-stream'].map((secretName, index) => ({ name: `x${index}`, secret: { secretName } })); },
+		['Deployment/api-cronz-deployment: refers to api-ingest\'s Kafka principal secret ariva-kafka-ingest', 'Deployment/api-cronz-deployment: refers to api-main\'s Redis user secret ariva-redis-main',
+			'Deployment/api-cronz-deployment: refers to api-stream\'s database login secret ariva-db-login-stream']],
+	['two hosts on one Kafka principal', 'k8s-dev', (docs) => { onSecret(docs, 'api-integration-deployment', 'Kafka__', 'ariva-kafka-main'); },
+		['Deployment/api-integration-deployment: its Kafka principal secret ariva-kafka-main is api-main\'s Kafka principal too',
+			'Deployment/api-integration-deployment: refers to api-main\'s Kafka principal secret ariva-kafka-main']],
+	['a Redis user on the host\'s database login', 'k8s-dev', (docs) => { onSecret(docs, 'api-cronz-deployment', 'Redis__', 'ariva-db-login-cronz'); },
+		['Deployment/api-cronz-deployment: its Redis user secret ariva-db-login-cronz is api-cronz\'s database login too']],
+	['a host without its Redis user', 'k8s-dev', (docs) => { const env = loginEnv(docs, 'api-main-deployment'); env.splice(env.findIndex((entry) => entry.name === 'Redis__Username'), 2); },
+		['Deployment/api-main-deployment: must get its own Redis user (Redis__Username and Redis__Password']],
+	['a literal Kafka password', 'k8s-dev', (docs) => { Object.assign(credentialVariable(docs, 'api-stream-deployment', 'Kafka__SaslPassword'), { value: 'x', valueFrom: undefined }); },
+		['Deployment/api-stream-deployment: must get its own Kafka principal', 'Deployment/api-stream-deployment container app: Kafka__SaslPassword: a credential comes from its secret']],
+	['optional principals in production', 'k8s-prd', (docs) => { onSecret(docs, 'kafka-topics', 'Kafka__', 'ariva-kafka-topics'); },
+		API_HOSTS.flatMap((host) => [`Deployment/${host}-deployment: k8s-prd must not mark its Kafka principal secret optional`,
+			`Deployment/${host}-deployment: k8s-prd must not mark its Redis user secret optional`])],
+	// The ARV-083b review: in production the topics job has a principal of its own, so api-main's never needs CREATE.
+	['the topics job on api-main\'s principal in production', 'k8s-prd', (docs) => { requireAll(docs); },
+		['Job/kafka-topics: k8s-prd signs the topics job in as a principal of its own (kafkaTopics.adminSecretName), never api-main\'s ariva-kafka-main']],
+	// The ARV-083b review: the migration password's secret reaches the job, the scheduled backup and the database server alone.
+	['the web pod mounting the migration password\'s secret', 'k8s-dev', (docs) => { workloadOf(docs, 'web-deployment').spec.template.spec.volumes = [{ name: 'x', secret: { secretName: 'timescaledb-credentials' } }]; },
+		['Deployment/web-deployment: refers to the migration login\'s password secret timescaledb-credentials']],
+	['the simulator reading it under another name', 'k8s-dev', (docs) => { docs.push(simpleWorkload('Deployment', 'simulation-deployment', 'r.example/ariva/simulation:1',
+		[{ name: 'Simulation__Store__Secret', valueFrom: { secretKeyRef: { name: 'timescaledb-credentials', key: 'migration-password' } } }])); },
+		['Deployment/simulation-deployment: refers to the migration login\'s password secret timescaledb-credentials']],
+	['clamd reading it beside api-main', 'k8s-dev', (docs) => { workloadOf(docs, 'api-main-deployment').spec.template.spec.containers.push({ name: 'clamd', image: 'clamav/clamav:1',
+		env: [{ name: 'CLAMD_CONF_Pass', valueFrom: { secretKeyRef: { name: 'timescaledb-credentials', key: 'migration-password' } } }] }); },
+		['Deployment/api-main-deployment: refers to the migration login\'s password secret timescaledb-credentials']],
+	['the scheduled backup and the database server reading it', 'k8s-dev', (docs) => {
+		const env = [{ name: 'ARIVA_MIGRATION_PASSWORD', valueFrom: { secretKeyRef: { name: 'timescaledb-credentials', key: 'migration-password' } } }];
+		docs.push({ kind: 'CronJob', metadata: { name: 'ariva-db-backup' }, spec: { jobTemplate: { spec: { template: { spec: { containers: [{ name: 'backup', image: 'timescale/timescaledb-ha:pg17', env }] } } } } } },
+			simpleWorkload('StatefulSet', 'timescaledb', 'timescale/timescaledb-ha:pg17', env)); }, []],
+	['the migration job with a Kafka principal', 'k8s-dev', (docs) => { loginEnv(docs, 'database-migration').push({ name: 'Kafka__SaslPassword', valueFrom: { secretKeyRef: { name: 'ariva-kafka-main', key: 'password' } } }); },
+		['Job/database-migration: refers to api-main\'s Kafka principal secret ariva-kafka-main', 'Job/database-migration: gets a Kafka credential; only the API hosts and the kafka-topics job']],
+	['the web pod with a Redis user', 'k8s-dev', (docs) => { loginEnv(docs, 'web-deployment').push({ name: 'Redis__Password', valueFrom: { secretKeyRef: { name: 'site-redis', key: 'password' } } }); },
+		['Deployment/web-deployment: gets a Redis credential; only the API hosts sign in to Redis']],
+	['the topics job on another host\'s principal', 'k8s-dev', (docs) => { onSecret(docs, 'kafka-topics', 'Kafka__', 'ariva-kafka-stream'); },
+		['Job/kafka-topics: refers to api-stream\'s Kafka principal secret ariva-kafka-stream']],
+	['the topics job with a Redis user', 'k8s-dev', (docs) => { loginEnv(docs, 'kafka-topics').push({ name: 'Redis__Username', valueFrom: { secretKeyRef: { name: 'ariva-redis-main', key: 'username' } } }); },
+		['Job/kafka-topics: refers to api-main\'s Redis user secret ariva-redis-main', 'Job/kafka-topics: gets a Redis credential; only the API hosts sign in to Redis']],
+	['the topics job on a principal of its own', 'k8s-dev', (docs) => { onSecret(docs, 'kafka-topics', 'Kafka__', 'ariva-kafka-topics'); }, []],
+	['the migration password in a host', 'k8s-dev', (docs) => { loginEnv(docs, 'api-ingest-deployment').push({ name: 'Database__Migration__Password', valueFrom: { secretKeyRef: { name: 'timescaledb-credentials', key: 'migration-password' } } }); },
+		['Deployment/api-ingest-deployment: refers to the migration login\'s password secret timescaledb-credentials', 'Deployment/api-ingest-deployment: gets the migration login\'s password; only the database-migration job does']],
+	['the migration password from the base settings', 'k8s-dev', (docs) => { const env = loginEnv(docs, 'database-migration'); env.splice(env.findIndex((entry) => entry.name === 'Database__Migration__Password'), 1); },
+		['Job/database-migration: must get the migration login\'s password (Database__Migration__Password) from its own secret']]
+];
+
+/** ARV-083b: the host credential rules: the good render is clean, a fixture without them is clean, each change gives exactly its findings. */
+function hostCredentialSelfTest() {
+	const failures = [];
+	const check = (docs, environment) => [...hostLoginFindings(docs, { hosts: true }), ...hostCredentialFindings(docs, { environment, hosts: true })];
+	const clean = check(hostCredentialDocs(), 'k8s-dev');
+	if (clean.length) failures.push(`the good host credential render produced findings:\n   ${clean.join('\n   ')}`);
+	const production = hostCredentialDocs();
+	requireAll(production);
+	onSecret(production, 'kafka-topics', 'Kafka__', 'ariva-kafka-topics');
+	const required = check(production, 'k8s-prd');
+	if (required.length) failures.push(`the production host credential render produced findings:\n   ${required.join('\n   ')}`);
+	const partial = hostCredentialDocs();
+	for (const doc of partial) doc.spec.template.spec.containers[0].env.length = 0;
+	if (hostCredentialFindings(partial, { environment: 'k8s-dev' }).length) failures.push('host credential rules: a part of a render without credentials must give no finding');
+	for (const [label, environment, change, expected] of HOST_CREDENTIAL_CASES) {
+		const docs = hostCredentialDocs();
+		change(docs);
+		const found = check(docs, environment);
+		if (!exactly(found, expected)) failures.push(`host credential case ${label} must give exactly ${expected.join(' | ') || 'nothing'}; gave ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	return { failures, count: HOST_CREDENTIAL_CASES.length };
+}
+
+/**
  * ARV-209: the release credential rule on sample command lines and pipeline fragments: each bad sample trips it exactly once and
  * names no value, each good one (a Secret's name, a switch, an empty value that turns a chart's copy off, a build number, a
  * neutral env var, another command's -f) trips nothing.
@@ -1581,11 +1682,12 @@ function selfTest() {
 	const scanning = uploadScanSelfTest();
 	const instances = instanceIdSelfTest();
 	const logins = hostLoginSelfTest();
+	const credentials83b = hostCredentialSelfTest();
 	const credentials = releaseCredentialSelfTest();
 	const webCertificate = webCertificateSelfTest();
 	const backups = backupSelfTest();
 	const others = [...credentials.failures, ...webCertificate.failures, ...backups.failures, ...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
-		...collectorCas.failures, ...scanning.failures, ...instances.failures, ...logins.failures];
+		...collectorCas.failures, ...scanning.failures, ...instances.failures, ...logins.failures, ...credentials83b.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
@@ -1596,7 +1698,7 @@ function selfTest() {
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
-		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases ${instances.count} instance id cases, ${logins.count} host database login cases, ${credentials.count} release credential cases, ${webCertificate.count} web certificate cases and ${backups.count} scheduled backup cases each giving exactly their findings (the chart's ariva-db.sh the repository's); the good fixtures are clean; the web image takes ` +
+		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases ${instances.count} instance id cases, ${logins.count} host database login cases, ${credentials83b.count} host Kafka, Redis and migration credential cases, ${credentials.count} release credential cases, ${webCertificate.count} web certificate cases and ${backups.count} scheduled backup cases each giving exactly their findings (the chart's ariva-db.sh the repository's); the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen} and keeps no nginx configuration in its web root (${webRoot.count} cases); the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
 		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
@@ -2185,6 +2287,29 @@ for (const [label, file, sets, message, annotation] of [
 	['a host login on the validation reader\'s secret', 'values-k8s-dev.yaml', ['databaseLogins.main=ariva-validation-reader'], 'names the validation reader\'s secret or the appsettings secret'],
 	['a host login on the appsettings secret', 'values-k8s-dev.yaml', ['databaseLogins.integration=base-appsettings-secret'], 'names the validation reader\'s secret or the appsettings secret'],
 	['a login secret for no host', 'values-k8s-dev.yaml', ['databaseLogins.simulation=ariva-db-login-simulation'], 'databaseLogins.simulation is not an Ariva host'],
+	// ARV-083b: each host's Kafka principal and Redis user from a secret of its own, required in production; the migration
+	// password from the job's own secret; the shared Kafka secret of before is gone.
+	['the shared Kafka secret of before', 'values-k8s-dev.yaml', ['kafkaSecretName=ariva-kafka'], 'kafkaSecretName is gone'],
+	['a Kafka principal without a secret name', 'values-k8s-dev.yaml', ['kafkaLogins.ingest='], 'kafkaLogins.ingest must name the secret'],
+	['a Redis user secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['redisLogins.stream=Stream_Redis'], 'redisLogins.stream must name the secret'],
+	['two hosts on one Kafka principal', 'values-k8s-dev.yaml', ['kafkaLogins.cronz=ariva-kafka-main'], 'kafkaLogins.cronz names a secret another credential uses'],
+	['a Redis user on a Kafka principal\'s secret', 'values-k8s-dev.yaml', ['redisLogins.main=ariva-kafka-main'], 'redisLogins.main names a secret another credential uses'],
+	['a Kafka principal on a database login\'s secret', 'values-k8s-dev.yaml', ['kafkaLogins.integration=ariva-db-login-integration'], 'kafkaLogins.integration names a secret another credential uses'],
+	['a Redis user on the appsettings secret', 'values-k8s-dev.yaml', ['redisLogins.cronz=base-appsettings-secret'], 'redisLogins.cronz names a secret another credential uses'],
+	['a Kafka principal for no host', 'values-k8s-dev.yaml', ['kafkaLogins.simulation=ariva-kafka-simulation'], 'kafkaLogins.simulation is not an Ariva host'],
+	['an optional that is not a switch', 'values-k8s-dev.yaml', ['redisLogins.optional=maybe'], 'redisLogins.optional must be true or false'],
+	['production with optional Kafka principals', 'values-k8s-prd.yaml', [PRD, 'kafkaLogins.optional=true'], 'set kafkaLogins.optional false'],
+	['production with optional Redis users', 'values-k8s-prd.yaml', [PRD, 'redisLogins.optional=true'], 'set redisLogins.optional false'],
+	['the migration password without a secret', 'values-k8s-dev.yaml', ['migration.passwordSecret.name='], 'migration.passwordSecret must name the secret and the key'],
+	['the migration password on a host\'s login', 'values-k8s-dev.yaml', ['migration.passwordSecret.name=ariva-db-login-main'], 'migration.passwordSecret names a host\'s credentials'],
+	['the migration password on the appsettings secret', 'values-k8s-dev.yaml', ['migration.passwordSecret.name=base-appsettings-secret'], 'migration.passwordSecret names a host\'s credentials'],
+	// The ARV-083b review: in production the topics job runs, with a principal of its own; nowhere on a host's or another's secret.
+	['production without the topics job\'s own principal', 'values-k8s-prd.yaml', [PRD, 'kafkaTopics.adminSecretName='], 'needs the topics job\'s own Kafka principal'],
+	['production with the topics job off', 'values-k8s-prd.yaml', [PRD, 'kafkaTopics.job=false'], 'k8s-prd needs the kafka-topics job'],
+	['the topics job on a host\'s principal', 'values-k8s-dev.yaml', ['kafkaTopics.adminSecretName=ariva-kafka-main'], 'kafkaTopics.adminSecretName names a host\'s credentials'],
+	['a topics job secret that is not a Kubernetes name', 'values-k8s-dev.yaml', ['kafkaTopics.adminSecretName=Topics_Admin'], 'kafkaTopics.adminSecretName must name the secret'],
+	['the migration password on the topics job\'s secret', 'values-k8s-dev.yaml', ['kafkaTopics.adminSecretName=ariva-kafka-topics', 'migration.passwordSecret.name=ariva-kafka-topics'],
+		'migration.passwordSecret names a host\'s credentials, the topics job\'s'],
 	// ARV-111a: the retention periods are whole days within RetentionSettings' bounds, and only the six known keys.
 	['a raw sensing retention below 7 days', 'values-k8s-dev.yaml', ['migration.retention.rawSensingDays=6']],
 	['a raw sensing retention above 3650 days', 'values-k8s-dev.yaml', ['migration.retention.rawSensingDays=3651']],

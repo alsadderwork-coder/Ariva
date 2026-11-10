@@ -72,8 +72,20 @@ public sealed class RedisSettings
     private const string UnspokenProtocols =
         "Redis:ConnectionString's sslProtocols names neither TLS 1.2 nor TLS 1.3: remove it, or name Tls12, Tls13 or Tls12|Tls13.";
 
+    /// <summary>The Redis ACL user name of a host started in k8s-prd: never the shared default user (ARV-083b).</summary>
+    public const string DefaultUser = "default";
+
     public bool Enabled { get; init; }
     public string ConnectionString { get; init; } = "localhost:6379";
+
+    /// <summary>
+    /// The host's own Redis ACL user (ARV-083b; RedisAccess lists what each host's user may run and touch), from the host's own
+    /// secret (Redis__Username), never from the shared base settings. Set, it replaces a user named in the connection string.
+    /// </summary>
+    public string Username { get; init; } = string.Empty;
+
+    /// <summary>The password of <see cref="Username"/> (Redis__Password), from the host's own secret; set, it replaces the connection string's.</summary>
+    public string Password { get; init; } = string.Empty;
 
     /// <summary>Key and channel prefix, so Ariva never collides with AMAN on a shared Redis.</summary>
     public string InstanceName { get; init; } = "ariva:";
@@ -88,7 +100,10 @@ public sealed class RedisSettings
     /// The connection's options, for the cache and the live hub's backplane alike: never aborting on a failed first connect,
     /// and over TLS with the handshake's own options (<see cref="Handshake"/>): pinned to the internal CA when one is named
     /// (<see cref="IsIssuedByPinnedCa"/>), the system's CAs otherwise, never a certificate downloaded (ARV-226), and TLS 1.2 and
-    /// 1.3 only with, on Linux, the pods' suites (ARV-280, <see cref="AllowedProtocols"/>).
+    /// 1.3 only with, on Linux, the pods' suites (ARV-280, <see cref="AllowedProtocols"/>). Since ARV-083b (its review's finding 1)
+    /// the client never sends CONFIG, which its handshake would otherwise use (CONFIG GET reads the default user's password, the
+    /// replication password and the TLS key passphrases, so no host's ACL user may run it), and uses no configuration channel and
+    /// no tie-breaker key, so no host's user is granted a channel every client of that Redis listens on or a key outside Ariva's.
     /// </summary>
     /// <exception cref="InvalidOperationException">The connection string's sslProtocols names neither TLS 1.2 nor 1.3.</exception>
     public ConfigurationOptions Options()
@@ -96,6 +111,14 @@ public sealed class RedisSettings
         var options = ConfigurationOptions.Parse(ConnectionString);
         options.AbortOnConnectFail = false;
         options.ClientName ??= "ariva";
+        options.CommandMap = CommandMap.Create(new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CONFIG" }, available: false);
+        options.ConfigurationChannel = string.Empty;
+        options.TieBreaker = string.Empty;
+        // ARV-083b: the host's own ACL user, from its own secret, over anything the shared connection string names.
+        if (!string.IsNullOrEmpty(Username))
+            options.User = Username;
+        if (!string.IsNullOrEmpty(Password))
+            options.Password = Password;
         if (!options.Ssl)
             return options;
         var protocols = AllowedProtocols(options.SslProtocols)
@@ -202,6 +225,43 @@ public sealed class RedisSettings
         if (string.IsNullOrWhiteSpace(CaCertificatePath))
             return "Redis:CaCertificatePath must name the internal CA's PEM file in k8s-prd: the server is verified against it, not the system store.";
         return fileExists(CaCertificatePath) ? null : "Redis:CaCertificatePath names a file that does not exist: mount the Redis CA secret.";
+    }
+
+    /// <summary>
+    /// Why this configuration's credentials are not fit for k8s-prd, or null (ARV-083b, CWE-269, CWE-287): with Redis on, the host
+    /// signs in as an ACL user of its own (<see cref="Username"/>, or a user the connection string names) with a password, never as
+    /// Redis's <see cref="DefaultUser"/>, which a Redis without ACL users gives every client. Names no user and no password.
+    /// </summary>
+    public string ProductionCredentialProblem()
+    {
+        if (!Enabled)
+            return null;
+        var options = ConfigurationOptions.Parse(ConnectionString);
+        var user = string.IsNullOrEmpty(Username) ? options.User : Username;
+        var password = string.IsNullOrEmpty(Password) ? options.Password : Password;
+        if (string.IsNullOrEmpty(user) || string.Equals(user, DefaultUser, StringComparison.Ordinal))
+            return "Redis:Username must name the host's own Redis ACL user in k8s-prd (from its own secret, never the default user; ARV-083b).";
+        return string.IsNullOrEmpty(password) ? "Redis:Password must be set in k8s-prd: the host's ACL user signs in with its own password (ARV-083b)." : null;
+    }
+
+    /// <summary>
+    /// Whether a connection string names a password or a user (ARV-083b): the shared base settings may not (SharedSettings), since
+    /// each host's Redis user comes from its own secret. A string StackExchange.Redis cannot read names nothing here; the
+    /// connection then fails on its own.
+    /// </summary>
+    public static bool NamesCredentials(string connectionString)
+    {
+        if (string.IsNullOrWhiteSpace(connectionString))
+            return false;
+        try
+        {
+            var options = ConfigurationOptions.Parse(connectionString);
+            return !string.IsNullOrEmpty(options.Password) || !string.IsNullOrEmpty(options.User);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     public static RedisSettings From(IConfiguration configuration)

@@ -168,10 +168,51 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 104,
-      "passes": false,
-      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). 2026-10-13 (ARV-171 security review): every host registers every topic's dead-letter producer, because any host can lead the outbox relay and send a kept dead letter; so each per-service Kafka principal needs WRITE on every *.dlq.v1 topic, while READ on dead-letter topics stays with operators and the replay tool. 2026-10-18 (found while documenting ARV-082b): nothing in k8s-prd requires Kafka:SslCaLocation; MessagingExtensions applies the CA only when it is set and checks only for SaslSsl. ASVS V12.3.4 stays Partly for this. From ARV-094 (crypto inventory section 5 item 17): every API host mounts the Data Protection certificate and its private key, api-ingest and api-stream included; whether they need it (they protect or unprotect nothing today, To confirm) belongs with the per-pod split of credentials here.",
+      "passes": true,
+      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). 2026-10-13 (ARV-171 security review): every host registers every topic's dead-letter producer, because any host can lead the outbox relay and send a kept dead letter; so each per-service Kafka principal needs WRITE on every *.dlq.v1 topic, while READ on dead-letter topics stays with operators and the replay tool. 2026-10-18 (found while documenting ARV-082b): nothing in k8s-prd requires Kafka:SslCaLocation; MessagingExtensions applies the CA only when it is set and checks only for SaslSsl. ASVS V12.3.4 stays Partly for this. From ARV-094 (crypto inventory section 5 item 17): every API host mounts the Data Protection certificate and its private key, api-ingest and api-stream included; whether they need it (they protect or unprotect nothing today, To confirm) belongs with the per-pod split of credentials here. 2026-11-10: built (per-host Kafka principals and Redis ACL users, a credential-free base settings secret, the internal Kafka CA required in k8s-prd by the owner's decision of the same day); Data Protection in api-ingest and api-stream split into ARV-083e, the shared cache writable by every host into ARV-083f.",
       "dependsOn": [
         "ARV-083a"
+      ]
+    },
+    {
+      "id": "ARV-083e",
+      "title": "[ASVS] Data Protection only in the hosts that protect or unprotect",
+      "description": "Split from ARV-083b on 2026-11-10 (crypto inventory section 5 item 17). api-ingest and api-stream protect and unprotect nothing, but RegisterArivaServices registers Data Protection in every host: DataProtectionHostedService reads the key ring at start (unwraps keys with the Data Protection certificate's private key and, when no key is current, creates one and signs it with the key ring signing key), and KeyAgeMetrics loads both certificates. Register Data Protection, the key ring checks and the key age metrics only in the hosts that use them, and drop the two mounts from api-ingest and api-stream. ASVS 5.0: V13.3.2, V11.1.1. Effort S to M.",
+      "acceptanceCriteria": [
+        "api-ingest and api-stream register no Data Protection services; a unit test boots each and shows nothing resolves IDataProtectionProvider, IKeyManager, DataProtectionCertificates or KeyRingSigning",
+        "The chart mounts ariva-dataprotection and ariva-dataprotection-signing (and the previous certificates during a rotation) in api-main, api-cronz and api-integration only; a chart test fails any other workload that mounts them",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 105,
+      "passes": false,
+      "notes": "Split from ARV-083b on 2026-11-10. Data Protection is on the sign-in path (TOTP seeds): confirm with the owner whether the sign-in freeze covers it before starting.",
+      "dependsOn": [
+        "ARV-083b"
+      ]
+    },
+    {
+      "id": "ARV-083f",
+      "title": "[ASVS] The shared cache cannot carry another host's security decisions",
+      "description": "Split from ARV-083b on 2026-11-10 (its security review, finding 4). Every host's Redis ACL user reads and writes the whole FusionCache distributed level (ariva:cache:*), which holds security decisions every host trusts: the session snapshots (SessionValidator), the accounts' role lists (StoredPermissionResolver), the site scopes (SiteScope) and the device credential records (SvcDeviceGateway). A compromised api-ingest or api-integration could write an entry that api-main then reads as a user's administrator rights or a device's credential, past ARV-083a's per-host database grants. Not a regression: before ARV-083b every host shared one Redis credential. Either give each concern its own key prefix that only the host deciding it may write (sessions, permissions and site scopes by api-main; device credentials by whichever host owns them) and grant the other hosts read-only on it, or authenticate each such entry by its writer (for example a MAC under a per-writer key from the host's own secret) and refuse an entry that does not verify. ASVS 5.0: V13.2.2, V8.3.1. Effort M.",
+      "acceptanceCriteria": [
+        "Each cached security decision (session snapshot, role list, site scope, device credential record) can be written only by the host that decides it: by a key prefix of its own in RedisAccess with read-only grants for the others, or by an entry each reader verifies against its writer",
+        "RedisAclTests shows api-ingest's and api-integration's users refused a write to those prefixes (or their forged entry refused by the reader), and every host's paths still run as its own user with an empty ACL log",
+        "A forged entry never widens a session, a role set, a site scope or a device's access: unit tests per cache",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 106,
+      "passes": false,
+      "notes": "Split from ARV-083b on 2026-11-10 (security review finding 4: the shared cache is writable by every host's Redis user). Under the owner's sign-in and authentication freeze: session and permission caching (SessionValidator, StoredPermissionResolver, SiteScope) is sign-in adjacent, so the story starts when the owner lifts the freeze, or with the owner's written leave to touch those caches; the device credential cache (SvcDeviceGateway) may go first if the owner agrees.",
+      "dependsOn": [
+        "ARV-083b"
       ]
     },
     {
