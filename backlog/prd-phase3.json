@@ -1274,7 +1274,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 311,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-23 by ARV-242's security review (round 2, L1). Low, so Phase 3 by the owner's rule.",
       "dependsOn": [
         "ARV-242"

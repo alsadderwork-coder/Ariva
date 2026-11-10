@@ -11,8 +11,9 @@ namespace Ariva.UnitTests.Architecture;
 /// connection timeout. The scan reads the Platform's production code for Npgsql's and ADO.NET's synchronous open and commands,
 /// NHibernate's synchronous transaction begin and its List and UniqueResult. Not in its scope: synchronous LINQ terminals on a
 /// session's query, ISession's Get, Load and Flush (none in the code when this was written), reads and commits on a connection
-/// already open (each bounded by the command timeout), and NHibernate's lazy loads, which open synchronously when they run
-/// outside a transaction: code a bounded run reaches loads its collections asynchronously (the validation results' campaign).
+/// already open (each bounded by the command timeout), and NHibernate's lazy loads, which ask for a connection synchronously
+/// when they run outside a transaction: since ARV-243 Ariva's provider answers every such request with the asynchronous open
+/// (<c>AsyncOpenConnectionProvider</c>, the only provider the session factory takes; integration <c>LazyLoadOpenTests</c>).
 /// </summary>
 public sealed partial class SynchronousDatabaseCallTests
 {

@@ -200,9 +200,11 @@ public sealed partial class CertificateDownloadTests : IDisposable
     [Theory]
     [InlineData("NHibernate.Driver.NpgsqlDriver, NHibernate", null)]
     [InlineData(null, "NHibernate.Connection.UserSuppliedConnectionProvider, NHibernate")]
+    [InlineData(null, "NHibernate.Connection.DriverConnectionProvider, NHibernate")]
     public void NHibernate_Should_RefuseToBuild_When_TheSettingsNameAnotherDriverOrProvider(string driver, string provider)
     {
-        // ARV-226 review (L4): NHibernate's stock driver would open connections Ariva did not harden.
+        // ARV-226 review (L4): NHibernate's stock driver would open connections Ariva did not harden; ARV-243: its stock provider
+        // would open them synchronously.
         var defaults = new NHibernateSettings();
         var settings = new DatabaseSettings
         {
@@ -211,7 +213,7 @@ public sealed partial class CertificateDownloadTests : IDisposable
 
         var build = () => new NHibernateSessionFactoryProvider(settings).SessionFactory;
 
-        build.Should().Throw<InvalidOperationException>().WithMessage("*NHibernatePostgresClientDriver*DriverConnectionProvider*");
+        build.Should().Throw<InvalidOperationException>().WithMessage("*NHibernatePostgresClientDriver*AsyncOpenConnectionProvider*");
         new NHibernateSessionFactoryProvider(new DatabaseSettings()).SessionFactory.Should().NotBeNull("Ariva's own driver and provider build");
     }
 

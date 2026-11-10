@@ -333,7 +333,7 @@ public sealed class MigrationLoginSettings
 public sealed class NHibernateSettings
 {
     public string ConnectionDriver { get; init; } = "Ariva.Infra.NHibernate.Drivers.NHibernatePostgresClientDriver, Ariva.Infra";
-    public string ConnectionProvider { get; init; } = "NHibernate.Connection.DriverConnectionProvider, NHibernate";
+    public string ConnectionProvider { get; init; } = "Ariva.Infra.NHibernate.Drivers.AsyncOpenConnectionProvider, Ariva.Infra";
     public string Dialect { get; init; } = "NHibernate.Dialect.PostgreSQL83Dialect";
     public short BatchSize { get; init; } = 25;
 
