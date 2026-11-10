@@ -19,6 +19,14 @@ namespace Ariva.IntegrationTests.Persistence;
 /// host, the E2E suites), which migrates the database it is given and seeds the development accounts with their known
 /// passwords, refuses a database that names another environment before doing either: the migration command, and Ariva.Api.Main
 /// itself whether it migrates at start or only seeds. A vm-local database stays usable by vm-local.
+/// <para>
+/// ARV-083a: a cluster's migration job (k8s-dev, k8s-demo) ensures each host's own login and the availability ledger's
+/// (<see cref="ClusterLogins"/>), and its hosts connect with them; a vm-local migration gives its shared development login
+/// (<see cref="RuntimeLogin"/>) every host role. A login is one or the other, never both (ariva_ensure_host_login refuses a
+/// login that holds another host's role), so a vm-local process sent to the deployed database here reaches it with that
+/// database's own login, Ariva.Api.Main's (or Ariva.Api.Stream's for a replay), as a tunnel or a port forward to a deployed
+/// store would.
+/// </para>
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
@@ -29,6 +37,16 @@ public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
     private const string DevelopmentUser = "it.environment.dev";
 
     private static readonly string RuntimePassword = "rt-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(12));
+
+    /// <summary>
+    /// ARV-083a: the cluster's host logins and the ledger's (Database:HostLogins, Database:Availability), made once for the class
+    /// so every migration of a deployed database here sets the same passwords and a test can sign in with them afterwards.
+    /// </summary>
+    private static readonly Dictionary<string, string> ClusterLogins = HostLogins.ClusterSettings("it_env_");
+
+    /// <summary>The hosts and the ledger, each with a login of its own in a cluster.</summary>
+    private static readonly string[] ClusterLoginOwners = ["Main", "Ingest", "Stream", "Cronz", "Integration", "Availability"];
+
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static string _deployed;
 
@@ -41,24 +59,30 @@ public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
     {
         var database = await DeployedAsync();
 
-        await using var runtime = new NpgsqlConnection(fixture.ConnectionString(database, RuntimeLogin, RuntimePassword));
-        await runtime.OpenAsync(Ct);
-        await using (var read = new NpgsqlCommand("SELECT environment FROM database_environment WHERE id = 1", runtime))
-            (await read.ExecuteScalarAsync(Ct)).Should().Be("k8s-dev", "the runtime login reads the record");
-
-        foreach (var sql in new[]
-                 {
-                     "UPDATE database_environment SET environment = 'vm-local'",
-                     "INSERT INTO database_environment (id, environment, set_on, set_by) VALUES (2, 'vm-local', now(), 'x')",
-                     "DELETE FROM database_environment",
-                     "TRUNCATE database_environment"
-                 })
+        // ARV-083a: the runtime logins of a cluster are each host's own and the ledger's (ariva_runtime and one host role): every
+        // one reads the record (the base's grant) and none may change it (no host role adds a write).
+        foreach (var owner in ClusterLoginOwners)
         {
+            var (login, password) = ClusterLogin(owner);
+            await using var runtime = new NpgsqlConnection(fixture.ConnectionString(database, login, password));
+            await runtime.OpenAsync(Ct);
+            await using (var read = new NpgsqlCommand("SELECT environment FROM database_environment WHERE id = 1", runtime))
+                (await read.ExecuteScalarAsync(Ct)).Should().Be("k8s-dev", $"the runtime login of {owner} reads the record");
+
+            foreach (var sql in new[]
+                     {
+                         "UPDATE database_environment SET environment = 'vm-local'",
+                         "INSERT INTO database_environment (id, environment, set_on, set_by) VALUES (2, 'vm-local', now(), 'x')",
+                         "DELETE FROM database_environment",
+                         "TRUNCATE database_environment"
+                     })
+            {
 #pragma warning disable CA2100 // literal statements from the array above
-            await using var command = new NpgsqlCommand(sql, runtime);
+                await using var command = new NpgsqlCommand(sql, runtime);
 #pragma warning restore CA2100
-            var change = () => command.ExecuteNonQueryAsync(Ct);
-            (await change.Should().ThrowAsync<PostgresException>(sql)).Which.SqlState.Should().Be("42501", $"permission denied: {sql}");
+                var change = () => command.ExecuteNonQueryAsync(Ct);
+                (await change.Should().ThrowAsync<PostgresException>($"{owner}: {sql}")).Which.SqlState.Should().Be("42501", $"permission denied to {owner}: {sql}");
+            }
         }
 
         (await RecordedAsync(database)).Should().Be("k8s-dev");
@@ -69,8 +93,8 @@ public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
     {
         var database = await DeployedAsync();
 
-        (await MigrateAsync(database, "vm-local")).Should().Be(1, "a vm-local migration stops on another environment's database");
-        await using (var provider = new ServiceCollection().AddLogging().AddArivaPersistence(Configuration(Settings(database, "vm-local"))).BuildServiceProvider())
+        (await MigrateAsync(database, "vm-local", "Main")).Should().Be(1, "a vm-local migration stops on another environment's database");
+        await using (var provider = new ServiceCollection().AddLogging().AddArivaPersistence(Configuration(Settings(database, "vm-local", "Main"))).BuildServiceProvider())
         {
             var migrate = () => provider.GetRequiredService<DatabaseMigrator>().MigrateAsync(Ct);
             await migrate.Should().ThrowAsync<InvalidOperationException>().WithMessage("The database belongs to the environment 'k8s-dev'*vm-local*ARV-180*",
@@ -95,7 +119,7 @@ public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
     {
         var database = await DeployedAsync();
         var user = $"{DevelopmentUser}.{(migrates ? "m" : "s")}{(atOnce ? "c" : "o")}{(demoOnly ? "d" : "u")}";
-        var settings = Settings(database, "vm-local");
+        var settings = Settings(database, "vm-local", "Main");
         settings["Database:AllowSchemaUpdate"] = migrates ? "true" : "false";
         settings["Database:VerifySchemaOnStartup"] = "false";
         settings["servicesStartConcurrently"] = atOnce ? "true" : "false";
@@ -143,10 +167,10 @@ public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
         string[] replay = ["--replay", "--replay-site=ENV", "--replay-from=2026-09-28T17:00:00Z", "--replay-to=2026-09-28T17:10:00Z"];
 
         using var local = new StringWriter();
-        (await ReplayCommand.RunAsync(Configuration(Settings(database, "vm-local")), replay, local, Ct)).Should().Be(4,
+        (await ReplayCommand.RunAsync(Configuration(Settings(database, "vm-local", "Stream")), replay, local, Ct)).Should().Be(4,
             "a vm-local replay stops on another environment's database");
         using var own = new StringWriter();
-        (await ReplayCommand.RunAsync(Configuration(Settings(database, "k8s-dev")), replay, own, Ct)).Should().Be(1,
+        (await ReplayCommand.RunAsync(Configuration(Settings(database, "k8s-dev", "Stream")), replay, own, Ct)).Should().Be(1,
             "the database's own environment reads on and fails on the missing profile");
 
         local.ToString().Should().BeEmpty("no run summary");
@@ -167,7 +191,7 @@ public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
         // The check itself, on its own: no problem with vm-local's own database, and the record's problem with another's.
         await using (var own = new ServiceCollection().AddLogging().AddArivaPersistence(Configuration(Settings(database, "vm-local"))).BuildServiceProvider())
             (await ReplayCommand.AnotherEnvironmentsAsync(own, Ct)).Should().BeNull("vm-local may replay into its own database");
-        await using (var deployed = new ServiceCollection().AddLogging().AddArivaPersistence(Configuration(Settings(await DeployedAsync(), "vm-local"))).BuildServiceProvider())
+        await using (var deployed = new ServiceCollection().AddLogging().AddArivaPersistence(Configuration(Settings(await DeployedAsync(), "vm-local", "Stream"))).BuildServiceProvider())
             (await ReplayCommand.AnotherEnvironmentsAsync(deployed, Ct)).Should().Contain("belongs to the environment 'k8s-dev'");
     }
 
@@ -206,12 +230,23 @@ public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
         }
     }
 
-    /// <summary>The migration job (api-main --migrate) as <paramref name="environment"/>, with the fixture's superuser as the migration login.</summary>
-    private Task<int> MigrateAsync(string database, string environment) =>
-        DatabaseMigration.RunAsync(new ConfigurationBuilder().AddInMemoryCollection(Settings(database, environment)).Build(), Ct);
+    /// <summary>
+    /// The migration job (api-main --migrate) as <paramref name="environment"/>, with the fixture's superuser as the migration
+    /// login; <paramref name="host"/> as in <see cref="Settings"/>.
+    /// </summary>
+    private Task<int> MigrateAsync(string database, string environment, string host = null) =>
+        DatabaseMigration.RunAsync(new ConfigurationBuilder().AddInMemoryCollection(Settings(database, environment, host)).Build(), Ct);
 
-    private Dictionary<string, string> Settings(string database, string environment)
+    /// <summary>
+    /// A process's settings as <paramref name="environment"/>. ARV-083a: in a cluster (k8s-*) the migration job is given every
+    /// host's login and the ledger's (<see cref="ClusterLogins"/>), and the process connects as <paramref name="host"/>'s login
+    /// (Ariva.Api.Main's by default, whose job migrates). A vm-local process connects with the shared development login, or with
+    /// <paramref name="host"/>'s cluster login when it is sent to the deployed database.
+    /// </summary>
+    private Dictionary<string, string> Settings(string database, string environment, string host = null)
     {
+        var cluster = environment?.StartsWith("k8s-", StringComparison.Ordinal) == true;
+        var (login, password) = cluster || host is not null ? ClusterLogin(host ?? "Main") : (RuntimeLogin, RuntimePassword);
         var settings = new Dictionary<string, string>
         {
             ["Application:Environment"] = environment,
@@ -220,17 +255,23 @@ public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
             ["Database:Name"] = database,
             ["Database:Migration:Username"] = fixture.AdminUsername,
             ["Database:Migration:Password"] = fixture.AdminPassword,
-            ["Database:Username"] = RuntimeLogin,
-            ["Database:Password"] = RuntimePassword
+            ["Database:Username"] = login,
+            ["Database:Password"] = password
         };
-        // ARV-083a: a cluster's migration job ensures every host's login (Main's is the runtime login here) and the ledger's.
-        if (environment?.StartsWith("k8s-", StringComparison.Ordinal) == true)
+        if (cluster)
         {
-            foreach (var (key, value) in HostLogins.ClusterSettings("it_env_", RuntimeLogin, RuntimePassword))
+            foreach (var (key, value) in ClusterLogins)
                 settings[key] = value;
         }
 
         return settings;
+    }
+
+    /// <summary>The cluster login of a host (Main, Ingest, Stream, Cronz, Integration) or of the availability ledger (Availability).</summary>
+    private static (string Login, string Password) ClusterLogin(string owner)
+    {
+        var section = owner == "Availability" ? "Database:Availability" : $"Database:HostLogins:{owner}";
+        return (ClusterLogins[$"{section}:Username"], ClusterLogins[$"{section}:Password"]);
     }
 
     private static IConfiguration Configuration(Dictionary<string, string> settings) => new ConfigurationBuilder().AddInMemoryCollection(settings).Build();

@@ -232,6 +232,7 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
         var admin = postgres.ConnectionString(database);
         await new SqlScriptRunner(admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
         var password = Secret("pw-");
+        var runtimePassword = Secret("rt-");
 
         // Roles this test needs (cluster-wide, so created only when missing): a privileged one, a runtime login, a login granted
         // to another role, a login that owns a table of this database, and (the review's M1) roles that own nothing and hold no
@@ -259,9 +260,10 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
             GRANT SELECT (zone_key) ON queue_minute TO it_vr_column;
             ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO it_vr_default;
             GRANT CREATE ON SCHEMA public TO it_vr_schema;
-            DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'it_vr_refused_runtime') THEN CREATE ROLE it_vr_refused_runtime LOGIN; END IF; END $$;
-            GRANT ariva_runtime TO it_vr_refused_runtime;
             """);
+        // ARV-083a: the runtime login as the migration job creates a host's (ariva_ensure_host_login, from a verifier): a member
+        // of ariva_runtime and of its host role (Ariva.Api.Main's here), with CONNECT on this database and a password it signs in with.
+        await HostLogins.EnsureAsync(admin, "it_vr_refused_runtime", runtimePassword, HostDatabaseAccess.MainRole, Ct);
 
         foreach (var (login, secret, message) in new[]
                  {
@@ -273,7 +275,7 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
                      ("ariva_validation_reader", password, "must be a login of its own"),
                      (postgres.AdminUsername, password, "must be a login of its own"),
                      ("it_vr_createdb", password, "is privileged"),
-                     ("it_vr_refused_runtime", password, "is a member of ariva_runtime"),
+                     ("it_vr_refused_runtime", password, "is a member of ariva_main, ariva_runtime;"),
                      ("it_vr_granted", password, "is granted to it_vr_holder"),
                      ("it_vr_owner", password, "owns objects or holds privileges"),
                      ("it_vr_table", password, "owns objects or holds privileges"),
@@ -361,8 +363,9 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
             UNION ALL SELECT rolname FROM pg_authid WHERE rolname IN ('it_vr_table', 'it_vr_column', 'it_vr_default', 'it_vr_schema', 'it_vr_database') AND rolpassword IS NOT NULL
             """)).Should().BeEmpty();
 
-        // The function is the migration login's: the runtime login may not run it.
-        var asRuntime = postgres.ConnectionString(database, "it_vr_refused_runtime", "runtime-password-0123456789");
+        // The function is the migration login's: the runtime login (a host's, which signs in) may not run it.
+        var asRuntime = postgres.ConnectionString(database, "it_vr_refused_runtime", runtimePassword);
+        (await RunAsync(asRuntime, "SELECT 1")).Should().Equal(["1"], "the host login signs in, so the refusal below is the function's");
         (await RefusedAsync(asRuntime, "SELECT ariva_ensure_validation_reader_login('it_vr_sneak', 'a-password-of-24-characters')"))
             .Should().Be(PostgresErrorCodes.InsufficientPrivilege);
     }

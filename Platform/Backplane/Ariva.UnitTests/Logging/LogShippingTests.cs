@@ -331,7 +331,8 @@ public sealed partial class LogShippingTests : IDisposable
     {
         using var database = new FakeDatabase();
 
-        var exit = await RunAsync<Ariva.Api.Main._IAssemblyMark>(["--migrate", .. ProductionCommandLine(database)]);
+        // ARV-083a: with each host's login and the ledger's, without which a cluster's migration stops before it connects.
+        var exit = await RunAsync<Ariva.Api.Main._IAssemblyMark>(["--migrate", .. ProductionCommandLine(database), .. HostLoginsCommandLine()]);
 
         exit.Should().Be(1, "the stand-in database closes the connection, so the migration fails as a migration does");
         (await database.Reached.WaitAsync(TimeSpan.FromSeconds(10), Ct)).Should().BeTrue("the migration started and connected: it asks for neither a collector nor a key");
@@ -413,6 +414,23 @@ public sealed partial class LogShippingTests : IDisposable
         $"--Database:RootCertificate={DatabaseCa()}",
         "--Kafka:Enabled=false",
         .. GoLiveCommandLine()
+    ];
+
+    /// <summary>
+    /// ARV-083a: each host's own login (Database:HostLogins) and the availability ledger's (Database:Availability), which a
+    /// cluster's migration job refuses to run without (HostLoginSettings), as the release gives the job every host's secret:
+    /// names of the tests' own and passwords made at run time, each its own. Nothing authenticates them, since the stand-in
+    /// database closes the connection first.
+    /// </summary>
+    private static string[] HostLoginsCommandLine() =>
+    [
+        .. ArivaHosts.Backplane.SelectMany(host => new[]
+        {
+            $"--Database:HostLogins:{host}:Username=ariva_test_{host.ToLowerInvariant()}",
+            $"--Database:HostLogins:{host}:Password={Guid.NewGuid():N}"
+        }),
+        $"--Database:Availability:Username={ArivaHosts.ClusterAvailabilityLogin}",
+        $"--Database:Availability:Password={Guid.NewGuid():N}"
     ];
 
     /// <summary>

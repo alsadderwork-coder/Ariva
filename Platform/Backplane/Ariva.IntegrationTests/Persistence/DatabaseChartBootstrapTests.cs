@@ -195,23 +195,31 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         (await removePolicy.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
         (await ScalarAsync<string>(owner, Query.RawRetentionDays)).Should().Be("60");
 
-        // ARV-111a: the purge runs as this non-superuser owner, so its privileges are checked as in the clusters. The runtime
-        // login may call it for each of the three data sets (ARV-189: each branch's DELETE is checked as the statement starts, so
-        // nothing old enough here, 0 rows, still proves it), and only because it runs as the owner: as SECURITY INVOKER every
-        // branch is refused to the runtime login, which may delete none of these rows itself. The reader login may not call it;
-        // EXECUTE belongs to the owner and ariva_cronz only (ARV-083a: the Cronz retention job's role; this login is the vm-local
-        // development login, which holds every host role), without grant option, and not to PUBLIC.
+        // ARV-111a: the purge runs as this non-superuser owner, so its privileges are checked as in the clusters. ARV-083a: the
+        // Cronz host's login (the retention job's, a member of ariva_cronz and ariva_runtime only, which the job created from
+        // Database:HostLogins:Cronz) may call it for each of the three data sets (ARV-189: each branch's DELETE is checked as the
+        // statement starts, so nothing old enough here, 0 rows, still proves it), and only because it runs as the owner: as
+        // SECURITY INVOKER every branch is refused to that login, which may delete none of these rows itself. The runtime login
+        // (Ariva.Api.Main's here) and the reader login may not call it; EXECUTE belongs to the owner and ariva_cronz only,
+        // without grant option, and not to PUBLIC.
+        var (cronzLogin, cronzPassword) = _server.HostLogin("Cronz");
+        var cronz = ConnectionString(cronzLogin, cronzPassword);
         foreach (var purge in new[] { Query.PurgeEmails, Query.PurgeIntegrationCalls, Query.PurgeDeliveries })
-            (await ScalarAsync<int>(runtime, purge)).Should().Be(0, purge.ToString());
+        {
+            (await ScalarAsync<int>(cronz, purge)).Should().Be(0, purge.ToString());
+            var asRuntime = async () => await ScalarAsync<int>(runtime, purge);
+            (await asRuntime.Should().ThrowAsync<PostgresException>(purge.ToString())).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
+        }
+
         await ScalarAsync<object>(owner, Query.PurgeAsInvoker);
         foreach (var purge in new[] { Query.PurgeEmails, Query.PurgeIntegrationCalls, Query.PurgeDeliveries })
         {
-            var asInvoker = async () => await ScalarAsync<int>(runtime, purge);
+            var asInvoker = async () => await ScalarAsync<int>(cronz, purge);
             (await asInvoker.Should().ThrowAsync<PostgresException>(purge.ToString())).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
         }
 
         await ScalarAsync<object>(owner, Query.PurgeAsDefiner);
-        (await ScalarAsync<int>(runtime, Query.PurgeDeliveries)).Should().Be(0, "the shipped SECURITY DEFINER again");
+        (await ScalarAsync<int>(cronz, Query.PurgeDeliveries)).Should().Be(0, "the shipped SECURITY DEFINER again");
         // ARV-189 (L4): the owner's view of the column grants scripts 0023, 0025 and 0054 leave: the runtime role cannot move a
         // row's age (so the purge's cutoff) and may still mark a delivery.
         (await ScalarAsync<string>(owner, Query.RuntimeColumnUpdates)).Should().Be(

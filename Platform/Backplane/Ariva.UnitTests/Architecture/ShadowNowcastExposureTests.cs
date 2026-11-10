@@ -307,13 +307,15 @@ public sealed class ShadowNowcastExposureTests
         // ARV-104g1 (changed on purpose): exactly one reader's file, the validation service's shadow part, which reads the table
         // through the validation reader login; and, after the review (M2), the access check that every host and the migration job
         // run, which names the table only to ask has_column_privilege about it and reads no row (ShadowReadAccess).
+        // ARV-083a: the grant manifest and its script name every table (here the stream role's grants on the table), in grants only.
         SourcesMatching(table, SourceKinds).Should().Equal(
             ["Backplane/Ariva.Core/Queueing/ShadowNowcast.cs", "Backplane/Ariva.Core/Queueing/ZoneProcessor.cs", ReaderSource,
-                "Backplane/Ariva.Infra/Streaming/StreamStore.cs",
+                "Backplane/Ariva.Infra/Streaming/StreamStore.cs", GrantManifestSources.Manifest,
                 "Backplane/Ariva.Infra/Timescale/Scripts/0041_shadow_nowcast.sql", "Backplane/Ariva.Infra/Timescale/Scripts/0043_queue_minute_shadow.sql",
                 "Backplane/Ariva.Infra/Timescale/Scripts/0044_desk_sensor_minute.sql", "Backplane/Ariva.Infra/Timescale/Scripts/0045_shadow_sensor_cycle.sql",
-                AccessCheckSource],
+                GrantManifestSources.Script, AccessCheckSource],
             "only the engine names the shadow, only the stream store writes its table and only the validation service's reader reads it; no screen, rule or report does");
+        GrantManifestSources.NonGrantLines(table).Should().BeEmpty("the grant manifest and its script name the shadow table in grants only (ARV-083a)");
 
         // The value itself: only the engine that computes it, the store that writes it and (ARV-104f) the comparison engine's
         // files that compare it name it.
@@ -333,10 +335,13 @@ public sealed class ShadowNowcastExposureTests
         // scan and the dependents test in QueueStreamTests are what keep other readers out.
         var table = new Regex(@"desk_?sensor_?minute", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, RegexTimeout);
 
+        // ARV-083a: the grant manifest and its script name every table (here the stream role's grant on it), in grants only.
         SourcesMatching(table, SourceKinds).Should().Equal(
             ["Backplane/Ariva.Core/Queueing/DeskTerm.cs", "Backplane/Ariva.Infra/Border/DeskFeed.cs", "Backplane/Ariva.Infra/Streaming/DeskTermSource.cs",
-                "Backplane/Ariva.Infra/Streaming/StreamStore.cs", "Backplane/Ariva.Infra/Timescale/Scripts/0044_desk_sensor_minute.sql"],
+                "Backplane/Ariva.Infra/Streaming/StreamStore.cs", GrantManifestSources.Manifest,
+                "Backplane/Ariva.Infra/Timescale/Scripts/0044_desk_sensor_minute.sql", GrantManifestSources.Script],
             "only the desk feed (through the store) writes the sensor-only desk minutes and only the stream's desk term reads them");
+        GrantManifestSources.NonGrantLines(table).Should().BeEmpty("the grant manifest and its script name the sensor-only desk minutes in grants only (ARV-083a)");
 
         // The engine and its samples: the desk feed runs the engine, the desk term and DeskTerms read the samples, and
         // (ARV-117b) the sensor cycle time sums their Serving seconds (the simulator, which is no Ariva host, has members of
@@ -457,14 +462,17 @@ public sealed class ShadowNowcastExposureTests
         SourcesMatching(cycle, SourceKinds).Should().Equal(SensorCycleSources,
             "only the engine computes the sensor cycle time, only the stream store writes it, only the validation service's reader reads it (ARV-104g1) " +
             "and only the comparison engine (ARV-104f) compares it; no screen, rule or report reads it");
+        GrantManifestSources.NonGrantLines(cycle).Should().BeEmpty("the grant manifest and its script name the sensor cycle column in grants only (ARV-083a)");
     }
 
+    // ARV-083a: the grant manifest and its script name every table and column a host writes (here the stream role's UPDATE
+    // of the shadow's sensor cycle column), in grants only.
     private static readonly string[] SensorCycleSources =
     [
         "Backplane/Ariva.Core/Queueing/DeskTerm.cs", "Backplane/Ariva.Core/Queueing/SensorCycle.cs", "Backplane/Ariva.Core/Queueing/ShadowNowcast.cs",
         "Backplane/Ariva.Core/Queueing/ZoneProcessor.cs", .. ComparisonCycleSources, ReaderSource, "Backplane/Ariva.Infra/Streaming/DeskTermSource.cs",
-        "Backplane/Ariva.Infra/Streaming/QueueStreamWorker.cs", "Backplane/Ariva.Infra/Streaming/StreamStore.cs",
-        "Backplane/Ariva.Infra/Timescale/Scripts/0045_shadow_sensor_cycle.sql"
+        "Backplane/Ariva.Infra/Streaming/QueueStreamWorker.cs", "Backplane/Ariva.Infra/Streaming/StreamStore.cs", GrantManifestSources.Manifest,
+        "Backplane/Ariva.Infra/Timescale/Scripts/0045_shadow_sensor_cycle.sql", GrantManifestSources.Script
     ];
 
     #endregion

@@ -42,9 +42,11 @@ public sealed class ValidationResultsExposureTests
             .Order(StringComparer.Ordinal)
             .ToList();
 
-        sources.Should().Equal(["Backplane/Ariva.Infra/Services/Validation/SvcValidationResults.Revisions.cs",
-            "Backplane/Ariva.Infra/Timescale/Scripts/0050_validation_result_revision.sql"],
+        // ARV-083a: the grant manifest and its script name every table (here Ariva.Api.Main's grant on it), in grants only.
+        sources.Should().Equal(["Backplane/Ariva.Infra/Services/Validation/SvcValidationResults.Revisions.cs", GrantManifestSources.Manifest,
+            "Backplane/Ariva.Infra/Timescale/Scripts/0050_validation_result_revision.sql", GrantManifestSources.Script],
             "only the validation results service stores and reads the frozen documents, and serves them through the projection");
+        GrantManifestSources.NonGrantLines(table).Should().BeEmpty("the grant manifest and its script name the frozen results table in grants only (ARV-083a)");
     }
 
     [Fact]
