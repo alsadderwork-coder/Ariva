@@ -59,6 +59,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkArtifacts, derivedVariables } from '../Platform/Testing/Ariva.E2E/scripts/artifact-secrets.mjs';
 import { methodFilter } from './test-counts.mjs';
+import { nugetAuditFindings, selfTest as nugetAuditSelfTest } from './security/nuget-audit.mjs';
 import { pruneLogFolders, runsToKeep } from './e2e-logs.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -112,21 +113,36 @@ function run(name, cmd, cmdArgs, cwd = ROOT, { optional = false } = {}) {
 }
 
 // The NuGet audit fails on a High or Critical advisory, as CI's "Vulnerable packages" step does: dotnet list exits 0 whatever
-// it finds, so its table is read (ARV-184 review). Moderate and Low advisories are printed and do not fail the gate.
+// it finds. Since ARV-186 it reads the JSON report (scripts/security/nuget-audit.mjs), not the table's severity words, and also
+// fails when the report cannot be trusted to be complete: not the JSON report, no package source read (the vulnerability data
+// comes from the sources), or a project or the report with a problem. The reader's self-test runs first. Moderate and Low
+// advisories are printed and do not fail the gate.
 function nugetAudit() {
-  const name = 'nuget vulnerability audit (fails on high or critical)';
-  const cmdArgs = ['list', 'Ariva.slnx', 'package', '--vulnerable', '--include-transitive'];
+  const name = 'nuget vulnerability audit (fails on any advisory but low or moderate, or on an incomplete report)';
+  const cmdArgs = ['list', 'Ariva.slnx', 'package', '--vulnerable', '--include-transitive', '--format', 'json'];
   const started = Date.now();
   process.stdout.write(`\n=== ${name}: dotnet ${cmdArgs.join(' ')}\n`);
   if (PLAN) { results.push({ name, ok: true, planned: true }); return; }
-  // English output whatever the machine's locale, since the severity words are what is read.
-  const r = spawnSync('dotnet', cmdArgs, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, DOTNET_CLI_UI_LANGUAGE: 'en' } });
-  process.stdout.write(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+  const tested = nugetAuditSelfTest();
+  if (tested.failures.length) {
+    process.stdout.write(`the audit's reader failed its self-test:\n  ${tested.failures.join('\n  ')}\n`);
+    results.push({ name, ok: false, seconds: Math.round((Date.now() - started) / 1000) });
+    return;
+  }
+  const r = spawnSync('dotnet', cmdArgs, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, DOTNET_CLI_UI_LANGUAGE: 'en', DOTNET_NOLOGO: '1', DOTNET_CLI_TELEMETRY_OPTOUT: '1' } });
+  if (r.stderr) process.stdout.write(r.stderr);
   const skipped = r.error?.code === 'ENOENT';
-  const severe = /\b(High|Critical)\b/.test(r.stdout ?? '');
-  if (severe) process.stdout.write('High or critical vulnerable package (CI fails on it too)\n');
-  if (skipped) process.stdout.write('(dotnet not found, skipped)\n');
-  results.push({ name, ok: skipped || (r.status === 0 && !severe), skipped, seconds: Math.round((Date.now() - started) / 1000), exit: r.status });
+  if (skipped) {
+    process.stdout.write('(dotnet not found, skipped)\n');
+    results.push({ name, ok: true, skipped, seconds: Math.round((Date.now() - started) / 1000) });
+    return;
+  }
+  const found = nugetAuditFindings(r.stdout ?? '');
+  for (const line of found.severe) process.stdout.write(`SEVERE ${line}\n`);
+  for (const line of found.other) process.stdout.write(`advisory (does not fail the gate) ${line}\n`);
+  for (const line of found.problems) process.stdout.write(`INCOMPLETE ${line}\n`);
+  if (!found.severe.length && !found.other.length && !found.problems.length) process.stdout.write('no vulnerable package; the report read its sources\n');
+  results.push({ name, ok: r.status === 0 && !found.severe.length && !found.problems.length, seconds: Math.round((Date.now() - started) / 1000), exit: r.status });
 }
 
 // ARV-104j review and ARV-152 (CWE-532): no credential in the Playwright report, the test output or a trace. Every Playwright

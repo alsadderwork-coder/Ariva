@@ -7,7 +7,10 @@
 //                                             covers every pin file, every .NET restore and npm install in a Dockerfile
 //                                             is locked (ARV-214 reads the exec form, a tool named by a path, env and
 //                                             VAR=value prefixes, shell wrappers, here-documents, ONBUILD, COPY scripts and
-//                                             a guarded tool anywhere in a command; not a script file a RUN runs), the
+//                                             a guarded tool anywhere in a command; not a script file a RUN runs), every
+//                                             .NET Dockerfile checks its published runtime and holds its stages to the
+//                                             image rule (ARV-184, ARV-186: the six listed by path, each read as BuildKit
+//                                             reads it, the escape and syntax directives refused), the
 //                                             pipelines that run the integration tests pin Testcontainers' Ryuk image, and
 //                                             CI's SDK steps install and run the images' SDK band, and no live .github
 //                                             folder is back (ARV-295) (offline; the local gates' check)
@@ -1021,27 +1024,67 @@ function rawWords(line) {
 	return words;
 }
 
+/** ARV-186: white space as BuildKit's Dockerfile parser trims it (Go's unicode.IsSpace), for blank and comment lines. */
+const GO_SPACE = '[\\t\\n\\v\\f\\r \\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000]';
+const BLANK_LINE = new RegExp(`^${GO_SPACE}*$`);
+const COMMENT_LINE = new RegExp(`^${GO_SPACE}*#`);
+/** BuildKit's line continuation with the default escape character: a backslash followed by nothing but spaces and tabs. */
+const CONTINUATION = /\\[ \t]*$/;
+/** A parser directive, # key = value (or // key = value, which BuildKit's syntax detection also reads), any case, any spacing. */
+const DIRECTIVE = /^[\s\u0085]*(?:#|\/\/)[\s\u0085]*([a-zA-Z][a-zA-Z0-9]*)[\s\u0085]*=[\s\u0085]*(.*?)[\s\u0085]*$/;
+
+/**
+ * ARV-186: the parser directives the checks refuse, read where BuildKit reads them and wider (fail closed): any line of the
+ * leading block (blank lines, # comments, // lines, a #! line) shaped as a directive, and a Dockerfile that is a JSON object
+ * with a syntax key. escape changes the escape and line continuation character, so the instructions would no longer be the
+ * ones parseDockerfile reads; syntax hands the Dockerfile to another frontend, whose grammar the checks do not mirror (no
+ * Dockerfile here names one, so it is refused outright, pinned or not). The check directive (build checks only) is allowed.
+ */
+function directiveProblems(lines) {
+	const problems = [];
+	for (const line of lines) {
+		if (!BLANK_LINE.test(line) && !COMMENT_LINE.test(line) && !/^\s*\/\//.test(line)) break;
+		const key = line.match(DIRECTIVE)?.[1]?.toLowerCase();
+		if (key === 'escape') problems.push(`the escape parser directive changes how BuildKit reads continuations and escapes, so the checks would not read what it runs: it is refused (${line.trim().slice(0, 60)})`);
+		if (key === 'syntax') problems.push(`the syntax parser directive hands the Dockerfile to another frontend, which the checks do not read: it is refused (${line.trim().slice(0, 80)})`);
+	}
+	try {
+		const json = JSON.parse(lines.filter((line, index) => index > 0 || !line.startsWith('#!')).join('\n'));
+		if (json && typeof json === 'object' && Object.keys(json).some((key) => key.toLowerCase() === 'syntax')) problems.push('a Dockerfile that is a JSON object with a syntax key names its own frontend: it is refused');
+	} catch {
+		// not JSON: a Dockerfile
+	}
+	return problems;
+}
+
 /**
  * ARV-214: a Dockerfile's instructions and the problems met reading them. Each instruction is one entry, its continuation lines
- * joined (a trailing backslash; comment lines inside a continuation dropped, as Docker drops them). A RUN, COPY or ADD (ONBUILD
- * included) with a here-document gets the document's lines appended after a new line, so a command written in it is read with
- * the instruction. A here-document is found as BuildKit finds it: a word of the instruction, outside quotes, that is <<NAME or
- * <<-NAME (optionally after digits), its name unquoted (any characters but white space and <); the document ends at the first
- * line equal to the name (tabs stripped first for <<-). One whose end is never found is reported (it cannot be read) and takes
- * no lines, so the instructions after it are still read.
+ * joined as BuildKit joins them (ARV-186): a trailing backslash followed only by spaces and tabs continues the instruction and
+ * is dropped with them, nothing put in its place; inside a continuation, comment lines and blank lines (white space only, as
+ * Go trims it) are skipped and the instruction goes on; a byte order mark and the carriage returns before a line's end are
+ * dropped; a continuation at the end of the file ends there. A RUN, COPY or ADD (ONBUILD included) with a here-document gets
+ * the document's lines appended after a new line, so a command written in it is read with the instruction. A here-document is
+ * found as BuildKit finds it: a word of the instruction, outside quotes, that is <<NAME or <<-NAME (optionally after digits),
+ * its name unquoted (any characters but white space and <); the document ends at the first line equal to the name (tabs
+ * stripped first for <<-). One whose end is never found is reported (it cannot be read) and takes no lines, so the instructions
+ * after it are still read. The escape and syntax parser directives are reported too (directiveProblems).
  */
 export function parseDockerfile(dockerfile) {
-	const lines = dockerfile.split(/\r?\n/);
+	const lines = dockerfile.replace(/^\uFEFF/, '').split('\n').map((line) => line.replace(/\r+$/, ''));
 	const instructions = [];
-	const problems = [];
+	const problems = directiveProblems(lines);
+	const skipped = (line) => BLANK_LINE.test(line) || COMMENT_LINE.test(line);
 	for (let i = 0; i < lines.length; i++) {
-		let text = lines[i];
-		if (!text.trim() || /^\s*#/.test(text)) continue;
-		while (/\\\s*$/.test(text) && i + 1 < lines.length) {
+		if (skipped(lines[i])) continue;
+		let open = CONTINUATION.test(lines[i]);
+		let text = lines[i].replace(CONTINUATION, '');
+		while (open && i + 1 < lines.length) {
 			i++;
-			if (/^\s*#/.test(lines[i])) continue;
-			text = `${text.replace(/\\\s*$/, ' ')}${lines[i]}`;
+			if (skipped(lines[i])) continue;
+			open = CONTINUATION.test(lines[i]);
+			text += lines[i].replace(CONTINUATION, '');
 		}
+		if (!text.trim()) continue;
 		if (/^\s*(?:ONBUILD\s+)?(?:RUN|COPY|ADD)\b/i.test(text)) {
 			for (const word of rawWords(text)) {
 				const heredoc = /^(\d*)<<(-?)([^<]*)$/.exec(word);
@@ -1145,11 +1188,12 @@ export function commandWords(input) {
  * ARV-214: the commands of a shell script as a RUN line's shell form runs them, each as commandWords. Read fail closed, so a
  * command is never missed for its spelling: commands are split at &&, ||, ;, a pipe, a background &, a new line, a subshell's
  * or a group's brackets and a command substitution ($(...) or backticks), also inside quotes; quotes are removed and a
- * backslash keeps the character after it, as the shell's quote removal does (n"p"m and n\pm are npm), so a script wrapped in
+ * backslash keeps the character after it, as the shell's quote removal does (n"p"m and n\pm are npm), and a backslash before a
+ * new line (in a here-document) joins the lines with nothing between, as the shell does (ARV-186), so a script wrapped in
  * sh -c or eval is read as commands of its own. A word that held a space inside quotes is read as several words.
  */
 export function shellCommands(script) {
-	const flat = script.replace(/\\\r?\n/g, ' ').replace(/\\(.)/g, '$1').replace(/["']/g, '');
+	const flat = script.replace(/\\\r?\n/g, '').replace(/\\(.)/g, '$1').replace(/["']/g, '');
 	return flat.split(/&&|\|\||[;|&\n()`]/).map((part) => commandWords(part.trim().split(/\s+/).filter(Boolean))).filter((words) => words.length);
 }
 
@@ -1345,7 +1389,7 @@ export function unreadableRunProblems(dockerfile) {
 		}
 		const script = runScript(instruction);
 		if (script === null) continue;
-		const flat = script.replace(/\\\r?\n/g, ' ').replace(/\\(.)/g, '$1').replace(/["']/g, '');
+		const flat = script.replace(/\\\r?\n/g, '').replace(/\\(.)/g, '$1').replace(/["']/g, '');
 		for (const part of flat.split(/&&|\|\||[;|&\n]/)) {
 			const words = commandWords(part.trim().replace(/^[({\s]+/, '').split(/\s+/).filter(Boolean));
 			if (words.length && isExpansion(words[0])) problems.push(`a RUN command named by an expansion cannot be checked: name its tool (${words.join(' ')})`);
@@ -1656,7 +1700,7 @@ function selfTestCommandTables() {
 	}
 }
 
-/** ARV-214: the RUN reader itself (dockerInstructions, runCommands, npmVerb, dotnetVerb) and the expansion refusal. */
+/** ARV-214: the RUN reader itself (dockerInstructions, runCommands, npmVerb, dotnetVerb) and the expansion refusal; ARV-186: continuations and parser directives as BuildKit reads them. */
 function selfTestRunCommands() {
 	const failures = [];
 	const same = (name, actual, expected) => {
@@ -1666,6 +1710,32 @@ function selfTestRunCommands() {
 	same('a here-document joins its instruction', dockerInstructions('FROM node\nRUN <<EOF\nnpm install\nEOF\nRUN true\n').length, 3);
 	same('a tab-stripped here-document', dockerInstructions('FROM node\nRUN <<-EOF\n\tnpm install\n\tEOF\nRUN true\n').length, 3);
 	same('continuations joined, comments dropped', dockerInstructions('RUN a \\\n# note\n    b\n').map((text) => text.replace(/\s+/g, ' ')), ['RUN a b']);
+	// ARV-186 review, round 2 (H1): continuations as BuildKit joins them.
+	const folded = (dockerfile) => dockerInstructions(dockerfile).map((text) => text.replace(/\s+/g, ' ').trim());
+	same('an empty line inside a continuation is skipped', folded('FROM x\nRUN a \\\n\nenv ; b\n'), ['FROM x', 'RUN a env ; b']);
+	same('a white space line inside a continuation is skipped', folded('FROM x\nRUN a \\\n \t \nlabel ; b\n'), ['FROM x', 'RUN a label ; b']);
+	same('a NEL line inside a continuation is blank, as Go trims it', folded('RUN a \\\n\u0085\nb\n'), ['RUN a b']);
+	same('a NEL before a comment inside a continuation', folded('RUN a \\\n\u0085# note\nb\n'), ['RUN a b']);
+	same('a continuation joins as written, with no space put in', folded('RUN dot\\\nnet restore x\n'), ['RUN dotnet restore x']);
+	same('a continuation is a backslash before spaces and tabs only', folded('LABEL a=b \\\v\nRUN x\n').length, 2);
+	same('carriage returns before a line end are dropped', folded('RUN a \\\r\r\nb\n'), ['RUN a b']);
+	same('a continuation at the end of the file ends there', folded('FROM x\nRUN a \\'), ['FROM x', 'RUN a']);
+	same('a byte order mark is dropped', readInstructions('\uFEFFFROM x\n')[0].keyword, 'FROM');
+	same('an empty continuation line hides no npm install', lockedNpmProblems('FROM node\nCOPY package.json package-lock.json ./\nRUN npm ci\nRUN true \\\n\nnpm install\n').some((problem) => problem.includes('npm install may change the tree')), true);
+	same('a continuation inside the tool name hides no restore', lockedRestoreProblems('FROM sdk\nRUN dot\\\nnet restore a.csproj\n', () => null).some((problem) => problem.includes('dotnet restore must pass --locked-mode')), true);
+	same('a continuation inside a here-document joins as the shell joins it', lockedRestoreProblems('FROM sdk\nRUN <<EOF\ndot\\\nnet restore a.csproj\nEOF\n', () => null).some((problem) => problem.includes('dotnet restore must pass --locked-mode')), true);
+	same('a here-document after a continuation with an empty line', dockerInstructions('FROM x\nRUN \\\n\ncat <<EOF\nnpm install\nEOF\nRUN true\n').length, 3);
+	// H2: the escape and syntax parser directives, refused where BuildKit honours them and wider; check allowed.
+	for (const [name, dockerfile, expected] of [
+		['an escape directive', '# escape=`\nFROM x\n', 1], ['an escape directive in another case and spacing', '#  Escape = `\nFROM x\n', 1],
+		['an escape directive after white space', '   # escape=\\\nFROM x\n', 1], ['an escape directive after a byte order mark', '\uFEFF# escape=`\nFROM x\n', 1],
+		['an escape directive after a check directive', '# check=skip=all\n# escape=`\nFROM x\n', 1], ['an escape directive after a comment (wider)', '# note\n# escape=`\nFROM x\n', 1],
+		['an escape directive after an empty line (wider)', '\n# escape=`\nFROM x\n', 1], ['a syntax directive', '# syntax=docker.io/other/frontend:latest\nFROM x\n', 1],
+		['a syntax directive pinned by digest', `# syntax=docker/dockerfile:1.19@sha256:${'0'.repeat(64)}\nFROM x\n`, 1], ['a syntax directive after a shebang', '#!/usr/bin/env buildctl\n# syntax=other/frontend\nFROM x\n', 1],
+		['a syntax directive in the // form', '// syntax=other/frontend\nFROM x\n', 1], ['a JSON Dockerfile naming its frontend', '{ "syntax": "other/frontend" }\n', 1],
+		['a check directive', '# check=skip=all\nFROM x\n', 0], ['an escape directive after the first instruction', 'FROM x\n# escape=`\nRUN true\n', 0], ['a comment that names escape', '# escape is a word here\nFROM x\n', 0]
+	]) same(name, parseDockerfile(dockerfile).problems.length, expected);
+	same('a directive problem is an unreadable Dockerfile', unreadableRunProblems('# escape=`\nFROM node\nRUN true\n').some((problem) => problem.includes('escape parser directive')), true);
 	same('exec form keeps its words, a word with a space also read as a script', runCommands('RUN ["dotnet", "restore", "my app/App.csproj"]'), [['dotnet', 'restore', 'my app/App.csproj'], ['my', 'app/App.csproj']]);
 	same('exec form through a shell', runCommands('RUN ["bash", "-c", "a && npm ci"]'), [['a'], ['npm', 'ci']]);
 	same('RUN flags skipped', runCommands('RUN --mount=type=cache,target=/x --network=none npm ci'), [['npm', 'ci']]);
@@ -1789,13 +1859,15 @@ function playwrightTag() {
 	return `v${lock.packages['node_modules/@playwright/test'].version}-noble`;
 }
 
+/** ARV-214: Dockerfile.<name> and <name>.Dockerfile too (none today), so a variant is not left unchecked. */
+const DOCKERFILE_NAME = /^Dockerfile(\.[^/]+)?$|\.Dockerfile$/i;
+
 function dockerfiles(dir = ROOT, out = []) {
 	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
 		if (SKIP.includes(entry.name)) continue;
 		const full = path.join(dir, entry.name);
 		if (entry.isDirectory()) dockerfiles(full, out);
-		// ARV-214: Dockerfile.<name> and <name>.Dockerfile too (none today), so a variant is not left unchecked.
-		else if (/^Dockerfile(\.[^/]+)?$|\.Dockerfile$/i.test(entry.name)) out.push(full);
+		else if (DOCKERFILE_NAME.test(entry.name)) out.push(full);
 	}
 	return out;
 }
@@ -1852,44 +1924,367 @@ export function devcontainerProblems(dockerfile, config) {
 }
 
 /**
+ * ARV-186: a Dockerfile's instructions (parseDockerfile: comment and blank lines dropped, continuations joined as BuildKit joins
+ * them) read as their keyword (upper case, whatever the file's case), their leading flags (--name or --name=value, in any
+ * order, each name with every value it was given) and the rest, white space folded; raw is the instruction as parseDockerfile
+ * read it (a here-document's lines after a new line).
+ */
+export function readInstructions(dockerfile) {
+	const flagPattern = /^--([A-Za-z-]+)(?:=(\S*))?(?:\s+|$)/;
+	return dockerInstructions(dockerfile).map((raw) => {
+		const text = raw.replace(/\s+/g, ' ').trim();
+		const head = text.match(/^\S+/)?.[0] ?? '';
+		const keyword = head.toUpperCase();
+		let rest = text.slice(head.length).trim();
+		const flags = {};
+		for (let flag = rest.match(flagPattern); flag; flag = rest.match(flagPattern)) {
+			(flags[flag[1].toLowerCase()] ??= []).push(flag[2] ?? '');
+			rest = rest.slice(flag[0].length);
+		}
+		return { keyword, flags, rest: rest.trim(), text, raw };
+	});
+}
+
+/** The stages of a Dockerfile: each FROM with its flags (--platform), its image, its name (lower case) and its instructions. */
+export function dockerStages(dockerfile) {
+	const stages = [];
+	for (const instruction of readInstructions(dockerfile)) {
+		if (instruction.keyword === 'FROM') {
+			const words = instruction.rest.split(/\s+/);
+			const name = words.length >= 3 && words[1].toUpperCase() === 'AS' ? words[2].toLowerCase() : undefined;
+			stages.push({ image: words[0], from: words[0].toLowerCase(), name, flags: instruction.flags, instructions: [] });
+		} else if (stages.length) {
+			stages.at(-1).instructions.push(instruction);
+		}
+	}
+	return stages;
+}
+
+const DOTNET_IMAGE = /^mcr\.microsoft\.com\/dotnet\//i;
+const DOTNET_TOOLS = new Set(['dotnet', 'dnx']);
+/**
+ * ARV-186: a .NET Dockerfile, which must ship on runtime-deps and pass publishedRuntimeProblems: a FROM on any
+ * mcr.microsoft.com/dotnet image; dotnet (or dnx) as the tool of any command the RUN reader finds (dockerRunCommands, so the
+ * exec form, a tool named by a path, a shell wrapper, a command after ; or &&, a here-document, a COPY script and a tool after
+ * a wrapper are all read); or an ENTRYPOINT, CMD or HEALTHCHECK that names dotnet or a .dll.
+ */
+export function dotnetDockerfile(dockerfile) {
+	const instructions = readInstructions(dockerfile);
+	if (instructions.some((i) => i.keyword === 'FROM' && DOTNET_IMAGE.test(i.rest))) return true;
+	if (dockerRunCommands(dockerfile).some(({ words }) => DOTNET_TOOLS.has(words[0]))) return true;
+	return instructions.some((i) => /^(?:ENTRYPOINT|CMD|HEALTHCHECK)$/.test(i.keyword) && i.rest.replace(/[[\]",']/g, ' ').split(/\s+/).some((word) => baseName(word).toLowerCase() === 'dotnet' || /\.dll$/i.test(word)));
+}
+
+const RUNTIME_DEPS = /^mcr\.microsoft\.com\/dotnet\/runtime-deps:([^@\s]+)@/i;
+/** ARV-186: the check stage runs on the node image pinned by digest, not on another stage. */
+const CHECK_IMAGE = /^node:[^@\s]+@sha256:[0-9a-f]{64}$/;
+const CHECK_COMMAND = /^node\s+\/check\/published-runtime\.mjs\s+--check\s+\/app\/publish\s+--runtime\s+(\S+)$/;
+const CHECK_SCRIPT_COPY = /^(?:\[\s*"scripts\/published-runtime\.mjs"\s*,\s*"\/check\/"\s*\]|scripts\/published-runtime\.mjs\s+\/check\/)$/;
+/**
+ * ARV-186: the runtime-deps stage the final stage is based on, word for word and in this order: the OS security fixes, the
+ * working folder and the port, nothing else (no COPY, ADD, SHELL, USER, ONBUILD, ENV, RUN flag or other instruction).
+ */
+const BASE_STAGE = ['RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*', 'WORKDIR /app', 'EXPOSE 8080'];
+/**
+ * The final stage's RUN, word for word (ARV-186): the non-root user, then /app given to root and write taken from group and
+ * others. COPY --from keeps the owner and mode the files had in the stage they come from, so both are set after the copy.
+ */
+const FINAL_RUN = 'groupadd -r -g 10001 nonroot && useradd -r -u 10001 -g nonroot nonroot && chown -R 0:0 /app && chmod -R go-w /app';
+/** ARV-186: what a final stage may hold besides its pinned sequence, anywhere in it: metadata only. */
+const FINAL_METADATA = new Set(['EXPOSE', 'LABEL']);
+/** Printable ASCII and tabs: the check, runtime-deps and final stages are compared word for word, so they hold nothing else. */
+const PLAIN = /^[\t\x20-\x7e]*$/;
+
+/** ARV-186: the project a publish stage publishes, as its apphost is named: its dotnet publish's .csproj, else its last WORKDIR's folder. */
+function publishedProject(stage) {
+	for (const instruction of stage?.instructions ?? []) {
+		for (const words of runCommands(instruction.raw)) {
+			if (words[0] !== 'dotnet' || dotnetVerb(words) !== 'publish') continue;
+			const project = words.find((word) => /\.csproj$/i.test(word));
+			if (project) return baseName(project.replace(/\\/g, '/')).replace(/\.csproj$/i, '');
+		}
+	}
+	const workdir = stage?.instructions.filter((i) => i.keyword === 'WORKDIR').at(-1)?.rest.replace(/\/+$/, '');
+	return workdir ? baseName(workdir) : undefined;
+}
+
+/**
  * ARV-184 (CWE-1395): a Dockerfile on runtime-deps publishes self-contained, so what it ships is the SDK's runtime pack, not
  * the base's. It must check the publish output with scripts/published-runtime.mjs, giving --runtime its runtime-deps tag, in a
- * named stage, and its final stage must copy from that stage only. Problems for a Dockerfile text (none without runtime-deps).
+ * named stage, and its final stage must copy from that stage only. ARV-186 (CWE-269, CWE-732, CWE-1395), the published
+ * runtime and image rule: it holds every .NET Dockerfile (dotnetDockerfile), which must ship on runtime-deps, read as
+ * parseDockerfile reads it (as BuildKit does; its problems, an escape or syntax directive among them, are this rule's too),
+ * with unique stage names (BuildKit takes the last stage of a name) and one --from per COPY. The check stage runs on the node
+ * image pinned by digest and holds exactly its three instructions (the script copied to /check/, the publish stage's
+ * /app/publish copied in, then the check run with RUN --network=none and no other flag). The final stage is based on a named
+ * runtime-deps stage that holds exactly BASE_STAGE, and is itself exactly WORKDIR /app; one COPY from the check stage
+ * (--link allowed, no other flag, no here-document) of /app/publish to .; FINAL_RUN, which gives /app to root and takes
+ * write from group and others whatever owner and mode the publish stage gave the files; USER 10001; and ENTRYPOINT
+ * ["./<the project the publish stage publishes>"], in that order, with EXPOSE and LABEL anywhere and nothing else (no ENV,
+ * ARG, CMD, HEALTHCHECK, STOPSIGNAL, SHELL, ONBUILD, VOLUME, ADD, RUN --mount). So the runtime user cannot rewrite its own
+ * binaries where no read-only root filesystem holds (docker run, the offline bundle), and the image runs what was checked.
+ * The three stages are compared word for word, in printable ASCII. Problems for a Dockerfile text (none if it is not .NET).
  */
 export function publishedRuntimeProblems(dockerfile) {
-	const base = dockerfile.match(/^\s*FROM\s+mcr\.microsoft\.com\/dotnet\/runtime-deps:([^@\s]+)@/m)?.[1];
-	if (!base) return [];
-	const stages = dockerfile.split(/^(?=\s*FROM\s)/m).filter((stage) => /^\s*FROM\s/.test(stage))
-		.map((body) => ({ name: body.match(/^\s*FROM\s+\S+\s+AS\s+(\S+)/i)?.[1]?.toLowerCase(), body }));
-	const problems = [];
-	const checks = stages.filter((stage) => /^\s*RUN\s+node\s+\/check\/published-runtime\.mjs\s+--check\s+\/app\/publish\s+--runtime\s+\S+\s*$/m.test(stage.body));
-	if (checks.length !== 1) return [`one stage must run "node /check/published-runtime.mjs --check /app/publish --runtime ${base}" (found ${checks.length})`];
-	const checked = checks[0];
-	const runtime = checked.body.match(/--runtime\s+(\S+)/)[1];
-	if (runtime !== base) problems.push(`the published runtime check uses --runtime ${runtime}; it must be the runtime-deps tag ${base}, with the SDK that bundles it`);
-	if (!/^\s*COPY\s+.*scripts\/published-runtime\.mjs.*\/check\/\S*\s*$/m.test(checked.body)) problems.push('the check stage must copy scripts/published-runtime.mjs to /check/');
-	if (!checked.name) problems.push('the check stage must be named (FROM ... AS checked)');
+	if (!dotnetDockerfile(dockerfile)) return [];
+	const problems = [...parseDockerfile(dockerfile).problems];
+	const stages = dockerStages(dockerfile);
+	const names = stages.map((stage) => stage.name).filter(Boolean);
+	const repeated = [...new Set(names.filter((name, index) => names.indexOf(name) !== index))];
+	if (repeated.length) problems.push(`stage names must be unique, since BuildKit takes the last stage of a name (${repeated.join(', ')})`);
+	const twice = stages.flatMap((stage) => stage.instructions).filter((i) => (i.flags.from?.length ?? 0) > 1);
+	if (twice.length) problems.push(`a COPY must name one --from (${twice.map((i) => i.text).join('; ')})`);
+	const runtimeStages = stages.filter((stage) => RUNTIME_DEPS.test(stage.image));
+	if (!runtimeStages.length) return [...problems, 'a .NET Dockerfile (a FROM mcr.microsoft.com/dotnet/*, a dotnet command, or an ENTRYPOINT or CMD naming dotnet or a .dll) must ship on mcr.microsoft.com/dotnet/runtime-deps pinned by digest (ARV-184)'];
 	const final = stages.at(-1);
-	const sources = [...final.body.matchAll(/^\s*COPY\s+--from=(\S+)/gim)].map((m) => m[1].toLowerCase());
+	const baseStage = stages.find((stage) => stage !== final && stage.name && stage.name === final.from);
+	const base = (RUNTIME_DEPS.test(baseStage?.image ?? '') ? baseStage : runtimeStages[0]).image.match(RUNTIME_DEPS)[1];
+	const checks = stages.filter((stage) => stage.instructions.some((i) => i.keyword === 'RUN' && CHECK_COMMAND.test(i.rest)));
+	if (checks.length !== 1) return [...problems, `one stage must run "RUN --network=none node /check/published-runtime.mjs --check /app/publish --runtime ${base}" (found ${checks.length})`];
+	const checked = checks[0];
+	if (!CHECK_IMAGE.test(checked.image)) problems.push(`the check stage must run on the node image pinned by digest, FROM node:<version>@sha256:<digest>, not on another stage (FROM ${checked.image})`);
+	const run = checked.instructions.find((i) => i.keyword === 'RUN' && CHECK_COMMAND.test(i.rest));
+	if ((run.flags.network ?? []).join(',') !== 'none' || Object.keys(run.flags).some((flag) => flag !== 'network')) {
+		problems.push('the published runtime check must run with RUN --network=none and no other flag: it reads the publish output and needs no network');
+	}
+	const runtime = run.rest.match(CHECK_COMMAND)[1];
+	if (runtime !== base) problems.push(`the published runtime check uses --runtime ${runtime}; it must be the runtime-deps tag ${base}, with the SDK that bundles it`);
+	if (!checked.name) problems.push('the check stage must be named (FROM ... AS checked)');
+	const scriptCopies = checked.instructions.filter((i) => i.keyword === 'COPY' && !Object.keys(i.flags).length && CHECK_SCRIPT_COPY.test(i.rest));
+	if (scriptCopies.length !== 1) problems.push('the check stage must copy scripts/published-runtime.mjs to /check/');
+	const publishers = new Set(stages.filter((stage) => stage.name && stage.instructions.some((i) => i.keyword === 'RUN' && /(^|\s)dotnet\s+publish\b.*\s-o\s+\/app\/publish(\s|$)/.test(i.rest))).map((stage) => stage.name));
+	const copiedIn = checked.instructions.filter((i) => i.keyword === 'COPY' && i.flags.from);
+	if (copiedIn.length !== 1 || copiedIn[0].flags.from.length !== 1 || !publishers.has(copiedIn[0].flags.from[0].toLowerCase()) || copiedIn[0].rest !== '/app/publish /app/publish' || Object.keys(copiedIn[0].flags).length !== 1) {
+		problems.push(`the check stage must copy from a stage only the publish stage's output, COPY --from=<the stage that runs dotnet publish -o /app/publish> /app/publish /app/publish (copies: ${copiedIn.map((c) => c.text).join('; ') || 'nothing'})`);
+	}
+	const others = checked.instructions.filter((i) => i !== run && !scriptCopies.includes(i) && !copiedIn.includes(i));
+	if (others.length) problems.push(`the check stage must hold only its script copy, its copy of the publish output and the check (also: ${others.map((i) => i.keyword).join(', ')})`);
+	else if (checked.instructions.at(-1) !== run) problems.push('the check must be the check stage\'s last instruction, after its two copies');
+	const publishStage = stages.find((stage) => stage.name && stage.name === copiedIn[0]?.flags.from?.[0]?.toLowerCase());
+	const copies = final.instructions.filter((i) => i.keyword === 'COPY' || i.keyword === 'ADD');
+	const sources = copies.map((i) => (i.keyword === 'COPY' && i.flags.from ? i.flags.from.join(' and ').toLowerCase() : i.keyword === 'ADD' ? 'ADD' : 'the build context'));
 	if (final === checked || !checked.name || !sources.includes(checked.name) || sources.some((source) => source !== checked.name)) {
 		problems.push(`the final stage must copy the app from the check stage only (copies from: ${sources.join(', ') || 'nothing'})`);
+	}
+	if (copies.some((i) => i.flags.chown || i.flags.chmod)) problems.push('the final stage must copy with no --chown or --chmod: /app stays root-owned and not writable by group or others');
+	if (final === checked || !baseStage || !RUNTIME_DEPS.test(baseStage.image)) {
+		problems.push(`the final stage must be based on the runtime-deps stage (FROM <that stage> AS final), not on another stage or an image (FROM ${final.image})`);
+	} else {
+		const held = baseStage.instructions;
+		if (held.length !== BASE_STAGE.length || held.some((i, k) => Object.keys(i.flags).length || `${i.keyword} ${i.rest}` !== BASE_STAGE[k])) {
+			problems.push(`the runtime-deps stage the final stage is based on must hold exactly ${BASE_STAGE.join('; ')}, in that order and nothing else (found: ${held.map((i) => i.text).join('; ') || 'nothing'})`);
+		}
+	}
+	const runs = final.instructions.filter((i) => i.keyword === 'RUN');
+	if (runs.some((i) => (i.flags.mount ?? []).some((mount) => /(^|,)from=/.test(mount)))) problems.push('the final stage must not read another stage through RUN --mount (from=...)');
+	if (runs.length !== 1 || runs.some((i) => i.rest !== FINAL_RUN || Object.keys(i.flags).length)) {
+		problems.push(`the final stage must keep /app root-owned and not writable by group or others: its one RUN is "${FINAL_RUN}" (no other chown, setfacl or chmod)`);
+	}
+	const allowed = new Set(['WORKDIR', 'COPY', 'RUN', 'USER', 'ENTRYPOINT', ...FINAL_METADATA]);
+	const unexpected = final.instructions.filter((i) => !allowed.has(i.keyword));
+	if (unexpected.length) problems.push(`the final stage may hold only WORKDIR, its COPY from the check stage, its RUN, USER, ENTRYPOINT, EXPOSE and LABEL (also: ${unexpected.map((i) => i.keyword).join(', ')})`);
+	const users = final.instructions.filter((i) => i.keyword === 'USER');
+	if (users.at(-1)?.rest !== '10001') problems.push(`the final stage must run as USER 10001, its last USER (found: ${users.map((i) => i.rest).join(', ') || 'none'})`);
+	const project = publishedProject(publishStage);
+	const entry = `["./${project ?? '<the project the publish stage publishes>'}"]`;
+	const startsProject = (i) => {
+		try {
+			const words = JSON.parse(i.rest);
+			return Boolean(project) && /^[A-Za-z0-9._-]+$/.test(project) && Array.isArray(words) && words.length === 1 && words[0] === `./${project}`;
+		} catch {
+			return false; // the shell form
+		}
+	};
+	const entrypoints = final.instructions.filter((i) => i.keyword === 'ENTRYPOINT');
+	if (entrypoints.length !== 1 || !startsProject(entrypoints[0])) problems.push(`the final stage must start the project the publish stage publishes, ENTRYPOINT ${entry}, once (found: ${entrypoints.map((i) => i.rest).join('; ') || 'none'})`);
+	const link = (values) => values === undefined || (values.length === 1 && ['', 'true', 'false'].includes(values[0]));
+	const steps = [
+		(i) => i.keyword === 'WORKDIR' && !Object.keys(i.flags).length && i.rest === '/app',
+		(i) => i.keyword === 'COPY' && Object.keys(i.flags).every((flag) => flag === 'from' || flag === 'link') && i.flags.from?.length === 1 && i.flags.from[0].toLowerCase() === checked.name && link(i.flags.link) && i.rest === '/app/publish .' && !i.raw.includes('\n'),
+		(i) => i.keyword === 'RUN' && !Object.keys(i.flags).length && i.rest === FINAL_RUN,
+		(i) => i.keyword === 'USER' && !Object.keys(i.flags).length && i.rest === '10001',
+		(i) => i.keyword === 'ENTRYPOINT' && !Object.keys(i.flags).length && startsProject(i)
+	];
+	const sequence = final.instructions.filter((i) => !FINAL_METADATA.has(i.keyword));
+	if (sequence.length !== steps.length || sequence.some((i, k) => !steps[k](i))) {
+		problems.push(`the final stage must be exactly WORKDIR /app; COPY --from=${checked.name ?? '<the check stage>'} /app/publish . (--link allowed); RUN ${FINAL_RUN}; USER 10001; ENTRYPOINT ${entry}, in that order, with EXPOSE and LABEL anywhere (found: ${sequence.map((i) => i.text.slice(0, 60)).join('; ') || 'nothing'})`);
+	}
+	for (const [label, stage] of [['the check stage', checked], ['the runtime-deps stage', baseStage], ['the final stage', final]]) {
+		const odd = (stage?.instructions ?? []).filter((i) => !PLAIN.test(i.raw.replace(/\n/g, ' ')));
+		if (odd.length) problems.push(`${label} is read word for word, so it holds printable ASCII only (${odd.map((i) => i.keyword).join(', ')})`);
 	}
 	return problems;
 }
 
+/** ARV-186: the Dockerfiles that build the .NET images, each held to publishedRuntimeProblems. */
+const DOTNET_IMAGES = [
+	'Platform/Backplane/Ariva.Api.Main/Dockerfile',
+	'Platform/Backplane/Ariva.Api.Ingest/Dockerfile',
+	'Platform/Backplane/Ariva.Api.Stream/Dockerfile',
+	'Platform/Backplane/Ariva.Api.Cronz/Dockerfile',
+	'Platform/Backplane/Ariva.Api.Integration/Dockerfile',
+	'Platform/Simulation/Ariva.Simulation.Api/Dockerfile'
+];
+/** ARV-186: Dockerfiles the .NET detection finds that build no image: the dev container (devcontainerProblems) and the CWE scanner's fixtures. */
+const NOT_IMAGES = ['.devcontainer/Dockerfile', 'scripts/security/fixtures/bad/Dockerfile', 'scripts/security/fixtures/good/Dockerfile'];
+
+/**
+ * ARV-186: the .NET image Dockerfiles against DOTNET_IMAGES, so none goes unchecked. walked: the Dockerfiles the walk reads
+ * (repository paths); dotnet: those the .NET detection finds that build an image (NOT_IMAGES left out); hidden: the .NET
+ * Dockerfiles git tracks under a folder the walk skips (SKIP) that build an image. Problems: a listed one gone or skipped, a
+ * listed one the detection no longer finds, a .NET one not listed, a hidden one; each names its file.
+ */
+export function dotnetImageProblems(expected, { walked, dotnet, hidden }) {
+	const problems = [];
+	for (const file of expected) {
+		if (!walked.includes(file)) problems.push(`${file}: a .NET image Dockerfile (DOTNET_IMAGES) the check does not read: it is gone or under a folder the walk skips`);
+		else if (!dotnet.includes(file)) problems.push(`${file}: a .NET image Dockerfile (DOTNET_IMAGES) the .NET detection no longer finds, so the published runtime and image rule would not hold it`);
+	}
+	for (const file of dotnet) if (!expected.includes(file)) problems.push(`${file}: a .NET Dockerfile DOTNET_IMAGES does not list: add it, so the check fails if it ever drops out of the .NET detection`);
+	for (const file of hidden) problems.push(`${file}: a .NET Dockerfile under a folder the walk skips (${SKIP.filter((name) => file.split('/').slice(0, -1).includes(name)).join(', ')}) goes unchecked: move it, or name it in NOT_IMAGES if it builds no image`);
+	return problems;
+}
+
+/**
+ * ARV-186: the Dockerfiles git tracks under a folder the walk skips (SKIP), as repository paths, read from the index alone (no
+ * folder is listed). None under .git or the client folder of SKIP, which nothing reads (git ignores the client folder, so
+ * the index holds nothing there). Throws when git cannot list them.
+ */
+function hiddenDockerfiles() {
+	const lookedInto = new Set(['node_modules', 'bin', 'obj', 'fixtures', 'build', '.svelte-kit']);
+	const files = execFileSync('git', ['-C', ROOT, 'ls-files', '-z', '--cached'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
+	return files.filter((file) => {
+		const folders = file.split('/').slice(0, -1);
+		return DOCKERFILE_NAME.test(file.split('/').at(-1)) && folders.some((name) => SKIP.includes(name)) && folders.every((name) => !SKIP.includes(name) || lookedInto.has(name));
+	});
+}
+
 function selfTestPublishedRuntime() {
 	const digest = '@sha256:' + '0'.repeat(64);
-	const good = `FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.13${digest} AS base\nFROM mcr.microsoft.com/dotnet/sdk:10.0.402${digest} AS build\nFROM build AS publish\nRUN dotnet publish -o /app/publish\nFROM node:22.23.3-alpine3.24${digest} AS checked\nCOPY ["scripts/published-runtime.mjs", "/check/"]\nCOPY --from=publish /app/publish /app/publish\nRUN node /check/published-runtime.mjs --check /app/publish --runtime 10.0.13\nFROM base AS final\nCOPY --from=checked /app/publish .\nUSER 10001\n`;
+	const good = [
+		`FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.13${digest} AS base`,
+		'RUN apt-get update \\',
+		'    && apt-get upgrade -y --no-install-recommends \\',
+		'    && rm -rf /var/lib/apt/lists/*',
+		'WORKDIR /app',
+		'EXPOSE 8080',
+		`FROM mcr.microsoft.com/dotnet/sdk:10.0.402${digest} AS build`,
+		'FROM build AS publish',
+		'WORKDIR /src/App',
+		'RUN dotnet publish "App.csproj" -o /app/publish',
+		`FROM node:22.23.3-alpine3.24${digest} AS checked`,
+		'COPY ["scripts/published-runtime.mjs", "/check/"]',
+		'COPY --from=publish /app/publish /app/publish',
+		'RUN --network=none node /check/published-runtime.mjs --check /app/publish --runtime 10.0.13',
+		'FROM base AS final',
+		'WORKDIR /app',
+		'COPY --from=checked /app/publish .',
+		'RUN groupadd -r -g 10001 nonroot \\',
+		'    && useradd -r -u 10001 -g nonroot nonroot \\',
+		'    && chown -R 0:0 /app \\',
+		'    && chmod -R go-w /app',
+		'USER 10001',
+		'ENTRYPOINT ["./App"]',
+		''
+	].join('\n');
+	const RUN_LINES = 'RUN groupadd -r -g 10001 nonroot \\\n    && useradd -r -u 10001 -g nonroot nonroot \\\n    && chown -R 0:0 /app \\\n    && chmod -R go-w /app\n';
+	const replaced = (from, to) => {
+		if (!good.includes(from)) throw new Error(`base images: the published runtime self-test is out of date (no "${from}" in its good Dockerfile)`);
+		return good.replace(from, to);
+	};
+	const final = (line) => replaced('USER 10001\n', `${line}\nUSER 10001\n`);
 	const cases = [
 		['good', good, []],
 		['no runtime-deps base', 'FROM node:22.23.3-alpine3.24\nCOPY . .\n', []],
-		['no check stage', good.replace(/^RUN node \/check.*$/m, 'RUN true'), ['one stage must run']],
-		['stale --runtime', good.replace('--runtime 10.0.13', '--runtime 10.0.12'), ['--runtime 10.0.12; it must be the runtime-deps tag 10.0.13']],
-		['base moved alone', good.replace('runtime-deps:10.0.13', 'runtime-deps:10.0.14'), ['must be the runtime-deps tag 10.0.14']],
-		['script not copied', good.replace('COPY ["scripts/published-runtime.mjs", "/check/"]\n', ''), ['must copy scripts/published-runtime.mjs']],
-		['final ships the unchecked output', good.replace('COPY --from=checked /app/publish .', 'COPY --from=publish /app/publish .'), ['from the check stage only (copies from: publish)']],
-		['final copies from both', good.replace('COPY --from=checked /app/publish .', 'COPY --from=checked /app/publish .\nCOPY --from=build /src/x .'), ['copies from: checked, build']],
-		['unnamed check stage', good.replace(' AS checked', '').replace('--from=checked', '--from=2'), ['must be named']]
+		['no check stage', good.replace(/^RUN --network=none node \/check.*$/m, 'RUN true'), ['one stage must run']],
+		// ARV-186: the check without network, what the check stage copies in, the final stage's base, mounts and ownership.
+		['check with the network', replaced('RUN --network=none node', 'RUN node'), ['must run with RUN --network=none']],
+		['check stage copies the sources too', replaced('COPY --from=publish /app/publish /app/publish\n', 'COPY --from=publish /app/publish /app/publish\nCOPY --from=build /src /src\n'), ['must copy from a stage only the publish stage\'s output']],
+		['check stage copies more of publish', replaced('COPY --from=publish /app/publish /app/publish', 'COPY --from=publish / /app/publish'), ['must copy from a stage only the publish stage\'s output']],
+		['check stage copies from a stage that does not publish', replaced('COPY --from=publish /app/publish /app/publish', 'COPY --from=build /app/publish /app/publish'), ['must copy from a stage only the publish stage\'s output']],
+		['final stage on publish', replaced('FROM base AS final', 'FROM publish AS final'), ['must be based on the runtime-deps stage', '(FROM publish)']],
+		['final stage reads a stage through a mount', final('RUN --mount=type=bind,from=build,source=/src,target=/src cp -r /src/x /app'), ['must not read another stage through RUN --mount']],
+		['final stage gives /app to the runtime user', replaced('&& chmod -R go-w /app', '&& chmod -R go-w /app && chown -R nonroot:nonroot /app'), ['must keep /app root-owned']],
+		['final stage makes /app writable', replaced('&& chmod -R go-w /app', '&& chmod -R go-w /app && chmod -R 777 /app'), ['must keep /app root-owned']],
+		['final stage makes /app group writable', replaced('&& chmod -R go-w /app', '&& chmod -R go-w /app && chmod -R g+w /app'), ['must keep /app root-owned']],
+		['final stage runs another chmod as well', replaced('&& chmod -R go-w /app', '&& chmod -R go-w /app && chmod 0755 /app'), ['must keep /app root-owned']],
+		// ARV-186 review: flags in any order, comments inside a continued RUN, keywords in any case, --platform, ACLs, ADD and
+		// copies from the build context, the check stage's other instructions, a .NET image off runtime-deps.
+		['final copy with --link first', replaced('COPY --from=checked /app/publish .', 'COPY --link --from=checked /app/publish .'), []],
+		['final copy chowned with the flag first', replaced('COPY --from=checked /app/publish .', 'COPY --chown=10001:10001 --from=checked /app/publish .'), ['no --chown or --chmod']],
+		['final copy with a mode', replaced('COPY --from=checked /app/publish .', 'COPY --from=checked --chmod=777 /app/publish .'), ['no --chown or --chmod']],
+		['final copy from build with the flag second', replaced('COPY --from=checked /app/publish .', 'COPY --from=checked /app/publish .\nCOPY --link --from=build /src/x .'), ['copies from: checked, build']],
+		['a comment inside the final RUN hides nothing', replaced('&& chmod -R go-w /app', '&& chmod -R go-w /app \\\n# the runtime user owns its files\n    && chown -R nonroot /app'), ['must keep /app root-owned']],
+		['keywords in lower case', good.replace(/^(FROM|RUN|COPY|USER|WORKDIR|EXPOSE|ENTRYPOINT)\b/gm, (keyword) => keyword.toLowerCase()).replace(/ AS /g, ' as '), []],
+		['final stage on publish in lower case', replaced('FROM base AS final', 'from publish as final'), ['must be based on the runtime-deps stage', '(FROM publish)']],
+		['a platform flag', replaced('FROM base AS final', 'FROM --platform=linux/amd64 base AS final'), []],
+		['final stage on publish behind a platform flag', replaced('FROM base AS final', 'FROM --platform=$BUILDPLATFORM publish AS final'), ['must be based on the runtime-deps stage', '(FROM publish)']],
+		['final stage grants write through an ACL', replaced('&& chmod -R go-w /app', '&& chmod -R go-w /app && setfacl -R -m u:nonroot:rwx /app'), ['must keep /app root-owned']],
+		['final stage adds an archive', final('ADD extra.tar /app'), ['copies from: checked, ADD']],
+		['final stage copies from the build context', final('COPY appsettings.json .'), ['copies from: checked, the build context']],
+		['final stage holds a SHELL', final('SHELL ["/usr/bin/env", "bash"]'), ['(also: SHELL)']],
+		['check stage downloads first', replaced('RUN --network=none node', 'RUN wget -q https://example.test/x\nRUN --network=none node'), ['must hold only its script copy']],
+		['check run with a mount as well', replaced('RUN --network=none node', 'RUN --network=none --mount=type=cache,target=/x node'), ['must run with RUN --network=none and no other flag']],
+		['check stage copy with the flag second', replaced('COPY --from=publish /app/publish /app/publish', 'COPY --link --from=publish /app/publish /app/publish'), ['must copy from a stage only the publish stage\'s output']],
+		['a .NET image off runtime-deps', `FROM mcr.microsoft.com/dotnet/aspnet:10.0.13${digest} AS final\nRUN dotnet publish -o /app/publish\n`, ['must ship on mcr.microsoft.com/dotnet/runtime-deps']],
+		['stale --runtime', replaced('--runtime 10.0.13', '--runtime 10.0.12'), ['--runtime 10.0.12; it must be the runtime-deps tag 10.0.13']],
+		['base moved alone', replaced('runtime-deps:10.0.13', 'runtime-deps:10.0.14'), ['must be the runtime-deps tag 10.0.14']],
+		['script not copied', replaced('COPY ["scripts/published-runtime.mjs", "/check/"]\n', ''), ['must copy scripts/published-runtime.mjs']],
+		['final ships the unchecked output', replaced('COPY --from=checked /app/publish .', 'COPY --from=publish /app/publish .'), ['from the check stage only (copies from: publish)']],
+		['final copies from both', replaced('COPY --from=checked /app/publish .', 'COPY --from=checked /app/publish .\nCOPY --from=build /src/x .'), ['copies from: checked, build']],
+		['unnamed check stage', good.replace(' AS checked', '').replace('--from=checked', '--from=2'), ['must be named']],
+		// ARV-186 review, round 2. H1: an empty or white space line inside a continuation, which BuildKit skips; a LABEL after it
+		// would otherwise be read as the final stage's own instruction while BuildKit runs it in the RUN.
+		['an empty line inside the final RUN hides nothing', replaced('    && chmod -R go-w /app\n', '    && chmod -R go-w /app \\\n\nlabel ; chown -R 10001:10001 /app\n'), ['must keep /app root-owned']],
+		['a white space line inside the final RUN hides nothing', replaced('    && chmod -R go-w /app\n', '    && chmod -R go-w /app \\\n \t \nLABEL ; chown -R 10001:10001 /app\n'), ['must keep /app root-owned']],
+		// H2: the parser directives that change how the Dockerfile is read.
+		['an escape directive', `# escape=\`\n${good}`, ['escape parser directive']],
+		['a syntax directive pinned by digest', `# syntax=docker/dockerfile:1.19${digest}\n${good}`, ['syntax parser directive']],
+		// H3: the runtime-deps stage the final stage is based on holds exactly BASE_STAGE.
+		...[['chowns /app', 'RUN chown 10001:10001 /app'], ['copies the unchecked output', 'COPY --from=publish /app/publish /opt/unchecked'], ['holds an ONBUILD', 'ONBUILD RUN chown -R 10001 /app'],
+			['wraps every RUN through a SHELL', 'SHELL ["/usr/bin/env", "bash", "-c"]'], ['sets a USER', 'USER 10001'], ['sets an ENV', 'ENV LD_PRELOAD=/tmp/x.so'], ['adds a file', 'ADD x.tar /app']
+		].map(([name, line]) => [`runtime-deps stage ${name}`, replaced('WORKDIR /app\nEXPOSE 8080', `WORKDIR /app\n${line}\nEXPOSE 8080`), ['the runtime-deps stage the final stage is based on must hold exactly']]),
+		['runtime-deps stage upgrade with a mount', replaced('RUN apt-get update', 'RUN --mount=type=bind,from=build,target=/x apt-get update'), ['the runtime-deps stage the final stage is based on must hold exactly']],
+		['final stage on the runtime-deps image itself', replaced('FROM base AS final', `FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.13${digest} AS final`), ['must be based on the runtime-deps stage']],
+		['two stages named base', replaced('FROM build AS publish', 'FROM build AS base\nFROM build AS publish'), ['stage names must be unique']],
+		// M1: the final stage pinned.
+		['final stage USER 0', replaced('USER 10001\n', 'USER 0\n'), ['must run as USER 10001']],
+		['final stage USER root after 10001', replaced('USER 10001\n', 'USER 10001\nUSER root\n'), ['must run as USER 10001']],
+		['final stage without a USER', replaced('USER 10001\n', ''), ['must run as USER 10001']],
+		['final stage starts through env', replaced('ENTRYPOINT ["./App"]', 'ENTRYPOINT ["/usr/bin/env", "./App"]'), ['must start the project the publish stage publishes, ENTRYPOINT ["./App"]']],
+		['final stage starts in the shell form', replaced('ENTRYPOINT ["./App"]', 'ENTRYPOINT exec ./App'), ['ENTRYPOINT ["./App"]']],
+		['final stage starts a file outside /app', replaced('ENTRYPOINT ["./App"]', 'ENTRYPOINT ["/opt/unchecked/App"]'), ['ENTRYPOINT ["./App"]']],
+		['final stage starts another project', replaced('ENTRYPOINT ["./App"]', 'ENTRYPOINT ["./Other"]'), ['ENTRYPOINT ["./App"]']],
+		['final stage without an ENTRYPOINT', replaced('ENTRYPOINT ["./App"]\n', ''), ['ENTRYPOINT ["./App"]']],
+		['the project read from the WORKDIR', replaced('RUN dotnet publish "App.csproj" -o /app/publish', 'RUN dotnet publish -o /app/publish'), []],
+		['final stage works in another folder', replaced('FROM base AS final\nWORKDIR /app\n', 'FROM base AS final\nWORKDIR /srv\n'), ['the final stage must be exactly']],
+		['final copy outside /app', replaced('COPY --from=checked /app/publish .', 'COPY --from=checked /app/publish /srv'), ['the final stage must be exactly']],
+		['final copies the whole check stage', replaced('COPY --from=checked /app/publish .', 'COPY --from=checked / /'), ['the final stage must be exactly']],
+		['final here-document copy from the check stage', replaced('COPY --from=checked /app/publish .\n', 'COPY --from=checked /app/publish .\nCOPY --from=checked <<EOF ./App.runtimeconfig.json\n{}\nEOF\n'), ['the final stage must be exactly']],
+		['final copy with --parents', replaced('COPY --from=checked /app/publish .', 'COPY --parents --from=checked /app/publish .'), ['the final stage must be exactly']],
+		['final copy with --link=true', replaced('COPY --from=checked /app/publish .', 'COPY --link=true --from=checked /app/publish .'), []],
+		['final stage USER before its RUN', replaced(`${RUN_LINES}USER 10001\n`, `USER 10001\n${RUN_LINES}`), ['the final stage must be exactly']],
+		['final stage with EXPOSE and LABEL', replaced('FROM base AS final\n', 'FROM base AS final\nLABEL org.opencontainers.image.title=App\nEXPOSE 8080\n'), []],
+		['final stage without its RUN', replaced(RUN_LINES, ''), ['must keep /app root-owned']],
+		['final stage RUN of round 1 (no chown to root)', replaced('    && chown -R 0:0 /app \\\n', ''), ['must keep /app root-owned']],
+		['final stage RUN twice', replaced(RUN_LINES, `${RUN_LINES}${RUN_LINES}`), ['must keep /app root-owned']],
+		['final stage RUN with a non-ASCII space', replaced('    && chown -R 0:0 /app', '    &&\u00a0chown -R 0:0 /app'), ['printable ASCII only']],
+		...['ENV DOTNET_STARTUP_HOOKS=/tmp/hook.dll', 'ARG X', 'CMD ["./App"]', 'HEALTHCHECK NONE', 'STOPSIGNAL SIGKILL', 'ONBUILD RUN true', 'VOLUME /app', 'MAINTAINER x']
+			.map((line) => [`final stage holds ${line.split(' ')[0]}`, final(line), [`(also: ${line.split(' ')[0]})`]]),
+		// L1: one --from per COPY.
+		['final copy with two --from', replaced('COPY --from=checked /app/publish .', 'COPY --from=checked --from=build /app/publish .'), ['a COPY must name one --from']],
+		['check stage copy with two --from', replaced('COPY --from=publish /app/publish /app/publish', 'COPY --from=publish --from=build /app/publish /app/publish'), ['a COPY must name one --from']],
+		// L2: the check stage on the node image pinned by digest, its check last.
+		['check stage on the publish stage', replaced(`FROM node:22.23.3-alpine3.24${digest} AS checked`, 'FROM publish AS checked'), ['must run on the node image pinned by digest']],
+		['check stage on node without a digest', replaced(`FROM node:22.23.3-alpine3.24${digest} AS checked`, 'FROM node:22.23.3-alpine3.24 AS checked'), ['must run on the node image pinned by digest']],
+		['the check before its copies', replaced('COPY ["scripts/published-runtime.mjs", "/check/"]\nCOPY --from=publish /app/publish /app/publish\nRUN --network=none node /check/published-runtime.mjs --check /app/publish --runtime 10.0.13', 'RUN --network=none node /check/published-runtime.mjs --check /app/publish --runtime 10.0.13\nCOPY ["scripts/published-runtime.mjs", "/check/"]\nCOPY --from=publish /app/publish /app/publish'), ['the check must be the check stage\'s last instruction']],
+		// M2: a .NET Dockerfile however it is written, off runtime-deps.
+		...[['an exec form publish', 'RUN ["dotnet", "publish", "-o", "/app/publish"]'], ['a publish by path', 'RUN /usr/share/dotnet/dotnet publish -o /app/publish'], ['an msbuild publish target', 'RUN dotnet build -t:Publish -p:PublishDir=/app/publish'],
+			['a publish in a here-document', 'RUN <<EOF\ndotnet publish -o /app/publish\nEOF'], ['a publish inside sh -c', 'RUN sh -c "dotnet publish -o /app/publish"'], ['a publish after a semicolon', 'RUN true;dotnet publish -o /app/publish']
+		].map(([name, line]) => [`.NET off runtime-deps with ${name}`, `FROM debian:12${digest} AS build\n${line}\nFROM debian:12${digest}\nCOPY --from=build /app/publish .\n`, ['must ship on mcr.microsoft.com/dotnet/runtime-deps']]),
+		['.NET off runtime-deps started by dotnet', `FROM debian:12${digest}\nCOPY bin/Release/net10.0/publish/ .\nENTRYPOINT ["dotnet", "App.dll"]\n`, ['must ship on mcr.microsoft.com/dotnet/runtime-deps']],
+		['.NET off runtime-deps started by its .dll', `FROM debian:12${digest}\nCOPY out/ /app/\nCMD ["/app/App.dll"]\n`, ['must ship on mcr.microsoft.com/dotnet/runtime-deps']],
+		['not .NET', `FROM node:22.23.3-alpine3.24${digest} AS builder\nRUN npm ci && npm run build\nFROM nginx:1.30.5-alpine3.24${digest}\nCOPY --from=builder /app/build /usr/share/nginx/html\n`, []]
 	];
 	const failures = [];
 	for (const [name, text, expected] of cases) {
@@ -1897,10 +2292,25 @@ function selfTestPublishedRuntime() {
 		if (!expected.length && found) failures.push(`${name}: expected clean, got ${found}`);
 		for (const fragment of expected) if (!found.includes(fragment)) failures.push(`${name}: did not report "${fragment}" (got: ${found || 'nothing'})`);
 	}
+	// L3: the list of .NET image Dockerfiles.
+	const listed = ['a/Dockerfile', 'b/Dockerfile'];
+	const lists = [
+		['the listed ones found', { walked: [...listed, 'web/Dockerfile'], dotnet: listed, hidden: [] }, []],
+		['a listed one off the .NET detection', { walked: listed, dotnet: ['a/Dockerfile'], hidden: [] }, ['b/Dockerfile: a .NET image Dockerfile (DOTNET_IMAGES) the .NET detection no longer finds']],
+		['a listed one gone', { walked: ['a/Dockerfile'], dotnet: ['a/Dockerfile'], hidden: [] }, ['b/Dockerfile: a .NET image Dockerfile (DOTNET_IMAGES) the check does not read']],
+		['a .NET one not listed', { walked: [...listed, 'c/Dockerfile'], dotnet: [...listed, 'c/Dockerfile'], hidden: [] }, ['c/Dockerfile: a .NET Dockerfile DOTNET_IMAGES does not list']],
+		['a .NET one under a skipped folder', { walked: listed, dotnet: listed, hidden: ['x/fixtures/Dockerfile'] }, ['x/fixtures/Dockerfile: a .NET Dockerfile under a folder the walk skips (fixtures)']]
+	];
+	for (const [name, found, expected] of lists) {
+		const problems = dotnetImageProblems(listed, found).join('\n');
+		if (!expected.length && problems) failures.push(`${name}: expected clean, got ${problems}`);
+		for (const fragment of expected) if (!problems.includes(fragment)) failures.push(`${name}: did not report "${fragment}" (got: ${problems || 'nothing'})`);
+	}
 	if (failures.length) {
 		console.error(`base images: published runtime self-test failed:\n  ${failures.join('\n  ')}`);
 		process.exit(1);
 	}
+	return cases.length + lists.length;
 }
 
 /** JSON with // comments (devcontainer.json). Comments start a line or follow a comma, a bracket or a brace. */
@@ -2075,12 +2485,19 @@ function check() {
 			problems.push(`.devcontainer: ${problem}`);
 		}
 	}
-	for (const file of dockerfiles()) {
-		const runtimeProblems = publishedRuntimeProblems(fs.readFileSync(file, 'utf8'));
-		for (const problem of runtimeProblems) problems.push(`${path.relative(ROOT, file)}: ${problem}`);
-		if (/^\s*FROM\s+mcr\.microsoft\.com\/dotnet\/runtime-deps:/m.test(fs.readFileSync(file, 'utf8')) && !runtimeProblems.length) runtimeChecked++;
-		// ARV-096: a .NET restore in an image build is locked, from nuget.config, with the whole closure and its lock files.
+	const walked = dockerfiles();
+	const repoPath = (file) => path.relative(ROOT, file).split(path.sep).join('/');
+	const dotnetImages = [];
+	for (const file of walked) {
 		const text = fs.readFileSync(file, 'utf8');
+		// ARV-184, ARV-186: a .NET image Dockerfile ships on runtime-deps, checks its published runtime and holds the image rule.
+		if (dotnetDockerfile(text) && !NOT_IMAGES.includes(repoPath(file))) {
+			dotnetImages.push(repoPath(file));
+			const runtimeProblems = publishedRuntimeProblems(text);
+			for (const problem of runtimeProblems) problems.push(`${path.relative(ROOT, file)}: ${problem}`);
+			if (!runtimeProblems.length) runtimeChecked++;
+		}
+		// ARV-096: a .NET restore in an image build is locked, from nuget.config, with the whole closure and its lock files.
 		const commands = dockerRunCommands(text).map(({ words }) => words);
 		const restoreProblems = lockedRestoreProblems(text, readRepo);
 		for (const problem of restoreProblems) problems.push(`${path.relative(ROOT, file)}: ${problem}`);
@@ -2110,6 +2527,17 @@ function check() {
 			}
 		}
 	}
+	// ARV-186: every .NET image Dockerfile is listed and found .NET, and none hides under a folder the walk skips.
+	let hidden = [];
+	try {
+		hidden = hiddenDockerfiles().filter((file) => {
+			const full = path.join(ROOT, ...file.split('/'));
+			return !NOT_IMAGES.includes(file) && fs.existsSync(full) && dotnetDockerfile(fs.readFileSync(full, 'utf8'));
+		});
+	} catch (error) {
+		problems.push(`the Dockerfiles git tracks could not be listed (git ls-files), so a .NET one under a folder the walk skips would go unchecked: ${String(error.message).split('\n')[0]}`);
+	}
+	for (const problem of dotnetImageProblems(DOTNET_IMAGES, { walked: walked.map(repoPath), dotnet: dotnetImages, hidden })) problems.push(problem);
 	// ARV-096: the visual baselines' browser is checked against the dev container's Playwright line; without that line its pin
 	// would go unchecked, so the line itself is required.
 	if (!playwrightFrom && fs.existsSync(VISUAL_BROWSER)) problems.push('scripts/visual-browser.mjs pins the Playwright image against the dev container\'s FROM mcr.microsoft.com/playwright line, which is missing');
@@ -2196,6 +2624,8 @@ function check() {
 	for (const file of integrationSources()) {
 		for (const problem of integrationImageLiterals(file.split(path.sep).join('/'), fs.readFileSync(path.join(ROOT, file), 'utf8'))) problems.push(problem);
 	}
+	// A problem two rules find (an unreadable Dockerfile, for one) is reported once.
+	problems.splice(0, problems.length, ...new Set(problems));
 	if (problems.length) {
 		console.error(`base images: ${problems.length} problem(s) in ${count} FROM lines and ${pins.length} other image pins\n  ${problems.join('\n  ')}`);
 		console.error('Run the base-images workflow (Actions, base-images, Run workflow) to get pinned lines.');
@@ -2203,7 +2633,7 @@ function check() {
 	}
 	const tagOnly = pins.filter((pin) => pin.resource && APPHOST_TAG_ONLY[pin.resource] && !pin.digest).map((pin) => `${pin.resource} (${APPHOST_TAG_ONLY[pin.resource]})`);
 	const integration = pins.filter((pin) => pin.where.startsWith(`${INTEGRATION_TESTS.split(path.sep).join('/')}/`)).length;
-	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged; ${runtimeChecked} runtime-deps images check their published runtime against their base; ${lockedRestores} image builds restore in locked mode with their whole closure; ${lockedNpmInstalls} image builds install npm packages with npm ci from their lock file; ${pins.length} images run outside the chart pinned by tag and digest (${integration} of them the integration tests')${tagOnly.length ? `, except on a tag: ${tagOnly.join(', ')}` : ''}; ${copies.length} further copies of third-party pins carry their digests; the ${RYUK_RUNNERS.length} pipelines that run the integration tests pin Testcontainers' Ryuk image; CI's .NET SDK steps name the images' SDK band; the local tools and the Aspire SDK are exact versions of one release; no live .github folder.`);
+	console.log(`base images: ${count} FROM lines pinned by version and digest; dev container non-root and unprivileged; ${runtimeChecked} .NET images (the ${DOTNET_IMAGES.length} listed, none under a skipped folder) ship on runtime-deps, check their published runtime against their base and hold their stages to the image rule; ${lockedRestores} image builds restore in locked mode with their whole closure; ${lockedNpmInstalls} image builds install npm packages with npm ci from their lock file; ${pins.length} images run outside the chart pinned by tag and digest (${integration} of them the integration tests')${tagOnly.length ? `, except on a tag: ${tagOnly.join(', ')}` : ''}; ${copies.length} further copies of third-party pins carry their digests; the ${RYUK_RUNNERS.length} pipelines that run the integration tests pin Testcontainers' Ryuk image; CI's .NET SDK steps name the images' SDK band; the local tools and the Aspire SDK are exact versions of one release; no live .github folder.`);
 }
 
 /** The TimescaleDB chart's image tag and digest, the pin every other copy follows (null without the chart). */

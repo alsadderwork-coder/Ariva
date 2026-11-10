@@ -3,7 +3,8 @@
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.13@sha256:da5846024d0008b48259b53a8953d39381fe5b7ec99ef1449ba4ba927f201490 AS base
 
 # OS security fixes published after Microsoft built the base image (Trivy gate in images.yml). The digest pins the
-# starting point; Dependabot moves it forward when Microsoft rebuilds.
+# starting point; scripts/base-images.mjs --patches finds a rebuild and --resolve --write moves the pin (Dependabot did until
+# ARV-295). scripts/base-images.mjs holds the stage the final stage is based on to exactly these three instructions (ARV-186).
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
@@ -55,16 +56,20 @@ RUN --mount=type=cache,id=nuget,sharing=locked,target=/root/.nuget/packages \
 FROM node:22.23.3-alpine3.24@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS checked
 COPY ["scripts/published-runtime.mjs", "/check/"]
 COPY --from=publish /app/publish /app/publish
-RUN node /check/published-runtime.mjs --check /app/publish --runtime 10.0.13
+RUN --network=none node /check/published-runtime.mjs --check /app/publish --runtime 10.0.13
 
 # Final stage
 FROM base AS final
 WORKDIR /app
 COPY --from=checked /app/publish .
 
-# Create non-root user for security
+# The non-root user the host runs as. ARV-186 (CWE-269, CWE-732): after the copy /app is given to root and write is taken
+# from group and others (COPY --from keeps the owner and mode the files had in the stage they come from), so the runtime user
+# cannot rewrite its own binaries also where no read-only root filesystem holds (docker run, the offline bundle); the host
+# writes only to its mounted volumes and /tmp. scripts/base-images.mjs holds this stage to exactly these instructions.
 RUN groupadd -r -g 10001 nonroot \
     && useradd -r -u 10001 -g nonroot nonroot \
-    && chown -R nonroot:nonroot /app
+    && chown -R 0:0 /app \
+    && chmod -R go-w /app
 USER 10001
 ENTRYPOINT ["./Ariva.Api.Ingest"]
