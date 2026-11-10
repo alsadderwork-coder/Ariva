@@ -3,6 +3,7 @@ using Ariva.Infra.Streaming;
 using Ariva.IntegrationTests.Messaging;
 using Ariva.IntegrationTests.Setup;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -61,6 +62,7 @@ public sealed class QueueStreamRestoreTests(PostgresFixture postgres, KafkaFixtu
         var log = new WorkerLog();
         using (var host = _h.Host(name, new Dictionary<string, string> { ["Stream:MaxZones"] = "2" }, TimeProvider.System, log))
         {
+            using var refusals = new InstrumentReader(host.Services.GetRequiredService<StreamMetrics>().Meter);
             await host.StartAsync(Ct);
 
             // A restored zone is held, so each checkpoint saves its state again; one not restored is not saved.
@@ -73,6 +75,10 @@ public sealed class QueueStreamRestoreTests(PostgresFixture postgres, KafkaFixtu
             }
 
             rows.Should().Equal(expected, "Q9a and Q9e restored in key order, the hostile copy passed over, and Q9f and Q9h beyond Stream:MaxZones");
+            // ARV-267: restoring the zones on assignment primed their site's refusals at 0 before any record was read, every kind
+            // once for the site whatever the number of its zones.
+            StreamMetrics.RefusalKinds.Where(kind => refusals.Zeros(StreamMetrics.QueueRefusedName, ("site", "DMO"), ("kind", kind)) != 1).Should().BeEmpty(
+                "a restored zone primes its site's refusals, once per site");
 
             // The worker carries on after the hostile snapshot: its checkpoints keep saving the restored zones.
             const string Saved = "SELECT updated_on FROM stream_zone_state WHERE zone_key = 'DMO/Q9a'";

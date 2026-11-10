@@ -128,6 +128,36 @@ public sealed partial class KafkaProducerMetrics : IDisposable
             description: "Seconds the oldest record a rider endpoint is handling has held it (every attempt, the retry waits and its dead letter), 0 when it holds none");
     }
 
+    /// <summary>
+    /// ARV-267: starts both kinds of fatal producer errors at 0. A cumulative counter has no series before its first Add, and
+    /// SigNoz's increase drops a series' first point (it has no point before it; pkg/query-service/app/metrics/v4/cumulative/
+    /// timeseries.go), so without it the first fatal error after a start would not fire kafkaProducerFatal. Called when the
+    /// producer starts (<c>KafkaProducerLifetime.StartAsync</c>), after the host's meter provider started listening (its hosted
+    /// service is registered first): a measurement taken in a constructor, before any hosted service starts, reaches no exporter.
+    /// </summary>
+    public void PrimeFatal()
+    {
+        _fatal.Add(0, new KeyValuePair<string, object>("kind", FatalErrorKind));
+        _fatal.Add(0, new KeyValuePair<string, object>("kind", RecreatedKind));
+    }
+
+    /// <summary>
+    /// ARV-267: starts the dead letters of one consumer (its source topic and group) at 0 for each outcome it can count (every
+    /// outcome when none is named: a rider endpoint also keeps letters in the outbox at a stop; the Stream engine's consumers only
+    /// send or fail), called when the consumer starts, so the first dead letter after a start is an increase SigNoz sees
+    /// (deadLetters), not a series' first point, which it drops. The tags are those <see cref="DeadLetter(DeadLetter, string)"/> gives.
+    /// </summary>
+    public void PrimeDeadLetters(string topic, string group, params string[] outcomes)
+    {
+        foreach (var outcome in outcomes is { Length: > 0 } ? outcomes : [SentOutcome, KeptOutcome, FailedOutcome])
+        {
+            if (outcome is not (SentOutcome or KeptOutcome or FailedOutcome))
+                throw new ArgumentOutOfRangeException(nameof(outcomes), outcome, "A dead letter is sent, kept or failed.");
+            _deadLetters.Add(0, new KeyValuePair<string, object>("topic", TopicTag(topic)), new KeyValuePair<string, object>("group", GroupTag(group)),
+                new KeyValuePair<string, object>("outcome", outcome));
+        }
+    }
+
     /// <summary>Counts one dead letter of <paramref name="letter"/>'s source topic and consumer with the given outcome.</summary>
     public void DeadLetter(DeadLetter letter, string outcome)
     {

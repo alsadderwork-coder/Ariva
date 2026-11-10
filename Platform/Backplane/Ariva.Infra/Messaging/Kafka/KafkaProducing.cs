@@ -292,8 +292,15 @@ public sealed class KafkaProduce : IDisposable
     /// <summary>Whether Ariva may produce to <paramref name="topic"/>.</summary>
     public static bool IsProducible(string topic) => topic is not null && Producible.Contains(topic);
 
-    /// <summary>Called by <see cref="KafkaProducerLifetime"/> when the host starts.</summary>
-    internal void Started() => Volatile.Write(ref _started, 1);
+    /// <summary>
+    /// Called by <see cref="KafkaProducerLifetime"/> when the host starts; the fatal error counter starts at 0 here (ARV-267,
+    /// <see cref="KafkaProducerMetrics.PrimeFatal"/>), once the meter provider listens.
+    /// </summary>
+    internal void Started()
+    {
+        _metrics?.PrimeFatal();
+        Volatile.Write(ref _started, 1);
+    }
 
     /// <summary>Produces <paramref name="value"/> as its runtime type <paramref name="type"/>, keyed, with the headers and the message id.</summary>
     public Task ProduceAsync(Type type, string topic, string key, object value, Guid messageId, IReadOnlyDictionary<string, string> headers, CancellationToken ct)

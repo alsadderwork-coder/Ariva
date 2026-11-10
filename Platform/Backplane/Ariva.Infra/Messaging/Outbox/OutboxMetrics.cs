@@ -94,6 +94,22 @@ public sealed class OutboxMetrics : IDisposable
         _last = new Snapshot(Math.Max(0, backlog.Unsent), age, now, freshFor);
     }
 
+    /// <summary>
+    /// ARV-267: starts the broker streaks of every topic the relay may send to (Ariva's own topics and every dead-letter topic, the
+    /// set the producer accepts; never the AMAN feed's source topics, which nothing of Ariva's sends to) at 0, so the first streak after a start is an increase SigNoz sees
+    /// (outboxBrokerStreak), not a series' first point, which it drops. Called when the relay starts (<c>OutboxRelay.ExecuteAsync</c>),
+    /// once the meter provider listens: a measurement taken in a constructor, before any hosted service starts, reaches no exporter.
+    /// </summary>
+    public void PrimeBrokerStreaks()
+    {
+        foreach (var topic in RelayTopics)
+            _brokerStreaks.Add(0, new KeyValuePair<string, object>("topic", TopicTag(topic)));
+    }
+
+    /// <summary>The topics the relay may send to: Ariva's own and every dead-letter topic (KafkaProduce's producible set).</summary>
+    public static IReadOnlyList<string> RelayTopics { get; } =
+        [.. KafkaTopics.Owned.Concat(KafkaTopics.All.Select(KafkaTopics.DeadLetter)).Distinct(StringComparer.Ordinal)];
+
     /// <summary>A row on <paramref name="topic"/> whose broker-unavailable streak passed the configured length (ARV-245).</summary>
     public void BrokerStreak(string topic) => _brokerStreaks.Add(1, new KeyValuePair<string, object>("topic", TopicTag(topic)));
 

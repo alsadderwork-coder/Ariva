@@ -59,6 +59,8 @@ public sealed partial class MetricTagTests
             kafka.DeadLetter(Letter(), KafkaProducerMetrics.SentOutcome);
             kafka.DeadLetter(Letter(), KafkaProducerMetrics.KeptOutcome);
             kafka.DeadLetter(Letter(), KafkaProducerMetrics.FailedOutcome);
+            kafka.PrimeDeadLetters(KafkaTopics.AmanEgateIntervalStats, Group);
+            kafka.PrimeFatal();
         },
         [typeof(DeviceHealthMetrics)] = m =>
         {
@@ -76,6 +78,7 @@ public sealed partial class MetricTagTests
             var border = (BorderMetrics)m;
             border.Record("desk-interval-stats", "kafka", "applied");
             border.Unmapped(Site);
+            border.Seen(Site);
             border.ObserveFeedAges(() => [(Site, 30.0)]);
         },
         [typeof(FlightMetrics)] = m =>
@@ -112,6 +115,7 @@ public sealed partial class MetricTagTests
             outbox.TopicHeld(KafkaTopics.FlowNowcast, OutboxMetrics.PartitionUnavailableHold);
             outbox.TopicHeld(KafkaTopics.FlowNowcast, OutboxMetrics.TopicRefusedHold);
             outbox.TopicHeld(KafkaTopics.DeadLetter(KafkaTopics.AmanEgateIntervalStats), OutboxMetrics.DeadLetterHold);
+            outbox.PrimeBrokerStreaks();
         },
         [typeof(StreamMetrics)] = m =>
         {
@@ -120,6 +124,7 @@ public sealed partial class MetricTagTests
             ((StreamMetrics)m).Checkpointed("ariva-stream.queue-engine");
             ((StreamMetrics)m).OverdueBins([("DMO", 2)], TimeSpan.FromMinutes(1));
             ((StreamMetrics)m).ZonesUnknown([("DMO", true), ("AUH-TA", false)], TimeSpan.FromMinutes(1));
+            ((StreamMetrics)m).PrimeSite("DMO");
         },
         [typeof(RetentionMetrics)] = m =>
         {
@@ -200,6 +205,88 @@ public sealed partial class MetricTagTests
             keys.Keys.Where(key => !AllowedKeys.Contains(key)).Should().BeEmpty($"{instrument} tags only with allowed keys");
             keys.Keys.Where(key => Forbidden().IsMatch(key)).Should().BeEmpty($"{instrument} carries no person, credential or document key");
         }
+    }
+
+    [Fact]
+    public void ProducerFatal_Should_StartAtZeroForEachKind_When_TheProducerStarts()
+    {
+        // ARV-267: SigNoz's increase drops a series' first point, so each counter an increase rule reads exists at 0 from the start.
+        // Primed when the producer starts, not when the metrics are built: a constructor runs before the meter provider listens.
+        using var zeros = new StartReader();
+        using var metrics = new KafkaProducerMetrics(zeros.Factory);
+        zeros.Zeros(KafkaProducerMetrics.FatalName).Should().BeEmpty("nothing is measured in the constructor");
+
+        metrics.PrimeFatal();
+
+        zeros.Zeros(KafkaProducerMetrics.FatalName).Select(tags => tags["kind"]).Should().BeEquivalentTo([KafkaProducerMetrics.FatalErrorKind, KafkaProducerMetrics.RecreatedKind]);
+    }
+
+    [Fact]
+    public void DeadLetters_Should_StartAtZeroForEveryOutcome_When_AConsumerStarts()
+    {
+        using var zeros = new StartReader();
+        using var metrics = new KafkaProducerMetrics(zeros.Factory);
+
+        metrics.PrimeDeadLetters(KafkaTopics.AmanEgateIntervalStats, Group);
+        metrics.PrimeDeadLetters("passport 123", "a value from a record");
+
+        var primed = zeros.Zeros(KafkaProducerMetrics.DeadLettersName);
+        primed.Where(tags => tags["topic"] == KafkaTopics.AmanEgateIntervalStats && tags["group"] == Group).Select(tags => tags["outcome"])
+            .Should().BeEquivalentTo([KafkaProducerMetrics.SentOutcome, KafkaProducerMetrics.KeptOutcome, KafkaProducerMetrics.FailedOutcome]);
+        primed.Where(tags => tags["topic"] == KafkaProducerMetrics.Unknown).Should().OnlyContain(tags => tags["group"] == KafkaProducerMetrics.Unknown,
+            "a primed series takes the tags a dead letter would, never a value from outside");
+    }
+
+    [Fact]
+    public void BrokerStreaks_Should_StartAtZeroForEveryTopicTheRelayMaySendTo_When_TheRelayStarts()
+    {
+        using var zeros = new StartReader();
+        using var metrics = new OutboxMetrics(zeros.Factory);
+        zeros.Zeros(OutboxMetrics.BrokerStreaksName).Should().BeEmpty("nothing is measured in the constructor");
+
+        metrics.PrimeBrokerStreaks();
+
+        var expected = KafkaTopics.Owned.Concat(KafkaTopics.All.Select(KafkaTopics.DeadLetter)).Distinct(StringComparer.Ordinal).ToList();
+        zeros.Zeros(OutboxMetrics.BrokerStreaksName).Select(tags => tags["topic"]).Should().BeEquivalentTo(expected, "Ariva's own topics and every dead-letter topic");
+        expected.Should().OnlyContain(topic => KafkaProduce.IsProducible(topic), "only topics the producer accepts, never the AMAN feed's sources");
+        expected.Should().OnlyContain(topic => OutboxMetrics.TopicTag(topic) == topic, "every primed value is a tag value a streak gives");
+    }
+
+    [Fact]
+    public void QueueRefused_Should_StartAtZeroForEveryKindOncePerSite_When_TheWorkerFirstHoldsAZoneOfIt()
+    {
+        using var zeros = new StartReader();
+        using var metrics = new StreamMetrics(zeros.Factory);
+
+        metrics.PrimeSite("DMO");
+        metrics.PrimeSite("DMO");
+        metrics.PrimeSite("AUH-TA");
+
+        var primed = zeros.Zeros(StreamMetrics.QueueRefusedName);
+        primed.Where(tags => tags["site"] == "DMO").Select(tags => tags["kind"]).Should().BeEquivalentTo(StreamMetrics.RefusalKinds, "once per site, every kind");
+        primed.Where(tags => tags["site"] == "AUH-TA").Should().HaveCount(StreamMetrics.RefusalKinds.Count);
+        StreamMetrics.RefusalKinds.Should().Contain([nameof(Ariva.Core.Queueing.QueueRejections.BufferFull), nameof(Ariva.Core.Queueing.QueueRejections.DeviceShareFull)],
+            "the kinds queueRefused reads by default");
+        // Every long count of QueueRejections set by reflection, so a kind added later is caught here. BeyondHorizon is a share of
+        // Late (the late events too old to recompute), not a kind of its own: Counts() never reports it.
+        var every = new Ariva.Core.Queueing.QueueRejections();
+        var counts = typeof(Ariva.Core.Queueing.QueueRejections).GetProperties()
+            .Where(p => p.PropertyType == typeof(long) && p.CanWrite && p.Name != nameof(Ariva.Core.Queueing.QueueRejections.BeyondHorizon)).ToList();
+        foreach (var property in counts)
+            property.SetValue(every, 1L);
+        every.Counts().Select(c => c.Kind).Should().BeEquivalentTo(counts.Select(p => p.Name), "each count is a kind Counts() reports")
+            .And.BeSubsetOf(StreamMetrics.RefusalKinds, "every kind the engine counts is primed");
+    }
+
+    [Fact]
+    public void Unmapped_Should_StartAtZero_When_ASiteIsSeen()
+    {
+        using var zeros = new StartReader();
+        using var metrics = new BorderMetrics(zeros.Factory);
+
+        metrics.Seen(Site);
+
+        zeros.Zeros("ariva.border.feed.unmapped").Select(tags => tags["site"]).Should().Equal(Site);
     }
 
     [Fact]
@@ -394,4 +481,48 @@ public sealed partial class MetricTagTests
     [GeneratedRegex("user|name|mail|person|officer|travel|passenger|document|passport|nationality|phone|address|^ip$|token|secret|password|credential|key|auth|cookie|session|client|subject|serial",
         RegexOptions.IgnoreCase)]
     private static partial Regex Forbidden();
+
+    /// <summary>
+    /// ARV-267: the zero measurements of instruments a meter factory of the test's own creates, from before the metrics type is
+    /// built, so a constructor's priming is seen (a reader made afterwards would miss it). Other tests' meters are not read.
+    /// </summary>
+    private sealed class StartReader : IDisposable
+    {
+        private readonly ServiceProvider _services = new ServiceCollection().AddMetrics().BuildServiceProvider();
+        private readonly MeterListener _listener;
+        private readonly ConcurrentQueue<(string Instrument, long Value, Dictionary<string, string> Tags)> _measured = new();
+
+        public StartReader()
+        {
+            Factory = _services.GetRequiredService<IMeterFactory>();
+            _listener = new MeterListener
+            {
+                InstrumentPublished = (instrument, listener) =>
+                {
+                    if (ReferenceEquals(instrument.Meter.Scope, Factory))
+                        listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            _listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
+            {
+                var copy = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (var tag in tags)
+                    copy[tag.Key] = tag.Value?.ToString();
+                _measured.Enqueue((instrument.Name, value, copy));
+            });
+            _listener.Start();
+        }
+
+        public IMeterFactory Factory { get; }
+
+        /// <summary>The tags of every measurement of 0 on <paramref name="instrument"/>.</summary>
+        public IReadOnlyList<Dictionary<string, string>> Zeros(string instrument) =>
+            [.. _measured.Where(m => m.Instrument == instrument && m.Value == 0).Select(m => m.Tags)];
+
+        public void Dispose()
+        {
+            _listener.Dispose();
+            _services.Dispose();
+        }
+    }
 }

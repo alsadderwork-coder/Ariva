@@ -248,6 +248,8 @@ public sealed class OutboxRelay(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var settings = kafka.Outbox;
+        // ARV-267: every topic's broker streaks start at 0, so the first one after a start is an increase (outboxBrokerStreak).
+        metrics?.PrimeBrokerStreaks();
         logger.LogInformation("Outbox relay started: batch {BatchSize}, poll {PollMilliseconds} ms", settings.BatchSize, settings.PollMilliseconds);
         if (settings.PassSeconds < OutboxRelaySettings.MinPassSecondsForTopicHolds)
             logger.LogWarning("Kafka:Outbox:PassSeconds {PassSeconds} is below {Minimum}: the pass ends before the producer reports a send that waited for a partition without a leader, so such a topic ends each pass at its row instead of being held (ARV-264)",

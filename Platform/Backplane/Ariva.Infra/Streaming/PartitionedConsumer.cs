@@ -63,6 +63,8 @@ public sealed class PartitionedConsumer<TValue>(KafkaSettings settings, IDeadLet
 
     private void Loop(string topic, string groupId, IPartitionHandler<TValue> handler, CancellationToken ct)
     {
+        // ARV-267: this consumer's dead letters start at 0, so the first one after a start is an increase (deadLetters).
+        metrics?.PrimeDeadLetters(topic, groupId, KafkaProducerMetrics.SentOutcome, KafkaProducerMetrics.FailedOutcome);
         var failed = false;
         var assigned = new HashSet<int>();
         using var consumer = new ConsumerBuilder<string, byte[]>(KafkaClientConfig.Consumer(settings, groupId))

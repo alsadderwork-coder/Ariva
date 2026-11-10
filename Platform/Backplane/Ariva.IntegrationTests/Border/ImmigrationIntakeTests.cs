@@ -122,6 +122,38 @@ public sealed partial class ImmigrationIntakeTests(PostgresFixture fixture) : IA
     }
 
     [Fact]
+    public async Task Intake_Should_StartTheSitesUnmappedRecordsAtZeroBeforeCountingOne_When_ABatchHoldsAnUnmappedCode()
+    {
+        // ARV-267: SigNoz's increase drops a series' first point, so the site's unmapped counter has its 0 before the batch's first
+        // unmapped record is counted (amanCodesUnmapped), from this host's own metrics only.
+        await SeedAsync();
+        var meter = _host.Provider.GetRequiredService<Ariva.Infra.Border.BorderMetrics>().Meter;
+        var measured = new System.Collections.Concurrent.ConcurrentQueue<long>();
+        using var listener = new System.Diagnostics.Metrics.MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (instrument.Meter == meter && instrument.Name == "ariva.border.feed.unmapped")
+                    l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+        {
+            foreach (var tag in tags)
+                if (tag.Key == "site" && Equals(tag.Value, "DMO"))
+                    measured.Enqueue(value);
+        });
+        listener.Start();
+        var at = new DateTimeOffset(new DateTime(Now.Ticks - Now.Ticks % TimeSpan.TicksPerMinute, DateTimeKind.Utc));
+
+        await Apply<DeskIntervalStats>(i => i.ApplyDeskIntervalsAsync(ImmigrationScope.ForSite("DMO"), "api-imm-test",
+            [new DeskIntervalStats("DMO", "NOSUCH2", at, 60, 1, 2, 30, 45, 60, "CIT", "imm-unmapped-order-1")], Ct));
+
+        measured.Should().NotBeEmpty().And.Subject.First().Should().Be(0, "the site is primed before its first unmapped record");
+        measured.Should().Contain(1, "the unmapped code is counted");
+    }
+
+    [Fact]
     public async Task Intake_Should_ResolveOnlyMappingsWhoseDeskIsAtTheSameSite_When_AMappingCrossesSites()
     {
         await SeedAsync();

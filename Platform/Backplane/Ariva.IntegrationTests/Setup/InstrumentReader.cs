@@ -35,6 +35,10 @@ public sealed class InstrumentReader : IDisposable
     public double Sum(string instrument, params (string Key, string Value)[] tags) =>
         _measured.Where(m => m.Instrument == instrument && Matches(m.Tags, tags)).Sum(m => m.Value);
 
+    /// <summary>ARV-267: how many measurements of 0 a counter was given whose tags include <paramref name="tags"/> (a priming).</summary>
+    public int Zeros(string instrument, params (string Key, string Value)[] tags) =>
+        _measured.Count(m => m.Instrument == instrument && m.Value == 0 && Matches(m.Tags, tags));
+
     /// <summary>A gauge's measurements now (empty when it reports nothing), each with its tags.</summary>
     public IReadOnlyList<(double Value, IReadOnlyDictionary<string, string> Tags)> Observe(string instrument)
     {

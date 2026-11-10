@@ -189,6 +189,46 @@ public sealed class ConsumerEndpointsTests
     }
 
     [Fact]
+    public async Task Start_Should_PrimeEachConsumersDeadLettersAtZero_When_TheEndpointsStart()
+    {
+        // ARV-267: SigNoz's increase drops a series' first point, so each consumer's dead letters exist at 0 from its start, with
+        // the tags a dead letter of it would carry, for every outcome.
+        using var metrics = new KafkaProducerMetrics();
+        var zeros = new ConcurrentQueue<(string Topic, string Group, string Outcome)>();
+        using var listener = new System.Diagnostics.Metrics.MeterListener
+        {
+            InstrumentPublished = (instrument, l) =>
+            {
+                if (instrument.Meter == metrics.Meter && instrument.Name == KafkaProducerMetrics.DeadLettersName)
+                    l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+        {
+            if (value != 0)
+                return;
+            string topic = null, group = null, outcome = null;
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "topic") topic = tag.Value?.ToString();
+                else if (tag.Key == "group") group = tag.Value?.ToString();
+                else if (tag.Key == "outcome") outcome = tag.Value?.ToString();
+            }
+            zeros.Enqueue((topic, group, outcome));
+        });
+        listener.Start();
+        using var endpoints = new KafkaConsumerEndpoints(Settings(), [new ConsumedTopic(Feed, Group, _ => Handle())], () => null,
+            () => new HashSet<string>(StringComparer.Ordinal) { Feed }, TimeProvider.System, new Lines(), metrics);
+
+        zeros.Should().BeEmpty("nothing is primed before the host starts the endpoints (the meter provider listens from then)");
+        await endpoints.StartAsync(Ct);
+
+        zeros.Should().BeEquivalentTo([(Feed, Group, KafkaProducerMetrics.SentOutcome), (Feed, Group, KafkaProducerMetrics.KeptOutcome),
+            (Feed, Group, KafkaProducerMetrics.FailedOutcome)]);
+        await endpoints.StopAsync(Ct);
+    }
+
+    [Fact]
     public async Task UnconnectedGauge_Should_ReadOneWhileTheConnectKeepsFailing_When_TheTopicExists()
     {
         // ARV-125a (ARV-176 re-review, recommendation a): a consumer whose topic exists but whose connect keeps failing

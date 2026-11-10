@@ -55,6 +55,14 @@ public sealed class BorderMetrics : IDisposable
     public void Unmapped(string site) => _unmapped.Add(1, new KeyValuePair<string, object>("site", site));
 
     /// <summary>
+    /// ARV-267: starts <paramref name="site"/>'s unmapped records at 0. A site is data, not a constant, so it is primed when the
+    /// host first reads that site's desk code mappings for a batch, before any of the batch's records is counted unmapped: a later
+    /// unmapped record is then an increase SigNoz sees (amanCodesUnmapped), not a series' first point, which it drops. Residual: an
+    /// unmapped record in the very first batch of a site since the host started is exported in the same interval as the 0.
+    /// </summary>
+    public void Seen(string site) => _unmapped.Add(0, new KeyValuePair<string, object>("site", site));
+
+    /// <summary>
     /// Observes the AMAN feed's age per border site (ARV-257): <paramref name="ages"/> gives each site this host reports and
     /// the seconds since its feed was last heard, read when the gauge is collected. Called once, by <see cref="AmanFeedAges"/>.
     /// </summary>

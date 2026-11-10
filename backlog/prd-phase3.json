@@ -2021,11 +2021,29 @@
     },
     {
       "id": "ARV-267",
-      "title": "[E17] Counters an increase rule reads are seen from their first increment",
+      "title": "[E17] Counters an increase rule reads are seen from their first increment (the lockout counter split into ARV-267a)",
       "description": "From the ARV-259 security review (2026-10-27, advisory 8). The hosts export counters cumulatively over OTLP, and a counter has no series until its first Add, so under a Prometheus-style increase the first increment of a new series is often dropped: the first dead letter, producer fatal error, broker streak or integration client lockout after a pod starts may not fire deadLetters, kafkaProducerFatal, outboxBrokerStreak or integrationLockout. Not verified against SigNoz v0.146 (no SigNoz in the harness). Verify first; if it holds, prime each such counter at 0 for its bounded tag values at start (or switch those instruments to delta temporality), with a test. The integration lockout counter lives in SvcIntegrationAuth.cs, under the owner's sign-in and auth freeze: its part waits for the freeze to lift. CWEs to review: CWE-400, CWE-778.",
       "acceptanceCriteria": [
         "How SigNoz evaluates increase over a counter's first data point is checked and recorded (wiki 10 section 3.1), with the source or a run against a SigNoz instance",
-        "If the first increment is dropped: every counter an increase rule reads (deadLetters, kafkaProducerFatal, outboxBrokerStreak, amanCodesUnmapped, integrationLockout and any later one) is primed at 0 for its tag values at start, or exported as delta, with MetricTagTests covering it; the integration lockout counter only once the auth freeze is lifted",
+        "If the first increment is dropped: every counter an increase rule reads (deadLetters, kafkaProducerFatal, outboxBrokerStreak, amanCodesUnmapped, integrationLockout and any later one) is primed at 0 for its tag values at start, or exported as delta, with MetricTagTests covering it; the integration lockout counter only once the auth freeze is lifted: built by ARV-267 for deadLetters, kafkaProducerFatal, outboxBrokerStreak, amanCodesUnmapped and queueRefused, each primed once the meter provider listens (a host-level export test proves a constructor's 0 is never exported); integrationLockout is ARV-267a's, under the sign-in freeze",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": true,
+      "notes": "Size S. Phase 3. Filed from the ARV-259 security review's advisory 8 (backlog/progress.md, 2026-10-27). Part waits on the auth freeze. 2026-11-10: built; the integration lockout counter split into ARV-267a (SvcIntegrationAuth.cs, under the auth freeze).",
+      "dependsOn": [
+        "ARV-259"
+      ]
+    },
+    {
+      "id": "ARV-267a",
+      "title": "[E17] The integration lockout counter is seen from its first increment",
+      "description": "Split from ARV-267 on 2026-11-10. ariva.integration.lockouts (rule integrationLockout) has no series until a client's first lockout, and SigNoz's increase drops a series' first point (wiki 10 section 3.1), so the first lockout after a start may go unalerted. Prime it at 0 for its bounded tag values once the meter provider listens (in a hosted service's StartAsync, as ARV-267 does), with MetricTagTests. It lives in SvcIntegrationAuth.cs, under the owner's sign-in and auth freeze. CWEs to review: CWE-400, CWE-778.",
+      "acceptanceCriteria": [
+        "ariva.integration.lockouts is primed at 0 for its tag values once the meter provider listens, never in a constructor, with MetricTagTests covering it",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
@@ -2033,9 +2051,9 @@
       ],
       "priority": 40,
       "passes": false,
-      "notes": "Size S. Phase 3. Filed from the ARV-259 security review's advisory 8 (backlog/progress.md, 2026-10-27). Part waits on the auth freeze.",
+      "notes": "Split from ARV-267 on 2026-11-10. Waits for the sign-in and auth freeze.",
       "dependsOn": [
-        "ARV-259"
+        "ARV-267"
       ]
     },
     {

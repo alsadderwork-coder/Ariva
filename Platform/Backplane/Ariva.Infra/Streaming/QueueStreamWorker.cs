@@ -368,6 +368,10 @@ public sealed class QueueStreamWorker(
         await CheckCoPartitionedAsync(ct);
         consumer.Subscribe(Topics);
         logger.LogInformation("Queue stream worker {GroupId} subscribed to {Topics}", GroupId, string.Join(", ", Topics));
+        // ARV-267: the worker's dead letters start at 0 for each of its topics, so the first one after a start is an increase
+        // (deadLetters); its letters carry its group (DeadLetters.Create with GroupId) and are only ever sent or failed.
+        foreach (var topic in Topics)
+            producerMetrics?.PrimeDeadLetters(topic, GroupId, KafkaProducerMetrics.SentOutcome, KafkaProducerMetrics.FailedOutcome);
         // ARV-258: the checkpoint age counts from the start, so a worker that never manages a checkpoint shows it growing.
         metrics?.Checkpointed(GroupId);
         var every = TimeSpan.FromSeconds(Math.Max(1, kafka.Consumers.CheckpointSeconds));
@@ -737,6 +741,8 @@ public sealed class QueueStreamWorker(
                 return RestoreOutcome.Gone;
             var notAfter = timeProvider.GetUtcNow().UtcDateTime.AddSeconds(settings.MaxAheadSeconds);
             var zone = ZoneProcessor.Restore(key, geometry.Geometry, geometry.ProfileVersion, settings.ZoneSettingsFor(site, _zoneSettings), state, notAfter);
+            // ARV-267: the site's refusals start at 0 (queueRefused); a zone restored on assignment does so before any record is read.
+            metrics?.PrimeSite(site);
             // Its clock moves on with the host's from here (TickIdleZones), as for a zone restored with its first record: the time the
             // stream was away is not skipped, since a record of the zone still to be read would then be late.
             _zones[key] = (zone, partition, timeProvider.GetUtcNow().UtcDateTime);
@@ -1185,6 +1191,8 @@ public sealed class QueueStreamWorker(
         }
 
         zone ??= new ZoneProcessor(batch.ZoneKey, geometry.Geometry, geometry.ProfileVersion, siteSettings);
+        // ARV-267: the site's refusals start at 0 (queueRefused), before the zone's first batch is processed.
+        metrics?.PrimeSite(batch.SiteCode);
         _zones[batch.ZoneKey] = (zone, partition, timeProvider.GetUtcNow().UtcDateTime);
         return zone;
     }

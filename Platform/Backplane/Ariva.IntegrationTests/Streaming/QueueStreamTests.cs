@@ -1355,6 +1355,9 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         await host.StartAsync(Ct);
         await WaitForAsync(database, "ariva-it-checkpoint-age.queue-engine");
         Age().Should().BeLessThan(10, "the worker checkpoints every second while it reads");
+        // ARV-267: the site's refusals were primed at 0 when its zones were created for their first batch, every kind once.
+        StreamMetrics.RefusalKinds.Where(kind => age.Zeros(StreamMetrics.QueueRefusedName, ("site", "DMO"), ("kind", kind)) != 1).Should().BeEmpty(
+            "a created zone primes its site's refusals, once per site");
         age.Observe(StreamMetrics.CheckpointAgeName).Single().Tags["group"].Should().Be("ariva-it-checkpoint-age.queue-engine");
 
         await using (var holder = new NpgsqlConnection(postgres.ConnectionString(database)))
@@ -1479,6 +1482,14 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
             .Should().BeGreaterThanOrEqualTo(2);
         counts.Sum(KafkaProducerMetrics.DeadLettersName, ("topic", KafkaTopics.DeviceHealth), ("group", group), ("outcome", KafkaProducerMetrics.SentOutcome))
             .Should().BeGreaterThanOrEqualTo(1);
+        // ARV-267: once it subscribed, the worker primed its dead letters at 0 for each of its topics under its group, sent and
+        // failed (the outcomes it counts), and never kept.
+        foreach (var topic in QueueStreamWorker.Topics)
+        {
+            counts.Zeros(KafkaProducerMetrics.DeadLettersName, ("topic", topic), ("group", group), ("outcome", KafkaProducerMetrics.SentOutcome)).Should().Be(1, topic);
+            counts.Zeros(KafkaProducerMetrics.DeadLettersName, ("topic", topic), ("group", group), ("outcome", KafkaProducerMetrics.FailedOutcome)).Should().Be(1, topic);
+        }
+        counts.Zeros(KafkaProducerMetrics.DeadLettersName, ("outcome", KafkaProducerMetrics.KeptOutcome)).Should().Be(0, "the worker never keeps a letter");
     }
 
     /// <summary>Collects the warnings a store logs (ARV-113: dropped line minutes name the zone key and the count only).</summary>

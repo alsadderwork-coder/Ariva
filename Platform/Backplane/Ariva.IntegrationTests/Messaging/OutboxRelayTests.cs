@@ -494,6 +494,11 @@ public sealed class OutboxRelayTests(PostgresFixture fixture) : IAsyncDisposable
 
         reader.Observe(OutboxMetrics.UnsentName).Should().ContainSingle().Which.Value.Should().Be(2);
         reader.Observe(OutboxMetrics.OldestUnsentAgeName).Should().ContainSingle().Which.Value.Should().BeApproximately(120, 1);
+        // ARV-267: the relay, once started, primed the broker streak of every topic it may send to at 0, once each, and none other.
+        OutboxMetrics.RelayTopics.Where(topic => reader.Zeros(OutboxMetrics.BrokerStreaksName, ("topic", topic)) != 1).Should().BeEmpty(
+            "ExecuteAsync primes each topic the relay may send to, once");
+        OutboxMetrics.RelayTopics.Should().NotContain(KafkaTopics.AmanEgateIntervalStats, "nothing of Ariva's sends to the AMAN feed's source topics");
+        reader.Zeros(OutboxMetrics.BrokerStreaksName).Should().Be(OutboxMetrics.RelayTopics.Count);
         (await _host.ReadAsync<long>("SELECT count(*) FROM outbox_message WHERE sent_on IS NULL")).Should().Be(2, "measuring sends nothing");
     }
 

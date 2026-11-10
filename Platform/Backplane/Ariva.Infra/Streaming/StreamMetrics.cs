@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using Ariva.Core.Queueing;
 
 namespace Ariva.Infra.Streaming;
 
@@ -41,6 +43,7 @@ public sealed class StreamMetrics : IDisposable
 
     private readonly Meter _meter;
     private readonly Counter<long> _refused;
+    private readonly ConcurrentDictionary<string, byte> _primedSites = new(StringComparer.Ordinal);
     private readonly TimeProvider _time;
     private volatile Snapshot _last;
     private volatile CheckpointState _checkpoint;
@@ -92,6 +95,30 @@ public sealed class StreamMetrics : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(group);
         ArgumentNullException.ThrowIfNull(lagByTopic);
         _last = new Snapshot(group, [.. lagByTopic.OrderBy(l => l.Key, StringComparer.Ordinal).Select(l => (l.Key, l.Value))], _time.GetUtcNow(), freshFor);
+    }
+
+    /// <summary>Every kind <see cref="Refused"/> is given: each <see cref="QueueRejections"/> count and the declared lines not in a zone.</summary>
+    public static readonly IReadOnlyList<string> RefusalKinds =
+    [
+        nameof(QueueRejections.Late), nameof(QueueRejections.Future), nameof(QueueRejections.Invalid), nameof(QueueRejections.UnknownGeometry),
+        nameof(QueueRejections.Duplicates), nameof(QueueRejections.Reverse), nameof(QueueRejections.UnmatchedExits), nameof(QueueRejections.NegativeWaits),
+        nameof(QueueRejections.BufferFull), nameof(QueueRejections.ForcedAdvances), nameof(QueueRejections.TooManyDevices), nameof(QueueRejections.DeviceShareFull),
+        ZoneProcessor.DeclaredLineNotInZone
+    ];
+
+    /// <summary>
+    /// ARV-267: starts every refusal kind of <paramref name="site"/> at 0, once per site, when the worker first holds a zone of
+    /// it (restored on assignment, or created for its first batch), so a later refusal is an increase SigNoz sees (queueRefused),
+    /// not a series' first point, which it drops. Residual: a refusal exported in the same interval as the 0 (in the first minute
+    /// after the worker starts, a restored zone's catch-up included, or after a site's first zone is created) lands in the series'
+    /// first point.
+    /// </summary>
+    public void PrimeSite(string site)
+    {
+        if (string.IsNullOrEmpty(site) || !_primedSites.TryAdd(site, 0))
+            return;
+        foreach (var kind in RefusalKinds)
+            _refused.Add(0, new KeyValuePair<string, object>("kind", kind), new KeyValuePair<string, object>("site", site));
     }
 
     /// <summary>Counts <paramref name="count"/> events of <paramref name="kind"/> refused at <paramref name="site"/> (ARV-231).</summary>

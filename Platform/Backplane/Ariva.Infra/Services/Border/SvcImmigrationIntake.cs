@@ -187,6 +187,8 @@ internal sealed class SvcImmigrationIntake(IUnitOfWork unitOfWork, ICurrentUser 
     {
         if (!mappings.TryGetValue(site, out var codes))
         {
+            // ARV-267: the site's unmapped records start at 0 (BorderMetrics.Seen), so a later unmapped record is an increase.
+            metrics.Seen(site);
             var rows = await ExecuteSqlAsync<DeskRow>("""
                 SELECT m.external_code AS "Code", m.desk_id AS "DeskId", d.kind AS "Kind"
                   FROM desk_code_mapping m JOIN desk d ON d.id = m.desk_id AND d.site_code = m.site_code

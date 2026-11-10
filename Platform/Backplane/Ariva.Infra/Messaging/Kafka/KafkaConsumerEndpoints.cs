@@ -104,6 +104,9 @@ internal sealed class KafkaConsumerEndpoints : IHostedService, IDisposable
         _rider = _riders();
         if (_ownsAdmin)
             _admin = new AdminClientBuilder(KafkaClientConfig.Admin(_settings)).Build();
+        // ARV-267: each consumer's dead letters start at 0, so the first one after a start is an increase (deadLetters).
+        foreach (var consumer in _consumers)
+            _metrics?.PrimeDeadLetters(consumer.Topic.Topic, consumer.Topic.Group);
         // A consumer reports once its topic has been read: 1 while the broker says the topic does not exist, 0 otherwise.
         _metrics?.ObserveConsumedTopics(() => _consumers.Where(c => c.State != TopicState.Unknown)
             .Select(c => (c.Topic.Topic, c.Topic.Group, c.State == TopicState.Missing)));
