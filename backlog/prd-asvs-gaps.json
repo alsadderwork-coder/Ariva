@@ -697,7 +697,7 @@
       "title": "[ASVS] Remediation time frames enforced in CI",
       "description": "Split from ARV-096. The remediation time frames per severity are documented (wiki 13 section 9, Proposed: critical 7 days, high 30, medium 90, low by the next planned release) but nothing enforces them: CI fails only on high and critical audit findings, whatever their age, and passes moderate and low ones forever. ASVS 5.0: V15.2.1. Effort M.",
       "acceptanceCriteria": [
-        "A CI step reads the NuGet audit, both npm audits and the Trivy results, takes each finding's age from its advisory (the GitHub Advisory Database publication date, or the date a fix was published where known) and fails when an open finding with a fix is older than its severity's frame",
+        "A CI step reads the NuGet audit, both npm audits and the Trivy results, takes each finding's age from its advisory (the GitHub Advisory Database publication date, or the date a fix was published where known) and fails when an open finding with a fix is older than its severity's frame: built by ARV-096a for the NuGet and npm audits (the script reads Trivy's JSON too); a gate's Trivy results are ARV-096f's, after the Azure DevOps scans (ARV-218)",
         "Exceptions are read from a file in security/ with the finding, the reason, the owner's approval and an expiry; an expired or unapproved exception fails the step, and no exception is ever approved by an agent",
         "Findings without a fix are listed in the job summary and do not fail the step; a test of the step with recorded audit outputs covers each severity, an exception and an expired exception",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
@@ -707,10 +707,30 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 116,
-      "passes": false,
-      "notes": "Split from ARV-096 on 2026-10-19. Needs the owner to approve the frames (wiki 13 section 9) before they fail a build; until then the step can run in report-only mode.",
+      "passes": true,
+      "notes": "Split from ARV-096 on 2026-10-19. Needs the owner to approve the frames (wiki 13 section 9) before they fail a build; until then the step can run in report-only mode. 2026-11-10: built report only; malformed approvals are refused in code, and so is drift from references (both files at HEAD, so an uncommitted edit is caught, and at the newest of main and origin/main that is an ancestor of HEAD, or at ARIVA_APPROVALS_BASE or the story gate's --base); approving frames that every reference holds PENDING, and anything committed on a reference itself, are left to review and the hooks proposed in docs/product/decisions.md; the Trivy results split into ARV-096f, since no gate runs Trivy until the Azure DevOps image builds (ARV-218). Only node scripts/verify.mjs security runs the step: the Azure DevOps Analyze-solution pipeline runs the npm audits but not this step, which ARV-096f wires in. passes flips to true only after a PASS security review (round 3 findings fixed, review pending).",
       "dependsOn": [
         "ARV-096"
+      ]
+    },
+    {
+      "id": "ARV-096f",
+      "title": "[ASVS] Remediation time frames on the Trivy results of the image and filesystem scans",
+      "description": "Split from ARV-096a on 2026-11-10: scripts/security/remediation-frames.mjs reads Trivy's JSON (--trivy), but no gate runs Trivy since ARV-295 archived the GitHub workflows (images.yml, security-scan.yml). Once the Azure DevOps image builds and the filesystem scan run (ARV-218), give the step each image's and the filesystem's Trivy JSON, so base image and OS package findings are held to their frames as the NuGet and npm ones are. ASVS 5.0: V15.2.1. Effort S.",
+      "acceptanceCriteria": [
+        "The Azure DevOps image builds and the filesystem scan write Trivy's JSON report and run scripts/security/remediation-frames.mjs with each as --trivy, the NuGet and npm audits as in verify.mjs, and a scan that did not run as --missing; the step passes the approval references (--frames-at and --exceptions-at) from the target branch, chosen as verify.mjs chooses them (approvalReferences: HEAD, then the newest of the target branch and its remote copy that is an ancestor of HEAD, after a fetch of it; a reference without the exceptions file as an empty list), and names each in the job summary",
+        "The job summary lists every Trivy finding with its age, frame and state; a recorded Trivy report of each image is part of the step's self-test",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md V15.2.1 updated with the Trivy evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 117,
+      "passes": false,
+      "notes": "Split from ARV-096a on 2026-11-10.",
+      "dependsOn": [
+        "ARV-096a",
+        "ARV-218"
       ]
     },
     {

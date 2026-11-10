@@ -1,0 +1,11 @@
+{
+  "$comment": "ARV-096a (ASVS 5.0 V15.2.1; wiki 13 section 9): the remediation time frames per severity, in days from the day a fix is published (the advisory's publication date stands for it); null, for low only, is no age frame (by the next planned release). scripts/security/remediation-frames.mjs fails a gate on an open finding with a fix past its frame only once the owner has approved these frames: until approvedBy names the owner it only reports. Only the owner sets approvedBy and approvedOn (YYYY-MM-DD); an agent never does, and once main holds them approved only the owner changes this file at all. The script refuses a malformed approval (approvedBy not a string or not one of its OWNERS, approvedOn missing, not a real day or after the day it runs) and any change to frames that a reference holds approved (HEAD, and the newest of main and origin/main that is an ancestor of HEAD); it cannot tell a well-formed approval naming the owner from the owner's own, so approving frames that every reference holds PENDING is left to review and the proposed hook (docs/product/decisions.md).",
+  "approvedBy": "PENDING: Ahmad Al-Sadder",
+  "approvedOn": "",
+  "frames": {
+    "critical": 7,
+    "high": 30,
+    "moderate": 90,
+    "low": null
+  }
+}

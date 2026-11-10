@@ -31,6 +31,8 @@
 //                database environment; about 10 minutes); reports in Platform/Testing/Ariva.E2E/zap-reports
 //   security     scanner self-test + full scan + ops tooling self-tests (ARV-126, the TLS check of ARV-084) + dependency audits
 //                + the E2E expect message check (no answer body as a message, ARV-152) and the artifact check's self-test
+//                + the remediation time frames (ARV-096a), whose approvals are compared with HEAD and the newest of main and
+//                origin/main that is an ancestor of HEAD; ARIVA_APPROVALS_BASE (or the story gate's --base) names another reference
 //   docs         text rules on Markdown (no em dashes, no double hyphens in prose)
 //   backend      build + unit + security
 //   mutation     Stryker.NET on the pure engines (ARV-069; one to three hours, mostly the queue engine; report in .verify/stryker);
@@ -61,6 +63,7 @@ import { checkArtifacts, derivedVariables } from '../Platform/Testing/Ariva.E2E/
 import { methodFilter } from './test-counts.mjs';
 import { nugetAuditFindings, selfTest as nugetAuditSelfTest } from './security/nuget-audit.mjs';
 import { pruneLogFolders, runsToKeep } from './e2e-logs.mjs';
+import { approvalReferences } from './security/remediation-frames.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB = path.join(ROOT, 'Platform', 'Frontplane', 'Ariva.Web');
@@ -116,7 +119,9 @@ function run(name, cmd, cmdArgs, cwd = ROOT, { optional = false } = {}) {
 // it finds. Since ARV-186 it reads the JSON report (scripts/security/nuget-audit.mjs), not the table's severity words, and also
 // fails when the report cannot be trusted to be complete: not the JSON report, no package source read (the vulnerability data
 // comes from the sources), or a project or the report with a problem. The reader's self-test runs first. Moderate and Low
-// advisories are printed and do not fail the gate.
+// advisories are printed and do not fail the gate. The report it read is kept for the remediation frames step (ARV-096a), which
+// would otherwise run dotnet list a second time.
+let nugetAuditReport = null;
 function nugetAudit() {
   const name = 'nuget vulnerability audit (fails on any advisory but low or moderate, or on an incomplete report)';
   const cmdArgs = ['list', 'Ariva.slnx', 'package', '--vulnerable', '--include-transitive', '--format', 'json'];
@@ -138,11 +143,119 @@ function nugetAudit() {
     return;
   }
   const found = nugetAuditFindings(r.stdout ?? '');
+  // Kept only when complete (sources read, no problem), so the frames step never takes an incomplete report as read.
+  if (r.status === 0 && r.stdout && !found.problems.length) nugetAuditReport = r.stdout;
   for (const line of found.severe) process.stdout.write(`SEVERE ${line}\n`);
   for (const line of found.other) process.stdout.write(`advisory (does not fail the gate) ${line}\n`);
   for (const line of found.problems) process.stdout.write(`INCOMPLETE ${line}\n`);
   if (!found.severe.length && !found.other.length && !found.problems.length) process.stdout.write('no vulnerable package; the report read its sources\n');
   results.push({ name, ok: r.status === 0 && !found.severe.length && !found.problems.length, seconds: Math.round((Date.now() - started) / 1000), exit: r.status });
+}
+
+// ARV-096a (ASVS 5.0 V15.2.1): the remediation time frames on the same audits. The rule's self-test runs first; then the NuGet
+// and npm audits are read as JSON (into .verify) and scripts/security/remediation-frames.mjs judges each finding against
+// security/remediation-frames.json and security/remediation-exceptions.json, printing its summary. It fails the gate only once
+// the owner has approved the frames; until then it reports what would fail (wiki 13 section 9), except on a malformed approval
+// or drift from an approval a reference holds, which fail it in either mode. Advisory dates come from GitHub's advisory
+// database, so a run that cannot reach it lists those findings with their age unknown.
+function remediationFrames(npmTrees) {
+  const name = 'remediation time frames (report only until the owner approves the frames)';
+  process.stdout.write(`\n=== ${name}: node scripts/security/remediation-frames.mjs\n`);
+  if (PLAN) { results.push({ name, ok: true, planned: true }); return; }
+  const started = Date.now();
+  if (!run('remediation frames self-test', 'node', ['scripts/security/remediation-frames.mjs', '--self-test'])) return;
+  const folder = path.join(ROOT, '.verify');
+  fs.mkdirSync(folder, { recursive: true });
+  const args = ['scripts/security/remediation-frames.mjs', '--summary', path.join(folder, 'remediation-frames.md')];
+  // The ARV-096a review (rounds 2 and 3): both files are compared with references, so the script refuses any change to frames a
+  // reference holds approved and an approved exception a reference does not hold unchanged (approvalDrift). HEAD always, so an
+  // uncommitted edit is caught whatever the branches say; then ARIVA_APPROVALS_BASE or the story's --base when given, otherwise
+  // the newest of main and origin/main that is an ancestor of HEAD, after a best-effort fetch of origin's main (local main is
+  // never moved here, CLAUDE.md rule 8, so a stale one is passed over; approvalReferences in the script chooses from the facts
+  // gathered here). Read with git and argument arrays, no shell. A frames file a reference does not hold has nothing approved to
+  // drift from; an exceptions file it does not hold counts as an empty list, so an approved exception added with the file is
+  // caught too. A reference that is given but names no commit, or a file git cannot show, fails the step.
+  let approvalsFailed = false;
+  spawnSync('git', ['fetch', '--quiet', '--no-tags', 'origin', 'main'], { cwd: ROOT, stdio: 'ignore', timeout: 15_000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+  const commitOf = (ref) => {
+    const r = spawnSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: ROOT, encoding: 'utf8' });
+    return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+  };
+  const dateOf = (commit) => (commit ? spawnSync('git', ['log', '-1', '--format=%cs', commit], { cwd: ROOT, encoding: 'utf8' }).stdout?.trim() ?? '' : '');
+  const contains = (older, newer) => spawnSync('git', ['merge-base', '--is-ancestor', older, newer], { cwd: ROOT, stdio: 'ignore' }).status === 0;
+  const storyBase = flag('--base');
+  let requested = process.env.ARIVA_APPROVALS_BASE || (storyBase && storyBase !== 'HEAD' ? storyBase : '');
+  if (requested && !GIT_REF.test(requested)) {
+    process.stdout.write('Approvals: the approval reference given (ARIVA_APPROVALS_BASE or --base) is not a git reference: the step fails\n');
+    args.push('--note', 'the approval reference given (ARIVA_APPROVALS_BASE or --base) is not a git reference, which fails the step; main and origin/main are compared instead');
+    approvalsFailed = true;
+    requested = '';
+  }
+  const headCommit = commitOf('HEAD');
+  const head = { name: 'HEAD', commit: headCommit, date: dateOf(headCommit) };
+  const candidates = (requested ? [requested] : ['main', 'origin/main']).map((ref) => {
+    const commit = commitOf(ref);
+    return { name: ref, commit, date: dateOf(commit), ancestorOfHead: Boolean(commit && headCommit && contains(commit, headCommit)) };
+  });
+  for (const candidate of candidates) {
+    candidate.ancestorOf = candidates.filter((other) => other !== candidate && candidate.commit && other.commit && contains(candidate.commit, other.commit)).map((other) => other.name);
+  }
+  const choice = approvalReferences({ head, candidates, explicit: Boolean(requested) });
+  for (const warning of choice.warnings) {
+    process.stdout.write(`Approvals: ${warning}\n`);
+    args.push('--note', warning);
+  }
+  for (const problem of choice.problems) {
+    process.stdout.write(`Approvals: ${problem}: the step fails\n`);
+    approvalsFailed = true;
+  }
+  process.stdout.write(`Approvals compared with ${choice.references.map((reference) => reference.label).join(' and ') || 'nothing'}\n`);
+  for (const [index, reference] of choice.references.entries()) {
+    for (const [option, file] of [['--frames-at', 'remediation-frames.json'], ['--exceptions-at', 'remediation-exceptions.json']]) {
+      const spec = `${reference.commit}:security/${file}`;
+      const copy = path.join(folder, `approvals-${index}-${file}`);
+      if (spawnSync('git', ['cat-file', '-e', spec], { cwd: ROOT, stdio: 'ignore' }).status !== 0) {
+        if (option === '--frames-at') {
+          process.stdout.write(`${reference.label} has no security/${file}: nothing approved to drift from\n`);
+          continue;
+        }
+        process.stdout.write(`${reference.label} has no security/${file}: compared with an empty list, so any approved exception counts as new\n`);
+        fs.writeFileSync(copy, '{"exceptions":[]}\n');
+      } else {
+        const shown = spawnSync('git', ['show', spec], { cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+        if (shown.status !== 0) {
+          approvalsFailed = true;
+          process.stdout.write(`${reference.label}: security/${file} could not be read (git show exited ${shown.status}): the step fails\n`);
+          continue;
+        }
+        fs.writeFileSync(copy, shown.stdout);
+      }
+      args.push(option, `${reference.label}=${copy}`);
+    }
+  }
+  // The NuGet audit's own report when that step read one in this run (ARV-186), otherwise dotnet list once here.
+  const nuget = nugetAuditReport !== null ? { status: 0, stdout: nugetAuditReport }
+    : spawnSync('dotnet', ['list', 'Ariva.slnx', 'package', '--vulnerable', '--include-transitive', '--format', 'json'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, DOTNET_CLI_UI_LANGUAGE: 'en', DOTNET_NOLOGO: '1', DOTNET_CLI_TELEMETRY_OPTOUT: '1' } });
+  if (nuget.status === 0 && nuget.stdout) {
+    fs.writeFileSync(path.join(folder, 'nuget-audit.json'), nuget.stdout);
+    args.push('--nuget', path.join(folder, 'nuget-audit.json'));
+  } else {
+    // Not read: reported while the frames are Proposed, a failure once they are approved.
+    args.push('--missing', 'nuget');
+  }
+  for (const [tree, cwd] of npmTrees) {
+    if (!fs.existsSync(path.join(cwd, 'package-lock.json'))) continue;
+    // npm audit exits non-zero when it finds anything; its JSON report is read whatever the exit code.
+    const audit = spawnSync('npm', ['audit', '--json'], { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, shell: IS_WIN });
+    if (!audit.stdout) {
+      args.push('--missing', `npm ${tree}`);
+      continue;
+    }
+    fs.writeFileSync(path.join(folder, `npm-audit-${tree}.json`), audit.stdout);
+    args.push('--npm', `${tree}=${path.join(folder, `npm-audit-${tree}.json`)}`);
+  }
+  const r = spawnSync('node', args, { cwd: ROOT, stdio: 'inherit' });
+  results.push({ name, ok: r.status === 0 && !approvalsFailed, seconds: Math.round((Date.now() - started) / 1000), exit: r.status });
 }
 
 // ARV-104j review and ARV-152 (CWE-532): no credential in the Playwright report, the test output or a trace. Every Playwright
@@ -718,6 +831,7 @@ const steps = {
     if (fs.existsSync(path.join(WEB, 'package-lock.json'))) run('npm audit (web)', 'npm', ['audit', '--audit-level=high'], WEB, { optional: true });
     if (fs.existsSync(path.join(E2E, 'package-lock.json'))) run('npm audit (e2e)', 'npm', ['audit', '--audit-level=high'], E2E, { optional: true });
     if (fs.existsSync(path.join(CHART_TESTS, 'package-lock.json'))) run('npm audit (chart tests)', 'npm', ['audit', '--audit-level=high'], CHART_TESTS, { optional: true });
+    remediationFrames([['web', WEB], ['e2e', E2E], ['chart-tests', CHART_TESTS]]);
   },
   docs: () => { docsCheck(); windowsPathsCheck(); },
   // ARV-152: the artifact check on its own, over the report and the test output a run left (no seed: shapes and variables only).

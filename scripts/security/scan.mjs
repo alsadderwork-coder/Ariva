@@ -993,8 +993,9 @@ function writeReport(findings, scanned) {
 }
 
 // ARV-157: the characters SEC-130 refuses, listed apart from its pattern so that a narrowed pattern fails the self-test;
-// and characters text uses (printable ASCII, Arabic letters and marks, punctuation) that it never refuses.
-const HIDDEN_CHARS = [[0x00, 0x08], [0x0B, 0x1F], [0x7F, 0x9F], [0x00AD], [0x034F], [0x061C], [0x115F, 0x1160], [0x17B4, 0x17B5],
+// and characters text uses (printable ASCII, Arabic letters and marks, punctuation) that it never refuses. HIDDEN_CHARS is
+// exported for scripts/security/remediation-frames.mjs (ARV-096a), whose summary passes none of them on.
+export const HIDDEN_CHARS = [[0x00, 0x08], [0x0B, 0x1F], [0x7F, 0x9F], [0x00AD], [0x034F], [0x061C], [0x115F, 0x1160], [0x17B4, 0x17B5],
   [0x180B, 0x180F], [0x200B, 0x200F], [0x2028, 0x202E], [0x2060, 0x206F], [0x3164], [0xFE00, 0xFE0F], [0xFEFF], [0xFFA0], [0xFFF9, 0xFFFB],
   [0xFFFE, 0xFFFF], [0xFDD0, 0xFDEF], [0x1BCA0, 0x1BCA3], [0x1D173, 0x1D17A], [0x13430, 0x1343F], [0xE0000, 0xE007F], [0xE0100, 0xE01EF],
   ...Array.from({ length: 16 }, (_, n) => [(n + 1) * 0x10000 + 0xFFFE, (n + 1) * 0x10000 + 0xFFFF])];
