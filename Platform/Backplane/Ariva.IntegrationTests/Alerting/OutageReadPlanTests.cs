@@ -176,7 +176,7 @@ public sealed partial class OutageReadPlanTests(PostgresFixture fixture) : IAsyn
         await SeededAsync();
         await using var connection = await OpenAsync();
         await using var transaction = await connection.BeginTransactionAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_stream", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
 #pragma warning disable CA2100 // every row is a constant of this test (Refused)
         await using var command = new NpgsqlCommand(statement, connection, transaction);
@@ -198,7 +198,7 @@ public sealed partial class OutageReadPlanTests(PostgresFixture fixture) : IAsyn
         await SeededAsync();
         await using var connection = await OpenAsync();
         await using var transaction = await connection.BeginTransactionAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_stream", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
         var from = LastDay.AddDays(40);
         foreach (var closed in new[] { false, true })
@@ -241,11 +241,21 @@ public sealed partial class OutageReadPlanTests(PostgresFixture fixture) : IAsyn
     /// a week when script 0068 runs, so <c>create_hypertable(..., migrate_data => true)</c> moves them into chunks before the
     /// script's REVOKE and column GRANT. In a database of its own, migrated to 0067, seeded, then to the latest script: every
     /// row is still there, in more than one chunk, and every migrated chunk carries the narrowed grants (no table-wide UPDATE,
-    /// no UPDATE of <c>from_utc</c>, UPDATE of the three columns the upsert sets, no DELETE or TRUNCATE), which the runtime
+    /// no UPDATE of <c>from_utc</c>, UPDATE of the three columns the upsert sets, no DELETE or TRUNCATE), which the stream's
     /// role finds when it tries.
+    /// <para>
+    /// The review of ARV-083a, round 2 (CWE-269): the host roles script narrows ariva_runtime to the base with
+    /// <c>REVOKE ALL ON ALL TABLES IN SCHEMA public</c> and grants each host role its manifest on the hypertables, and only
+    /// TimescaleDB carries both to the chunks that already exist. So the database is first migrated to the script before it and
+    /// seeded as the shared runtime login wrote it until then (a week of outages in a chunk of its own, created after 0068, and
+    /// availability minutes over three months); then on every chunk that existed before the script ariva_runtime and each host
+    /// role hold exactly what HostDatabaseAccess declares on its hypertable, no more and no less: only ariva_availability
+    /// inserts availability minutes there, ariva_runtime can insert, update or delete in no old chunk, and the ledger's role
+    /// still records a minute into one.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task Upgrade_Should_KeepTheOutagesAndNarrowEveryMigratedChunk_When_Script0068RunsOnAPopulatedTable()
+    public async Task Upgrade_Should_KeepTheOutagesAndNarrowEveryChunk_When_Script0068AndTheHostRolesScriptRunOnPopulatedTables()
     {
         try
         {
@@ -272,8 +282,11 @@ public sealed partial class OutageReadPlanTests(PostgresFixture fixture) : IAsyn
             await create.ExecuteNonQueryAsync(Ct);
         }
 
+        var scripts = SqlScriptCatalog.Embedded();
+        // Found by its name, so a script landed before it (and the renumbering that follows) leaves this test as it is.
+        var hostRoles = scripts.Single(s => s.Name.EndsWith(HostRolesScript, StringComparison.Ordinal));
         var runner = new SqlScriptRunner(fixture.ConnectionString(UpgradeDatabase), NullLogger<SqlScriptRunner>.Instance);
-        await runner.ApplyAsync([.. SqlScriptCatalog.Embedded().Where(s => s.Number < 68)], Ct);
+        await runner.ApplyAsync([.. scripts.Where(s => s.Number < 68)], Ct);
         await using var connection = new NpgsqlConnection(fixture.ConnectionString(UpgradeDatabase));
         await connection.OpenAsync(Ct);
         await using (var seed = new NpgsqlCommand("""
@@ -289,17 +302,29 @@ public sealed partial class OutageReadPlanTests(PostgresFixture fixture) : IAsyn
             await seed.ExecuteNonQueryAsync(Ct);
         }
 
-        var applied = await runner.ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
+        (await runner.ApplyAsync([.. scripts.Where(s => s.Number < hostRoles.Number)], Ct)).Should().Contain("0068_outage_and_staffing_reads.sql");
+        await SeedAsTheSharedRuntimeLoginAsync(connection);
+        var chunks = await ChunksAsync(connection);
+        chunks.Count(c => c.Hypertable == "zone_outage").Should().BeGreaterThan(1);
+        chunks.Count(c => c.Hypertable == "availability_minute").Should().BeGreaterThan(1, "three months of minutes span more than one 30-day chunk");
+        await using (var before = new NpgsqlCommand(
+            "SELECT count(*) FROM unnest(@chunks::text[]) c(name) WHERE NOT has_table_privilege('ariva_runtime', c.name::regclass, 'INSERT')", connection))
+        {
+            before.Parameters.AddWithValue("chunks", chunks.Select(c => c.Chunk).ToArray());
+            ((long)await before.ExecuteScalarAsync(Ct)).Should().Be(0, "until the host roles script the shared runtime login inserts into every chunk, so its REVOKE has work to do");
+        }
 
-        applied.Should().Contain("0068_outage_and_staffing_reads.sql");
+        var applied = await runner.ApplyAsync(scripts, Ct);
+
+        applied.Should().Contain(hostRoles.Name);
         await using (var check = new NpgsqlCommand("""
-            SELECT (SELECT count(*) FROM zone_outage),
+            SELECT (SELECT count(*) FROM zone_outage WHERE zone_key = 'DMO/RP-UP'),
                    (SELECT count(*) FROM show_chunks('zone_outage')),
                    (SELECT count(*) FROM show_chunks('zone_outage') c
-                     WHERE has_table_privilege('ariva_runtime', c, 'UPDATE') OR has_table_privilege('ariva_runtime', c, 'DELETE')
-                        OR has_table_privilege('ariva_runtime', c, 'TRUNCATE') OR has_column_privilege('ariva_runtime', c, 'from_utc', 'UPDATE')
-                        OR NOT has_column_privilege('ariva_runtime', c, 'to_utc', 'UPDATE') OR NOT has_column_privilege('ariva_runtime', c, 'closed', 'UPDATE')
-                        OR NOT has_column_privilege('ariva_runtime', c, 'recorded_on', 'UPDATE') OR NOT has_table_privilege('ariva_runtime', c, 'INSERT'))
+                     WHERE has_table_privilege('ariva_stream', c, 'UPDATE') OR has_table_privilege('ariva_stream', c, 'DELETE')
+                        OR has_table_privilege('ariva_stream', c, 'TRUNCATE') OR has_column_privilege('ariva_stream', c, 'from_utc', 'UPDATE')
+                        OR NOT has_column_privilege('ariva_stream', c, 'to_utc', 'UPDATE') OR NOT has_column_privilege('ariva_stream', c, 'closed', 'UPDATE')
+                        OR NOT has_column_privilege('ariva_stream', c, 'recorded_on', 'UPDATE') OR NOT has_table_privilege('ariva_stream', c, 'INSERT'))
             """, connection))
         await using (var reader = await check.ExecuteReaderAsync(Ct))
         {
@@ -312,7 +337,7 @@ public sealed partial class OutageReadPlanTests(PostgresFixture fixture) : IAsyn
         foreach (var statement in UpgradeRefused)
         {
             await using var transaction = await connection.BeginTransactionAsync(Ct);
-            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_stream", connection, transaction))
                 await role.ExecuteNonQueryAsync(Ct);
 #pragma warning disable CA2100 // every statement is a constant of this test (UpgradeRefused)
             await using var command = new NpgsqlCommand(statement, connection, transaction);
@@ -321,9 +346,14 @@ public sealed partial class OutageReadPlanTests(PostgresFixture fixture) : IAsyn
             (await act.Should().ThrowAsync<PostgresException>(statement)).Which.SqlState.Should().Be("42501", statement);
             await transaction.RollbackAsync(Ct);
         }
+
+        await HostRolesOnOldChunksAsync(connection, chunks);
     }
 
     private const string UpgradeDatabase = "it_outage_upgrade";
+
+    /// <summary>The host roles script (ARV-083a), by the end of its name.</summary>
+    private const string HostRolesScript = "_host_database_roles.sql";
 
     private static readonly string[] UpgradeRefused =
     [
@@ -331,6 +361,184 @@ public sealed partial class OutageReadPlanTests(PostgresFixture fixture) : IAsyn
         "DO $$ BEGIN EXECUTE format('DELETE FROM %s', (SELECT c FROM show_chunks('zone_outage') AS c ORDER BY c LIMIT 1)); END $$",
         "DO $$ BEGIN EXECUTE format('TRUNCATE %s', (SELECT c FROM show_chunks('zone_outage') AS c ORDER BY c LIMIT 1)); END $$"
     ];
+
+    /// <summary>
+    /// What ariva_runtime may no longer do on an old chunk, each on the chunk named by the setting <c>ariva_it.chunk</c> (and the
+    /// column <c>ariva_it.column</c>), which the test sets per chunk as a parameter: insert a row, update a column the base once
+    /// could (zone_outage's <c>to_utc</c>, script 0068's column grant), delete.
+    /// </summary>
+    private static readonly string[] RuntimeRefusedOnAChunk =
+    [
+        "DO $$ BEGIN EXECUTE format('INSERT INTO %s DEFAULT VALUES', current_setting('ariva_it.chunk')::regclass); END $$",
+        "DO $$ BEGIN EXECUTE format('UPDATE %s SET %I = %I', current_setting('ariva_it.chunk')::regclass, current_setting('ariva_it.column'), current_setting('ariva_it.column')); END $$",
+        "DO $$ BEGIN EXECUTE format('DELETE FROM %s', current_setting('ariva_it.chunk')::regclass); END $$"
+    ];
+
+    /// <summary>
+    /// Each role's privileges on each chunk named, as HostDatabaseAccess writes a grant (the table privileges, then each held on
+    /// some columns only, with its columns in byte order), one row per chunk and role: <c>chunk role=privileges</c>.
+    /// </summary>
+    private const string ChunkPrivileges = """
+        WITH table_privileges(p, i) AS (
+            SELECT t.p, t.i FROM unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']
+                   || CASE WHEN current_setting('server_version_num')::integer >= 170000 THEN ARRAY['MAINTAIN'] ELSE ARRAY[]::text[] END) WITH ORDINALITY t(p, i)),
+        column_privileges(p, i) AS (
+            SELECT t.p, t.i FROM unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) WITH ORDINALITY t(p, i)),
+        chunks(name, oid) AS (
+            SELECT c.name, c.name::regclass FROM unnest(@chunks::text[]) c(name))
+        SELECT k.name || ' ' || r.name || '=' || concat_ws(',', VARIADIC ARRAY(
+                   SELECT t.p FROM table_privileges t WHERE has_table_privilege(r.name, k.oid, t.p) ORDER BY t.i)
+                 || ARRAY(
+                   SELECT t.p || '(' || string_agg(a.attname::text, ' ' ORDER BY a.attname) || ')'
+                     FROM column_privileges t
+                     JOIN pg_attribute a ON a.attrelid = k.oid AND a.attnum > 0 AND NOT a.attisdropped
+                    WHERE NOT has_table_privilege(r.name, k.oid, t.p) AND has_column_privilege(r.name, k.oid, a.attnum, t.p)
+                    GROUP BY t.p, t.i ORDER BY t.i))
+          FROM chunks k CROSS JOIN unnest(@roles::text[]) r(name)
+        """;
+
+    /// <summary>
+    /// What the hosts wrote as the shared runtime login between script 0068 and the host roles script: a week of outages 50 days
+    /// back (a chunk the stream's insert created, apart from those 0068 migrated) and an availability minute every 10 days over
+    /// three months, as the ledger recorded them. Within zone_outage's retention period, so the job this database keeps
+    /// scheduled drops none of them while the test runs.
+    /// </summary>
+    private static async Task SeedAsTheSharedRuntimeLoginAsync(NpgsqlConnection connection)
+    {
+        await using var transaction = await connection.BeginTransactionAsync(Ct);
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+            await role.ExecuteNonQueryAsync(Ct);
+        await using (var outages = new NpgsqlCommand("""
+            INSERT INTO zone_outage (zone_key, device_code, from_utc, to_utc, closed, recorded_on)
+            SELECT 'DMO/RP-HR', 'RP-HR-' || k, @first + k * interval '1 day', @first + k * interval '1 day' + interval '12 minutes', true, now()
+              FROM generate_series(0, 6) k
+            """, connection, transaction))
+        {
+            outages.Parameters.AddWithValue("first", NpgsqlDbType.TimestampTz, DateTime.UtcNow.Date.AddDays(-50));
+            await outages.ExecuteNonQueryAsync(Ct);
+        }
+
+        await using (var minutes = new NpgsqlCommand("""
+            INSERT INTO availability_minute (site_code, minute_utc, local_date, calendar, state, reasons, zones_expected, zones_stale, zones_missing,
+                                             zones_lagging, profile_version, rule_version, decided_utc)
+            SELECT 'DMO', m, m::date, 'Operating', 'Available', '{}', 1, 0, 0, 0, 1, 1, m + interval '2 minutes'
+              FROM (SELECT @today - k * interval '10 days' AS m FROM generate_series(1, 9) k) minutes
+            """, connection, transaction))
+        {
+            minutes.Parameters.AddWithValue("today", NpgsqlDbType.TimestampTz, DateTime.UtcNow.Date);
+            await minutes.ExecuteNonQueryAsync(Ct);
+        }
+
+        await transaction.CommitAsync(Ct);
+    }
+
+    /// <summary>The chunks of zone_outage and availability_minute (availability_cursor is a plain table), each with its hypertable.</summary>
+    private static async Task<List<(string Hypertable, string Chunk)>> ChunksAsync(NpgsqlConnection connection)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT hypertable_name::text, format('%I.%I', chunk_schema, chunk_name)
+              FROM timescaledb_information.chunks
+             WHERE hypertable_schema = 'public' AND hypertable_name IN ('zone_outage', 'availability_minute')
+             ORDER BY 1, 2
+            """, connection);
+        await using var reader = await command.ExecuteReaderAsync(Ct);
+        var chunks = new List<(string Hypertable, string Chunk)>();
+        while (await reader.ReadAsync(Ct))
+            chunks.Add((reader.GetString(0), reader.GetString(1)));
+        return chunks;
+    }
+
+    /// <summary>What HostDatabaseAccess declares for the role on the relation, as <see cref="ChunkPrivileges"/> writes it; empty when nothing.</summary>
+    private static string Declared(string role, string relation)
+    {
+        var entry = HostDatabaseAccess.Grants[role].SingleOrDefault(g => HostDatabaseAccess.RelationOf(g) == relation);
+        return entry is null ? string.Empty : entry[(relation.Length + 1)..];
+    }
+
+    /// <summary>
+    /// After the host roles script, on the chunks that existed before it: each role holds its hypertable's manifest exactly;
+    /// only ariva_availability inserts availability minutes and ariva_runtime writes no old chunk of either table (each refusal
+    /// in its own transaction, rolled back); and the ledger's role still records a minute into an old chunk.
+    /// </summary>
+    private static async Task HostRolesOnOldChunksAsync(NpgsqlConnection connection, IReadOnlyList<(string Hypertable, string Chunk)> chunks)
+    {
+        var held = new List<string>();
+        await using (var command = new NpgsqlCommand(ChunkPrivileges, connection))
+        {
+            command.Parameters.AddWithValue("chunks", chunks.Select(c => c.Chunk).ToArray());
+            command.Parameters.AddWithValue("roles", HostDatabaseAccess.Roles.ToArray());
+            await using var reader = await command.ExecuteReaderAsync(Ct);
+            while (await reader.ReadAsync(Ct))
+                held.Add(reader.GetString(0));
+        }
+
+        held.Should().BeEquivalentTo(chunks.SelectMany(c => HostDatabaseAccess.Roles.Select(role => $"{c.Chunk} {role}={Declared(role, c.Hypertable)}")),
+            "TimescaleDB carries the host roles script's REVOKE and grants to every chunk that existed before it: each role holds its hypertable's manifest there, no more and no less");
+
+        var minuteChunks = chunks.Where(c => c.Hypertable == "availability_minute").Select(c => c.Chunk).ToArray();
+        await using (var writers = new NpgsqlCommand("""
+            SELECT c.name,
+                   coalesce((SELECT string_agg(r.name, ',' ORDER BY r.name) FROM unnest(@roles::text[]) r(name)
+                              WHERE has_table_privilege(r.name, c.name::regclass, 'INSERT')), ''),
+                   has_table_privilege('ariva_runtime', c.name::regclass, 'INSERT') OR has_table_privilege('ariva_runtime', c.name::regclass, 'UPDATE')
+                       OR has_table_privilege('ariva_runtime', c.name::regclass, 'DELETE') OR has_any_column_privilege('ariva_runtime', c.name::regclass, 'UPDATE')
+              FROM unnest(@chunks::text[]) c(name)
+            """, connection))
+        {
+            writers.Parameters.AddWithValue("chunks", minuteChunks);
+            writers.Parameters.AddWithValue("roles", HostDatabaseAccess.Roles.ToArray());
+            await using var reader = await writers.ExecuteReaderAsync(Ct);
+            var rows = 0;
+            while (await reader.ReadAsync(Ct))
+            {
+                rows++;
+                reader.GetString(1).Should().Be(HostDatabaseAccess.AvailabilityRole, $"{reader.GetString(0)}: only the availability ledger's role records a minute (owner decision 2026-10-10)");
+                reader.GetBoolean(2).Should().BeFalse($"{reader.GetString(0)}: ariva_runtime inserts, updates and deletes no availability minute");
+            }
+
+            rows.Should().Be(minuteChunks.Length);
+        }
+
+        foreach (var (hypertable, chunk) in chunks)
+        {
+            foreach (var statement in RuntimeRefusedOnAChunk)
+            {
+                await using var transaction = await connection.BeginTransactionAsync(Ct);
+                await using (var target = new NpgsqlCommand("SELECT set_config('ariva_it.chunk', @chunk, true), set_config('ariva_it.column', @column, true)", connection, transaction))
+                {
+                    target.Parameters.AddWithValue("chunk", chunk);
+                    target.Parameters.AddWithValue("column", hypertable == "zone_outage" ? "to_utc" : "state");
+                    await target.ExecuteNonQueryAsync(Ct);
+                }
+
+                await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+                    await role.ExecuteNonQueryAsync(Ct);
+#pragma warning disable CA2100 // every statement is a constant of this test (RuntimeRefusedOnAChunk); the chunk is a setting
+                await using var command = new NpgsqlCommand(statement, connection, transaction);
+#pragma warning restore CA2100
+                var act = async () => await command.ExecuteNonQueryAsync(Ct);
+                (await act.Should().ThrowAsync<PostgresException>($"{chunk}: {statement}")).Which.SqlState.Should().Be("42501", $"{chunk}: {statement}");
+                await transaction.RollbackAsync(Ct);
+            }
+        }
+
+        // The other side: the ledger's role records a minute that lands in the oldest chunk, one that existed before the script.
+        await using (var transaction = await connection.BeginTransactionAsync(Ct))
+        {
+            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_availability", connection, transaction))
+                await role.ExecuteNonQueryAsync(Ct);
+            await using (var record = new NpgsqlCommand("""
+                INSERT INTO availability_minute (site_code, minute_utc, local_date, calendar, state, reasons, zones_expected, zones_stale, zones_missing,
+                                                 zones_lagging, profile_version, rule_version, decided_utc)
+                SELECT 'HR', m, m::date, 'Operating', 'Available', '{}', 1, 0, 0, 0, 1, 1, m + interval '2 minutes'
+                  FROM (SELECT min(minute_utc) + interval '1 minute' AS m FROM availability_minute) earliest
+                """, connection, transaction))
+                (await record.ExecuteNonQueryAsync(Ct)).Should().Be(1);
+            await using (var landed = new NpgsqlCommand("SELECT tableoid::regclass::text FROM availability_minute WHERE site_code = 'HR'", connection, transaction))
+                minuteChunks.Should().Contain((string)await landed.ExecuteScalarAsync(Ct), "the minute lands in a chunk older than the host roles script");
+            await transaction.RollbackAsync(Ct);
+        }
+    }
 
     [Fact]
     public async Task Retention_Should_BeTheRawSensingPeriod_When_TheScriptsAreApplied()

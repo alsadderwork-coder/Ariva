@@ -38,7 +38,8 @@ public sealed record KeyRingUpgradeFinding(long UserSeeds, long ClientSeeds, lon
 /// <item>Never upgraded: an upgrade, or a restore of a backup from before ARV-211, without the window, or a signing rotation whose
 /// previous signer was removed before any value moved. Values would be unreadable at once (users could not sign in with their
 /// authenticator, integration clients could not authenticate, outbound calls would lose their secrets), so the migration job (after
-/// its scripts, <c>DatabaseMigration</c>, exit code 2) and every host at start (<see cref="KeyRingUpgradeGate"/>) refuse, with
+/// its scripts, <c>DatabaseMigration</c>, exit code 2) and Ariva.Api.Main and Ariva.Api.Cronz at start (<see cref="KeyRingUpgradeGate"/>;
+/// ARV-083a: the hosts whose own login may read the three columns; the others' may not) refuse, with
 /// <see cref="Problem"/>: set the window (wiki 04 section 6.2) for keys from before ARV-211; configure the previous signer again for
 /// a retired signer's keys (only the hosts can tell those, the migration job holds no signing certificate). When that signer's
 /// certificate is lost for good, <c>DataProtection:Signing:RetiredSignerAcceptedUntil</c> (at most 7 days ahead, the review's finding
@@ -339,13 +340,15 @@ public static partial class KeyRingUpgradeCheck
 }
 
 /// <summary>
-/// Every host outside vm-local (Database:VerifySchemaOnStartup), after the schema check (the review's findings H1 and N1): refuses to
+/// Ariva.Api.Main and Ariva.Api.Cronz outside vm-local (Database:VerifySchemaOnStartup), after the schema check (the review's findings
+/// H1 and N1; ARV-083a: only the hosts whose own login may read every stored payload, <c>HostDatabaseAccess.KeyRingUpgradeCheckRoles</c>,
+/// since the check reads them all and Ingest's, Stream's and Integration's logins are refused that read): refuses to
 /// start only in the never-upgraded case of <see cref="KeyRingUpgradeCheck.Problem"/>, verifying each row's signature under the
 /// signers it holds; otherwise it starts, warns while the window is open, while <c>DataProtection:Signing:RetiredSignerAcceptedUntil</c>
 /// holds, or when values still need keys the hosts refuse (<see cref="KeyRingUpgradeCheck.Leftovers"/>). Before any of that it reports
 /// the counts of <see cref="KeyRingUpgradeCheck.Reported"/> for <see cref="StartReportFreshFor"/> (<see cref="KeyAgeMetrics.UpgradeCheckReported"/>):
 /// above 0 only when the check refuses or warns about leftovers, so a normal upgrade with its window open does not raise keyRingUnsigned.
-/// One pass of two reads with the runtime login, each within the database command timeout.
+/// One pass of two reads with the host's own login, each within the database command timeout.
 /// </summary>
 internal sealed class KeyRingUpgradeGate(DatabaseSettings settings, KeyRingSigning signing, TimeProvider time, ILogger<KeyRingUpgradeGate> logger,
     KeyAgeMetrics metrics = null) : IHostedService

@@ -432,6 +432,67 @@ test fails if another workload gets them. optional follows validationReader.opti
 {{- end }}
 
 {{/*
+A host's own database login (ARV-083a; values databaseLogins): Database__Username and Database__Password from the secret
+databaseLogins.<host> (keys username and password), never optional. Only that host and the database-migration job get it;
+the chart test fails if another workload does.
+Usage: {{- include "ariva-platform.hostLoginEnv" (list . "main") | nindent 12 }}
+*/}}
+{{- define "ariva-platform.hostLoginEnv" -}}
+{{- $root := index . 0 }}
+{{- $secret := index $root.Values.databaseLogins (index . 1) }}
+- name: Database__Username
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret | quote }}
+      key: username
+- name: Database__Password
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret | quote }}
+      key: password
+{{- end }}
+
+{{/*
+The availability ledger's own database login (ARV-083a; values databaseLogins.availability), for api-cronz, which runs the
+ledger, and the database-migration job, which creates it.
+*/}}
+{{- define "ariva-platform.availabilityLoginEnv" -}}
+- name: Database__Availability__Username
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.databaseLogins.availability | quote }}
+      key: username
+- name: Database__Availability__Password
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.databaseLogins.availability | quote }}
+      key: password
+{{- end }}
+
+{{/*
+Every host's database login and the availability ledger's, for the database-migration job alone (ARV-083a): it creates or
+updates each from a SCRAM-SHA-256 verifier (Database:HostLogins, Database:Availability). Database__Username and
+Database__Password name api-main's login, so the job's own checks see the hosts' logins only.
+*/}}
+{{- define "ariva-platform.migrationLoginsEnv" -}}
+{{- include "ariva-platform.hostLoginEnv" (list . "main") }}
+{{- range $host := list "main" "ingest" "stream" "cronz" "integration" }}
+{{- $secret := index $.Values.databaseLogins $host }}
+- name: Database__HostLogins__{{ title $host }}__Username
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret | quote }}
+      key: username
+- name: Database__HostLogins__{{ title $host }}__Password
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret | quote }}
+      key: password
+{{- end }}
+{{ include "ariva-platform.availabilityLoginEnv" . }}
+{{- end }}
+
+{{/*
 Log shipping and the log pseudonym key of the five API hosts (ARV-091a; values logging), and nothing when neither is set:
 - Logging__PseudonymKey from the Secret logging.pseudonymKeySecret names (its key, pseudonym-key by default), as a secretKeyRef
   that is not optional: a host waits for the Secret rather than start with a key of its own. The key itself is never a value.

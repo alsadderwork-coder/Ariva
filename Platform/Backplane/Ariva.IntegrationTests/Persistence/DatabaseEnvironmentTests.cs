@@ -210,17 +210,28 @@ public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
     private Task<int> MigrateAsync(string database, string environment) =>
         DatabaseMigration.RunAsync(new ConfigurationBuilder().AddInMemoryCollection(Settings(database, environment)).Build(), Ct);
 
-    private Dictionary<string, string> Settings(string database, string environment) => new()
+    private Dictionary<string, string> Settings(string database, string environment)
     {
-        ["Application:Environment"] = environment,
-        ["Database:Host"] = fixture.Hostname,
-        ["Database:Port"] = fixture.Port.ToString(CultureInfo.InvariantCulture),
-        ["Database:Name"] = database,
-        ["Database:Migration:Username"] = fixture.AdminUsername,
-        ["Database:Migration:Password"] = fixture.AdminPassword,
-        ["Database:Username"] = RuntimeLogin,
-        ["Database:Password"] = RuntimePassword
-    };
+        var settings = new Dictionary<string, string>
+        {
+            ["Application:Environment"] = environment,
+            ["Database:Host"] = fixture.Hostname,
+            ["Database:Port"] = fixture.Port.ToString(CultureInfo.InvariantCulture),
+            ["Database:Name"] = database,
+            ["Database:Migration:Username"] = fixture.AdminUsername,
+            ["Database:Migration:Password"] = fixture.AdminPassword,
+            ["Database:Username"] = RuntimeLogin,
+            ["Database:Password"] = RuntimePassword
+        };
+        // ARV-083a: a cluster's migration job ensures every host's login (Main's is the runtime login here) and the ledger's.
+        if (environment?.StartsWith("k8s-", StringComparison.Ordinal) == true)
+        {
+            foreach (var (key, value) in HostLogins.ClusterSettings("it_env_", RuntimeLogin, RuntimePassword))
+                settings[key] = value;
+        }
+
+        return settings;
+    }
 
     private static IConfiguration Configuration(Dictionary<string, string> settings) => new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
 

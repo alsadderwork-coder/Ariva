@@ -73,10 +73,7 @@ public sealed class ValidationTests(PostgresFixture fixture) : IAsyncDisposable
         await using (var admin = new NpgsqlConnection(fixture.ConnectionString(database)))
         {
             await admin.OpenAsync(Ct);
-            await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
-            ensure.Parameters.AddWithValue("login", RuntimeLogin);
-            ensure.Parameters.AddWithValue("password", RuntimePassword);
-            await ensure.ExecuteNonQueryAsync(Ct);
+            await Ariva.IntegrationTests.Setup.HostLogins.EnsureAsync(admin, RuntimeLogin, RuntimePassword, Ariva.Infra.Timescale.HostDatabaseAccess.MainRole, Ct);
         }
 
         _runtime = new AccountsHost(fixture, new Dictionary<string, string> { ["Database:Username"] = RuntimeLogin, ["Database:Password"] = RuntimePassword },

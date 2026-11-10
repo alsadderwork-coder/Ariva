@@ -68,7 +68,7 @@ public sealed class QueueBinCompletionFlagTests(PostgresFixture postgres)
         await using var connection = new NpgsqlConnection(postgres.ConnectionString(database));
         await connection.OpenAsync(Ct);
         await using var transaction = await connection.BeginTransactionAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_stream", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
 #pragma warning disable CA2100 // literal statements of the test below
         await using var command = new NpgsqlCommand(sql, connection, transaction);

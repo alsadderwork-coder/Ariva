@@ -179,7 +179,9 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             (await GetAsync(client, token, "api/v1/admin/zone-profiles?siteCode=DMO")).Should().Be(source.ZoneProfiles);
         }
 
-        await using (var integration = new DeployedHost<Ariva.Api.Integration._IAssemblyMark>(HostSettings(_target, RestoredRuntimePassword)))
+        // ARV-083a: Ariva.Api.Integration on its own login, as the chart starts it.
+        var (integrationLogin, integrationPassword) = _target.HostLogin("Integration");
+        await using (var integration = new DeployedHost<Ariva.Api.Integration._IAssemblyMark>(HostSettings(_target, integrationPassword, integrationLogin)))
         {
             await using var scope = integration.Services.CreateAsyncScope();
             var exchange = await scope.ServiceProvider.GetRequiredService<ISvcIntegrationAuth>().ExchangeAsync(
@@ -366,7 +368,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
     {
         var check = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         check.ExitCode.Should().Be(0, check.Stdout + check.Stderr);
-        check.Stdout.Should().Contain("ariva_app holds ariva_runtime only (DML)");
+        check.Stdout.Should().Contain("ariva_app holds ariva_main and ariva_runtime (DML only)", "ARV-083a: Ariva.Api.Main's own login");
         // ARV-290 review: the runtime login's own caps as the migration job set them, and no parameter privilege but the one the
         // chart's init script gave the migration login.
         check.Stdout.Should().Contain("ok    runtime caps|ariva_app in this database: statement_timeout ").And.Contain(", temp_file_limit 1024MB")
@@ -377,7 +379,8 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             .And.Contain("ok    views|the views of public are the scripts' 3, each reading what its script reads")
             .And.Contain("ok    internal privileges|ariva_runtime: each inheritance child no wider than its parent")
             .And.Contain("ok    runtime grants|every grant of a relation or column to the runtime role goes to ariva_runtime without grant option")
-            .And.Contain("ok    default privileges|script 0001's only")
+            .And.Contain("ok    default privileges|none: a table or sequence a later script creates gives no role anything until its script grants it")
+            .And.Contain("ok    host privileges|each host role's grants on public as the scripts leave them")
             .And.Contain("ok    toast|no toast table grants ariva_runtime or a login that holds it anything, and none of them may use pg_toast")
             .And.Contain("ok    system function grants|the system catalog's functions grant what initdb gave and nothing more");
         // ARV-262: the restored database, migrated again by the release's job, holds Ariva's objects as a database the scripts
@@ -398,7 +401,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         (await ddl.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
         var oldPassword = async () => await ExecuteAsync(_target.ConnectionString(RuntimeLogin, SourceRuntimePassword), Query.One);
         (await oldPassword.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InvalidPassword);
-        (await ScalarAsync<string>(runtime, Query.RuntimeMemberships)).Should().Be("ariva_runtime");
+        (await ScalarAsync<string>(runtime, Query.RuntimeMemberships)).Should().Be("ariva_main,ariva_runtime", "ARV-083a: the base and Ariva.Api.Main's role only");
         (await ScalarAsync<bool>(runtime, Query.IsSuperuser)).Should().BeFalse();
     }
 
@@ -579,17 +582,19 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         // entries widened are reported as well as entries of their own.
         Line(check, "FAIL  default privileges|").Should().Contain("ariva in every schema on tables gives ").And.Contain("ariva_runtime=TRIGGER")
             .And.Contain("ariva in _timescaledb_internal on tables gives ariva_runtime=DELETE,ariva_runtime=INSERT,ariva_runtime=SELECT,ariva_runtime=UPDATE")
-            .And.Contain("ariva in public on tables gives ariva_runtime=DELETE,ariva_runtime=INSERT,ariva_runtime=SELECT,ariva_runtime=TRUNCATE,ariva_runtime=UPDATE")
-            .And.Contain("ariva in public on sequences gives ariva_runtime=SELECT,ariva_runtime=UPDATE with grant option,ariva_runtime=USAGE");
+            .And.Contain("ariva in public on tables gives ariva_runtime=TRUNCATE", "ARV-083a: script 0074 left no default privilege, so the forged one is all there is")
+            .And.Contain("ariva in public on sequences gives ariva_runtime=UPDATE with grant option");
         Line(check, "FAIL  runtime grants|").Should().Contain($"public.integration_call to {RuntimeLogin}")
             .And.Contain("public.audit_entry to ariva_runtime with grant option").And.Contain("public.site to PUBLIC");
         Line(check, "FAIL  runtime role|may create objects: ").Should().Contain("ariva_runtime in the database").And.Contain("ariva_app in schema it_side");
         await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.RememberForgottenScripts);
         var compared = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         compared.Stdout.Should().Contain("FAIL  runtime privileges|", compared.Stdout);
-        Line(compared, "FAIL  runtime privileges|").Should().Contain(
-            "report_delivery (the scripts: SELECT,INSERT,UPDATE(attempts reason sent_utc status); found: SELECT,INSERT,UPDATE)")
-            .And.Contain("sensing_event (the scripts: SELECT,INSERT; found: SELECT,INSERT,MAINTAIN)");
+        // ARV-083a: the host roles that write the two tables since script 0074, compared as the runtime role is.
+        compared.Stdout.Should().Contain("FAIL  host privileges|", compared.Stdout);
+        Line(compared, "FAIL  host privileges|").Should().Contain(
+            "ariva_cronz.report_delivery (the scripts: SELECT,INSERT,UPDATE(attempts reason sent_utc status); found: SELECT,INSERT,UPDATE)")
+            .And.Contain("ariva_stream.sensing_event (the scripts: SELECT,INSERT; found: SELECT,INSERT,MAINTAIN)");
         Line(compared, "FAIL  views|").Should().Contain("it_deliveries (the scripts: no such view; found: reads report_delivery)");
         // ARV-262 (the story's criterion): a trigger and a constraint taken away and a lost revoke, each in a relation of Ariva's
         // that no other line compares this way, and a function and a view the scripts do not create. Its review: a chunk's copy
@@ -684,7 +689,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         // option, EXECUTE for another role, and another setting for its sessions.
         foreach (var (forge, back, why) in new[]
                  {
-                     (Query.PurgeWithGrantOption, Query.PurgeWithoutGrantOption, "ariva_runtime may grant EXECUTE on"),
+                     (Query.PurgeWithGrantOption, Query.PurgeWithoutGrantOption, "ariva_cronz may grant EXECUTE on"),
                      (Query.PurgeForReader, Query.PurgeNotForReader, "EXECUTE granted to another role"),
                      (Query.PurgeOtherTimeZone, Query.PurgeUtc, "another setting for its sessions")
                  })
@@ -720,12 +725,12 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
 
     #region Helpers
 
-    private Dictionary<string, string> HostSettings(ChartDatabase server, string runtimePassword) => new()
+    private Dictionary<string, string> HostSettings(ChartDatabase server, string runtimePassword, string login = RuntimeLogin) => new()
     {
         ["Database:Host"] = server.Hostname,
         ["Database:Port"] = server.Port.ToString(System.Globalization.CultureInfo.InvariantCulture),
         ["Database:Name"] = ChartDatabase.Database,
-        ["Database:Username"] = RuntimeLogin,
+        ["Database:Username"] = login,
         ["Database:Password"] = runtimePassword,
         ["DataProtection:CertificatePath"] = _certificatePath,
         ["DataProtection:KeyPath"] = _keyPath,
@@ -870,7 +875,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             CREATE RULE it_rule AS ON INSERT TO public.site DO ALSO NOTHING;
             CREATE OR REPLACE FUNCTION public.validation_row_immutable() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
             CREATE PUBLICATION it_pub FOR TABLE public.site;
-            GRANT UPDATE ON public.report_delivery TO ariva_runtime;
+            GRANT UPDATE ON public.report_delivery TO ariva_cronz;
             DROP TRIGGER validation_result_revision_immutable ON public.validation_result_revision;
             ALTER TABLE public.alert DROP CONSTRAINT alert_state_check;
             INSERT INTO public.queue_bin (zone_key, start_utc, length_minutes, profile_version, entries, exits, waits, abandoned, censored, fragmented,
@@ -889,7 +894,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
                 EXECUTE (SELECT format('GRANT INSERT ON %I.%I TO ariva_runtime', materialization_hypertable_schema, materialization_hypertable_name)
                            FROM timescaledb_information.continuous_aggregates WHERE view_name = 'queue_minute_15m');
             END $$;
-            GRANT MAINTAIN ON public.sensing_event TO ariva_runtime;
+            GRANT MAINTAIN ON public.sensing_event TO ariva_stream;
             CREATE VIEW public.it_deliveries AS SELECT * FROM public.report_delivery;
             CREATE SCHEMA it_side;
             GRANT CREATE ON SCHEMA it_side TO ariva_app;
@@ -1048,8 +1053,8 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         Query.MigrationLoginIsSuperuser => "SELECT rolsuper FROM pg_roles WHERE rolname = 'ariva'",
         Query.GiveMigrationLoginReplication => "ALTER ROLE ariva REPLICATION",
         Query.RevokePurgeFromPublic => "REVOKE EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) FROM PUBLIC",
-        Query.PurgeWithGrantOption => "GRANT EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) TO ariva_runtime WITH GRANT OPTION",
-        Query.PurgeWithoutGrantOption => "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) FROM ariva_runtime",
+        Query.PurgeWithGrantOption => "GRANT EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) TO ariva_cronz WITH GRANT OPTION",
+        Query.PurgeWithoutGrantOption => "REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) FROM ariva_cronz",
         Query.PurgeForReader => "GRANT EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) TO ariva_validation_reader",
         Query.PurgeNotForReader => "REVOKE EXECUTE ON FUNCTION public.ariva_retention_purge(text, integer) FROM ariva_validation_reader",
         // ALTER FUNCTION ... SET replaces the setting where it stands, so setting it back restores the shipped array.

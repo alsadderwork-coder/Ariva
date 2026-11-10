@@ -38,14 +38,21 @@ public sealed class AccountsHost : IAsyncDisposable
 
     private readonly Action<IServiceCollection> _configure;
 
+    private readonly string _databaseName;
+
     /// <param name="configure">Replaces registrations after the host's own (test doubles such as a recording publisher).</param>
+    /// <param name="databaseName">
+    /// A database the caller created and migrated (ARV-083a: a cluster's migration job, with every host's login), used as it is:
+    /// nothing is created or applied, and <paramref name="database"/> is not used.
+    /// </param>
     public AccountsHost(PostgresFixture fixture, Dictionary<string, string> settings = null, TestDatabase database = TestDatabase.Accounts,
-        Action<IServiceCollection> configure = null)
+        Action<IServiceCollection> configure = null, string databaseName = null)
     {
         _fixture = fixture;
         Settings = settings ?? [];
         _databaseKind = database;
         _configure = configure;
+        _databaseName = databaseName;
     }
 
     public ManualClock Clock { get; } = new(new DateTimeOffset(2026, 10, 1, 8, 0, 0, TimeSpan.Zero));
@@ -61,6 +68,8 @@ public sealed class AccountsHost : IAsyncDisposable
 
     public async Task<string> DatabaseAsync()
     {
+        if (_databaseName is not null)
+            return _databaseName;
         await DatabaseGate.WaitAsync();
         try
         {
@@ -78,6 +87,9 @@ public sealed class AccountsHost : IAsyncDisposable
             DatabaseGate.Release();
         }
     }
+
+    /// <summary>Builds the host's services without creating an account (a host whose login may not create one, ARV-083a).</summary>
+    public Task StartAsync() => EnsureProviderAsync();
 
     private async Task EnsureProviderAsync()
     {

@@ -185,7 +185,7 @@ public sealed class GoldenReplayArchiveTests(PostgresFixture fixture) : IAsyncDi
         var run = await runner.RunAsync(Request(["A-VIS"]), null, Ct);
         await using var connection = new NpgsqlConnection(fixture.ConnectionString(database));
         await connection.OpenAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET ROLE ariva_runtime", connection))
+        await using (var role = new NpgsqlCommand("SET ROLE ariva_stream", connection))
             await role.ExecuteNonQueryAsync(Ct);
         await using var forge = new NpgsqlCommand("""
             INSERT INTO replay_run (id, format, site_code, zones, from_utc, to_utc, profile_version, settings_hash, input_records, output_records,
@@ -212,9 +212,7 @@ public sealed class GoldenReplayArchiveTests(PostgresFixture fixture) : IAsyncDi
         await using (var admin = new NpgsqlConnection(fixture.ConnectionString(database)))
         {
             await admin.OpenAsync(Ct);
-            await using var login = new NpgsqlCommand("SELECT ariva_ensure_runtime_login('it_replay_runtime', @password)", admin);
-            login.Parameters.AddWithValue("password", password);
-            await login.ExecuteNonQueryAsync(Ct);
+            await Ariva.IntegrationTests.Setup.HostLogins.EnsureAsync(admin, "it_replay_runtime", password, Ariva.Infra.Timescale.HostDatabaseAccess.StreamRole, Ct);
         }
 
         // A real runtime login, not SET ROLE from the superuser: its own temporary table named replay_run.
@@ -251,7 +249,7 @@ public sealed class GoldenReplayArchiveTests(PostgresFixture fixture) : IAsyncDi
         await runner.RunAsync(Request(["A-VIS"]), null, Ct);
         await using var connection = new NpgsqlConnection(fixture.ConnectionString(database));
         await connection.OpenAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET ROLE ariva_runtime", connection))
+        await using (var role = new NpgsqlCommand("SET ROLE ariva_stream", connection))
             await role.ExecuteNonQueryAsync(Ct);
 #pragma warning disable CA2100 // the statements are the theory's literals
         await using var command = new NpgsqlCommand(statement, connection);

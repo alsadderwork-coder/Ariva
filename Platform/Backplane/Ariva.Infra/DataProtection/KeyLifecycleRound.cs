@@ -26,12 +26,14 @@ public sealed record KeyLifecycleRun(KeyRingRetention KeyRing, IReadOnlyDictiona
 /// <list type="number">
 /// <item>Deletes the expired Data Protection keys past <see cref="KeyLifecycleSettings.ExpiredKeyRetentionDays"/> that no stored
 /// value needs, in batches of <see cref="KeyLifecycleSettings.BatchSize"/>, each one call of <c>ariva_data_protection_key_purge</c>
-/// (script 0072): the job connects with the hosts' runtime login, which may not delete a key itself (0002), and the database
+/// (script 0072): the job connects with Ariva.Api.Cronz's own login (ARV-083a: ariva_cronz, the one role script 0074 lets run the
+/// purge), which may not delete a key itself (0002), and the database
 /// function decides what goes (the floor of 30 days, the stored values that name each key, an unexpired key left in the ring).
 /// This class passes only the days and the batch size, as bind parameters of constant statements (CWE-89, CWE-269).</item>
 /// <item>Reads when the oldest of each dated credential in use was made (integration client secrets and seeds, device and
 /// display credentials, outbound endpoint secrets) and the oldest key in the ring, one constant statement of aggregates: no
-/// value, hash or name is read.</item>
+/// value, hash or name is read (ariva_cronz holds SELECT on those dates, the status and the credential columns only, script
+/// 0074).</item>
 /// <item>Since the ARV-211 review (finding N1), after the purge and the re-protection of the night: the stored values that still
 /// need a key the hosts refuse, the leftovers of an upgrade or a rotation, counted with <see cref="KeyRingUpgradeCheck"/> (each
 /// row's signature checked here) as <see cref="KeyRingUpgradeCheck.Reported"/> gives them (while the upgrade window is open the

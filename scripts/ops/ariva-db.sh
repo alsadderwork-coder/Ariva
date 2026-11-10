@@ -179,6 +179,8 @@ alert_keep_raise:52af781790c93f2eab47e7cc2b99b6e592da013f16804c725a0dc1b20b5f480
 alert_keep_raise:7da479242dafa3d0ffae451c6f31cd9e9301a2be48720b166dc10ef985dc4190,\
 alert_rule_identity:b1bbde2c3162fc34a948fb06dca87e4334b5dcec9c474a7f387f52dfdf9efee1,\
 ariva_data_protection_key_purge:9d886614f2343b230d50749c2f10b04df075e698c8758c163f80ca9ff15d975b,\
+ariva_ensure_development_login:75fb405a2a74092112033e88ffa56a8cdcf5a0123c3bcde5621e050df6af49a6,\
+ariva_ensure_host_login:80ca058fb83a64f7a7bcaeb9c8647ad376e2e332ecac3a67a624eb693ccfe107,\
 ariva_ensure_runtime_login:6864027ae91766a330f29144c95cdaafbc7d7d277c67b93f1e0fd38587aadd03,\
 ariva_ensure_validation_reader_login:80844ccdbfee88483d1b2b8f3eb810b19c9886998d9ab90174ebfcaef9317acb,\
 ariva_retention_purge:535ad38b539587c302aa4ea85e1c3508d55e5d5df6bf4f0675bbadf0076f78d7,\
@@ -205,97 +207,198 @@ zone_health_bin_final_is_immutable:546495444ddf733639f5cc6b2e5d09ec19c72d4dec1c8
 zone_profile_geometry_immutable:ffb5713b5a9b0bbca725c0208082cfe8b3dcbb4bd525317f08bb29b6391af07d,\
 zone_profile_immutable:c3c11583ac7dd5add9f4bafea3c4ba323d27a97cd9adeebd77b06ef9f4ea5a13"
 
-# ARV-189: the runtime role's privileges on every relation of public that Ariva's scripts leave other than the default
-# SELECT, INSERT, UPDATE and DELETE (script 0001's default privileges), with its column grants, as
-# <relation>=<privileges>[,<privilege>(<column> ...)] entries separated by ";". check compares them with the database once
-# it is at ARIVA_RUNTIME_PRIVILEGES_AT or later (before that the migration job has not applied the scripts the list
-# reflects), so a restore that lost a revoke, or gained a grant, is reported. OpsScriptTests refuses a later script that
-# grants to or revokes from ariva_runtime, or creates a view, until this list (or ARIVA_VIEWS) and its script move with it;
-# BackupRestoreTests holds the list equal to a migrated database.
-readonly ARIVA_RUNTIME_PRIVILEGES_AT="0072_data_protection_key_retention.sql"
-readonly ARIVA_RUNTIME_PRIVILEGES="advertising_media=SELECT,INSERT,UPDATE;\
-advertising_play=SELECT,INSERT;\
-advertising_playlist=SELECT,INSERT,UPDATE;\
-advertising_policy=SELECT,INSERT,UPDATE;\
-advertising_schedule=SELECT,INSERT,UPDATE;\
-airport=SELECT,INSERT,UPDATE;\
-alert=SELECT,INSERT,UPDATE;\
-alert_rule=SELECT,INSERT,UPDATE;\
-aman_pull_cursor=SELECT,INSERT,UPDATE;\
-audit_entry=SELECT,INSERT;\
-availability_cursor=SELECT,INSERT,UPDATE;\
-availability_minute=SELECT,INSERT;\
-border_desk_interval=SELECT,INSERT;\
-border_desk_session=SELECT,INSERT;\
-border_egate_interval=SELECT,INSERT;\
-checkpoint=SELECT,INSERT,UPDATE;\
-counter_allocation=SELECT,INSERT,UPDATE;\
-data_protection_key=SELECT,INSERT;\
+# ARV-189: the runtime role's privileges on every relation of public, with its column grants, as
+# <relation>=<privileges>[,<privilege>(<column> ...)] entries separated by ";"; a relation the list does not name grants it
+# nothing. Since ARV-083a (script 0074) ariva_runtime is the base every host login holds, and ARIVA_HOST_PRIVILEGES below
+# holds each host role's own grants, as <role>.<relation>=<privileges> entries: both are Ariva.Infra's HostDatabaseAccess
+# manifest (OpsScriptTests holds them equal to it, and HostDatabaseAccessTests holds a migrated database to it). check compares
+# them with the database once it is at ARIVA_RUNTIME_PRIVILEGES_AT or later (before that the migration job has not applied the
+# scripts the lists reflect), so a restore that lost a revoke, or gained a grant, is reported. OpsScriptTests refuses a later
+# script that grants to or revokes from ariva_runtime or a host role, or creates a view, until these lists (or ARIVA_VIEWS) and
+# their script move with it.
+readonly ARIVA_RUNTIME_PRIVILEGES_AT="0074_host_database_roles.sql"
+readonly ARIVA_RUNTIME_PRIVILEGES="data_protection_key=SELECT,INSERT;\
 database_environment=SELECT;\
-desk=SELECT,INSERT,UPDATE;\
-desk_code_mapping=SELECT,INSERT,UPDATE;\
-desk_feed_state=SELECT,INSERT,UPDATE;\
-desk_minute=SELECT,INSERT,UPDATE;\
-desk_observation=SELECT,INSERT;\
-desk_observation_batch=SELECT,INSERT;\
-desk_sensor_minute=SELECT,INSERT,UPDATE;\
-desk_zone_reading=SELECT,INSERT;\
-device=SELECT,INSERT,UPDATE;\
-device_calibration=SELECT,INSERT;\
-device_health_event=SELECT,INSERT;\
-display=SELECT,INSERT,UPDATE;\
-egate_minute=SELECT,INSERT,UPDATE;\
-email_message=SELECT,INSERT,UPDATE(attempts next_attempt_utc reason sent_utc status);\
-feed_freshness=SELECT,INSERT,UPDATE;\
-flight_event=SELECT,INSERT;\
-flight_leg=SELECT,INSERT,UPDATE;\
-floor_plan=SELECT,INSERT,UPDATE;\
-inbound_lane_demand=SELECT,INSERT,UPDATE;\
-instruction_slide=SELECT,INSERT,UPDATE;\
-integration_call=SELECT,INSERT;\
-integration_client=SELECT,INSERT,UPDATE;\
-integration_idempotency=SELECT,INSERT,DELETE,UPDATE(response_body status_code);\
-lane_staffing=SELECT,INSERT;\
-level=SELECT,INSERT,UPDATE;\
-line_minute=SELECT,INSERT,UPDATE;\
-line_minute_15m=SELECT;\
-maintenance_window=SELECT,INSERT,UPDATE;\
-manual_count=SELECT,INSERT;\
-operating_day_exception=SELECT,INSERT,UPDATE;\
-operating_week=SELECT,INSERT,UPDATE;\
-outbound_endpoint=SELECT,INSERT,UPDATE;\
-overflow_bin_15m=SELECT;\
-overflow_minute=SELECT,INSERT,UPDATE;\
-queue_bin=SELECT,INSERT,UPDATE;\
-queue_minute=SELECT,INSERT,UPDATE;\
-queue_minute_15m=SELECT;\
-queue_minute_shadow=INSERT,SELECT(minute_utc zone_key),UPDATE(no_service nowcast_degraded nowcast_minutes sensor_cycle_minutes updated_on);\
-recovery_code=SELECT,INSERT,UPDATE;\
-refresh_token=SELECT,INSERT,UPDATE;\
-replay_run=SELECT,INSERT;\
-report_delivery=SELECT,INSERT,UPDATE(attempts reason sent_utc status);\
-report_schedule=SELECT,INSERT,UPDATE;\
-retention_period=SELECT;\
+outbox_message=SELECT,INSERT,UPDATE,DELETE;\
+processed_event=SELECT,DELETE;\
 schema_version=SELECT;\
-sensing_batch=SELECT,INSERT;\
-sensing_day_key=SELECT,INSERT,DELETE;\
-sensing_event=SELECT,INSERT;\
-site=SELECT,INSERT,UPDATE(modified_by modified_by_id modified_on name);\
-stream_offset=SELECT,INSERT,UPDATE;\
-stream_partition_count=SELECT,INSERT;\
-stream_zone_state=SELECT,INSERT,UPDATE;\
-terminal=SELECT,INSERT,UPDATE;\
-tracer_batch=SELECT,INSERT;\
-tracer_run=SELECT,INSERT;\
-user=SELECT,INSERT,UPDATE;\
-user_session=SELECT,INSERT,UPDATE;\
-validation_campaign=SELECT,INSERT,UPDATE(closed_by_id closed_utc started_by_id started_utc status);\
-validation_campaign_desk=SELECT,INSERT;\
-validation_campaign_line=SELECT,INSERT;\
-validation_campaign_zone=SELECT,INSERT;\
-validation_result_revision=SELECT,INSERT;\
-zone_health_bin=SELECT,INSERT,UPDATE;\
-zone_outage=SELECT,INSERT,UPDATE(closed recorded_on to_utc)"
+user=SELECT(all_sites created_by created_by_id created_on display_name email failed_login_count id is_break_glass is_disabled last_login_on locked_until modified_by modified_by_id modified_on must_change_password totp_enrolled totp_last_step user_name);\
+user_role=SELECT;\
+user_session=SELECT;\
+user_site=SELECT"
+readonly ARIVA_HOST_ROLES="ariva_main,ariva_ingest,ariva_stream,ariva_cronz,ariva_integration,ariva_availability"
+readonly ARIVA_HOST_PRIVILEGES="ariva_main.advertising_media=SELECT,INSERT,UPDATE;\
+ariva_main.advertising_play=SELECT,INSERT;\
+ariva_main.advertising_playlist=SELECT,INSERT,UPDATE;\
+ariva_main.advertising_policy=SELECT,INSERT,UPDATE;\
+ariva_main.advertising_schedule=SELECT,INSERT,UPDATE;\
+ariva_main.airport=SELECT,INSERT,UPDATE;\
+ariva_main.alert=SELECT,UPDATE;\
+ariva_main.alert_rule=SELECT,INSERT,UPDATE;\
+ariva_main.audit_entry=SELECT,INSERT;\
+ariva_main.availability_minute=SELECT;\
+ariva_main.border_desk_interval=SELECT;\
+ariva_main.border_desk_session=SELECT;\
+ariva_main.border_egate_interval=SELECT;\
+ariva_main.checkpoint=SELECT,INSERT,UPDATE;\
+ariva_main.counter_allocation=SELECT;\
+ariva_main.desk=SELECT,INSERT,UPDATE;\
+ariva_main.desk_code_mapping=SELECT,INSERT,UPDATE;\
+ariva_main.desk_minute=SELECT;\
+ariva_main.desk_observation=SELECT,INSERT;\
+ariva_main.desk_observation_batch=SELECT,INSERT;\
+ariva_main.device=SELECT,INSERT,UPDATE;\
+ariva_main.device_calibration=SELECT,INSERT;\
+ariva_main.device_heartbeat=SELECT,INSERT,UPDATE;\
+ariva_main.display=SELECT,INSERT,UPDATE;\
+ariva_main.email_message=SELECT,INSERT;\
+ariva_main.feed_freshness=SELECT,INSERT,UPDATE;\
+ariva_main.flight_leg=SELECT,INSERT,UPDATE;\
+ariva_main.floor_plan=SELECT,INSERT,UPDATE;\
+ariva_main.inbound_lane_demand=SELECT;\
+ariva_main.instruction_slide=SELECT,INSERT,UPDATE;\
+ariva_main.integration_client=SELECT,INSERT,UPDATE;\
+ariva_main.lane_staffing=SELECT;\
+ariva_main.level=SELECT,INSERT,UPDATE;\
+ariva_main.line=SELECT,INSERT,UPDATE,DELETE;\
+ariva_main.line_minute=SELECT;\
+ariva_main.maintenance_window=SELECT,INSERT,UPDATE;\
+ariva_main.manual_count=SELECT,INSERT;\
+ariva_main.operating_day_exception=SELECT,INSERT,UPDATE;\
+ariva_main.operating_week=SELECT,INSERT,UPDATE;\
+ariva_main.outbound_endpoint=SELECT,INSERT,UPDATE;\
+ariva_main.overflow_minute=SELECT;\
+ariva_main.processed_event=INSERT;\
+ariva_main.queue_bin=SELECT;\
+ariva_main.queue_minute=SELECT;\
+ariva_main.recovery_code=SELECT,INSERT,UPDATE;\
+ariva_main.refresh_token=SELECT,INSERT,UPDATE;\
+ariva_main.report_delivery=SELECT;\
+ariva_main.report_schedule=SELECT,INSERT,UPDATE;\
+ariva_main.report_schedule_recipient=SELECT,INSERT,DELETE;\
+ariva_main.site=SELECT,INSERT,UPDATE(modified_by modified_by_id modified_on name);\
+ariva_main.terminal=SELECT,INSERT,UPDATE;\
+ariva_main.tracer_batch=SELECT,INSERT;\
+ariva_main.tracer_run=SELECT,INSERT;\
+ariva_main.user=SELECT,INSERT,UPDATE;\
+ariva_main.user_role=INSERT,DELETE;\
+ariva_main.user_session=INSERT,UPDATE;\
+ariva_main.user_site=INSERT,DELETE;\
+ariva_main.validation_campaign=SELECT,INSERT,UPDATE(closed_by_id closed_utc started_by_id started_utc status);\
+ariva_main.validation_campaign_desk=SELECT,INSERT;\
+ariva_main.validation_campaign_line=SELECT,INSERT;\
+ariva_main.validation_campaign_zone=SELECT,INSERT;\
+ariva_main.validation_result_revision=SELECT,INSERT;\
+ariva_main.zone=SELECT,INSERT,UPDATE,DELETE;\
+ariva_main.zone_health=SELECT,INSERT,UPDATE;\
+ariva_main.zone_health_bin=SELECT;\
+ariva_main.zone_outage=SELECT;\
+ariva_main.zone_profile=SELECT,INSERT,UPDATE,DELETE;\
+ariva_ingest.airport=SELECT;\
+ariva_ingest.device=SELECT;\
+ariva_ingest.level=SELECT;\
+ariva_ingest.line=SELECT;\
+ariva_ingest.terminal=SELECT;\
+ariva_ingest.zone=SELECT;\
+ariva_ingest.zone_profile=SELECT;\
+ariva_stream.alert=SELECT,INSERT,UPDATE;\
+ariva_stream.alert_rule=SELECT;\
+ariva_stream.alert_rule_state=SELECT,INSERT,UPDATE,DELETE;\
+ariva_stream.audit_entry=INSERT;\
+ariva_stream.border_desk_interval=SELECT;\
+ariva_stream.border_desk_session=SELECT;\
+ariva_stream.border_egate_interval=SELECT;\
+ariva_stream.checkpoint=SELECT;\
+ariva_stream.desk=SELECT;\
+ariva_stream.desk_code_mapping=SELECT;\
+ariva_stream.desk_feed_state=SELECT,INSERT,UPDATE;\
+ariva_stream.desk_minute=SELECT,INSERT,UPDATE;\
+ariva_stream.desk_sensor_minute=SELECT,INSERT,UPDATE;\
+ariva_stream.desk_zone_reading=SELECT,INSERT;\
+ariva_stream.device=SELECT;\
+ariva_stream.device_health_event=SELECT,INSERT;\
+ariva_stream.device_heartbeat=SELECT;\
+ariva_stream.egate_minute=SELECT,INSERT,UPDATE;\
+ariva_stream.email_message=SELECT,INSERT;\
+ariva_stream.flight_leg=SELECT;\
+ariva_stream.inbound_lane_demand=SELECT;\
+ariva_stream.lane_staffing=SELECT;\
+ariva_stream.line=SELECT;\
+ariva_stream.line_minute=SELECT,INSERT,UPDATE;\
+ariva_stream.overflow_minute=SELECT,INSERT,UPDATE;\
+ariva_stream.processed_event=INSERT;\
+ariva_stream.queue_bin=SELECT,INSERT,UPDATE;\
+ariva_stream.queue_minute=SELECT,INSERT,UPDATE;\
+ariva_stream.queue_minute_shadow=INSERT,SELECT(minute_utc zone_key),UPDATE(no_service nowcast_degraded nowcast_minutes sensor_cycle_minutes updated_on);\
+ariva_stream.replay_run=SELECT,INSERT;\
+ariva_stream.sensing_batch=SELECT,INSERT;\
+ariva_stream.sensing_day_key=SELECT,INSERT,DELETE;\
+ariva_stream.sensing_event=SELECT,INSERT;\
+ariva_stream.stream_offset=SELECT,INSERT,UPDATE;\
+ariva_stream.stream_partition_count=SELECT,INSERT;\
+ariva_stream.stream_zone_state=SELECT,INSERT,UPDATE;\
+ariva_stream.zone=SELECT;\
+ariva_stream.zone_health_bin=SELECT,INSERT,UPDATE;\
+ariva_stream.zone_outage=SELECT,INSERT,UPDATE(closed recorded_on to_utc);\
+ariva_stream.zone_profile=SELECT;\
+ariva_cronz.airport=SELECT;\
+ariva_cronz.alert=SELECT;\
+ariva_cronz.border_egate_interval=SELECT;\
+ariva_cronz.checkpoint=SELECT;\
+ariva_cronz.desk=SELECT;\
+ariva_cronz.desk_minute=SELECT;\
+ariva_cronz.device=SELECT;\
+ariva_cronz.device_heartbeat=SELECT;\
+ariva_cronz.display=SELECT(credential_hash credential_issued_on deleted_on);\
+ariva_cronz.flight_leg=SELECT;\
+ariva_cronz.inbound_lane_demand=SELECT;\
+ariva_cronz.integration_client=SELECT(id secret_changed_utc status totp_changed_utc totp_secret_protected),UPDATE(totp_secret_protected);\
+ariva_cronz.lane_staffing=SELECT,INSERT;\
+ariva_cronz.outbound_endpoint=SELECT(id secret_changed_utc secret_protected status),UPDATE(secret_protected);\
+ariva_cronz.queue_minute=SELECT;\
+ariva_cronz.report_delivery=SELECT,INSERT,UPDATE(attempts reason sent_utc status);\
+ariva_cronz.report_schedule=SELECT;\
+ariva_cronz.report_schedule_recipient=SELECT;\
+ariva_cronz.retention_period=SELECT;\
+ariva_cronz.site=SELECT;\
+ariva_cronz.terminal=SELECT;\
+ariva_cronz.user=SELECT(totp_secret_protected),UPDATE(totp_secret_protected);\
+ariva_cronz.zone=SELECT;\
+ariva_cronz.zone_outage=SELECT;\
+ariva_cronz.zone_profile=SELECT;\
+ariva_integration.airport=SELECT;\
+ariva_integration.alert=SELECT;\
+ariva_integration.aman_pull_cursor=SELECT,INSERT,UPDATE;\
+ariva_integration.audit_entry=INSERT;\
+ariva_integration.border_desk_interval=SELECT,INSERT;\
+ariva_integration.border_desk_session=SELECT,INSERT;\
+ariva_integration.border_egate_interval=SELECT,INSERT;\
+ariva_integration.checkpoint=SELECT;\
+ariva_integration.counter_allocation=SELECT,INSERT,UPDATE;\
+ariva_integration.desk=SELECT;\
+ariva_integration.desk_code_mapping=SELECT;\
+ariva_integration.email_message=SELECT,UPDATE(attempts next_attempt_utc reason sent_utc status);\
+ariva_integration.feed_freshness=SELECT,INSERT,UPDATE;\
+ariva_integration.flight_event=INSERT;\
+ariva_integration.flight_leg=SELECT,INSERT,UPDATE;\
+ariva_integration.inbound_lane_demand=SELECT,INSERT,UPDATE;\
+ariva_integration.integration_call=INSERT;\
+ariva_integration.integration_client=SELECT,UPDATE(attempt_window_utc attempts_in_window failed_attempts last_token_utc locked_until_utc totp_last_step);\
+ariva_integration.integration_idempotency=SELECT,INSERT,DELETE,UPDATE(response_body status_code);\
+ariva_integration.outbound_endpoint=SELECT,UPDATE(consecutive_failures last_modified last_poll_utc last_status);\
+ariva_integration.processed_event=INSERT;\
+ariva_integration.site=SELECT;\
+ariva_integration.terminal=SELECT;\
+ariva_availability.airport=SELECT;\
+ariva_availability.availability_cursor=SELECT,INSERT,UPDATE;\
+ariva_availability.availability_minute=SELECT,INSERT;\
+ariva_availability.maintenance_window=SELECT;\
+ariva_availability.operating_day_exception=SELECT;\
+ariva_availability.operating_week=SELECT;\
+ariva_availability.queue_minute=SELECT;\
+ariva_availability.terminal=SELECT;\
+ariva_availability.zone=SELECT;\
+ariva_availability.zone_profile=SELECT"
 
 # ARV-290 review: the bounds the hosts and the migration job hold the runtime login's caps to (DatabaseSettings'
 # MinStatementTimeoutSeconds to MaxStatementTimeoutSeconds and MinTempFileLimitMegabytes to MaxTempFileLimitMegabytes;
@@ -334,69 +437,70 @@ readonly ARIVA_VIEWS="line_minute_15m=line_minute;overflow_bin_15m=overflow_minu
 # ARIVA_SCHEMA_AT, the latest script (any script may change them), so a trigger, constraint, grant or function a forged dump
 # left out, changed or added is reported even where no other line looks. OpsScriptTests holds ARIVA_SCHEMA_AT at the
 # latest script; BackupRestoreTests holds the list equal to a database the release's migration job migrated (and prints it).
-readonly ARIVA_SCHEMA_AT="0073_data_protection_key_row_signature.sql"
-readonly ARIVA_SCHEMA="advertising_media=2cb17c8c169d81de441d4192fdc21b0c;\
+readonly ARIVA_SCHEMA_AT="0074_host_database_roles.sql"
+readonly ARIVA_SCHEMA="advertising_media=efa1f55d8551acc26956c6a23987ee5c;\
 advertising_media_guard()=0c14e39356e12f186a82b88895cc130a;\
-advertising_play=d5f1179d8cfaccdcc0d9c7d9c3634258;\
-advertising_playlist=4a6c0318760037977918e61300754a06;\
+advertising_play=273d01cb52fbcaca594c2bce19e6edf0;\
+advertising_playlist=b5b78c8539b41c0ecdf69e8db1776d7d;\
 advertising_playlist_guard()=633d55f8a6c27f13b7b7a1e94d2b9da1;\
-advertising_policy=76011b22e581d1eda49686c422e8bbd5;\
+advertising_policy=511c705797e5bbda07ac44ef1c8fade6;\
 advertising_policy_stamped()=5c0aa1c10b5c5c2a24037be6464daf6e;\
-advertising_schedule=b8b25b05cc51068e681cee5e690ef853;\
+advertising_schedule=85b92a00c2798b05b848c0779b2340fa;\
 advertising_schedule_guard()=bf75f116d53a7bf6e874609ff14775f4;\
-airport=3c94cfdd409c8390193522cab42771f1;\
-alert=24824e4c643233ddbac5ec2d6ab45655;\
+airport=3521f76004e77098a8b58c31bb863824;\
+alert=76dde94442cb22504b9ec8cfe8e9e34b;\
 alert_keep_raise()=85dd9b3f8edd77b7ada96d91567edd5e;\
-alert_rule=667a50186480b9515162c8790ab9d2dc;\
+alert_rule=69ab50417eb542cdefbf9be442a8330a;\
 alert_rule_identity()=895b6cc23a25603fadff715c72460978;\
-alert_rule_state=33e6047c3886060ebd4fc368a29373be;\
-aman_pull_cursor=2b1f0d463807d44bf7e9550223bb1bf9;\
-ariva_data_protection_key_purge(p_after_days integer, p_limit integer)=38851ffa83823933dbd844d305281aec;\
-ariva_ensure_runtime_login(login_name text, login_password text)=a34b831ffc5ede64cdd0f70840744ab4;\
+alert_rule_state=944aadd8e543d6f301de7fdabbf9755b;\
+aman_pull_cursor=ea251994d68bde67af782d8d6f314f4d;\
+ariva_data_protection_key_purge(p_after_days integer, p_limit integer)=9b8f72595b8d5b84e4d087f366b487c5;\
+ariva_ensure_development_login(login_name text, login_verifier text)=fec2f431c1d59d2ab46a22b5cbabb0db;\
+ariva_ensure_host_login(login_name text, login_verifier text, host_role text)=fa60aa4b4cc12da4d0f67602044fa2b8;\
 ariva_ensure_validation_reader_login(login_name text, login_verifier text)=a933282b920424704f9a04912201735e;\
-ariva_retention_purge(p_data_set text, p_limit integer)=a7ff57e7b5404c01e5cb1715f4416c2c;\
+ariva_retention_purge(p_data_set text, p_limit integer)=667cc4b997e5dde63f94f3e048f110e7;\
 ariva_set_runtime_session_limits(login_name text, idle_in_transaction_seconds integer, keepalive_idle_seconds integer, keepalive_interval_seconds integer, keepalive_count integer)=42767b94e5f2e71b2eb0ebc49a7ff9a0;\
 ariva_set_runtime_statement_timeout(login_name text, timeout_seconds integer)=9e7119ef6c672f24c7f58833abdac5f9;\
 ariva_set_runtime_temp_file_limit(login_name text, limit_megabytes integer)=7bd37ec1510e5736eb101d351a794abc;\
-audit_entry=517f91f81aa4f05abee86733509a5cae;\
-availability_cursor=8e4b2ef670b3e952fe9b2d7d78c9ad63;\
-availability_minute=a0a7f3238150c745a520566b57e17da4;\
-border_desk_interval=5f357f5f8810dc45e5d0066550447da3;\
-border_desk_session=9f55be74e4a68f69813c1dd90063d42e;\
-border_egate_interval=f58e79376e4e7c851af7bb68b5cf1302;\
-checkpoint=f39bbc7b8379b08fca1a398490927d55;\
-counter_allocation=9160c214b4875f087f813c0fa69702ab;\
+audit_entry=acaaeb5d0eba12ebc9f117edcc99f31e;\
+availability_cursor=f1b3496fc30991bbfc8d6e5ee0359177;\
+availability_minute=5046c63c93132ea430e4a50b7b88e4a9;\
+border_desk_interval=c608272e0e38abf35832e50a71d64e87;\
+border_desk_session=fb919bd0c662d17d12feb1d06ff6e12e;\
+border_egate_interval=20990bf3303bde380dcd2d2b0b6fef6c;\
+checkpoint=14c06b1c6bf1b395ef7016df49e1ef04;\
+counter_allocation=3c80f5ba079259bba3c9472bc00f331c;\
 data_protection_key=1bdb6d157bcbf9c56ef37a12b00b98cf;\
 database=b90a9d25f2cafa4afcdf86348a4884ea;\
 database_environment=e52adb8c3538e5988c62134485224f03;\
-desk=7e2fd78689a8e39df7d7718eb47ff4c2;\
-desk_code_mapping=e35f0f7d275e0630066f9fd4e42da56a;\
-desk_feed_state=d28b817a20b273a697a452a2e7fd9d50;\
-desk_minute=3e875cb29f2515f1ec77676bf22f596e;\
-desk_observation=f1b03382ca05ea989e8e7949a437fb9d;\
-desk_observation_batch=097cb763e24f900450524f0418de2be4;\
+desk=79f14d06be46a13b55d94fe4fcc76970;\
+desk_code_mapping=638faafef308c8c20acca131929f3d54;\
+desk_feed_state=1f4947f9f11cc25da175971112ca1e60;\
+desk_minute=c2a0c2faf71c5845cdb9ab41295aad61;\
+desk_observation=c262e94305a41a99eed9b9670937267d;\
+desk_observation_batch=41717c0ac0c736b78df672e035634873;\
 desk_observation_insert_check()=825ab6784dec0fbdbc3538ef0a990d2f;\
-desk_sensor_minute=3546d814ef2e6a7e7c18241b43e7a362;\
-desk_zone_reading=a204ce21cdfc0d3efb69de85b4b2e2db;\
-device=b59745ec0348bfad4a9194b8e545ad93;\
-device_calibration=8df606c26b6e3ab383f5867afd132b32;\
+desk_sensor_minute=483da35db29b2a8de7f9a7cedf9cfd6c;\
+desk_zone_reading=b4b1bc8a4420ce49f3ca362cdddc3165;\
+device=2807c34022015792d0ac0b8b58ccb9fb;\
+device_calibration=a60e63b9883da3bc75711a6008f8f646;\
 device_calibration_immutable()=898d61ed2d4d8bed0d1c463c86f4abe9;\
-device_health_event=54f0a7662277a2dcbddbc26a0b41b6a0;\
-device_heartbeat=0cd33743e6e2f39b0940afd5349aa485;\
-display=3e2ccabac8fa244989f46e9e8768f3f1;\
+device_health_event=098a47a36118c584296f0e3126dff26a;\
+device_heartbeat=40043b90d1ffec64e8d8393685e7d642;\
+display=2dbdcac9c50f0eeb35d167dac3afbc8e;\
 display_advertising_allowed()=5420d3348838bb6c035cad53f5684d8c;\
-egate_minute=fe0f51641a7af9a738e8e5dcdc48301f;\
-email_message=1c531e7cecee02a2b7101e47730a08c8;\
+egate_minute=56950de3a3438f05b4e71cd1408dbe38;\
+email_message=b9ee18c9a3284939336685e716471e84;\
 email_message_keep()=d91278075b584d4e3e4b5905e6770ee6;\
-feed_freshness=d06d4c8376c322fd09a876991f7735d9;\
-flight_event=718de1b8138faa0cb2c5d8d47a852c31;\
-flight_leg=995c0e72317cd5713439b4e544bb3b93;\
-floor_plan=4cb91c2b99aa2229325665b7547fbe22;\
-inbound_lane_demand=4513c5b054cd09dc13a0a5932dfb6ecc;\
-instruction_slide=88971ae117e1b10b28506495edb04e7e;\
-integration_call=e46b0d368a4916cb0834ecee757ad780;\
-integration_client=5900cfdb0d5ca73d3abce7cebf968b94;\
-integration_idempotency=7391a46cbb12dc523a9f98ef518d8c77;\
+feed_freshness=7103bec594ffca8f14b6e7e132734af7;\
+flight_event=7998f95b435f5152fa1a00a2e1729834;\
+flight_leg=8424fca173691ec7c6ae8fb88e172092;\
+floor_plan=b3410bfd693f141f44f483edf3b6299c;\
+inbound_lane_demand=7d127dd67d10fe2b5fae06d6a7d26415;\
+instruction_slide=0bb488ce13fe92568cc889e07a0dc6ef;\
+integration_call=66db811725f2becb638d9e7e47218a5e;\
+integration_client=32a34d2592c2a70c2191d52d3b88a5a9;\
+integration_idempotency=de521b2fd8d56190dfe78d6ab1ac6a95;\
 integration_idempotency_keep()=b3b527e2df0c9358c30ac3e1d26d786f;\
 job _timescaledb_functions.policy_compression on public.device_health_event=89b38544bfc656b1c3fd4271615bc972;\
 job _timescaledb_functions.policy_compression on public.sensing_event=ae0ad0fbd8f7bfca70da5aa0f18de182;\
@@ -411,35 +515,35 @@ job _timescaledb_functions.policy_retention on public.sensing_batch=41989bc3ae24
 job _timescaledb_functions.policy_retention on public.sensing_event=13fc8b41922715a182ff842c2988f340;\
 job _timescaledb_functions.policy_retention on public.zone_outage=8ecdc4df16b85f013fce50266318a530;\
 job _timescaledb_functions.policy_telemetry=391d9deb8604ef06497fe1c4d49a4936;\
-lane_staffing=8cf2ed16d6b64a3ca97dd63cbe84a654;\
-level=ef72305459eb8b4ba8140489c8612fcf;\
-line=b17d4462e2e004ba9db787d69655149d;\
-line_minute=949005495d9badc823b8f406bf0508a4;\
-line_minute_15m=c486d2eb00e6f688763ccbfa14f4f49a;\
-maintenance_window=30c9e45c92c9f12632648b94e61652cf;\
-manual_count=cc73bd7e33a26983b067f4d91e0ce437;\
+lane_staffing=1aef2e44c206eceae0f92dc04c497817;\
+level=dad6a94db0e22b8c3d9b251fc5d6134e;\
+line=99dc21870cb5df369c45f4e2fa02b431;\
+line_minute=adbf08c9afc67211330485b13ad0f684;\
+line_minute_15m=dd892980cfe6e5544461034eb00be317;\
+maintenance_window=63bb5572083b570937341557340e85a9;\
+manual_count=63c4065743f9c5c874443006b5bd5898;\
 manual_count_insert_check()=440139ea9b09c91a26a5d0d497faae00;\
-operating_day_exception=039d4c83fdcce93a7f70c5689e6dd688;\
-operating_week=4bf3eae1c6360300dadde851d38f57c0;\
-outbound_endpoint=c22fdee5cf9a5b29d82973abcd2ddbc5;\
+operating_day_exception=990ba3243eeaaefbd32c9d07d8c3c8bd;\
+operating_week=bc180eefb3cb9eede700f550e3d67bfd;\
+outbound_endpoint=b7c0f4fe02360628e854d555c9e7a0a8;\
 outbox_message=bbd7564a3197af6eab375a3b02976a3f;\
-outbox_message_seq_seq=1385144055b5137fc429fe2b18c88a02;\
-overflow_bin_15m=437c7e5730c99b675118b78e998ca305;\
-overflow_minute=5ffa03608bb5598cc7e75b9559c04aee;\
-processed_event=e3e043f4a644c70841f27b0067158d27;\
-queue_bin=08776c919041f64ad030a3aa7d899eb1;\
+outbox_message_seq_seq=d7d6baf610a6890e7fa06eb6c3be767d;\
+overflow_bin_15m=0631512be8adc43aa49d188fe1e0aa95;\
+overflow_minute=c8353984cc798b6ab5bdb76d34ecb2fb;\
+processed_event=f3063145e7c18f51a1bef9f029c37131;\
+queue_bin=aedc281a35db1300b3a77cf4a4f981d5;\
 queue_bin_final_is_immutable()=a8f0a0b610e7430cc97d338b164571aa;\
-queue_minute=6a779edc6e03c01e76844db4c7a8ecfe;\
-queue_minute_15m=ab5233a3c5588ab61bbd2a96cc896fb7;\
-queue_minute_shadow=99cee8b2a6e0a9df0fad7f8f41fb24fe;\
-recovery_code=8505ef0be87bad1390e64df736902e79;\
-refresh_token=f1daa29c1e256df7932dac8db5dceae1;\
-replay_run=0cd65a5511a133ce3379725c2851d06d;\
+queue_minute=8656bce695c7e60f6f7ebf43074d648e;\
+queue_minute_15m=45ffc689720d520b2212d0ab423e424c;\
+queue_minute_shadow=4ad28954f236a1752692d7fc31b61c86;\
+recovery_code=16db38569318de154b9898a5d46fc4c6;\
+refresh_token=ddc5d0b811dd08a8debc854fee998666;\
+replay_run=32b01e00dc61157c8078d77e388f6809;\
 replay_run_anchor()=0787fcfcc3f351eb37e3f469e36ffbd5;\
-report_delivery=53deee3a4bb2b171b8768ff6ee18b555;\
-report_schedule=1b9f664301a76bbf4fd3e8507000c122;\
-report_schedule_recipient=a955d379c49e2a89352667344e1f0700;\
-retention_period=7392f4079c31935a03633a7a08238725;\
+report_delivery=0d73a2521cf718247e06069928a104da;\
+report_schedule=21b60b30c0a3c266b062d25ff4020c8a;\
+report_schedule_recipient=8b2e385ae67ea0e14c35146dc4544432;\
+retention_period=0c560d7fa806c4b99a1e0cad33cfa30c;\
 schema _timescaledb_cache=01b9f62992baa1842166fe29ac004a7a;\
 schema _timescaledb_catalog=01b9f62992baa1842166fe29ac004a7a;\
 schema _timescaledb_config=01b9f62992baa1842166fe29ac004a7a;\
@@ -448,44 +552,44 @@ schema _timescaledb_internal=01b9f62992baa1842166fe29ac004a7a;\
 schema information_schema=01b9f62992baa1842166fe29ac004a7a;\
 schema pg_catalog=01b9f62992baa1842166fe29ac004a7a;\
 schema pg_toast=b674f4d680283437e56727831c38bbf3;\
-schema public=3abf3cd4be4886c9d3aacf2b0b9f3734;\
+schema public=c5502e0e18b2371527559f5bff156f6c;\
 schema timescaledb_experimental=01b9f62992baa1842166fe29ac004a7a;\
 schema timescaledb_information=01b9f62992baa1842166fe29ac004a7a;\
 schema toolkit_experimental=01b9f62992baa1842166fe29ac004a7a;\
 schema_version=b28ff4f835f1e99b965b23ee311bb0af;\
-sensing_batch=e89a84e0d986b4f52711e08243a8ae86;\
-sensing_day_key=83545c0e1c076078e6eb00b450a90542;\
-sensing_event=d324e9c04c9a19a56db1458b2b351869;\
-site=c23fd0ae4abba5729f38703cea18030b;\
-stream_offset=7a6dcf84e92b526649085fd79d5fa516;\
-stream_partition_count=1ee751f5fda9720aeaa06947656cc370;\
-stream_zone_state=d7528ea2a44188105afd889623b93347;\
-terminal=df71d62a0b33cfa0a8a270f417784f90;\
-tracer_batch=91544f21e175f95d6226eaad7370ecd2;\
-tracer_run=ef5e635b2e58841bb8b872082a31dbfe;\
-user=98d18078d1cf068518726005d68af86e;\
-user_role=b409107c70c5fdc069a1e5d455f5a232;\
-user_session=9b9ea08ab46360356d343172edb30f8d;\
-user_site=d9ffd9b23069936bfc03888f4a71ef45;\
-validation_campaign=835158a659b6cbcb5e7ce1143f22f629;\
-validation_campaign_desk=6df792079f53aa13faa2be15ab5eb5f6;\
+sensing_batch=f1e4c09c6e7c6c5f5a2743c771d2c150;\
+sensing_day_key=3ec7b4c4b245a21310efe1c81d3a9fb6;\
+sensing_event=1b1485b9700d98ad44bcfd8a710ec7b5;\
+site=86c6a3119775eb5d7cf3a1048667d126;\
+stream_offset=68101bd0fcc12f775ad93d87ba65d708;\
+stream_partition_count=a1e51296a4b5fc1eb39cabff942af976;\
+stream_zone_state=300ca1c9c2191dad9af1c7a9d7af9bde;\
+terminal=8f8e8c7629ab5c892f9ba80fdb7f7c98;\
+tracer_batch=a05e1e9bb968eb60f8b90a2009a22be7;\
+tracer_run=9ed548503963e020a1312d128c36e176;\
+user=9e7fb747afed0755779eccae5e3fb72d;\
+user_role=63490d89117cf7065a3b458cda569d8f;\
+user_session=a13d591e150e76f223c7b5ee2419ddce;\
+user_site=be6e3d64c45b3195628591e139a1b134;\
+validation_campaign=9cdf5378be1c436c2776c148a76aeae4;\
+validation_campaign_desk=a0e90d385f03a957ba2b6d20790b04cf;\
 validation_campaign_desk_check()=104ea7afcc154308d02495c5c62a6cb3;\
 validation_campaign_insert_check()=54d97900461e4a0900d00a9e1b2ca38c;\
-validation_campaign_line=53c13b9d9179eea8772c51ec24ed9c31;\
+validation_campaign_line=915d35d5da0524d8fc6272a948bfa837;\
 validation_campaign_line_check()=660ada511c8ea7f4436835940bb6348f;\
 validation_campaign_transition()=1b4cd420c3805b5b6125015cd8456ff3;\
-validation_campaign_zone=c2d2c328696d12b45594aadf0f8c2674;\
+validation_campaign_zone=ff07d1c941d3fe75efd2f5a1cc2932df;\
 validation_campaign_zone_check()=6ff7893065cd5560d80c53b1b8d44af5;\
 validation_capture_insert_check()=75dff80d9f1c8e8e64d54c9f222fb0d1;\
-validation_result_revision=4af93ccdfbc4363e4a52652101add721;\
+validation_result_revision=025fe05d2c0d8f1bd715bfc1619a62de;\
 validation_result_revision_insert_check()=bcdfa3eee48504be818dddb7738ef6fb;\
 validation_row_immutable()=e77b1c7f83acb7761ff4cd2ff8877653;\
-zone=144daa8f192dce93a13e75a77ec54228;\
-zone_health=567ae9a2661ee7a7f18dfb79c3b216c6;\
-zone_health_bin=83f6d4fc5a024c2bbae3392fd68df243;\
+zone=8a845285dd6ad59a486cf1a9f214ae7e;\
+zone_health=14e685bdcd32c9c80d6f45131ed2d03f;\
+zone_health_bin=fd04ffafc63f78568fee780f590f2a76;\
 zone_health_bin_final_is_immutable()=f6f65edacdd24324741915722bdcfa7b;\
-zone_outage=b39c8f0af1b5c8e9de9f36c5b07835c0;\
-zone_profile=ecb5cd2096d36deaa1d51fd176bb2727;\
+zone_outage=c98b2173c06d9021128510126dff48ee;\
+zone_profile=dae06e9239058daa7be2d6a256e81f27;\
 zone_profile_geometry_immutable()=6328ab8391d54f21a060ba94d04bd158;\
 zone_profile_immutable()=ffc3bff3f5370bf70f8ae9d8c0702f41"
 
@@ -576,12 +680,13 @@ SQL
   [[ "$row" == "f|t|f|f" ]] || die "the migration login must own database $DATABASE and be neither superuser, replication nor bypassrls (found superuser|owner|replication|bypassrls = $row)"
 }
 
-# Members of Ariva's group roles other than the migration login and the named runtime and reader logins.
+# Members of Ariva's group roles other than the migration login and the named runtime and reader logins (since ARV-083a the
+# host roles' too, so a server whose host roles already have members is refused as one whose runtime role has).
 extra_members() {
   as_migration_catalog --tuples-only --no-align --set=runtime="$1" --set=reader="$2" <<'SQL'
 SELECT coalesce(string_agg(g.rolname || ' has member ' || r.rolname, ', ' ORDER BY g.rolname, r.rolname), '')
   FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles r ON r.oid = m.member
- WHERE g.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader') AND r.rolname <> current_user
+ WHERE g.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability') AND r.rolname <> current_user
    AND NOT (g.rolname = 'ariva_runtime' AND r.rolname = :'runtime')
    AND NOT (g.rolname = 'ariva_validation_reader' AND r.rolname = :'reader');
 SQL
@@ -1112,11 +1217,31 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ariva_validation_reader') THEN
         CREATE ROLE ariva_validation_reader NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION;
     END IF;
+    -- ARV-083a (script 0074): the host roles, which the dump's grants name.
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ariva_main') THEN
+        CREATE ROLE ariva_main NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION;
+    END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ariva_ingest') THEN
+        CREATE ROLE ariva_ingest NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION;
+    END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ariva_stream') THEN
+        CREATE ROLE ariva_stream NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION;
+    END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ariva_cronz') THEN
+        CREATE ROLE ariva_cronz NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION;
+    END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ariva_integration') THEN
+        CREATE ROLE ariva_integration NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION;
+    END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ariva_availability') THEN
+        CREATE ROLE ariva_availability NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION;
+    END IF;
 END
 $$;
 GRANT ariva_migration TO CURRENT_USER;
 SELECT string_agg(rolname, ', ') FROM pg_roles
- WHERE rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader')
+ WHERE rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz',
+                   'ariva_integration', 'ariva_availability')
    AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolcanlogin OR rolreplication OR rolbypassrls);
 SQL
 )"
@@ -1263,6 +1388,7 @@ cmd_check() {
   report="$(as_migration_catalog --tuples-only --no-align --set=runtime="$runtime" --set=reader="$reader" --set=allowed_extensions="$extensions" \
     --set=allowed_logins="$logins_allowed" --set=allowed_settings="$settings_allowed" --set=ariva_functions="$ARIVA_FUNCTIONS" \
     --set=runtime_privileges="$ARIVA_RUNTIME_PRIVILEGES" --set=runtime_privileges_at="$ARIVA_RUNTIME_PRIVILEGES_AT" \
+    --set=host_roles="$ARIVA_HOST_ROLES" --set=host_privileges="$ARIVA_HOST_PRIVILEGES" \
     --set=ariva_views="$ARIVA_VIEWS" --set=after_restore="$check_after_restore" \
     --set=timeout_min="$RUNTIME_TIMEOUT_MIN_SECONDS" --set=timeout_max="$RUNTIME_TIMEOUT_MAX_SECONDS" \
     --set=temp_min="$RUNTIME_TEMP_FILE_MIN_MEGABYTES" --set=temp_max="$RUNTIME_TEMP_FILE_MAX_MEGABYTES" \
@@ -1314,12 +1440,38 @@ runtime_privileges AS (
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')),
 pinned_privileges AS (
     SELECT split_part(e, '=', 1) AS name, split_part(e, '=', 2) AS privileges FROM unnest(string_to_array(:'runtime_privileges', ';')) e),
--- A relation the list does not name has the default DML; one it names that the database lacks is reported too.
+-- A relation the list does not name grants nothing (ARV-083a: script 0074 left ariva_runtime the base only and took away
+-- script 0001's default privileges); one it names that the database lacks is reported too.
 privilege_drift AS (
-    SELECT coalesce(a.name, p.name) || ' (the scripts: ' || coalesce(p.privileges, 'SELECT,INSERT,UPDATE,DELETE') || '; found: '
+    SELECT coalesce(a.name, p.name) || ' (the scripts: ' || coalesce(nullif(p.privileges, ''), 'none') || '; found: '
            || CASE WHEN a.name IS NULL THEN 'no such relation' ELSE coalesce(nullif(a.privileges, ''), 'none') END || ')' AS name
       FROM runtime_privileges a FULL JOIN pinned_privileges p ON p.name = a.name
-     WHERE a.privileges IS DISTINCT FROM coalesce(p.privileges, 'SELECT,INSERT,UPDATE,DELETE')),
+     WHERE a.privileges IS DISTINCT FROM coalesce(p.privileges, '')),
+-- ARV-083a: each host role's privileges, as ARIVA_HOST_PRIVILEGES writes them (<role>.<relation>=<privileges>); a relation
+-- the list does not name for a role grants that role nothing. A host role missing from the server shows no privileges.
+host_role_names(name) AS (
+    SELECT unnest(string_to_array(:'host_roles', ','))),
+host_privileges AS (
+    SELECT h.name || '.' || c.relname::text AS name,
+           concat_ws(',', VARIADIC ARRAY(
+               SELECT t.p FROM table_privileges t WHERE has_table_privilege(r.oid, c.oid, t.p) ORDER BY t.i)
+             || ARRAY(
+               SELECT t.p || '(' || string_agg(a.attname::text, ' ' ORDER BY a.attname) || ')'
+                 FROM column_privileges t
+                 JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+                WHERE NOT has_table_privilege(r.oid, c.oid, t.p) AND has_column_privilege(r.oid, c.oid, a.attnum, t.p)
+                GROUP BY t.p, t.i ORDER BY t.i)) AS privileges
+      FROM host_role_names h JOIN pg_roles r ON r.rolname = h.name
+      CROSS JOIN pg_class c
+     WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+       AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')),
+pinned_host_privileges AS (
+    SELECT split_part(e, '=', 1) AS name, split_part(e, '=', 2) AS privileges FROM unnest(string_to_array(:'host_privileges', ';')) e),
+host_privilege_drift AS (
+    SELECT coalesce(a.name, p.name) || ' (the scripts: ' || coalesce(nullif(p.privileges, ''), 'none') || '; found: '
+           || CASE WHEN a.name IS NULL THEN 'no such role or relation' ELSE coalesce(nullif(a.privileges, ''), 'none') END || ')' AS name
+      FROM host_privileges a FULL JOIN pinned_host_privileges p ON p.name = a.name
+     WHERE a.privileges IS DISTINCT FROM coalesce(p.privileges, '')),
 -- ARV-189 review: the views of public (and any materialized view or foreign table) are the scripts' own, each reading what its
 -- script reads: a continuous aggregate its hypertable, a plain view the relations it names. A view the scripts do not create
 -- would take the default DML and act with its owner's rights on whatever it reads.
@@ -1477,10 +1629,12 @@ stray_grants AS (
      WHERE g.grantee IN (SELECT r.oid FROM runtime_members r)
         OR (g.grantee = 'ariva_runtime'::regrole AND g.is_grantable)
         OR (g.grantee = 0 AND c.oid >= 16384 AND NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.relation = c.oid))),
--- ARV-189 review (its third round): the default privileges are script 0001's and nothing else: the tables the migration login
--- creates in public give ariva_runtime SELECT, INSERT, UPDATE and DELETE, its sequences there SELECT and USAGE, without grant
--- option. A dump carries default privileges (the migration login's DEFAULT ACL entries) and any role may change its own, so
--- another entry would widen what the tables and views of a later release give, past every check of this one.
+-- ARV-189 review (its third round): the default privileges are the scripts' and nothing else. Since ARV-083a (script 0074)
+-- there are none: a table or sequence a later script creates gives no role anything until its script grants it. A database
+-- behind script 0074 has script 0001's: the tables the migration login creates in public give ariva_runtime SELECT, INSERT,
+-- UPDATE and DELETE, its sequences there SELECT and USAGE, without grant option. A dump carries default privileges (the
+-- migration login's DEFAULT ACL entries) and any role may change its own, so another entry would widen what the tables and
+-- views of a later release give, past every check of this one.
 default_privileges AS (
     SELECT d.defaclrole, d.defaclnamespace, d.defaclobjtype,
            coalesce((SELECT string_agg(x.e, ',' ORDER BY x.e COLLATE "C")
@@ -1495,12 +1649,13 @@ default_drift AS (
                                    WHEN 'n' THEN 'schemas' WHEN 'L' THEN 'large objects' ELSE p.defaclobjtype::text END
            || ' gives ' || coalesce(nullif(p.entries, ''), 'nothing') AS name
       FROM default_privileges p
-     WHERE NOT (p.defaclrole = (SELECT oid FROM me) AND p.defaclnamespace = 'public'::regnamespace
+     WHERE NOT ((SELECT behind FROM pinned_at) AND p.defaclrole = (SELECT oid FROM me) AND p.defaclnamespace = 'public'::regnamespace
                 AND ((p.defaclobjtype = 'r' AND p.entries = 'ariva_runtime=DELETE,ariva_runtime=INSERT,ariva_runtime=SELECT,ariva_runtime=UPDATE')
                      OR (p.defaclobjtype = 'S' AND p.entries = 'ariva_runtime=SELECT,ariva_runtime=USAGE')))
     UNION ALL
     SELECT 'script 0001''s for ' || x.what || ' missing' FROM (VALUES ('r', 'tables'), ('S', 'sequences')) x(t, what)
-     WHERE NOT EXISTS (SELECT 1 FROM default_privileges p
+     WHERE (SELECT behind FROM pinned_at)
+       AND NOT EXISTS (SELECT 1 FROM default_privileges p
                         WHERE p.defaclrole = (SELECT oid FROM me) AND p.defaclnamespace = 'public'::regnamespace AND p.defaclobjtype::text = x.t)),
 -- What a forged dump would leave behind (defence in depth; the signed manifest is the gate): code the superuser could run.
 risky_functions AS (
@@ -1512,20 +1667,25 @@ risky_functions AS (
        -- ARV-111a: Ariva's SECURITY DEFINER functions (script 0054, the retention purge the Cronz job calls; script 0072,
        -- ARV-207, the key ring purge the Cronz key lifecycle job calls), each exactly as shipped: its name and arguments, the
        -- migration login as owner, plpgsql, its settings (search path and time zone), the SHA-256 of its body
-       -- (OpsScriptTests keeps these hashes equal to the scripts) and its grants: EXECUTE for the owner and ariva_runtime
-       -- only, without grant option (a NULL ACL would mean PUBLIC may run it). Anything else under their names is reported.
+       -- (OpsScriptTests keeps these hashes equal to the scripts) and its grants: EXECUTE for the owner and ariva_cronz only
+       -- (ARV-083a, the role of the Cronz jobs that call them; ariva_runtime on a database behind script 0074), without grant
+       -- option (a NULL ACL would mean PUBLIC may run it). Anything else under their names is reported.
        AND NOT (p.oid = to_regprocedure('public.ariva_retention_purge(text, integer)') AND p.proowner = (SELECT oid FROM me)
                 AND l.lanname = 'plpgsql' AND p.proconfig = ARRAY['search_path=pg_catalog, pg_temp', 'TimeZone=UTC']
                 AND encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') = '535ad38b539587c302aa4ea85e1c3508d55e5d5df6bf4f0675bbadf0076f78d7'
                 AND p.proacl IS NOT NULL
                 AND NOT EXISTS (SELECT 1 FROM aclexplode(p.proacl) a
-                                 WHERE a.grantee NOT IN ((SELECT oid FROM me), 'ariva_runtime'::regrole) OR a.is_grantable))
+                                 WHERE a.grantee NOT IN ((SELECT oid FROM me), (SELECT CASE WHEN behind THEN 'ariva_runtime'::regrole::oid
+                                                                                           ELSE coalesce(to_regrole('ariva_cronz')::oid, 0::oid) END FROM pinned_at))
+                                    OR a.is_grantable))
        AND NOT (p.oid = to_regprocedure('public.ariva_data_protection_key_purge(integer, integer)') AND p.proowner = (SELECT oid FROM me)
                 AND l.lanname = 'plpgsql' AND p.proconfig = ARRAY['search_path=pg_catalog, pg_temp', 'TimeZone=UTC']
                 AND encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') = '9d886614f2343b230d50749c2f10b04df075e698c8758c163f80ca9ff15d975b'
                 AND p.proacl IS NOT NULL
                 AND NOT EXISTS (SELECT 1 FROM aclexplode(p.proacl) a
-                                 WHERE a.grantee NOT IN ((SELECT oid FROM me), 'ariva_runtime'::regrole) OR a.is_grantable))),
+                                 WHERE a.grantee NOT IN ((SELECT oid FROM me), (SELECT CASE WHEN behind THEN 'ariva_runtime'::regrole::oid
+                                                                                           ELSE coalesce(to_regrole('ariva_cronz')::oid, 0::oid) END FROM pinned_at))
+                                    OR a.is_grantable))),
 other_languages AS (
     SELECT lanname AS name FROM pg_language WHERE lanispl AND lanname <> 'plpgsql'),
 other_extensions AS (
@@ -1586,7 +1746,7 @@ privileged_roles AS (
 held_by_ariva AS (
     SELECT r.rolname || ' holds ' || g.rolname AS name
       FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member JOIN pg_roles g ON g.oid = m.roleid
-     WHERE r.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader')
+     WHERE r.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability')
         OR (:'reader' <> '' AND r.rolname = :'reader' AND g.rolname <> 'ariva_validation_reader')),
 -- ARV-183 review: settings made for a role's sessions (ALTER ROLE ... SET), in this database or in every one, but the
 -- runtime login's statement timeout (script 0063), temporary file cap (script 0069, ARV-290), idle transaction limit and TCP
@@ -1687,12 +1847,19 @@ replication AS (
 event_triggers AS (
     SELECT e.evtname AS name FROM pg_event_trigger e
      WHERE NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_event_trigger'::regclass AND d.objid = e.oid AND d.deptype = 'e')),
+-- ARV-083a: a host login (it signs in and holds ariva_runtime and exactly one host role, nothing else; the migration job's
+-- ariva_ensure_host_login) is one of the deployment's logins; any other member of Ariva's roles but the named ones is reported.
 extra_members AS (
     SELECT g.rolname || ' has member ' || r.rolname AS name
       FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles r ON r.oid = m.member
-     WHERE g.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader') AND r.rolname <> current_user
+     WHERE g.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability') AND r.rolname <> current_user
        AND NOT (g.rolname = 'ariva_runtime' AND r.rolname = :'runtime')
-       AND NOT (g.rolname = 'ariva_validation_reader' AND r.rolname = :'reader'))
+       AND NOT (g.rolname = 'ariva_validation_reader' AND r.rolname = :'reader')
+       AND NOT (r.rolcanlogin AND g.rolname IN ('ariva_runtime', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability')
+                AND (SELECT count(*) FROM pg_auth_members x WHERE x.member = r.oid) = 2
+                AND EXISTS (SELECT 1 FROM pg_auth_members x JOIN pg_roles h ON h.oid = x.roleid WHERE x.member = r.oid AND h.rolname = 'ariva_runtime')
+                AND EXISTS (SELECT 1 FROM pg_auth_members x JOIN pg_roles h ON h.oid = x.roleid WHERE x.member = r.oid
+                                                                                                AND h.rolname IN ('ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability'))))
 SELECT 'schema_version|' || (SELECT count(*) FROM public.schema_version) || ' scripts, latest ' || coalesce((SELECT max(script_name) FROM public.schema_version), 'none')
 UNION ALL SELECT 'hypertables|' || (SELECT count(*) FROM timescaledb_information.hypertables) || ' hypertables, '
     || (SELECT count(*) FROM timescaledb_information.jobs WHERE application_name NOT LIKE 'Telemetry%') || ' TimescaleDB jobs'
@@ -1709,10 +1876,18 @@ UNION ALL SELECT CASE
             THEN 'FAIL runtime privileges|not compared: the database is at ' || (SELECT latest FROM pinned_at) || ' and the list at ' || :'runtime_privileges_at'
                  || ' (run the migration job, then check again)'
         WHEN count(*) = 0 THEN 'runtime privileges|ariva_runtime''s grants on public as the scripts leave them (' || (SELECT count(*) FROM pinned_privileges)
-                 || ' relations other than the default SELECT, INSERT, UPDATE and DELETE)'
+                 || ' relations, the base every host login holds; nothing on any other)'
         ELSE 'FAIL runtime privileges|' || count(*) || ' relations differ from the scripts: '
              || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM privilege_drift ORDER BY name LIMIT 10) first_ten)
              || CASE WHEN count(*) > 10 THEN ', and ' || (count(*) - 10) || ' more' ELSE '' END END FROM privilege_drift
+UNION ALL SELECT CASE
+        WHEN (SELECT behind FROM pinned_at) AND :'after_restore' = '1' THEN 'host privileges|not compared: the database is behind the list (as runtime privileges)'
+        WHEN (SELECT behind FROM pinned_at) THEN 'FAIL host privileges|not compared: the database is behind the list (as runtime privileges)'
+        WHEN count(*) = 0 THEN 'host privileges|each host role''s grants on public as the scripts leave them (' || (SELECT count(*) FROM pinned_host_privileges)
+                 || ' grants of ' || replace(:'host_roles', ',', ', ') || '; nothing on any other relation)'
+        ELSE 'FAIL host privileges|' || count(*) || ' grants differ from the scripts: '
+             || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM host_privilege_drift ORDER BY name LIMIT 10) first_ten)
+             || CASE WHEN count(*) > 10 THEN ', and ' || (count(*) - 10) || ' more' ELSE '' END END FROM host_privilege_drift
 UNION ALL SELECT CASE
         WHEN (SELECT behind FROM pinned_at) AND :'after_restore' = '1' THEN 'views|not compared: the database is behind the list (as runtime privileges)'
         WHEN (SELECT behind FROM pinned_at) THEN 'FAIL views|not compared: the database is behind the list (as runtime privileges)'
@@ -1732,9 +1907,10 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'toast|no toast table grants ariva_
                       ELSE 'FAIL toast|' || count(*) || ' grants on toast tables or their schemas: '
                            || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM toast_grants ORDER BY name LIMIT 50) first_ones)
                            || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END FROM toast_grants
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'default privileges|script 0001''s only: the migration login''s tables in public give ariva_runtime SELECT, INSERT, UPDATE and DELETE, its sequences there SELECT and USAGE'
-                      ELSE 'FAIL default privileges|' || count(*) || ' entries differ from script 0001''s: ' || string_agg(name, '; ' ORDER BY name) END FROM default_drift
-UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader')
+UNION ALL SELECT CASE WHEN count(*) = 0 AND NOT (SELECT behind FROM pinned_at) THEN 'default privileges|none: a table or sequence a later script creates gives no role anything until its script grants it (script 0074)'
+                      WHEN count(*) = 0 THEN 'default privileges|script 0001''s only: the migration login''s tables in public give ariva_runtime SELECT, INSERT, UPDATE and DELETE, its sequences there SELECT and USAGE'
+                      ELSE 'FAIL default privileges|' || count(*) || ' entries differ from the scripts'': ' || string_agg(name, '; ' ORDER BY name) END FROM default_drift
+UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability')
                                      AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolcanlogin OR rolreplication OR rolbypassrls))
                       THEN 'FAIL group roles|an Ariva group role is privileged or can sign in' ELSE 'group roles|NOLOGIN, unprivileged' END
 UNION ALL SELECT 'migration login|' || current_user || ' owns the database; not superuser, replication or bypassrls'
@@ -1805,11 +1981,18 @@ UNION ALL SELECT CASE
         WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'runtime') THEN 'FAIL runtime login|' || :'runtime' || ' does not exist: run the migration job'
         WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'runtime' AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls OR NOT rolcanlogin))
             THEN 'FAIL runtime login|' || :'runtime' || ' is privileged or cannot sign in'
-        WHEN (SELECT array_agg(g.rolname::text ORDER BY g.rolname) FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
-               WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime')) IS DISTINCT FROM ARRAY['ariva_runtime']
-            THEN 'FAIL runtime login|' || :'runtime' || ' holds roles other than ariva_runtime'
+        -- ARV-083a: ariva_runtime and at most one host role (a host's login), nothing else.
+        WHEN NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
+                          WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime') AND g.rolname = 'ariva_runtime')
+          OR EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
+                      WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime') AND g.rolname <> 'ariva_runtime'
+                        AND g.rolname NOT IN ('ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability'))
+          OR (SELECT count(*) FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
+               WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime') AND g.rolname IN ('ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability')) > 1
+            THEN 'FAIL runtime login|' || :'runtime' || ' holds roles other than ariva_runtime and one host role'
         WHEN has_schema_privilege(:'runtime', 'public', 'CREATE') THEN 'FAIL runtime login|' || :'runtime' || ' may create objects in public'
-        ELSE 'runtime login|' || :'runtime' || ' holds ariva_runtime only (DML)' END;
+        ELSE 'runtime login|' || :'runtime' || ' holds ' || (SELECT string_agg(g.rolname::text, ' and ' ORDER BY g.rolname) FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
+                                                              WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime')) || ' (DML only)' END;
 SQL
 )"
   # ARV-183 review: the system's own functions against template1's (a function replaced in place keeps its oid).

@@ -7,6 +7,12 @@
 #   ARIVA-K8S-DEV-<SERVICE>-APPSETTINGS    appsettings.service.k8s-dev.json content per service
 #   ARIVA-K8S-DEV-DB-SUPERUSER-PASSWORD    TimescaleDB "postgres" superuser (database administrator only)
 #   ARIVA-K8S-DEV-DB-MIGRATION-PASSWORD    TimescaleDB migration login; equals Database:Migration:Password in the base appsettings
+#   ARIVA-K8S-DEV-DB-LOGIN-<LOGIN>-USERNAME, ARIVA-K8S-DEV-DB-LOGIN-<LOGIN>-PASSWORD
+#                                          each host's own database login and the availability ledger's (ARV-083a), <LOGIN> one
+#                                          of MAIN, INGEST, STREAM, CRONZ, INTEGRATION and AVAILABILITY: twelve variables, each
+#                                          name a plain lower-case identifier of its own (ariva_app_main, for one) and each
+#                                          password its own, 16 printable ASCII characters or more; this pipeline writes them
+#                                          into the Secrets ariva-db-login-<login>, and the migration job creates the logins
 # Both database passwords are read only when the database volume is first initialised (wiki 04, section 6.2).
 name: $(Build.SourceBranchName)-$(NAMESPACE)-$(Date:yyyyMMdd)$(Rev:rr)
 
@@ -192,6 +198,60 @@ steps:
     env:
       ACR_USERNAME: $(ACR-USERNAME)
       ACR_PASSWORD: $(ACR-PASSWORD)
+
+  # ARV-083a: each host's database login and the availability ledger's, one Secret each (the chart's databaseLogins:
+  # ariva-db-login-<login>, keys username and password), which only that host and the migration job get. The names and
+  # passwords reach the step as environment variables and each Secret through files in the agent's temporary folder (0600,
+  # removed on exit), never through a command line or the log (a failure names the variable, never its value), and each
+  # Secret is applied server side under this release's own field manager, so no last-applied-configuration annotation keeps
+  # a copy of it. The migration job creates or updates each login from a SCRAM-SHA-256 verifier and stops before any script
+  # when two logins share a name or a password (wiki 04 section 6.2).
+  - script: |
+      set -e
+      export KUBECONFIG="$(Build.SourcesDirectory)/_cicd/jupiter-kube-config.yaml"
+      umask 077
+      folder="$(Agent.TempDirectory)/db-logins"
+      trap 'rm -rf "$folder"' EXIT
+      mkdir -p "$folder"
+      for login in MAIN INGEST STREAM CRONZ INTEGRATION AVAILABILITY; do
+        user_variable="DB_LOGIN_${login}_USERNAME"
+        password_variable="DB_LOGIN_${login}_PASSWORD"
+        user="${!user_variable}"
+        password="${!password_variable}"
+        # Written as \$\( so Azure DevOps does not read it as a macro.
+        if [[ -z "$user" || "$user" == \$\(* || -z "$password" || "$password" == \$\(* ]]; then
+          echo "##vso[task.logissue type=error]$user_variable or $password_variable is not defined in the variable group"; exit 1
+        fi
+        if [[ ! "$user" =~ ^[a-z_][a-z0-9_]{0,62}$ || "$user" == pg_* ]]; then
+          echo "##vso[task.logissue type=error]$user_variable must be a plain lower-case PostgreSQL identifier, not pg_"; exit 1
+        fi
+        # Printable ASCII only (space to tilde, no newline): the migration job derives the verifier without SASLprep.
+        if [ "${#password}" -lt 16 ] || ( LC_ALL=C; [[ "$password" =~ [^\ -~] ]] ); then
+          echo "##vso[task.logissue type=error]$password_variable must have at least 16 printable ASCII characters"; exit 1
+        fi
+        printf '%s' "$user" > "$folder/username"
+        printf '%s' "$password" > "$folder/password"
+        kubectl create secret generic "ariva-db-login-${login,,}" \
+          --from-file=username="$folder/username" --from-file=password="$folder/password" \
+          --namespace="$(NAMESPACE)" --dry-run=client -o yaml \
+          | kubectl apply --context="$(K8SCLUSTERCONTEXT)" --server-side --force-conflicts --field-manager=ariva-release -f -
+        rm -f "$folder/username" "$folder/password"
+      done
+      unset user password
+    displayName: "Create the host database login secrets"
+    env:
+      DB_LOGIN_MAIN_USERNAME: $(ARIVA-K8S-DEV-DB-LOGIN-MAIN-USERNAME)
+      DB_LOGIN_MAIN_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-MAIN-PASSWORD)
+      DB_LOGIN_INGEST_USERNAME: $(ARIVA-K8S-DEV-DB-LOGIN-INGEST-USERNAME)
+      DB_LOGIN_INGEST_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-INGEST-PASSWORD)
+      DB_LOGIN_STREAM_USERNAME: $(ARIVA-K8S-DEV-DB-LOGIN-STREAM-USERNAME)
+      DB_LOGIN_STREAM_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-STREAM-PASSWORD)
+      DB_LOGIN_CRONZ_USERNAME: $(ARIVA-K8S-DEV-DB-LOGIN-CRONZ-USERNAME)
+      DB_LOGIN_CRONZ_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-CRONZ-PASSWORD)
+      DB_LOGIN_INTEGRATION_USERNAME: $(ARIVA-K8S-DEV-DB-LOGIN-INTEGRATION-USERNAME)
+      DB_LOGIN_INTEGRATION_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-INTEGRATION-PASSWORD)
+      DB_LOGIN_AVAILABILITY_USERNAME: $(ARIVA-K8S-DEV-DB-LOGIN-AVAILABILITY-USERNAME)
+      DB_LOGIN_AVAILABILITY_PASSWORD: $(ARIVA-K8S-DEV-DB-LOGIN-AVAILABILITY-PASSWORD)
 
   - script: |
       set -e

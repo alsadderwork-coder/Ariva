@@ -25,6 +25,8 @@ spec:
         app: database-migration
     spec:
       restartPolicy: Never
+      # ARV-083a: the job holds every host's database password and calls no Kubernetes API, so it gets no service account token
+      automountServiceAccountToken: false
       imagePullSecrets:
         - name: dalilacr-secret
       volumes:
@@ -59,6 +61,9 @@ spec:
               value: {{ .Values.environment | quote }}
             # The validation reader login (ARV-104g1): the job creates or updates it (script 0049)
             {{- include "ariva-platform.validationReaderEnv" . | nindent 12 }}
+            # Every host's database login and the availability ledger's (ARV-083a; databaseLogins): the job creates or updates
+            # each from a SCRAM-SHA-256 verifier (script 0074), as a member of ariva_runtime and its host role only
+            {{- include "ariva-platform.migrationLoginsEnv" . | nindent 12 }}
             # Retention periods in days (ARV-111a, values migration.retention, checked in validate.yaml): after the scripts the
             # job sets the hypertables' TimescaleDB retention policies and the relational periods the Cronz retention job reads
             - name: Database__Retention__RawSensingDays

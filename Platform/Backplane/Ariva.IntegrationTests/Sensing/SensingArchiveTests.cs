@@ -272,7 +272,7 @@ public sealed class SensingArchiveTests(PostgresFixture fixture) : IAsyncDisposa
                  })
         {
             await using var transaction = await sql.BeginTransactionAsync(Ct);
-            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", sql, transaction))
+            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_stream", sql, transaction))
                 await role.ExecuteNonQueryAsync(Ct);
 #pragma warning disable CA2100 // fixed statements from this test, not input
             await using var change = new NpgsqlCommand(statement, sql, transaction);
@@ -302,7 +302,7 @@ public sealed class SensingArchiveTests(PostgresFixture fixture) : IAsyncDisposa
         // The chunks carry the same grants as the hypertable: the runtime role cannot delete through a chunk either.
         await using (var transaction = await sql.BeginTransactionAsync(Ct))
         {
-            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", sql, transaction))
+            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_stream", sql, transaction))
                 await role.ExecuteNonQueryAsync(Ct);
             await using var delete = new NpgsqlCommand("""
                 DO $$ BEGIN EXECUTE format('DELETE FROM %s', (SELECT c FROM show_chunks('sensing_event') AS c LIMIT 1)); END $$

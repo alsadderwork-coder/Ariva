@@ -163,6 +163,8 @@ public sealed partial class OpsScriptTests
         var definers = SqlScriptCatalog.Embedded().Where(script => script.Sql.Contains("SECURITY DEFINER", StringComparison.Ordinal)).Select(script => script.Name);
         definers.Should().Equal(["0054_retention_period.sql", "0072_data_protection_key_retention.sql"],
             "a new SECURITY DEFINER function needs its own entry in the restore check");
+        // ARV-083a: script 0074 moves both from ariva_runtime to ariva_cronz, the role of the Cronz jobs that call them.
+        var hosts = WithoutComments(SqlScriptCatalog.Embedded().Single(s => s.Name == "0074_host_database_roles.sql").Sql);
 
         foreach (var (script, function, arguments) in new[]
                  {
@@ -182,12 +184,19 @@ public sealed partial class OpsScriptTests
             pin.Should().Contain($"encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') = '{hash}'", $"the check pins {function}'s body as shipped")
                 .And.Contain("p.proconfig = ARRAY['search_path=pg_catalog, pg_temp', 'TimeZone=UTC']")
                 .And.Contain("AND p.proacl IS NOT NULL")
-                .And.Contain("WHERE a.grantee NOT IN ((SELECT oid FROM me), 'ariva_runtime'::regrole)",
-                    "EXECUTE for the owner and ariva_runtime only, without grant option (a NULL ACL means PUBLIC may run it)");
+                .And.Contain("WHERE a.grantee NOT IN ((SELECT oid FROM me), (SELECT CASE WHEN behind THEN 'ariva_runtime'::regrole::oid",
+                    "EXECUTE for the owner and one role only, without grant option (a NULL ACL means PUBLIC may run it)")
+                .And.Contain("ELSE coalesce(to_regrole('ariva_cronz')::oid, 0::oid) END FROM pinned_at))",
+                    "ARV-083a: from script 0074 the role of the Cronz job that calls it, ariva_runtime before it");
             sql.Should().Contain("SET search_path = pg_catalog, pg_temp\n    SET TimeZone = 'UTC'", "the settings the check pins, in that order");
             sql.Should().Contain($"REVOKE ALL ON FUNCTION {function}({arguments}) FROM PUBLIC")
-                .And.Contain($"GRANT EXECUTE ON FUNCTION {function}({arguments}) TO ariva_runtime", "the grants the check pins");
+                .And.Contain($"GRANT EXECUTE ON FUNCTION {function}({arguments}) TO ariva_runtime", "the grants the check pins before script 0074");
+            hosts.Should().Contain($"REVOKE ALL ON FUNCTION {function}({arguments}) FROM ariva_runtime;")
+                .And.Contain($"GRANT EXECUTE ON FUNCTION {function}({arguments}) TO ariva_cronz;", "the grants the check pins from script 0074");
         }
+
+        HostDatabaseAccess.Functions.Should().ContainKey(HostDatabaseAccess.CronzRole).WhoseValue.Should()
+            .Equal("ariva_data_protection_key_purge(integer,integer)", "ariva_retention_purge(text,integer)");
     }
 
     [Fact]
@@ -215,28 +224,30 @@ public sealed partial class OpsScriptTests
     }
 
     [Fact]
-    public void Check_Should_PinTheRuntimeRolesPrivilegesOnEveryRelationTheScriptsRestrict_When_ItComparesThem()
+    public void Check_Should_PinTheRuntimeAndHostRolesPrivilegesAsTheManifest_When_ItComparesThem()
     {
-        // ARV-189 (CWE-269): check compares ariva_runtime's privileges on public with ARIVA_RUNTIME_PRIVILEGES, the relations the
-        // scripts leave other than the default DML. The list names exactly the relations a script takes SELECT, INSERT, UPDATE
-        // or DELETE from (REVOKE ... FROM ariva_runtime, ALL included) or grants columns of, once each, in name order; the
-        // privileges themselves come from a migrated database (BackupRestoreTests holds them equal, its message has the list).
-        var scripts = SqlScriptCatalog.Embedded();
-        var restricted = scripts
-            .SelectMany(script => RestrictedRelations(WithoutComments(script.Sql)))
-            .Distinct(StringComparer.Ordinal)
-            .Order(StringComparer.Ordinal)
-            .ToList();
+        // ARV-189 (CWE-269) and ARV-083a: check compares ariva_runtime's privileges on public with ARIVA_RUNTIME_PRIVILEGES and each
+        // host role's with ARIVA_HOST_PRIVILEGES, a relation not named granting nothing. Both are HostDatabaseAccess's manifest, in
+        // name order, once each (HostDatabaseAccessTests holds a migrated database to the manifest, BackupRestoreTests the check).
         var listed = RuntimePrivilegesList().Match(Script.Value);
         listed.Success.Should().BeTrue("the script lists the runtime role's privileges in ARIVA_RUNTIME_PRIVILEGES");
         var entries = listed.Groups["entries"].Value.Replace("\\\n", string.Empty, StringComparison.Ordinal).Split(';');
-
         entries.Should().OnlyContain(entry => PrivilegeEntry().IsMatch(entry), "relation=PRIVILEGE,...,PRIVILEGE(column column)");
-        var names = entries.Select(entry => entry[..entry.IndexOf('=', StringComparison.Ordinal)]).ToList();
-        names.Should().BeInAscendingOrder(StringComparer.Ordinal).And.OnlyHaveUniqueItems();
-        names.Should().Equal(restricted, "every relation the scripts restrict, and nothing else");
-        entries.Should().Contain("report_delivery=SELECT,INSERT,UPDATE(attempts reason sent_utc status)", "script 0054's revoke and column grant");
-        restricted.Should().HaveCountGreaterThan(50);
+        entries.Should().Equal(HostDatabaseAccess.Grants[HostDatabaseAccess.RuntimeRole], "the base every host login holds, and nothing else");
+
+        var roles = HostRolesList().Match(Script.Value);
+        roles.Success.Should().BeTrue("the script lists the host roles in ARIVA_HOST_ROLES");
+        roles.Groups["roles"].Value.Split(',').Should().Equal(HostDatabaseAccess.HostRoles);
+
+        var hosts = HostPrivilegesList().Match(Script.Value);
+        hosts.Success.Should().BeTrue("the script lists the host roles' privileges in ARIVA_HOST_PRIVILEGES");
+        var hostEntries = hosts.Groups["entries"].Value.Replace("\\\n", string.Empty, StringComparison.Ordinal).Split(';');
+        hostEntries.Should().Equal(HostDatabaseAccess.HostRoles.SelectMany(role => HostDatabaseAccess.Grants[role].Select(grant => $"{role}.{grant}")),
+            "each host role's grants as the manifest declares them, role by role in the scripts' order");
+        hostEntries.Where(entry => !entry.Contains('.', StringComparison.Ordinal) || !PrivilegeEntry().IsMatch(entry[(entry.IndexOf('.', StringComparison.Ordinal) + 1)..]))
+            .Should().BeEmpty("each entry is <role>.<relation>=<privileges>");
+        hostEntries.Should().Contain("ariva_cronz.report_delivery=SELECT,INSERT,UPDATE(attempts reason sent_utc status)", "script 0054's column grant, now Cronz's")
+            .And.Contain("ariva_availability.availability_minute=SELECT,INSERT", "the ledger's own role");
     }
 
     [Fact]
@@ -260,19 +271,26 @@ public sealed partial class OpsScriptTests
     }
 
     [Fact]
-    public void Check_Should_ExpectScript0001sDefaultPrivileges_When_NoOtherScriptChangesThem()
+    public void Check_Should_ExpectNoDefaultPrivilegesFromScript0074_When_NoOtherScriptChangesThem()
     {
-        // ARV-189 review, third round (CWE-269): check's default privileges line accepts script 0001's two entries and nothing
-        // else, so no other script may change default privileges without moving that line with it.
+        // ARV-189 review, third round (CWE-269), and ARV-083a: check's default privileges line accepts script 0001's two entries on
+        // a database behind script 0074, and none from it on (0074 takes them away, so a new table grants no host anything until
+        // its script does), so no other script may change default privileges without moving that line with it.
         var scripts = SqlScriptCatalog.Embedded();
         scripts.Where(script => AlterDefaultPrivileges().IsMatch(WithoutComments(script.Sql))).Select(script => script.Name)
-            .Should().Equal(["0001_roles.sql"], "the check expects script 0001's default privileges only");
+            .Should().Equal(["0001_roles.sql", "0074_host_database_roles.sql"], "the check expects script 0001's default privileges, then none");
         var roles = WithoutComments(scripts.Single(script => script.Name == "0001_roles.sql").Sql);
         AlterDefaultPrivileges().Matches(roles).Select(m => m.Value).Should().Equal(
             "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ariva_runtime;",
             "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ariva_runtime;");
+        var hosts = WithoutComments(scripts.Single(script => script.Name == "0074_host_database_roles.sql").Sql);
+        AlterDefaultPrivileges().Matches(hosts).Select(m => m.Value).Should().Equal(
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM ariva_runtime;",
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM ariva_runtime;");
         Script.Value.Should().Contain("p.entries = 'ariva_runtime=DELETE,ariva_runtime=INSERT,ariva_runtime=SELECT,ariva_runtime=UPDATE'")
-            .And.Contain("p.entries = 'ariva_runtime=SELECT,ariva_runtime=USAGE'");
+            .And.Contain("p.entries = 'ariva_runtime=SELECT,ariva_runtime=USAGE'")
+            .And.Contain("WHERE NOT ((SELECT behind FROM pinned_at) AND p.defaclrole = (SELECT oid FROM me)", "script 0001's entries only behind script 0074")
+            .And.Contain("'default privileges|none: a table or sequence a later script creates gives no role anything until its script grants it (script 0074)'");
     }
 
     [Fact]
@@ -308,11 +326,17 @@ public sealed partial class OpsScriptTests
         listedRelations.Where(name => !name.EndsWith("_seq", StringComparison.Ordinal)).Should().BeEquivalentTo(relations,
             "every table and view the scripts create (none is dropped), and nothing else");
 
+        // ARV-083a: a function a later script removes (0074 removes 0001's ariva_ensure_runtime_login) keeps its body in
+        // ARIVA_FUNCTIONS, which an older backup holds, and is no object of a migrated database.
+        var removed = scripts.SelectMany(script => FunctionRemoved().Matches(WithoutComments(script.Sql))).Select(m => m.Groups["name"].Value.ToLowerInvariant())
+            .ToHashSet(StringComparer.Ordinal);
+        removed.Should().BeEquivalentTo(["ariva_ensure_runtime_login"], "script 0074 removes the function that took a plain password");
         var functions = ArivaFunctionsList().Match(Script.Value).Groups["entries"].Value.Replace("\\\n", string.Empty, StringComparison.Ordinal).Split(',')
             .Select(entry => entry[..entry.IndexOf(':', StringComparison.Ordinal)])
+            .Where(name => !removed.Contains(name))
             .ToHashSet(StringComparer.Ordinal);
         names.Where(name => name.Contains('(', StringComparison.Ordinal)).Select(name => name[..name.IndexOf('(', StringComparison.Ordinal)])
-            .Should().BeEquivalentTo(functions, "every function the scripts create, once");
+            .Should().BeEquivalentTo(functions, "every function the scripts create and keep, once");
         names.Should().Contain(["schema_version", "queue_minute_15m", "ariva_retention_purge(p_data_set text, p_limit integer)", "schema public", "database"]);
 
         // ARV-263: TimescaleDB's jobs, one per policy a script adds (retention, compression, a continuous aggregate's refresh) and
@@ -592,8 +616,17 @@ public sealed partial class OpsScriptTests
     [GeneratedRegex(@"GRANT\s+(?<privileges>[A-Z]+\s*\([^)]*\)(?:\s*,\s*[A-Z]+\s*\([^)]*\))*)\s+ON\s+(?:TABLE\s+)?(?<names>[A-Za-z0-9_"".]+(?:\s*,\s*[A-Za-z0-9_"".]+)*)\s+TO\s+ariva_runtime\b", RegexOptions.IgnoreCase)]
     private static partial Regex ColumnGrantToRuntime();
 
-    [GeneratedRegex(@"\b(GRANT|REVOKE)\b[^;]*\b(TO|FROM)\s+ariva_runtime\b", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\b(GRANT|REVOKE)\b[^;]*\b(TO|FROM)\s+(ariva_runtime|ariva_main|ariva_ingest|ariva_stream|ariva_cronz|ariva_integration|ariva_availability)\b", RegexOptions.IgnoreCase)]
     private static partial Regex RuntimeGrantOrRevoke();
+
+    [GeneratedRegex(@"^readonly ARIVA_HOST_ROLES=""(?<roles>[a-z_,]+)""$", RegexOptions.Multiline)]
+    private static partial Regex HostRolesList();
+
+    [GeneratedRegex(@"^readonly ARIVA_HOST_PRIVILEGES=""(?<entries>[a-z0-9_=,;(). A-Z\\\n]+)""$", RegexOptions.Multiline)]
+    private static partial Regex HostPrivilegesList();
+
+    [GeneratedRegex(@"\bDROP\s+FUNCTION\s+(?:IF\s+EXISTS\s+)?(?:public\.)?(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(", RegexOptions.IgnoreCase)]
+    private static partial Regex FunctionRemoved();
 
     [GeneratedRegex(@"^readonly ARIVA_RUNTIME_PRIVILEGES=""(?<entries>[a-z0-9_=,;() A-Z\\\n]+)""$", RegexOptions.Multiline)]
     private static partial Regex RuntimePrivilegesList();

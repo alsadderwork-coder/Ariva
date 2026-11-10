@@ -35,7 +35,7 @@ public sealed class DatabaseTimeoutTests(PostgresFixture postgres)
         await new SqlScriptRunner(admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
         const string login = "it_st_app";
         var password = Secret();
-        await ExecuteAsync(admin, "SELECT ariva_ensure_runtime_login(@name, @password)", ("name", login), ("password", password));
+        await ExecuteAsync(admin, "SELECT ariva_ensure_host_login(@name, @verifier, 'ariva_main')", ("name", login), ("verifier", ScramVerifier.For(password)));
         // One second here, so the test is quick; the migration job takes Database:StatementTimeoutSeconds (301 to 3,600).
         await ExecuteAsync(admin, "SELECT ariva_set_runtime_statement_timeout(@name, @seconds)", ("name", login), ("seconds", 1));
 
@@ -88,7 +88,7 @@ public sealed class DatabaseTimeoutTests(PostgresFixture postgres)
         var database = await postgres.CreateDatabaseAsync(TestDatabase.StatementTimeoutRefusals);
         var admin = postgres.ConnectionString(database);
         await new SqlScriptRunner(admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
-        await ExecuteAsync(admin, "SELECT ariva_ensure_runtime_login(@name, @password)", ("name", "it_st_member"), ("password", Secret()));
+        await ExecuteAsync(admin, "SELECT ariva_ensure_host_login(@name, @verifier, 'ariva_main')", ("name", "it_st_member"), ("verifier", ScramVerifier.For(Secret())));
         await ExecuteAsync(admin, "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'it_st_outsider') THEN CREATE ROLE it_st_outsider LOGIN; END IF; END $$");
 
         async Task<string> RefusalOf(string name, int seconds)

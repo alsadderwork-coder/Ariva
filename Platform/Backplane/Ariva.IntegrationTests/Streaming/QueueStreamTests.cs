@@ -506,9 +506,9 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         (await RowsAsync(database, "SELECT overflow_minutes, observed_minutes, peak_band_occupancy FROM overflow_bin_15m WHERE zone_key = 'DMO/Q1'"))
             .Should().Equal("1|2|9");
         (await RowsAsync(database, """
-            SELECT has_table_privilege('ariva_runtime', 'overflow_bin_15m', 'SELECT'), has_table_privilege('ariva_runtime', 'overflow_bin_15m', 'INSERT'),
-                   has_table_privilege('ariva_runtime', 'overflow_minute', 'DELETE'), has_table_privilege('ariva_runtime', 'overflow_minute', 'INSERT')
-            """)).Should().Equal("True|False|False|True");
+            SELECT has_table_privilege('ariva_stream', 'overflow_bin_15m', 'SELECT'), has_table_privilege('ariva_stream', 'overflow_bin_15m', 'INSERT'),
+                   has_table_privilege('ariva_stream', 'overflow_minute', 'DELETE'), has_table_privilege('ariva_stream', 'overflow_minute', 'INSERT')
+            """)).Should().Equal(["False|False|False|True"], "ARV-083a: the stream writes the minutes and no code reads the continuous aggregate");
 
         // ARV-113: every line role and both sources are kept apart under one key; a rewrite changes nothing.
         var minute = new DateTime(2026, 9, 28, 19, 0, 0, DateTimeKind.Utc);
@@ -666,7 +666,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
     }
 
     // ARV-117a (CWE-862, CWE-863), the owner's decision of 2026-10-07: the database enforces the no-read rule. A runtime
-    // login (as ariva_ensure_runtime_login creates it for the hosts) writes and rewrites the shadow through the stream
+    // login (as ariva_ensure_host_login creates it for Ariva.Api.Stream, ARV-083a) writes and rewrites the shadow through the stream
     // store, and every read of a shadow value fails with 42501: a column, a wildcard, a whole row, a filter or an
     // assignment over a value, RETURNING, COPY, and a chunk read directly. Only the key columns are readable (the
     // upsert's conflict target needs them). The read role for the validation comparison reads it (ARV-104g1 grants it to the
@@ -680,10 +680,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         await using (var admin = new NpgsqlConnection(postgres.ConnectionString(database)))
         {
             await admin.OpenAsync(Ct);
-            await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
-            ensure.Parameters.AddWithValue("login", login);
-            ensure.Parameters.AddWithValue("password", password);
-            await ensure.ExecuteNonQueryAsync(Ct);
+            await Ariva.IntegrationTests.Setup.HostLogins.EnsureAsync(admin, login, password, Ariva.Infra.Timescale.HostDatabaseAccess.StreamRole, Ct);
         }
 
         var store = new StreamStore(new DatabaseSettings { Host = postgres.Hostname, Port = postgres.Port, Name = database, Username = login, Password = password },
@@ -876,10 +873,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         await using (var admin = new NpgsqlConnection(postgres.ConnectionString(database)))
         {
             await admin.OpenAsync(Ct);
-            await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
-            ensure.Parameters.AddWithValue("login", login);
-            ensure.Parameters.AddWithValue("password", password);
-            await ensure.ExecuteNonQueryAsync(Ct);
+            await Ariva.IntegrationTests.Setup.HostLogins.EnsureAsync(admin, login, password, Ariva.Infra.Timescale.HostDatabaseAccess.StreamRole, Ct);
         }
 
         await RowsAsync(database, """
@@ -1160,7 +1154,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         log.Warnings.Should().Equal(
             "Dropped 6 desk zone readings of zone DMO/Q1: a desk key not of the zone's site or too long, or a role or count out of bounds",
             "Dropped 1 desk zone readings of zone Q1: a desk key not of the zone's site or too long, or a role or count out of bounds");
-        (await RowsAsync(database, "SELECT has_table_privilege('ariva_runtime', 'desk_zone_reading', 'INSERT'), has_table_privilege('ariva_runtime', 'desk_zone_reading', 'SELECT')"))
+        (await RowsAsync(database, "SELECT has_table_privilege('ariva_stream', 'desk_zone_reading', 'INSERT'), has_table_privilege('ariva_stream', 'desk_zone_reading', 'SELECT')"))
             .Should().Equal("True|True");
     }
 
@@ -1257,7 +1251,7 @@ public sealed class QueueStreamTests(PostgresFixture postgres, KafkaFixture kafk
         var database = await StoreDatabaseAsync();
         await using var connection = new NpgsqlConnection(postgres.ConnectionString(database));
         await connection.OpenAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET ROLE ariva_runtime", connection))
+        await using (var role = new NpgsqlCommand("SET ROLE ariva_stream", connection))
             await role.ExecuteNonQueryAsync(Ct);
 #pragma warning disable CA2100 // the statements are the theory's literals
         await using var command = new NpgsqlCommand(statement, connection);

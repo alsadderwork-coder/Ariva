@@ -57,8 +57,10 @@ public sealed partial class ConnectionBudgetTests
     {
         var pools = ChartPools();
 
-        // Every host's runtime pool, api-main's validation reader, api-stream's desk term reads, the migration job and the operators.
-        var needed = pools.Values.Sum() + ValidationReaderSettings.MaxPoolSize + DatabaseSettings.DeskTermPoolSize + MigrationAndOperators;
+        // Every host's runtime pool, api-main's validation reader, api-stream's desk term reads, api-cronz's availability ledger
+        // (its own login since ARV-083a), the migration job and the operators.
+        var needed = pools.Values.Sum() + ValidationReaderSettings.MaxPoolSize + DatabaseSettings.DeskTermPoolSize + AvailabilityLoginSettings.MaxPoolSize
+            + MigrationAndOperators;
 
         pools.Keys.Should().BeEquivalentTo("main", "ingest", "stream", "cronz", "integration");
         needed.Should().BeLessThanOrEqualTo(DefaultServerAllows, "one replica of each host runs on a PostgreSQL left at its defaults");
@@ -67,12 +69,13 @@ public sealed partial class ConnectionBudgetTests
     [Fact]
     public void Chart_Should_CountTheFixedPoolsAsTheHostsHoldThem_When_AddingUpTheConnections()
     {
-        // validate.yaml adds, as literals, api-main's validation reader (4) and api-stream's desk term reads (2) to each of their
-        // replicas; no other host holds either pool.
+        // validate.yaml adds, as literals, api-main's validation reader (4), api-stream's desk term reads (2) and api-cronz's
+        // availability ledger (2, ARV-083a) to each of their replicas; no other host holds any of these pools.
         var validate = File.ReadAllText(RepositoryPaths.Resolve("Platform/Cloud/Ariva.K8s/Helm/Charts/platform/templates/validate.yaml"));
 
-        validate.Should().Contain("$fixedPools := dict \"main\" 4 \"stream\" 2");
+        validate.Should().Contain("$fixedPools := dict \"main\" 4 \"stream\" 2 \"cronz\" 2");
         DatabaseSettings.DeskTermPoolSize.Should().Be(2);
+        AvailabilityLoginSettings.MaxPoolSize.Should().Be(2);
         ValidationReaderSettings.MaxPoolSize.Should().Be(4);
     }
 

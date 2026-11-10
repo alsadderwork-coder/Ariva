@@ -748,7 +748,8 @@ public sealed class AvailabilityTests(PostgresFixture fixture) : IAsyncDisposabl
         (await ScalarAsync<DateTime>("SELECT next_minute_utc FROM availability_cursor WHERE site_code = 'AVANC'")).Should().Be(Utc(10, 1, 7, 56));
 
         var password = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
-        await ExecuteAsync("SELECT ariva_ensure_runtime_login('it_av_runtime', @password)", ("password", password));
+        // ARV-083a: Ariva.Api.Main's login, the one that writes zone profiles.
+        await ExecuteAsync("SELECT ariva_ensure_host_login('it_av_runtime', @verifier, 'ariva_main')", ("verifier", Ariva.Infra.Timescale.ScramVerifier.For(password)));
         await using var runtime = new NpgsqlConnection(fixture.ConnectionString(await Host.DatabaseAsync(), "it_av_runtime", password));
         await runtime.OpenAsync(Ct);
         foreach (var sql in new[]
@@ -874,22 +875,68 @@ public sealed class AvailabilityTests(PostgresFixture fixture) : IAsyncDisposabl
     #region Privileges
 
     [Fact]
-    public async Task Tables_Should_KeepTheLedgerWriteOnce_When_TheRuntimeRoleWrites()
+    public async Task Tables_Should_KeepTheLedgerWriteOnceAndItsOwn_When_AnyOtherRoleWrites()
     {
         await Host.DatabaseAsync();
 
-        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_runtime', 'availability_minute', 'INSERT')")).Should().BeTrue();
-        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_runtime', 'availability_minute', 'SELECT')")).Should().BeTrue();
-        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_runtime', 'availability_minute', 'UPDATE')")).Should().BeFalse();
-        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_runtime', 'availability_minute', 'DELETE')")).Should().BeFalse();
-        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_runtime', 'availability_minute', 'TRUNCATE')")).Should().BeFalse();
-        foreach (var table in new[] { "operating_week", "operating_day_exception", "maintenance_window", "availability_cursor" })
+        // ARV-083a (owner decision 2026-10-10): only the ledger's own role records a minute or moves a cursor, and never
+        // rewrites or removes a minute.
+        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_availability', 'availability_minute', 'INSERT')")).Should().BeTrue();
+        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_availability', 'availability_minute', 'SELECT')")).Should().BeTrue();
+        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_availability', 'availability_minute', 'UPDATE')")).Should().BeFalse();
+        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_availability', 'availability_minute', 'DELETE')")).Should().BeFalse();
+        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_availability', 'availability_minute', 'TRUNCATE')")).Should().BeFalse();
+        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_availability', 'availability_cursor', 'INSERT')")).Should().BeTrue();
+        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_availability', 'availability_cursor', 'UPDATE')")).Should().BeTrue();
+        (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_availability', 'availability_cursor', 'DELETE')")).Should().BeFalse();
+        foreach (var role in new[] { "ariva_runtime", "ariva_main", "ariva_ingest", "ariva_stream", "ariva_cronz", "ariva_integration" })
         {
-            (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_runtime', @t, 'UPDATE')", ("t", table))).Should().BeTrue(table);
-            (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_runtime', @t, 'DELETE')", ("t", table))).Should().BeFalse(table);
+            (await ScalarAsync<bool>("SELECT has_table_privilege(@r, 'availability_minute', 'INSERT')", ("r", role))).Should().BeFalse(role);
+            (await ScalarAsync<bool>("SELECT has_table_privilege(@r, 'availability_cursor', 'INSERT')", ("r", role))).Should().BeFalse(role);
+            (await ScalarAsync<bool>("SELECT has_table_privilege(@r, 'availability_cursor', 'UPDATE')", ("r", role))).Should().BeFalse(role);
+        }
+
+        // The calendar is Ariva.Api.Main's, kept by version: updated, never deleted.
+        foreach (var table in new[] { "operating_week", "operating_day_exception", "maintenance_window" })
+        {
+            (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_main', @t, 'UPDATE')", ("t", table))).Should().BeTrue(table);
+            (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_main', @t, 'DELETE')", ("t", table))).Should().BeFalse(table);
         }
 
         (await ScalarAsync<long>("SELECT count(*) FROM timescaledb_information.hypertables WHERE hypertable_name = 'availability_minute'")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Ledger_Should_RecordItsMinutesUnderItsOwnLogin_When_TheCronzLoginIsRefused()
+    {
+        // ARV-083a: the ledger's own login (ariva_runtime and ariva_availability, Database:Availability) decides and records the
+        // minute and moves the cursor; Ariva.Api.Cronz's own login runs the same pass and is refused before it writes anything.
+        await PlantSiteAsync("AVLOGIN", "AVM", "Asia/Dubai", Utc(9, 1, 0, 0), "Q1");
+        var snapshots = new FakeSnapshots();
+        await LedgerAsync(snapshots);
+        var database = await Host.DatabaseAsync();
+        var ledgerPassword = HostLogins.NewPassword("av-");
+        var cronzPassword = HostLogins.NewPassword("cz-");
+        await HostLogins.EnsureAsync(fixture.ConnectionString(database), "it_av_ledger", ledgerPassword, Ariva.Infra.Timescale.HostDatabaseAccess.AvailabilityRole, Ct);
+        await HostLogins.EnsureAsync(fixture.ConnectionString(database), "it_av_cronz", cronzPassword, Ariva.Infra.Timescale.HostDatabaseAccess.CronzRole, Ct);
+        var settings = Host.Provider.GetRequiredService<DatabaseSettings>();
+        Host.Clock.Advance(TimeSpan.FromSeconds(30));
+        await PlantMinutesAsync("AVLOGIN", "Q1", Utc(10, 1, 7, 50), Utc(10, 1, 8, 10));
+        snapshots.Fresh("AVLOGIN/Q1", Utc(10, 1, 7, 59), Utc(10, 1, 8, 0));
+
+        var asCronz = new DatabaseSettings { Host = settings.Host, Port = settings.Port, Name = settings.Name, Username = "it_av_cronz", Password = cronzPassword };
+        var cronz = new AvailabilityLedger(asCronz, snapshots, Host.Clock, new AvailabilitySettings(), NullLogger<AvailabilityLedger>.Instance);
+        (await FluentActions.Awaiting(() => cronz.SiteAsync("AVLOGIN", Ct)).Should().ThrowAsync<PostgresException>())
+            .Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege, "Cronz's own login neither reads nor moves a cursor");
+        (await RowsAsync("AVLOGIN")).Should().BeEmpty();
+
+        var own = new AvailabilityLedger(settings, snapshots, Host.Clock, new AvailabilitySettings(), NullLogger<AvailabilityLedger>.Instance,
+            new AvailabilityLoginSettings { Username = "it_av_ledger", Password = ledgerPassword });
+        (await own.SiteAsync("AVLOGIN", Ct)).Minutes.Should().Be(1);
+        (await RowsAsync("AVLOGIN")).Should().ContainSingle().Which.State.Should().Be("Available");
+        (await ScalarAsync<DateTime>("SELECT next_minute_utc FROM availability_cursor WHERE site_code = 'AVLOGIN'")).Should().Be(Utc(10, 1, 7, 58));
+        (await ScalarAsync<long>("SELECT count(*) FROM pg_stat_activity WHERE usename = 'it_av_ledger' AND application_name <> @name",
+            ("name", AvailabilityLoginSettings.ApplicationName))).Should().Be(0, "the ledger's connections carry its own application name");
     }
 
     [Fact]

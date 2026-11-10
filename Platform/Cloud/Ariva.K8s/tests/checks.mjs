@@ -157,6 +157,124 @@ function readerLoginFindings(doc, id, pod, environment) {
 }
 
 /**
+ * ARV-083a (CWE-269, CWE-285; ASVS 5.0 V13.2.2, V13.3.2): each API host connects to the database with a login of its own, and
+ * the availability ledger in api-cronz with one more; the database-migration job, which creates them, alone gets them all.
+ * - Each API host's .NET container gets Database__Username and Database__Password from one secret (keys username and
+ *   password) that no other login comes from; api-cronz gets Database__Availability__Username and Password from one more.
+ * - No workload but the host itself and the job refers to a host's login secret (env, envFrom or a volume), and none but
+ *   api-cronz and the job to the ledger's; only the job gets Database__HostLogins__*, only api-cronz and the job
+ *   Database__Availability__*, and every login variable comes from a secret (secretKeyRef), never a literal.
+ * - The job gets Database__HostLogins__<Host>__Username and Password from each host's own secret and the ledger's login from
+ *   api-cronz's, and runs without the service account token (automountServiceAccountToken false): it holds every login's
+ *   password and calls no Kubernetes API.
+ * With hosts (a whole render) every API host and the job must be there with their logins; without (a fixture), what is there is
+ * checked.
+ */
+export const HOST_LOGIN_SECTIONS = { 'api-main': 'Main', 'api-ingest': 'Ingest', 'api-stream': 'Stream', 'api-cronz': 'Cronz', 'api-integration': 'Integration' };
+const MIGRATION_JOB = 'Job/database-migration';
+const CRONZ = 'Deployment/api-cronz-deployment';
+const LEDGER = 'the availability ledger';
+const LOGIN_ENV = /^Database__(HostLogins__[A-Za-z]+__|Availability__)?(Username|Password)$/;
+
+/** Every secret a workload refers to: env, envFrom and volumes, of its init containers too. */
+function secretReferences(pod) {
+	const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
+	return [
+		...containers.flatMap((container) => (container.env ?? []).map((variable) => variable.valueFrom?.secretKeyRef?.name)),
+		...containers.flatMap((container) => (container.envFrom ?? []).map((source) => source.secretRef?.name)),
+		...(pod.volumes ?? []).map((volume) => volume.secret?.secretName),
+		...(pod.volumes ?? []).flatMap((volume) => (volume.projected?.sources ?? []).map((source) => source.secret?.name))
+	].filter(Boolean);
+}
+
+/** The secret a login's two variables (prefix Username and prefix Password) come from, keys username and password, or null. */
+function loginSecret(container, prefix) {
+	const ref = (suffix) => (container.env ?? []).find((variable) => variable.name === `${prefix}${suffix}`)?.valueFrom?.secretKeyRef;
+	const user = ref('Username');
+	const password = ref('Password');
+	return user && password && user.key === 'username' && password.key === 'password' && user.name && user.name === password.name ? String(user.name) : null;
+}
+
+export function hostLoginFindings(docs, { hosts = false } = {}) {
+	const findings = [];
+	const workloads = docs.filter((doc) => doc && typeof doc === 'object' && WORKLOADS.has(doc.kind))
+		.map((doc) => ({ id: `${doc.kind}/${doc.metadata?.name ?? '?'}`, pod: podSpecOf(doc) ?? {} }));
+	const hostContainer = (pod) => (pod.containers ?? []).find((container) => DOTNET_IMAGES.has(imageName(container.image ?? ''))) ?? (pod.containers ?? [])[0] ?? {};
+	const hasVariable = (container, pattern) => (container.env ?? []).some((variable) => pattern.test(variable.name ?? ''));
+	const owners = new Map();
+	const hostSecrets = {};
+	for (const host of Object.keys(HOST_LOGIN_SECTIONS)) {
+		const id = `Deployment/${host}-deployment`;
+		const workload = workloads.find((candidate) => candidate.id === id);
+		if (!workload) {
+			if (hosts) findings.push(`${id}: not rendered; every API host connects with a database login of its own (ARV-083a)`);
+			continue;
+		}
+		const container = hostContainer(workload.pod);
+		const secret = loginSecret(container, 'Database__');
+		if (!secret) {
+			if (hosts || hasVariable(container, /^Database__(Username|Password)$/)) {
+				findings.push(`${id}: must get its own database login (Database__Username and Database__Password, keys username and password) from one secret (ARV-083a)`);
+			}
+			continue;
+		}
+		if (owners.has(secret)) findings.push(`${id}: its database login secret ${secret} is ${owners.get(secret)}'s too; each host has a login of its own (ARV-083a)`);
+		else owners.set(secret, host);
+		hostSecrets[host] = secret;
+	}
+	const cronz = workloads.find((candidate) => candidate.id === CRONZ);
+	const ledger = cronz ? loginSecret(hostContainer(cronz.pod), 'Database__Availability__') : null;
+	if (cronz && !ledger && (hosts || hasVariable(hostContainer(cronz.pod), /^Database__Availability__/))) {
+		findings.push(`${CRONZ}: must get the availability ledger's login (Database__Availability__Username and Password, keys username and password) from one secret (ARV-083a)`);
+	} else if (ledger && owners.has(ledger)) {
+		findings.push(`${CRONZ}: the availability ledger's login secret ${ledger} is ${owners.get(ledger)}'s too; the ledger has a login of its own (ARV-083a)`);
+	} else if (ledger) {
+		owners.set(ledger, LEDGER);
+	}
+	for (const { id, pod } of workloads) {
+		const containers = [...(pod.initContainers ?? []), ...(pod.containers ?? [])];
+		for (const secret of new Set(secretReferences(pod))) {
+			const owner = owners.get(secret);
+			if (!owner || id === MIGRATION_JOB || id === (owner === LEDGER ? CRONZ : `Deployment/${owner}-deployment`)) continue;
+			findings.push(`${id}: refers to ${owner === LEDGER ? LEDGER : owner}'s database login secret ${secret}; a pod gets its own host's login only (ARV-083a)`);
+		}
+		if (id !== MIGRATION_JOB && containers.some((container) => hasVariable(container, /^Database__HostLogins__/))) {
+			findings.push(`${id}: only the database-migration job gets the host logins (Database__HostLogins__*; ARV-083a)`);
+		}
+		if (id !== MIGRATION_JOB && id !== CRONZ && containers.some((container) => hasVariable(container, /^Database__Availability__/))) {
+			findings.push(`${id}: only api-cronz-deployment and the database-migration job get the availability ledger's login (Database__Availability__*; ARV-083a)`);
+		}
+		for (const container of containers) {
+			for (const variable of container.env ?? []) {
+				if (LOGIN_ENV.test(variable.name ?? '') && !variable.valueFrom?.secretKeyRef) {
+					findings.push(`${id} container ${container.name}: ${variable.name}: a database login comes from its secret (secretKeyRef), never a literal (ARV-083a)`);
+				}
+			}
+		}
+	}
+	const job = workloads.find((candidate) => candidate.id === MIGRATION_JOB);
+	if (!job) {
+		if (hosts) findings.push(`${MIGRATION_JOB}: not rendered; the migration job creates every host's database login (ARV-083a)`);
+		return findings;
+	}
+	if (job.pod.automountServiceAccountToken !== false) {
+		findings.push(`${MIGRATION_JOB}: must set automountServiceAccountToken false: it holds every host's database password and calls no Kubernetes API (ARV-083a)`);
+	}
+	const container = hostContainer(job.pod);
+	for (const [host, section] of Object.entries(HOST_LOGIN_SECTIONS)) {
+		const secret = loginSecret(container, `Database__HostLogins__${section}__`);
+		if (hostSecrets[host] ? secret !== hostSecrets[host] : hosts && !secret) {
+			findings.push(`${MIGRATION_JOB}: must get ${host}'s login (Database__HostLogins__${section}__Username and Password) from ${host}'s own secret${hostSecrets[host] ? ` ${hostSecrets[host]}` : ''} (ARV-083a)`);
+		}
+	}
+	const jobLedger = loginSecret(container, 'Database__Availability__');
+	if (ledger ? jobLedger !== ledger : hosts && !jobLedger) {
+		findings.push(`${MIGRATION_JOB}: must get the availability ledger's login (Database__Availability__Username and Password) from api-cronz's ledger secret${ledger ? ` ${ledger}` : ''} (ARV-083a)`);
+	}
+	return findings;
+}
+
+/**
  * ARV-082a: the servers' CAs. Every workload that runs an Ariva .NET host against PostgreSQL and Redis (the API hosts and
  * the migration and topics jobs, which build the same host) mounts each CA, read-only and whole (a subPath mount never sees
  * a renewed CA), at the path the hosts read in k8s-prd (Database:RootCertificate, Redis:CaCertificatePath), from a secret
@@ -1232,6 +1350,8 @@ export function checkManifests(docs, { environment, hosts = false }) {
 	}
 	// ARV-275: every container that exports telemetry names its pod as service.instance.id (with hosts, a whole render: every host does).
 	findings.push(...instanceIdFindings(docs, { hosts }));
+	// ARV-083a: each host's database login from its own secret, and the migration job alone with them all.
+	findings.push(...hostLoginFindings(docs, { hosts }));
 	return findings;
 }
 

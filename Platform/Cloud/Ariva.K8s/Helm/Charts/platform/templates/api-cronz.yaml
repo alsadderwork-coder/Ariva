@@ -152,6 +152,10 @@ spec:
             # The most connections this replica keeps in its runtime pool (ARV-232; databaseConnections, validate.yaml)
             - name: Database__MaxPoolSize
               value: {{ .Values.databaseConnections.poolSize.cronz | quote }}
+            # This host's own database login (ARV-083a; databaseLogins.cronz): no other host's pod gets its secret
+            {{- include "ariva-platform.hostLoginEnv" (list . "cronz") | nindent 12 }}
+            # The availability ledger's own login (ARV-083a; databaseLogins.availability): only this host and the migration job
+            {{- include "ariva-platform.availabilityLoginEnv" . | nindent 12 }}
             # Kafka SASL password (ARV-020); optional, absent where Kafka is plaintext
             - name: Kafka__SaslPassword
               valueFrom:

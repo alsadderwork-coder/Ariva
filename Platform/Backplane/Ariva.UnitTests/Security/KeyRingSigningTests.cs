@@ -539,10 +539,18 @@ public sealed class KeyRingSigningTests : IDisposable
         Directory.GetFiles(directory, "*.tmp").Should().BeEmpty("the file that holds a private key does not stay behind");
     }
 
-    [Fact]
-    public void AddArivaDataProtection_Should_CheckTheUpgradeAtStart_When_TheHostVerifiesItsSchema()
+    [Theory]
+    [InlineData("main", true)]
+    [InlineData("cronz", true)]
+    [InlineData("ingest", false)]
+    [InlineData("stream", false)]
+    [InlineData("integration", false)]
+    [InlineData("base", false)]
+    public void AddArivaDataProtection_Should_CheckTheUpgradeAtStart_When_TheHostVerifiesItsSchemaAndMayReadTheStoredSecrets(string shortName, bool checks)
     {
-        // The review's finding H1: outside vm-local (Database:VerifySchemaOnStartup) every host runs the upgrade check at start.
+        // The review's finding H1: outside vm-local (Database:VerifySchemaOnStartup) a host runs the upgrade check at start. ARV-083a
+        // (its review's R2-2): only Ariva.Api.Main and Ariva.Api.Cronz, whose logins may read the three columns the check reads; the
+        // others never read those values, their logins are refused the read, and the migration job checks the same at release.
         var directory = Folder();
         IServiceCollection Registered(bool verify)
         {
@@ -550,6 +558,7 @@ public sealed class KeyRingSigningTests : IDisposable
             services.AddLogging();
             services.AddArivaDataProtection(Configuration(new()
             {
+                ["Application:ShortName"] = shortName,
                 ["DataProtection:UseDevelopmentCertificate"] = "true",
                 ["DataProtection:DevelopmentCertificateDirectory"] = directory,
                 ["Database:VerifySchemaOnStartup"] = verify ? "true" : "false"
@@ -557,7 +566,7 @@ public sealed class KeyRingSigningTests : IDisposable
             return services;
         }
 
-        Registered(verify: true).Should().Contain(d => d.ImplementationType == typeof(KeyRingUpgradeGate));
+        Registered(verify: true).Any(d => d.ImplementationType == typeof(KeyRingUpgradeGate)).Should().Be(checks, shortName);
         Registered(verify: false).Should().NotContain(d => d.ImplementationType == typeof(KeyRingUpgradeGate), "vm-local migrates its own database");
     }
 

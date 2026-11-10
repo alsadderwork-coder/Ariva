@@ -33,7 +33,7 @@ public sealed class DatabaseTempFileLimitTests(PostgresFixture postgres)
         await new SqlScriptRunner(admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
         const string login = "it_tf_app";
         var password = Secret();
-        await ExecuteAsync(admin, "SELECT ariva_ensure_runtime_login(@name, @password)", ("name", login), ("password", password));
+        await ExecuteAsync(admin, "SELECT ariva_ensure_host_login(@name, @verifier, 'ariva_main')", ("name", login), ("verifier", ScramVerifier.For(password)));
         // One megabyte here, so the test is quick; the migration job takes Database:TempFileLimitMegabytes (64 to 102,400).
         await ExecuteAsync(admin, "SELECT ariva_set_runtime_temp_file_limit(@name, @megabytes)", ("name", login), ("megabytes", 1));
         var asRuntime = postgres.ConnectionString(database, login, password);
@@ -63,7 +63,7 @@ public sealed class DatabaseTempFileLimitTests(PostgresFixture postgres)
         var database = await postgres.CreateDatabaseAsync(TestDatabase.TempFileLimitRefusals);
         var admin = postgres.ConnectionString(database);
         await new SqlScriptRunner(admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
-        await ExecuteAsync(admin, "SELECT ariva_ensure_runtime_login(@name, @password)", ("name", "it_tf_member"), ("password", Secret()));
+        await ExecuteAsync(admin, "SELECT ariva_ensure_host_login(@name, @verifier, 'ariva_main')", ("name", "it_tf_member"), ("verifier", ScramVerifier.For(Secret())));
         await ExecuteAsync(admin, "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'it_tf_outsider') THEN CREATE ROLE it_tf_outsider LOGIN; END IF; END $$");
 
         async Task<string> RefusalOf(string name, int megabytes)

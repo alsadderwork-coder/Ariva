@@ -73,6 +73,7 @@
     "0070_runtime_session_limits.sql": "83251d7d5df4f630c378f6edba276f9139f765238c19c7f93810158f1f903fd7",
     "0071_advertising_policy_stamped.sql": "af3279ab2c8243164da2e236d494d4720662af9ca6884862bcdac962748e37ea",
     "0072_data_protection_key_retention.sql": "5493f4c2d889c3e2d5ee31266382cf987a1ac16bd4c528a85c148a8dae04296b",
-    "0073_data_protection_key_row_signature.sql": "74ab490c5288d100dc99b5e216d87a3cd0eb7d61229ac63cc6e4fc726af73db8"
+    "0073_data_protection_key_row_signature.sql": "74ab490c5288d100dc99b5e216d87a3cd0eb7d61229ac63cc6e4fc726af73db8",
+    "0074_host_database_roles.sql": "add2e97243e8eccd1e8e81be14e02af2e3f19bbbc6f80c1779052d08dcc55bf0"
   }
 }

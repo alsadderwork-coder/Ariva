@@ -151,7 +151,7 @@ public sealed class IllustrativeSeedTests(PostgresFixture fixture) : IAsyncDispo
         (await source.LoadAsync("AUH-TA", "A-EG", Ct)).Geometry.DeskZones.Should().BeEmpty("smart gates have no desk zones");
     }
 
-    // CWE-269 (script 0046): a real runtime login, as ariva_ensure_runtime_login creates it for the hosts, renames the
+    // CWE-269 (script 0046): a real host login, as ariva_ensure_host_login creates it for Ariva.Api.Main (ARV-083a), renames the
     // illustrative site through SvcSites and NHibernate, re-runs the seed (its SELECT ... FOR UPDATE on site), and fails
     // with 42501 on every statement that would set, clear or recode the flag's row or delete it. The Site mapping must
     // keep dynamic update: a full-row UPDATE would also write is_illustrative and code, which the login may not.
@@ -168,10 +168,7 @@ public sealed class IllustrativeSeedTests(PostgresFixture fixture) : IAsyncDispo
         await using (var admin = new NpgsqlConnection(fixture.ConnectionString(database)))
         {
             await admin.OpenAsync(Ct);
-            await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
-            ensure.Parameters.AddWithValue("login", login);
-            ensure.Parameters.AddWithValue("password", password);
-            await ensure.ExecuteNonQueryAsync(Ct);
+            await Ariva.IntegrationTests.Setup.HostLogins.EnsureAsync(admin, login, password, Ariva.Infra.Timescale.HostDatabaseAccess.MainRole, Ct);
         }
 
         (await host.ReadAsync<bool>("SELECT pg_has_role('it_illustrative_runtime', 'ariva_runtime', 'MEMBER') AND NOT rolsuper AND NOT rolcreaterole FROM pg_roles WHERE rolname = 'it_illustrative_runtime'"))

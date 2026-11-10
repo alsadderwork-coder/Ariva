@@ -120,10 +120,35 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 103,
-      "passes": false,
-      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). From ARV-083's notes: the database-migration job does not set automountServiceAccountToken: false (it needs no Kubernetes API access). 2026-10-10: owner folded the ARV-118 availability ledger rights into ARV-083 (now this story). 2026-10-19 (ARV-091 log inventory): the migration job sends the runtime login password in clear to PostgreSQL: SELECT ariva_ensure_runtime_login(@name, @password) (DatabaseMigrator.cs) binds it as a parameter, which the server logs with log_statement all or a duration threshold while log_parameter_max_length is -1, and the function EXECUTEs ALTER ROLE or CREATE ROLE ... PASSWORD %L, whose text a failing EXECUTE prints in the error CONTEXT. When the per-host logins replace this, send a SCRAM-SHA-256 verifier computed in the job (PostgreSQL stores a verifier given as the password as it is), never the password, and keep the advice of docs/security/log-inventory.md (log_statement none or ddl). ARV-096d (script 0063): each per-host login also gets the runtime statement timeout (ariva_set_runtime_statement_timeout, called by the migration job after the login is ensured), since a setting of a group role does not reach its members.",
+      "passes": true,
+      "notes": "Split from ARV-083 on 2026-10-18 (Effort L, three reviewable parts; the vault part needs the owner's choice of secret store). From ARV-083's notes: the database-migration job does not set automountServiceAccountToken: false (it needs no Kubernetes API access). 2026-10-10: owner folded the ARV-118 availability ledger rights into ARV-083 (now this story). 2026-10-19 (ARV-091 log inventory): the migration job sends the runtime login password in clear to PostgreSQL: SELECT ariva_ensure_runtime_login(@name, @password) (DatabaseMigrator.cs) binds it as a parameter, which the server logs with log_statement all or a duration threshold while log_parameter_max_length is -1, and the function EXECUTEs ALTER ROLE or CREATE ROLE ... PASSWORD %L, whose text a failing EXECUTE prints in the error CONTEXT. When the per-host logins replace this, send a SCRAM-SHA-256 verifier computed in the job (PostgreSQL stores a verifier given as the password as it is), never the password, and keep the advice of docs/security/log-inventory.md (log_statement none or ddl). ARV-096d (script 0063): each per-host login also gets the runtime statement timeout (ariva_set_runtime_statement_timeout, called by the migration job after the login is ensured), since a setting of a group role does not reach its members. 2026-11-10: built (script 0074_host_database_roles.sql, renumbered from 0073 when rebased onto ARV-207 and ARV-211); the deeper ariva-db.sh checks for the host roles split into ARV-083d.",
       "dependsOn": [
         "ARV-074"
+      ]
+    },
+    {
+      "id": "ARV-083d",
+      "title": "[ASVS] The ops and restore checks hold the host roles as deeply as the runtime role",
+      "description": "Split from ARV-083a on 2026-11-10. ariva-db.sh check compares each host role's grants on public with HostDatabaseAccess (host privileges) and accepts host-shaped logins, but its deeper checks still judge ariva_runtime alone, so a restored or edited database that gives, for example, ariva_main INSERT on an availability_minute chunk passes check. Extend them to ariva_main, ariva_ingest, ariva_stream, ariva_cronz, ariva_integration and ariva_availability, and refuse a host-shaped ariva_app. Also run the paths other than authentication and the key ring under their own host's login (Cronz's re-protection and report deliveries, Stream's COPY writers, Integration's intake): the E2E suites use the vm-local development login, which holds every role, so a missing grant reaches a cluster unseen (it fails closed with 42501). ASVS 5.0: V13.2.2. Effort S to M.",
+      "acceptanceCriteria": [
+        "internal_drift (ariva-db.sh, the internal privileges) judges the six host roles as it judges ariva_runtime: chunks and compressed chunks no wider than their hypertable, continuous aggregates' tables and views at most SELECT, relations outside public (the extension's and any created after initdb) nothing, and no sequence privilege",
+        "the grants on system and extension tables and functions, and the CREATE checks, cover the six host roles and their logins (runtime_grantees includes them)",
+        "runtime_caps checks the statement timeout, temporary file cap, idle transaction limit and keepalives of every host login and the availability ledger's, not only the one --runtime-login",
+        "extra_members accepts at most one login per host role, holding ariva_runtime and that role only, and refuses ariva_app as a host login",
+        "BackupRestoreTests plants one finding of each kind for a host role (a chunk grant, a compressed chunk grant, a continuous aggregate table grant, a grant outside public, a sequence grant, a system or extension table grant, a host login without its caps, a second login of one host role), each a FAIL of check",
+        "OpsScriptTests holds the role lists of these checks equal to HostDatabaseAccess.HostRoles",
+        "Integration tests run Cronz's secret re-protection and report deliveries, Stream's COPY writers and Integration's intake under their own host's login on a cluster-migrated database",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "docs/security/asvs-l2.md rows for the requirements above updated with their new status and evidence",
+        "security-reviewer verdict PASS recorded in backlog/progress.md",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 105,
+      "passes": false,
+      "notes": "Split from ARV-083a on 2026-11-10 (its security review, round 1 finding 3 and round 3 advisory).",
+      "dependsOn": [
+        "ARV-083a"
       ]
     },
     {

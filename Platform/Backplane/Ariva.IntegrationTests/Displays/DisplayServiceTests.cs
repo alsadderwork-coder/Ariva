@@ -295,7 +295,7 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
         await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
         await connection.OpenAsync(Ct);
         await using var transaction = await connection.BeginTransactionAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_main", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
         await using var command = change switch
         {
@@ -318,7 +318,7 @@ public sealed class DisplayServiceTests(PostgresFixture fixture) : IAsyncDisposa
         await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
         await connection.OpenAsync(Ct);
         await using var transaction = await connection.BeginTransactionAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_main", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
         await using var command = new NpgsqlCommand("DELETE FROM display WHERE code = 'RT-1'", connection, transaction);
         var delete = () => command.ExecuteNonQueryAsync(Ct);

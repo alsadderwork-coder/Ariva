@@ -75,6 +75,9 @@ public static class ArivaHosts
         ("Kafka:Topics:Partitions", "6")
     ];
 
+    /// <summary>The availability ledger's login a cluster's Cronz host started here is given (ARV-083a); it never connects.</summary>
+    public const string ClusterAvailabilityLogin = "ariva_test_availability";
+
     /// <summary>The log pseudonym key a host started here in k8s-prd hashes with (ARV-091a): base64 of the bytes 1 to 32, the tests' own.</summary>
     public const string ProductionPseudonymKey = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
 
@@ -339,6 +342,13 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
             // settings would give them (UseSetting reaches the host as its command line, a k8s-prd source).
             foreach (var (goLiveKey, goLiveValue) in ArivaHosts.GoLiveAnswers)
                 builder.UseSetting(goLiveKey, goLiveValue);
+        }
+        // A cluster's Cronz host records availability minutes under the ledger's own login (ARV-083a) and refuses to start
+        // without one, which the chart passes from its own secret: nothing connects here, so a login of the tests' own stands in.
+        if (environment.StartsWith("k8s-", StringComparison.Ordinal))
+        {
+            builder.UseSetting("Database:Availability:Username", ArivaHosts.ClusterAvailabilityLogin);
+            builder.UseSetting("Database:Availability:Password", "availability-test-password-0123");
         }
         // Nor a database readiness check, which would answer 503 here: the probes' authorization is what these hosts
         // test; the check itself is covered by ServiceDefaultsTests (ARV-066).

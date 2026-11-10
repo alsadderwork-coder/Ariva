@@ -37,10 +37,7 @@ public sealed class BinMaturityTests(PostgresFixture postgres)
         await using (var admin = new NpgsqlConnection(postgres.ConnectionString(database)))
         {
             await admin.OpenAsync(Ct);
-            await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
-            ensure.Parameters.AddWithValue("login", login);
-            ensure.Parameters.AddWithValue("password", password);
-            await ensure.ExecuteNonQueryAsync(Ct);
+            await Ariva.IntegrationTests.Setup.HostLogins.EnsureAsync(admin, login, password, Ariva.Infra.Timescale.HostDatabaseAccess.StreamRole, Ct);
         }
 
         var store = new StreamStore(new DatabaseSettings { Host = postgres.Hostname, Port = postgres.Port, Name = database, Username = login, Password = password },

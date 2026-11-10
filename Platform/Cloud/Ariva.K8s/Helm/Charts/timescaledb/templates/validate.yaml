@@ -2,7 +2,8 @@
 Release guards. Renders nothing; fails the render when a rule is broken.
 - The image is pinned by digest and never "latest" (CWE-494).
 - Passwords come from an existing secret, never from values (CWE-798).
-- The names are plain PostgreSQL identifiers, and the migration login is never the superuser (CWE-269).
+- The names are plain PostgreSQL identifiers, and the migration login is never the superuser or one of Ariva's group roles
+  (the host roles of ARV-083a among them; CWE-269).
 - TLS (ARV-082a, CWE-319): tls is a map and tls.enabled true or false; when on, tls.secretName names a Kubernetes secret
   (the certificate and key never come from values) and tls.minProtocolVersion is TLSv1.2 or TLSv1.3.
 - maxConnections (ARV-232) is a whole number from 20 to 5000.
@@ -26,7 +27,8 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- fail (printf "%s must be a lower case PostgreSQL identifier" $name) }}
 {{- end }}
 {{- end }}
-{{- if has (toString .Values.migrationLogin) (list "postgres" "ariva_migration" "ariva_runtime") }}
+{{- /* Ariva's group roles (scripts 0001, 0043 and 0074; ARV-083a the host roles): never a login. */}}
+{{- if has (toString .Values.migrationLogin) (list "postgres" "ariva_migration" "ariva_runtime" "ariva_validation_reader" "ariva_main" "ariva_ingest" "ariva_stream" "ariva_cronz" "ariva_integration" "ariva_availability") }}
 {{- fail "migrationLogin must be a login of its own, not the superuser or one of Ariva's roles" }}
 {{- end }}
 {{- if not (kindIs "map" .Values.tls) }}

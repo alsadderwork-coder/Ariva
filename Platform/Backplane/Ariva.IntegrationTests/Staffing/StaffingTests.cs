@@ -328,10 +328,11 @@ public sealed class StaffingTests(PostgresFixture fixture) : IAsyncDisposable
     public async Task Table_Should_KeepTheRowsWriteOnceAndRefuseWhatTheEngineNeverWrites_When_Written()
     {
         await Host.DatabaseAsync();
+        // ARV-083a: Ariva.Api.Cronz's role, the staffing job's (Ariva.Api.Main and Ariva.Api.Stream only read the rows).
         foreach (var privilege in new[] { "INSERT", "SELECT" })
-            (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_runtime', 'lane_staffing', @p)", ("p", privilege))).Should().BeTrue(privilege);
+            (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_cronz', 'lane_staffing', @p)", ("p", privilege))).Should().BeTrue(privilege);
         foreach (var privilege in new[] { "UPDATE", "DELETE", "TRUNCATE" })
-            (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_runtime', 'lane_staffing', @p)", ("p", privilege))).Should().BeFalse(privilege);
+            (await ScalarAsync<bool>("SELECT has_table_privilege('ariva_cronz', 'lane_staffing', @p)", ("p", privilege))).Should().BeFalse(privilege);
         (await ScalarAsync<bool>("SELECT EXISTS (SELECT 1 FROM timescaledb_information.jobs WHERE hypertable_name = 'lane_staffing' AND proc_name = 'policy_retention')"))
             .Should().BeTrue("kept 90 days");
 

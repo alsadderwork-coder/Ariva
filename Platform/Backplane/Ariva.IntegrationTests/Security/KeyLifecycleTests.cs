@@ -23,7 +23,9 @@ namespace Ariva.IntegrationTests.Security;
 /// ARV-207 against TimescaleDB, through the real migration job and the runtime login it creates, with keys the hosts' own Data
 /// Protection wrote to <c>data_protection_key</c> (so script 0072's pattern is held to the shape Data Protection really writes):
 /// <list type="bullet">
-/// <item>the runtime login still cannot delete a key itself, nor ask the purge for less than 30 days;</item>
+/// <item>the runtime login still cannot delete a key itself, nor ask the purge for less than 30 days (ARV-083a: this class's
+/// migration job has no environment and no host logins, so it gives that login every host role, the widest a login gets; the purge
+/// is ariva_cronz's alone, and HostLoginServicesTests runs the round under Cronz's own login);</item>
 /// <item>the key lifecycle round deletes an expired key past its retention only once no stored value names it (a user's TOTP
 /// seed, an integration client's seed and an outbound endpoint's secret, each naming a key of its own, the last two with a
 /// header that ends in base64url's own characters), keeps a key expired within its retention, keeps every revocation, deletes
@@ -142,7 +144,9 @@ public sealed class KeyLifecycleTests(PostgresFixture fixture)
         (await shorter.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InvalidParameterValue);
         (await larger.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InvalidParameterValue);
         (await ScalarAsync<bool>(Admin, "SELECT has_function_privilege('public', 'ariva_data_protection_key_purge(integer,integer)', 'EXECUTE')"))
-            .Should().BeFalse("only ariva_runtime may run it");
+            .Should().BeFalse("only ariva_cronz may run it (ARV-083a)");
+        (await ScalarAsync<bool>(Admin, "SELECT has_function_privilege('ariva_runtime', 'ariva_data_protection_key_purge(integer,integer)', 'EXECUTE')"))
+            .Should().BeFalse("script 0074 took it from the base every host login holds");
         (await ScalarAsync<bool>(Admin, "SELECT p.prosecdef FROM pg_proc p WHERE p.oid = 'ariva_data_protection_key_purge(integer,integer)'::regprocedure"))
             .Should().BeTrue("it runs as its owner, so the runtime role needs no DELETE");
     }

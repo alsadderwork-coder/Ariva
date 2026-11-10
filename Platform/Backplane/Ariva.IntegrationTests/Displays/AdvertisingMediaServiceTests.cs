@@ -683,7 +683,7 @@ public sealed class AdvertisingMediaServiceTests(PostgresFixture fixture) : IAsy
         var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
         await connection.OpenAsync(Ct);
         var transaction = await connection.BeginTransactionAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_main", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
         return new Runtime(connection, transaction);
     }

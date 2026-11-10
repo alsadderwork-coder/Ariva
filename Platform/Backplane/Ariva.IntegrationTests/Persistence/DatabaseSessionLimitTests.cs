@@ -38,7 +38,8 @@ public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
         await new SqlScriptRunner(admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
         const string login = "it_sl_app";
         var password = Secret();
-        await ExecuteAsync(admin, "SELECT ariva_ensure_runtime_login(@name, @password)", ("name", login), ("password", password));
+        // ARV-083a: a delivery round is Cronz's (it locks and updates report_delivery), so the round's hold runs as Cronz's login.
+        await ExecuteAsync(admin, "SELECT ariva_ensure_host_login(@name, @verifier, 'ariva_cronz')", ("name", login), ("verifier", ScramVerifier.For(password)));
         // Three seconds here, so the test is quick; the migration job takes Database:IdleInTransactionTimeoutSeconds (300 to 7,200).
         await ExecuteAsync(admin, "SELECT ariva_set_runtime_session_limits(@name, 3, 60, 10, 6)", ("name", login));
         await ExecuteAsync(admin, """
@@ -93,7 +94,7 @@ public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
         await new SqlScriptRunner(admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
         const string login = "it_sl_long";
         var password = Secret();
-        await ExecuteAsync(admin, "SELECT ariva_ensure_runtime_login(@name, @password)", ("name", login), ("password", password));
+        await ExecuteAsync(admin, "SELECT ariva_ensure_host_login(@name, @verifier, 'ariva_main')", ("name", login), ("verifier", ScramVerifier.For(password)));
         await ExecuteAsync(admin, "SELECT ariva_set_runtime_session_limits(@name, 3, 60, 10, 6)", ("name", login));
         await ExecuteAsync(admin, "INSERT INTO site (id, code, name) VALUES (gen_random_uuid(), 'SLL', 'Session long')");
 
@@ -122,7 +123,7 @@ public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
         var database = await postgres.CreateDatabaseAsync(TestDatabase.SessionLimitRefusals);
         var admin = postgres.ConnectionString(database);
         await new SqlScriptRunner(admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
-        await ExecuteAsync(admin, "SELECT ariva_ensure_runtime_login(@name, @password)", ("name", "it_sl_member"), ("password", Secret()));
+        await ExecuteAsync(admin, "SELECT ariva_ensure_host_login(@name, @verifier, 'ariva_main')", ("name", "it_sl_member"), ("verifier", ScramVerifier.For(Secret())));
         await ExecuteAsync(admin, "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'it_sl_outsider') THEN CREATE ROLE it_sl_outsider LOGIN; END IF; END $$");
 
         async Task<string> RefusalOf(string name, int idle, int keepIdle = 60, int keepInterval = 10, int keepCount = 6)
@@ -187,7 +188,8 @@ public sealed class DatabaseSessionLimitTests(PostgresFixture postgres)
         await new SqlScriptRunner(admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded(), Ct);
         const string login = "it_sl_gate";
         var password = Secret();
-        await ExecuteAsync(admin, "SELECT ariva_ensure_runtime_login(@name, @password)", ("name", login), ("password", password));
+        // ARV-083a: a host's login as the migration job creates it (script 0074 removed the function that took a plain password).
+        await HostLogins.EnsureAsync(admin, login, password, HostDatabaseAccess.MainRole, Ct);
         var settings = DatabaseSettings.FromConfiguration(Configuration(database, login, password, idleSeconds: 300, verifySchema: true));
         var budget = IdleTransactionBudget.FromConfiguration(new ConfigurationBuilder().Build(), settings);
         budget.Longest.Seconds.Should().Be(180);

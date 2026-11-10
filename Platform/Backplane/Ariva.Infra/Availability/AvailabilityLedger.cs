@@ -53,7 +53,7 @@ public sealed record AvailabilitySitePass(int Minutes, int Available, int Unavai
 /// </para>
 /// </summary>
 public sealed class AvailabilityLedger(DatabaseSettings database, ILiveSnapshotStore snapshots, TimeProvider timeProvider, AvailabilitySettings settings,
-    ILogger<AvailabilityLedger> logger)
+    ILogger<AvailabilityLedger> logger, AvailabilityLoginSettings login = null)
 {
     /// <summary>The advisory lock class of a site's pass (two-key form; 41, 42 and 49 are taken).</summary>
     public const int LockClass = 50;
@@ -468,9 +468,13 @@ public sealed class AvailabilityLedger(DatabaseSettings database, ILiveSnapshotS
 
     private static DateTime Utc(DateTime value) => value.Kind == DateTimeKind.Utc ? value : DateTime.SpecifyKind(value.ToUniversalTime(), DateTimeKind.Utc);
 
+    /// <summary>
+    /// ARV-083a: every connection of a run is the ledger's own login (Database:Availability), the only one that may record a
+    /// minute or move a cursor; without it (a vm-local database whose hosts share the development login) the host's runtime login.
+    /// </summary>
     private async Task<NpgsqlConnection> OpenAsync(CancellationToken ct)
     {
-        var connection = PostgresConnections.Create(database.BuildConnectionString());
+        var connection = PostgresConnections.Create(login is { IsConfigured: true } ? login.BuildConnectionString(database) : database.BuildConnectionString());
         await connection.OpenAsync(ct);
         return connection;
     }

@@ -104,45 +104,55 @@ public sealed class SqlScriptRunnerTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task RolesScript_Should_GiveRuntimeLoginDmlOnly_When_Migrated()
+    public async Task RolesScripts_Should_GiveAHostLoginItsRolesGrantsAndNoDdl_When_Migrated()
     {
         var database = await fixture.CreateDatabaseAsync(TestDatabase.Roles);
         var migration = fixture.ConnectionString(database);
         var runtimePassword = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
 
         await new SqlScriptRunner(migration, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded());
-        await ExecuteAsync(migration, "SELECT ariva_ensure_runtime_login('ariva_app_it', @password)", runtimePassword);
-        // A table created by the migration login after 0001, as later scripts will: default privileges apply.
+        // ARV-083a: a host login (here Ariva.Api.Stream's), from a SCRAM-SHA-256 verifier, as the migration job creates it.
+        await HostLogins.EnsureAsync(migration, "ariva_app_it", runtimePassword, HostDatabaseAccess.StreamRole, TestContext.Current.CancellationToken);
+        // A table created by the migration login after the scripts, as later scripts will: since script 0074 no default
+        // privilege gives a host anything on it until its script grants it.
         await ExecuteAsync(migration, "CREATE TABLE zone_probe (id int PRIMARY KEY, name text)");
 
         var runtime = fixture.ConnectionString(database, "ariva_app_it", runtimePassword);
-        await ExecuteAsync(runtime, "INSERT INTO zone_probe (id, name) VALUES (1, 'A')");
-        await ExecuteAsync(runtime, "UPDATE zone_probe SET name = 'B' WHERE id = 1");
+        await ExecuteAsync(runtime, "INSERT INTO stream_partition_count (topic_set, partitions, first_seen) VALUES ('it-roles', 1, now())");
         (await CountAsync(database, "SELECT count(*) FROM schema_version", runtime)).Should().BeGreaterThan(0, "hosts read schema_version at startup");
 
+        var probe = () => ExecuteAsync(runtime, "INSERT INTO zone_probe (id, name) VALUES (1, 'A')");
+        var configuration = () => ExecuteAsync(runtime, "UPDATE zone_profile SET name = name");
         var createTable = () => ExecuteAsync(runtime, "CREATE TABLE forbidden (id int)");
         var writeVersions = () => ExecuteAsync(runtime, "DELETE FROM schema_version");
         var dropTable = () => ExecuteAsync(runtime, "DROP TABLE zone_probe");
 
+        (await probe.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege, "no default privilege");
+        (await configuration.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege, "the stream reads profiles only");
         (await createTable.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
         (await writeVersions.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
         (await dropTable.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
     }
 
     [Fact]
-    public async Task EnsureRuntimeLogin_Should_RefuseWeakOrPrivilegedLogins_When_Called()
+    public async Task EnsureHostLogin_Should_RefuseAPasswordABadNameOrRoleOrTheMigrationLogin_When_Called()
     {
         // Its own database: the shipped scripts create "user", which the sample schema in ariva_it also has.
         var migration = fixture.ConnectionString(await fixture.CreateDatabaseAsync(TestDatabase.RuntimeLogin));
         await new SqlScriptRunner(migration, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded());
+        var verifier = ScramVerifier.For(new string('p', 24));
 
-        var shortPassword = () => ExecuteAsync(migration, "SELECT ariva_ensure_runtime_login('ariva_app_short', @password)", "too-short");
-        var badName = () => ExecuteAsync(migration, "SELECT ariva_ensure_runtime_login('x; DROP ROLE ariva', @password)", new string('p', 24));
-        var superuser = () => ExecuteAsync(migration, "SELECT ariva_ensure_runtime_login('ariva', @password)", new string('p', 24));
+        var password = () => ExecuteAsync(migration, "SELECT ariva_ensure_host_login('ariva_app_plain', @password, 'ariva_main')", new string('p', 24));
+        var badName = () => ExecuteAsync(migration, "SELECT ariva_ensure_host_login('x; DROP ROLE ariva', @password, 'ariva_main')", verifier);
+        var badRole = () => ExecuteAsync(migration, "SELECT ariva_ensure_host_login('ariva_app_role', @password, 'ariva_migration')", verifier);
+        var migrationLogin = () => ExecuteAsync(migration, "SELECT ariva_ensure_host_login('ariva', @password, 'ariva_main')", verifier);
 
-        await shortPassword.Should().ThrowAsync<PostgresException>().WithMessage("*at least 16 characters*");
-        await badName.Should().ThrowAsync<PostgresException>().WithMessage("*invalid runtime login name*");
-        await superuser.Should().ThrowAsync<PostgresException>().WithMessage("*privileged*");
+        await password.Should().ThrowAsync<PostgresException>().WithMessage("*SCRAM-SHA-256 verifier*never a password*");
+        await badName.Should().ThrowAsync<PostgresException>().WithMessage("*invalid host login name*");
+        await badRole.Should().ThrowAsync<PostgresException>().WithMessage("*invalid host role*");
+        await migrationLogin.Should().ThrowAsync<PostgresException>().WithMessage("*login of its own*");
+        (await CountAsync(string.Empty, "SELECT count(*) FROM pg_proc WHERE proname = 'ariva_ensure_runtime_login'", migration))
+            .Should().Be(0, "script 0074 removes the function that took a plain password");
     }
 
     private async Task<long> CountAsync(string database, [System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, string connectionString = null)

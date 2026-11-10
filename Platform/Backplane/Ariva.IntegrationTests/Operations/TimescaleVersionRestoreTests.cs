@@ -175,12 +175,14 @@ public sealed partial class TimescaleVersionRestoreTests : IAsyncLifetime
         NpgsqlConnection.ClearAllPools();
         var check = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         check.ExitCode.Should().Be(0, check.Stdout + check.Stderr);
-        check.Stdout.Should().Contain($"ok    runtime login|{RuntimeLogin} holds ariva_runtime only (DML)")
+        check.Stdout.Should().Contain($"ok    runtime login|{RuntimeLogin} holds ariva_main and ariva_runtime (DML only)", "ARV-083a: Ariva.Api.Main's own login")
             .And.Contain("ok    extension versions|").And.NotContain("FAIL", check.Stdout);
 
         await using (var main = new DeployedHost<Ariva.Api.Main._IAssemblyMark>(HostSettings(_target, RestoredRuntimePassword)))
             (await StartupProbeAsync(main.Client())).Should().Be(HttpStatusCode.OK, "Ariva.Api.Main starts on the restored database, its schema check included");
-        await using (var integration = new DeployedHost<Ariva.Api.Integration._IAssemblyMark>(HostSettings(_target, RestoredRuntimePassword)))
+        // ARV-083a: Ariva.Api.Integration on its own login, as the chart starts it.
+        var (integrationLogin, integrationPassword) = _target.HostLogin("Integration");
+        await using (var integration = new DeployedHost<Ariva.Api.Integration._IAssemblyMark>(HostSettings(_target, integrationPassword, integrationLogin)))
             (await StartupProbeAsync(integration.Client())).Should().Be(HttpStatusCode.OK, "Ariva.Api.Integration starts on the restored database, its schema check included");
 
         // Its review: what the dump brings is judged before the update runs on it, and the empty database before the extension
@@ -385,12 +387,12 @@ public sealed partial class TimescaleVersionRestoreTests : IAsyncLifetime
         backup.ExitCode.Should().Be(0, backup.Stderr);
     }
 
-    private Dictionary<string, string> HostSettings(ChartDatabase server, string runtimePassword) => new()
+    private Dictionary<string, string> HostSettings(ChartDatabase server, string runtimePassword, string login = RuntimeLogin) => new()
     {
         ["Database:Host"] = server.Hostname,
         ["Database:Port"] = server.Port.ToString(System.Globalization.CultureInfo.InvariantCulture),
         ["Database:Name"] = ChartDatabase.Database,
-        ["Database:Username"] = RuntimeLogin,
+        ["Database:Username"] = login,
         ["Database:Password"] = runtimePassword,
         ["DataProtection:CertificatePath"] = _certificatePath,
         ["DataProtection:KeyPath"] = _keyPath,

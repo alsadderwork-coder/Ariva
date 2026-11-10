@@ -1,5 +1,6 @@
 using Ariva.Infra.DataProtection;
 using Ariva.Infra.Settings;
+using Ariva.Infra.Timescale;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.DataProtection.AuthenticatedEncryption;
 using Microsoft.AspNetCore.DataProtection.AuthenticatedEncryption.ConfigurationModel;
@@ -32,8 +33,10 @@ public static class DataProtectionExtensions
         var database = DatabaseSettings.FromConfiguration(configuration);
         services.AddArivaDataProtection(database, certificates, KeyRingSigning.Load(configuration, certificates), LegacyFormatUntil(configuration));
         // ARV-211 (the review's finding H1): outside vm-local, after the schema check, a host refuses to start while a stored value
-        // needs a key from before ARV-211 and the upgrade window is not open, and warns while it is open.
-        if (database.VerifySchemaOnStartup)
+        // needs a key from before ARV-211 and the upgrade window is not open, and warns while it is open. ARV-083a: only the hosts
+        // whose own login may read every stored payload, Ariva.Api.Main and Ariva.Api.Cronz (HostDatabaseAccess.KeyRingUpgradeCheckRoles);
+        // the others' logins may not read all three columns the check reads, and the migration job checks the same at release.
+        if (database.VerifySchemaOnStartup && HostDatabaseAccess.RunsKeyRingUpgradeCheck(configuration["Application:ShortName"]))
             services.AddHostedService<KeyRingUpgradeGate>();
         return services;
     }

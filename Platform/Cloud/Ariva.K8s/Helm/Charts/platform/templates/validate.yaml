@@ -6,6 +6,9 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 - The MQTT transport always has its TLS secret (ARV-024): device credentials never cross the network in clear.
 - The validation reader login (ARV-104g1) comes from a secret named by validationReader.secretName, and production
   requires it (optional false), so the pilot's ground-truth proof always has its reader.
+- Each host's database login and the availability ledger's (ARV-083a, databaseLogins) come from six secrets, each named
+  as Kubernetes names a secret, each its own (not another login's, the validation reader's or the appsettings secret), and
+  databaseLogins names no other key.
 - The database connections (ARV-232, databaseConnections): every host's poolSize is a whole number from 2 to 100 (the bounds
   of the hosts' Database:MaxPoolSize), the other counts and the replica counts whole numbers, and the connections every replica
   may hold, over each host's largest replica count and the extra pods of a rolling update, with the migration job's and the
@@ -211,6 +214,30 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if and (eq .Values.environment "k8s-prd") .Values.validationReader.optional }}
 {{- fail "k8s-prd needs the validation reader secret: set validationReader.optional false (ARV-104g1)" }}
+{{- end }}
+{{- /* ARV-083a: each host's database login, and the availability ledger's, from a secret of its own. */}}
+{{- $logins := .Values.databaseLogins | default dict }}
+{{- if not (kindIs "map" $logins) }}
+{{- fail "databaseLogins must be a map of main, ingest, stream, cronz, integration and availability to secret names (ARV-083a)" }}
+{{- end }}
+{{- $loginSecrets := list }}
+{{- range $key := list "main" "ingest" "stream" "cronz" "integration" "availability" }}
+{{- $secret := toString (index $logins $key | default "") }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" $secret) }}
+{{- fail (printf "databaseLogins.%s must name the secret of that login (keys username and password; ARV-083a)" $key) }}
+{{- end }}
+{{- if has $secret $loginSecrets }}
+{{- fail (printf "databaseLogins.%s names a secret another login uses: each host, and the availability ledger, has a login of its own (ARV-083a)" $key) }}
+{{- end }}
+{{- if has $secret (list (toString $.Values.validationReader.secretName) "base-appsettings-secret") }}
+{{- fail (printf "databaseLogins.%s names the validation reader's secret or the appsettings secret: a host login has a secret of its own (ARV-083a)" $key) }}
+{{- end }}
+{{- $loginSecrets = append $loginSecrets $secret }}
+{{- end }}
+{{- range $key, $secret := $logins }}
+{{- if not (has $key (list "main" "ingest" "stream" "cronz" "integration" "availability")) }}
+{{- fail (printf "databaseLogins.%s is not an Ariva host or the availability ledger (ARV-083a)" $key) }}
+{{- end }}
 {{- end }}
 {{- range $key, $name := dict "databaseCaSecretName" (.Values.databaseCaSecretName | default "ariva-database-ca") "redisCaSecretName" (.Values.redisCaSecretName | default "ariva-redis-ca") }}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?$" (toString $name)) }}
@@ -1074,8 +1101,9 @@ off), quantities only (its review: any other key rendered into the pod spec). */
 {{- end }}
 {{- $needed := add (int $db.migration) (int $db.operators) }}
 {{- $parts := list }}
-{{- /* The pools a host keeps besides its runtime pool: api-main's validation reader (4), api-stream's desk term reads (2). */}}
-{{- $fixedPools := dict "main" 4 "stream" 2 }}
+{{- /* The pools a host keeps besides its runtime pool: api-main's validation reader (4), api-stream's desk term reads (2),
+       api-cronz's availability ledger under its own login (2, ARV-083a). */}}
+{{- $fixedPools := dict "main" 4 "stream" 2 "cronz" 2 }}
 {{- range $name := list "replicas" "apiMainReplicas" "apiMainHpaMax" "apiIngestReplicas" "apiIngestHpaMax" "apiStreamReplicas" "apiStreamHpaMax" "apiCronzReplicas" "apiCronzHpaMax" "apiIntegrationReplicas" "apiIntegrationHpaMax" }}
 {{- $count := index $.Values $name }}
 {{- if not (kindIs "invalid" $count) }}

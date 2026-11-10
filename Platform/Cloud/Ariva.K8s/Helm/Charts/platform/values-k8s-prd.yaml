@@ -103,6 +103,10 @@ validationReader:
   secretName: ariva-validation-reader
   optional: false
 
+# Host database logins (ARV-083a; values.yaml databaseLogins): the chart's six secret names (one per API host and one for the
+# availability ledger, keys username and password, each login and password its own) must exist before the release; the
+# migration job ensures each login and the hosts start on their own (wiki/04, section 6.2).
+
 # Retention periods (ARV-111a; values.yaml, docs/privacy/data-inventory.md): the migration job applies them after the scripts.
 # Raw sensing keeps the 90-day default until the contract's dispute window is known (TC-62); the relational periods are the
 # Proposed defaults (TC-66 to TC-68). Change them here, per environment, and the next release applies them.

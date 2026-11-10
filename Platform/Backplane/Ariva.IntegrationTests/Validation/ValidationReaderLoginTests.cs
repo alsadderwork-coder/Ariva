@@ -176,7 +176,8 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
                      "UPDATE queue_minute_shadow SET nowcast_degraded = true", "DELETE FROM queue_minute_shadow", "TRUNCATE queue_minute_shadow",
                      "CREATE TABLE it_vr_forbidden (id int)", "CREATE VIEW it_vr_view AS SELECT * FROM queue_minute_shadow",
                      "SELECT ariva_ensure_validation_reader_login('it_vr_other', 'a-password-of-24-characters')",
-                     "SELECT ariva_ensure_runtime_login('it_vr_other', 'a-password-of-24-characters')"
+                     "SELECT ariva_ensure_host_login('it_vr_other', 'a-password-of-24-characters', 'ariva_main')",
+                     "SELECT ariva_ensure_development_login('it_vr_other', 'a-password-of-24-characters')"
                  })
         {
             (await RefusedAsync(asReader, statement)).Should().Be(PostgresErrorCodes.InsufficientPrivilege, statement);
@@ -258,7 +259,8 @@ public sealed class ValidationReaderLoginTests(PostgresFixture postgres)
             GRANT SELECT (zone_key) ON queue_minute TO it_vr_column;
             ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO it_vr_default;
             GRANT CREATE ON SCHEMA public TO it_vr_schema;
-            SELECT ariva_ensure_runtime_login('it_vr_refused_runtime', 'runtime-password-0123456789');
+            DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'it_vr_refused_runtime') THEN CREATE ROLE it_vr_refused_runtime LOGIN; END IF; END $$;
+            GRANT ariva_runtime TO it_vr_refused_runtime;
             """);
 
         foreach (var (login, secret, message) in new[]

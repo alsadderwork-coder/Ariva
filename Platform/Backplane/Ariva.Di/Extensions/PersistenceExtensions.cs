@@ -37,6 +37,10 @@ public static class PersistenceExtensions
         // ARV-104g1: the validation reader login (Database:ValidationReader), apart from the runtime login. Configured in the
         // clusters for api-main and the migration job only; held by the validation service, the migrator and the guard.
         services.AddSingleton(ValidationReaderSettings.FromConfiguration(configuration));
+        // ARV-083a: each host's own login (Database:HostLogins), which only the migration job reads (in the clusters only its
+        // pod gets them), and the availability ledger's (Database:Availability: the migration job and Ariva.Api.Cronz).
+        services.AddSingleton(HostLoginSettings.FromConfiguration(configuration));
+        services.AddSingleton(AvailabilityLoginSettings.FromConfiguration(configuration));
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(provider => new NHibernateSessionFactoryProvider(provider.GetRequiredService<DatabaseSettings>()));
 

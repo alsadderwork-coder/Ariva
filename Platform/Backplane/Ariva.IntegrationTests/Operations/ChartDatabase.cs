@@ -26,6 +26,10 @@ internal sealed class ChartDatabase : IAsyncDisposable
     private readonly IContainer _container;
     private readonly string _initScript;
 
+    // ARV-083a: the other hosts' logins and the availability ledger's, as the chart gives the migration job every host's secret;
+    // one set per server, so each migration of it keeps them.
+    private readonly Dictionary<string, string> _hostLogins = Ariva.IntegrationTests.Setup.HostLogins.ClusterSettings("it_chart_");
+
     private ChartDatabase(IContainer container, string initScript, string superuserPassword, string migrationPassword)
     {
         _container = container;
@@ -111,17 +115,30 @@ internal sealed class ChartDatabase : IAsyncDisposable
         Timeout = 15
     }.ConnectionString;
 
-    /// <summary>The migration job's settings (api-main --migrate) for this server, with the given runtime login.</summary>
-    public Dictionary<string, string> MigrationSettings(string runtimeLogin, string runtimePassword) => new()
+    /// <summary>
+    /// The migration job's settings (api-main --migrate) for this server, with the given runtime login as Ariva.Api.Main's own
+    /// (ARV-083a: the job ensures every host's login, Database:HostLogins, and the availability ledger's).
+    /// </summary>
+    public Dictionary<string, string> MigrationSettings(string runtimeLogin, string runtimePassword)
     {
-        ["Database:Host"] = Hostname,
-        ["Database:Port"] = Port.ToString(CultureInfo.InvariantCulture),
-        ["Database:Name"] = Database,
-        ["Database:Migration:Username"] = MigrationLogin,
-        ["Database:Migration:Password"] = MigrationPassword,
-        ["Database:Username"] = runtimeLogin,
-        ["Database:Password"] = runtimePassword
-    };
+        var settings = new Dictionary<string, string>(_hostLogins, StringComparer.Ordinal)
+        {
+            ["Database:Host"] = Hostname,
+            ["Database:Port"] = Port.ToString(CultureInfo.InvariantCulture),
+            ["Database:Name"] = Database,
+            ["Database:Migration:Username"] = MigrationLogin,
+            ["Database:Migration:Password"] = MigrationPassword,
+            ["Database:Username"] = runtimeLogin,
+            ["Database:Password"] = runtimePassword,
+            ["Database:HostLogins:Main:Username"] = runtimeLogin,
+            ["Database:HostLogins:Main:Password"] = runtimePassword
+        };
+        return settings;
+    }
+
+    /// <summary>The login and password of a host other than Ariva.Api.Main (Ingest, Stream, Cronz, Integration) on this server.</summary>
+    public (string Username, string Password) HostLogin(string host) =>
+        (_hostLogins[$"Database:HostLogins:{host}:Username"], _hostLogins[$"Database:HostLogins:{host}:Password"]);
 
     public async ValueTask DisposeAsync()
     {

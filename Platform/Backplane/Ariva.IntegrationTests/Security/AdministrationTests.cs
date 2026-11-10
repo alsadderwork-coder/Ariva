@@ -204,7 +204,7 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
         foreach (var sql in new[] { "UPDATE audit_entry SET action = 'x'", "DELETE FROM audit_entry", "TRUNCATE audit_entry" })
         {
             await using var transaction = await connection.BeginTransactionAsync(Ct);
-            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_main", connection, transaction))
                 await role.ExecuteNonQueryAsync(Ct);
 #pragma warning disable CA2100 // literal statements from the array above
             await using var command = new NpgsqlCommand(sql, connection, transaction);
@@ -219,7 +219,7 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
 
     /// <summary>
     /// ARV-094 (docs/security/data-classification.md section 6, item 5; L3 and L4 at rest and deletion): connected as a runtime
-    /// login, as ariva_ensure_runtime_login creates one for the hosts, nothing deletes or truncates an account, a session, a
+    /// login, as ariva_ensure_host_login creates one for Ariva.Api.Main (ARV-083a), nothing deletes or truncates an account, a session, a
     /// refresh token or a recovery code, and nothing updates, deletes or truncates the Data Protection key ring (scripts 0002
     /// to 0005). Accounts are disabled and sessions revoked, never deleted.
     /// </summary>
@@ -243,10 +243,7 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
                 await key.ExecuteNonQueryAsync(Ct);
             }
 
-            await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
-            ensure.Parameters.AddWithValue("login", login);
-            ensure.Parameters.AddWithValue("password", password);
-            await ensure.ExecuteNonQueryAsync(Ct);
+            await Ariva.IntegrationTests.Setup.HostLogins.EnsureAsync(admin, login, password, Ariva.Infra.Timescale.HostDatabaseAccess.MainRole, Ct);
         }
 
         string[] tables = ["\"user\"", "user_session", "refresh_token", "recovery_code", "data_protection_key"];
@@ -286,7 +283,7 @@ public sealed class AdministrationTests(PostgresFixture fixture) : IAsyncDisposa
                 string[] privileges = table == "data_protection_key" ? ["DELETE", "TRUNCATE", "UPDATE"] : ["DELETE", "TRUNCATE"];
                 foreach (var privilege in privileges)
                 {
-                    foreach (var role in new[] { "ariva_runtime", login })
+                    foreach (var role in new[] { "ariva_runtime", Ariva.Infra.Timescale.HostDatabaseAccess.MainRole, login })
                     {
                         await using var check = new NpgsqlCommand("SELECT has_table_privilege(@role::name, @table::text, @privilege::text)", admin);
                         check.Parameters.AddWithValue("role", role);

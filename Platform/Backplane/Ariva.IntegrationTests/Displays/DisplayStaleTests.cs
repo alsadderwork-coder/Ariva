@@ -58,10 +58,7 @@ public sealed class DisplayStaleTests(PostgresFixture fixture, RedisFixture redi
         await using (var admin = new NpgsqlConnection(fixture.ConnectionString(database)))
         {
             await admin.OpenAsync(Ct);
-            await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
-            ensure.Parameters.AddWithValue("login", login);
-            ensure.Parameters.AddWithValue("password", _runtimePassword);
-            await ensure.ExecuteNonQueryAsync(Ct);
+            await Ariva.IntegrationTests.Setup.HostLogins.EnsureAsync(admin, login, _runtimePassword, Ariva.Infra.Timescale.HostDatabaseAccess.MainRole, Ct);
         }
 
         // The tests share the database: the displays an earlier test left are taken out (soft deleted, as the services do).

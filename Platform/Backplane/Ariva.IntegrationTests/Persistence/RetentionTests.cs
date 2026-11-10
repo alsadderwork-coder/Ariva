@@ -272,7 +272,7 @@ public sealed class RetentionTests(PostgresFixture fixture)
         var log = new RoundLog();
         var runtime = new DatabaseSettings { Host = fixture.Hostname, Port = fixture.Port, Name = _database, Username = RuntimeLogin, Password = RuntimePassword };
         var round = new RetentionRound(runtime, new RetentionJobSettings { BatchSize = 10, MaxBatchesPerRun = 1 }, log);
-        await ExecuteAsync(Admin, "REVOKE SELECT ON retention_period FROM ariva_runtime; REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock(integer, integer) FROM PUBLIC");
+        await ExecuteAsync(Admin, "REVOKE SELECT ON retention_period FROM ariva_cronz; REVOKE EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock(integer, integer) FROM PUBLIC");
         try
         {
             var run = async () => await round.RunAsync(Ct);
@@ -297,7 +297,7 @@ public sealed class RetentionTests(PostgresFixture fixture)
         }
         finally
         {
-            await ExecuteAsync(Admin, "GRANT SELECT ON retention_period TO ariva_runtime; GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock(integer, integer) TO PUBLIC");
+            await ExecuteAsync(Admin, "GRANT SELECT ON retention_period TO ariva_cronz; GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock(integer, integer) TO PUBLIC");
             // Whatever failed above, no pooled session keeps the lock from this class's other tests.
             ClearRuntimePool(runtime);
         }
@@ -323,7 +323,7 @@ public sealed class RetentionTests(PostgresFixture fixture)
         Outcomes().Should().BeEquivalentTo(new Dictionary<string, double> { ["failed"] = 0, ["unset"] = 0, ["run"] = 0 });
 
         await ExecuteAsync(Admin, "WITH gone AS (DELETE FROM retention_period WHERE data_set = 'report_delivery' RETURNING 1) SELECT count(*) FROM gone");
-        await ExecuteAsync(Admin, "REVOKE EXECUTE ON FUNCTION ariva_retention_purge(text, integer) FROM ariva_runtime");
+        await ExecuteAsync(Admin, "REVOKE EXECUTE ON FUNCTION ariva_retention_purge(text, integer) FROM ariva_cronz");
         try
         {
             await round.RunAsync(Ct);
@@ -343,7 +343,7 @@ public sealed class RetentionTests(PostgresFixture fixture)
             }
 
             // A run that fails as a whole reports nothing here: the job reports it (RetentionJobsTests).
-            await ExecuteAsync(Admin, "REVOKE SELECT ON retention_period FROM ariva_runtime");
+            await ExecuteAsync(Admin, "REVOKE SELECT ON retention_period FROM ariva_cronz");
             var failing = async () => await round.RunAsync(Ct);
             await failing.Should().ThrowAsync<PostgresException>();
             Outcomes().Should().BeEquivalentTo(new Dictionary<string, double> { ["failed"] = 2, ["unset"] = 1, ["run"] = 0 });
@@ -351,7 +351,7 @@ public sealed class RetentionTests(PostgresFixture fixture)
         finally
         {
             // Whatever failed above, this class's other tests find the grants and the periods as the migration job left them.
-            await ExecuteAsync(Admin, "GRANT SELECT ON retention_period TO ariva_runtime; GRANT EXECUTE ON FUNCTION ariva_retention_purge(text, integer) TO ariva_runtime");
+            await ExecuteAsync(Admin, "GRANT SELECT ON retention_period TO ariva_cronz; GRANT EXECUTE ON FUNCTION ariva_retention_purge(text, integer) TO ariva_cronz");
             ClearRuntimePool(runtime);
             await MigrateAsync();
         }

@@ -263,7 +263,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
         await connection.OpenAsync(Ct);
         await using var transaction = await connection.BeginTransactionAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_main", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
 #pragma warning disable CA2100 // the statements are the theory's literals
         await using var command = new NpgsqlCommand(sql, connection, transaction);
@@ -526,7 +526,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
         await connection.OpenAsync(Ct);
         var transaction = await connection.BeginTransactionAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_main", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
         return new Runtime(connection, transaction);
     }
@@ -671,7 +671,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
                      "ALTER TABLE advertising_policy DISABLE TRIGGER advertising_policy_stamped",
                      "UPDATE advertising_policy SET created_on = NULL, created_by_id = NULL, modified_on = NULL, modified_by_id = NULL WHERE site_code = 'DMO'",
                      "ALTER TABLE advertising_policy ENABLE TRIGGER advertising_policy_stamped",
-                     "SET LOCAL ROLE ariva_runtime"
+                     "SET LOCAL ROLE ariva_main"
                  })
         {
 #pragma warning disable CA2100 // the statements are the literals above
@@ -703,7 +703,7 @@ public sealed class AdvertisingPolicyServiceTests(PostgresFixture fixture) : IAs
         await connection.OpenAsync(Ct);
         await using (var transaction = await connection.BeginTransactionAsync(Ct))
         {
-            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+            await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_main", connection, transaction))
                 await role.ExecuteNonQueryAsync(Ct);
             await using (var allowed = new NpgsqlCommand("UPDATE display SET second_region = 'Advertising' WHERE code = 'RT-AD-OK'", connection, transaction))
                 (await allowed.ExecuteNonQueryAsync(Ct)).Should().Be(1, "A-VIS is not excluded");

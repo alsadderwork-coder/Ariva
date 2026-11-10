@@ -96,7 +96,8 @@ public sealed partial class OlderBackupRestoreTests : IAsyncLifetime
         after.Stdout.Should().Contain("ok    runtime privileges|ariva_runtime's grants on public as the scripts leave them")
             .And.Contain("ok    views|the views of public are the scripts' ")
             .And.Contain("ok    schema|Ariva's ").And.Contain("TimescaleDB's jobs included")
-            .And.Contain($"ok    runtime login|{RuntimeLogin} holds ariva_runtime only (DML)")
+            .And.Contain($"ok    runtime login|{RuntimeLogin} holds ariva_main and ariva_runtime (DML only)")
+            .And.Contain("ok    host privileges|each host role's grants on public as the scripts leave them")
             .And.NotContain("FAIL", after.Stdout);
 
         // Past the list (ARV-262 review, I3): a later release's migration job ran, this release's ariva-db.sh cannot vouch for the

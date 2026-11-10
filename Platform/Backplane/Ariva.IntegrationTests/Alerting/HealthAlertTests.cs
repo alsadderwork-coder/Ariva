@@ -459,7 +459,7 @@ public sealed class HealthAlertTests(PostgresFixture fixture) : IAsyncDisposable
         await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
         await connection.OpenAsync(Ct);
         await using var transaction = await connection.BeginTransactionAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_main", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
 #pragma warning disable CA2100 // literal statements from the inline data above
         await using var command = new NpgsqlCommand(sql, connection, transaction);
@@ -478,7 +478,7 @@ public sealed class HealthAlertTests(PostgresFixture fixture) : IAsyncDisposable
         await using var connection = new NpgsqlConnection(fixture.ConnectionString(await _host.DatabaseAsync()));
         await connection.OpenAsync(Ct);
         await using var transaction = await connection.BeginTransactionAsync(Ct);
-        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_runtime", connection, transaction))
+        await using (var role = new NpgsqlCommand("SET LOCAL ROLE ariva_main", connection, transaction))
             await role.ExecuteNonQueryAsync(Ct);
         await using var bounds = new NpgsqlCommand("""
             UPDATE alert_rule SET threshold = CASE metric WHEN 'TrackCompletion' THEN 100 WHEN 'OccupancyOutOfRange' THEN 1440 ELSE 100000 END

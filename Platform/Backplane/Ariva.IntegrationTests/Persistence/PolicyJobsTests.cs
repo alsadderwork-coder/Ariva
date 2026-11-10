@@ -45,10 +45,7 @@ public sealed class PolicyJobsTests : IAsyncLifetime
         await new SqlScriptRunner(Admin, NullLogger<SqlScriptRunner>.Instance).ApplyAsync(SqlScriptCatalog.Embedded());
         await using var admin = new NpgsqlConnection(Admin);
         await admin.OpenAsync(Ct);
-        await using var ensure = new NpgsqlCommand("SELECT ariva_ensure_runtime_login(@login, @password)", admin);
-        ensure.Parameters.AddWithValue("login", RuntimeLogin);
-        ensure.Parameters.AddWithValue("password", _runtimePassword);
-        await ensure.ExecuteNonQueryAsync(Ct);
+        await Ariva.IntegrationTests.Setup.HostLogins.EnsureAsync(admin, RuntimeLogin, _runtimePassword, Ariva.Infra.Timescale.HostDatabaseAccess.CronzRole, Ct);
     }
 
     public async ValueTask DisposeAsync()

@@ -360,6 +360,27 @@ validationReader:
   secretName: ariva-validation-reader
   optional: true
 
+# Host database logins (ARV-083a; CWE-269, CWE-285, CWE-287): each API host connects with a login of its own, a member of
+# ariva_runtime (the base every host needs) and of its host role only (ariva_main, ariva_ingest, ariva_stream, ariva_cronz or
+# ariva_integration; script 0074 grants each role what its host's code reads and writes, no more), and the availability ledger
+# that api-cronz runs with one more (ariva_availability, the only role that records availability minutes and moves a site's
+# cursor). Each secret below (keys username and password; the name a plain lower-case PostgreSQL identifier of the operator's
+# choosing, such as ariva_app_main, never a role's name; the password 16 printable ASCII characters or more, each its own) is
+# created out of band per environment like the appsettings secrets (wiki/04, section 6.2). A host gets its own secret alone, as
+# Database__Username and Database__Password (api-cronz the ledger's too, as Database__Availability__Username and Password); the
+# database-migration job gets them all (Database__HostLogins__<Host>__Username and Password, and the ledger's), creates or
+# updates each login from a SCRAM-SHA-256 verifier it computes (so no password reaches the server) and sets the runtime limits
+# on it. The chart test fails if a pod gets another host's secret. None is optional: a host without its secret waits in
+# CreateContainerConfigError, and the migration job (a pre-upgrade hook) fails before any pod changes, so a release never runs
+# a host on a login the job did not ensure.
+databaseLogins:
+  main: ariva-db-login-main
+  ingest: ariva-db-login-ingest
+  stream: ariva-db-login-stream
+  cronz: ariva-db-login-cronz
+  integration: ariva-db-login-integration
+  availability: ariva-db-login-availability
+
 # Kafka topics Job (ARV-062): api-main --provision-topics as a Helm hook before each upgrade (after the first install).
 # It creates the missing ariva.* topics and their dead-letter topics, never changes an existing one, and fails the
 # release when the broker cannot be reached within activeDeadlineSeconds. While it is on, api-main runs with

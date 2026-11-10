@@ -84,7 +84,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
-import { BACKUP, BACKUP_RULES, backupFindings, checkManifests, COLLECTOR_CAS, collectorCaFindings, INSTANCE_ID, instanceIdFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
+import { BACKUP, BACKUP_RULES, backupFindings, checkManifests, COLLECTOR_CAS, collectorCaFindings, HOST_LOGIN_SECTIONS, hostLoginFindings, INSTANCE_ID, instanceIdFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
 	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients,
 	clamavDirectives, releaseCredentialFindings, UPLOAD_SCAN, uploadScanFindings, WEB_CERTIFICATE, webCertificateFindings } from './checks.mjs';
 
@@ -1203,6 +1203,77 @@ function instanceIdSelfTest() {
 	return { failures, count: INSTANCE_ID_CASES.length };
 }
 
+/** ARV-083a: the five API hosts, the web pod and the migration job as the chart renders their database logins. */
+function hostLoginDocs() {
+	const login = (prefix, secret) => [{ name: `${prefix}Username`, valueFrom: { secretKeyRef: { name: secret, key: 'username' } } },
+		{ name: `${prefix}Password`, valueFrom: { secretKeyRef: { name: secret, key: 'password' } } }];
+	const workload = (kind, name, image, env, extra = {}) => ({ kind, metadata: { name }, spec: { template: { spec: { ...extra, containers: [{ name: 'app', image, env }] } } } });
+	const short = (host) => host.replace('api-', '');
+	return [...API_HOSTS.map((host) => workload('Deployment', `${host}-deployment`, `r.example/ariva/${host}:1`,
+		[...login('Database__', `ariva-db-login-${short(host)}`), ...(host === 'api-cronz' ? login('Database__Availability__', 'ariva-db-login-availability') : [])])),
+	workload('Deployment', 'web-deployment', 'r.example/ariva/web:1', []),
+	workload('Job', 'database-migration', 'r.example/ariva/api-main:1', [...login('Database__', 'ariva-db-login-main'),
+		...API_HOSTS.flatMap((host) => login(`Database__HostLogins__${HOST_LOGIN_SECTIONS[host]}__`, `ariva-db-login-${short(host)}`)),
+		...login('Database__Availability__', 'ariva-db-login-availability')], { automountServiceAccountToken: false })];
+}
+const loginEnv = (docs, name) => workloadOf(docs, name).spec.template.spec.containers[0].env;
+const loginVariable = (docs, name, variable) => loginEnv(docs, name).find((entry) => entry.name === variable);
+const JOB = 'Job/database-migration';
+
+/** ARV-083a: each change to the rendered logins and the findings it must give, no more (a whole render: hosts true). */
+const HOST_LOGIN_CASES = [
+	['a host reading another host\'s login', (docs) => { loginEnv(docs, 'api-ingest-deployment').push({ name: 'Extra__Password', valueFrom: { secretKeyRef: { name: 'ariva-db-login-main', key: 'password' } } }); },
+		['Deployment/api-ingest-deployment: refers to api-main\'s database login secret ariva-db-login-main; a pod gets its own host\'s login only']],
+	['a host mounting another host\'s login secret', (docs) => { workloadOf(docs, 'api-stream-deployment').spec.template.spec.volumes = [{ name: 'x', secret: { secretName: 'ariva-db-login-integration' } }]; },
+		['Deployment/api-stream-deployment: refers to api-integration\'s database login secret ariva-db-login-integration']],
+	['the web pod with the ledger\'s login', (docs) => { loginEnv(docs, 'web-deployment').push({ name: 'Other', valueFrom: { secretKeyRef: { name: 'ariva-db-login-availability', key: 'username' } } }); },
+		['Deployment/web-deployment: refers to the availability ledger\'s database login secret ariva-db-login-availability']],
+	['two hosts on one login', (docs) => { for (const entry of loginEnv(docs, 'api-integration-deployment')) entry.valueFrom.secretKeyRef.name = 'ariva-db-login-main'; },
+		['Deployment/api-integration-deployment: its database login secret ariva-db-login-main is api-main\'s too',
+			'Deployment/api-integration-deployment: refers to api-main\'s database login secret ariva-db-login-main',
+			'Job/database-migration: must get api-integration\'s login (Database__HostLogins__Integration__Username and Password) from api-integration\'s own secret ariva-db-login-main']],
+	['a host without its own login', (docs) => { loginEnv(docs, 'api-stream-deployment').length = 0; }, ['Deployment/api-stream-deployment: must get its own database login']],
+	['a host login from two secrets', (docs) => { loginVariable(docs, 'api-main-deployment', 'Database__Password').valueFrom.secretKeyRef.name = 'other'; },
+		['Deployment/api-main-deployment: must get its own database login']],
+	['a literal host login name', (docs) => { Object.assign(loginVariable(docs, 'api-ingest-deployment', 'Database__Username'), { value: 'ariva_app', valueFrom: undefined }); },
+		['Deployment/api-ingest-deployment: must get its own database login', 'Deployment/api-ingest-deployment container app: Database__Username: a database login comes from its secret']],
+	['the ledger on api-cronz\'s login', (docs) => { for (const entry of loginEnv(docs, 'api-cronz-deployment').slice(2)) entry.valueFrom.secretKeyRef.name = 'ariva-db-login-cronz'; },
+		['Deployment/api-cronz-deployment: the availability ledger\'s login secret ariva-db-login-cronz is api-cronz\'s too', 'Job/database-migration: must get the availability ledger\'s login']],
+	['api-cronz without the ledger\'s login', (docs) => { loginEnv(docs, 'api-cronz-deployment').splice(2); }, ['Deployment/api-cronz-deployment: must get the availability ledger\'s login']],
+	['another host with the ledger\'s variables', (docs) => { loginEnv(docs, 'api-main-deployment').push({ name: 'Database__Availability__Username', valueFrom: { secretKeyRef: { name: 'x', key: 'username' } } }); },
+		['Deployment/api-main-deployment: only api-cronz-deployment and the database-migration job get the availability ledger\'s login']],
+	['a host with the host logins', (docs) => { loginEnv(docs, 'api-cronz-deployment').push({ name: 'Database__HostLogins__Main__Password', valueFrom: { secretKeyRef: { name: 'x', key: 'password' } } }); },
+		['Deployment/api-cronz-deployment: only the database-migration job gets the host logins']],
+	['the job with the service account token', (docs) => { delete workloadOf(docs, 'database-migration').spec.template.spec.automountServiceAccountToken; },
+		[`${JOB}: must set automountServiceAccountToken false`]],
+	['the job without a host\'s login', (docs) => { const env = loginEnv(docs, 'database-migration'); env.splice(env.findIndex((entry) => entry.name === 'Database__HostLogins__Stream__Username'), 2); },
+		[`${JOB}: must get api-stream's login (Database__HostLogins__Stream__Username and Password) from api-stream's own secret ariva-db-login-stream`]],
+	['the job with another secret for a host', (docs) => { for (const entry of loginEnv(docs, 'database-migration').filter((item) => item.name.startsWith('Database__HostLogins__Cronz__'))) entry.valueFrom.secretKeyRef.name = 'ariva-db-login-old'; },
+		[`${JOB}: must get api-cronz's login`]],
+	['the job without the ledger\'s login', (docs) => { const env = loginEnv(docs, 'database-migration'); env.splice(env.findIndex((entry) => entry.name === 'Database__Availability__Username'), 2); },
+		[`${JOB}: must get the availability ledger's login`]],
+	['a host not rendered', (docs) => { docs.splice(docs.indexOf(workloadOf(docs, 'api-ingest-deployment')), 1); },
+		['Deployment/api-ingest-deployment: not rendered']]
+];
+
+/** ARV-083a: the host login rules: the good render is clean, a fixture without logins is clean, each change gives exactly its findings. */
+function hostLoginSelfTest() {
+	const failures = [];
+	const clean = hostLoginFindings(hostLoginDocs(), { hosts: true });
+	if (clean.length) failures.push(`the good host login render produced findings:\n   ${clean.join('\n   ')}`);
+	// Without hosts (a fixture, not a whole render) a host and a job without any login variable are not findings.
+	const partial = hostLoginDocs();
+	for (const doc of partial) doc.spec.template.spec.containers[0].env.length = 0;
+	if (hostLoginFindings(partial).length) failures.push('host login rules: a part of a render without logins must give no finding');
+	for (const [label, change, expected] of HOST_LOGIN_CASES) {
+		const docs = hostLoginDocs();
+		change(docs);
+		const found = hostLoginFindings(docs, { hosts: true });
+		if (!exactly(found, expected)) failures.push(`host login case ${label} must give exactly ${expected.join(' | ')}; gave ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	return { failures, count: HOST_LOGIN_CASES.length };
+}
+
 /**
  * ARV-209: the release credential rule on sample command lines and pipeline fragments: each bad sample trips it exactly once and
  * names no value, each good one (a Secret's name, a switch, an empty value that turns a chart's copy off, a build number, a
@@ -1509,11 +1580,12 @@ function selfTest() {
 	const collectorCas = collectorCaSelfTest();
 	const scanning = uploadScanSelfTest();
 	const instances = instanceIdSelfTest();
+	const logins = hostLoginSelfTest();
 	const credentials = releaseCredentialSelfTest();
 	const webCertificate = webCertificateSelfTest();
 	const backups = backupSelfTest();
 	const others = [...credentials.failures, ...webCertificate.failures, ...backups.failures, ...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
-		...collectorCas.failures, ...scanning.failures, ...instances.failures];
+		...collectorCas.failures, ...scanning.failures, ...instances.failures, ...logins.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
 		if (good.length) console.error('  good fixture produced findings:\n   ' + good.join('\n   '));
@@ -1524,7 +1596,7 @@ function selfTest() {
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
-		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases ${instances.count} instance id cases, ${credentials.count} release credential cases, ${webCertificate.count} web certificate cases and ${backups.count} scheduled backup cases each giving exactly their findings (the chart's ariva-db.sh the repository's); the good fixtures are clean; the web image takes ` +
+		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases ${instances.count} instance id cases, ${logins.count} host database login cases, ${credentials.count} release credential cases, ${webCertificate.count} web certificate cases and ${backups.count} scheduled backup cases each giving exactly their findings (the chart's ariva-db.sh the repository's); the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen} and keeps no nginx configuration in its web root (${webRoot.count} cases); the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
 		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
@@ -2025,6 +2097,9 @@ for (const [label, sets] of [
 	['database passwords without a secret', ['existingSecret=']],
 	['the superuser as the migration login', ['migrationLogin=postgres']],
 	['a migration login that is not an identifier', ['migrationLogin=ariva; drop']],
+	// ARV-083a: a host role is a group role, never the migration login.
+	['a host role as the migration login', ['migrationLogin=ariva_main']],
+	['the availability ledger\'s role as the migration login', ['migrationLogin=ariva_availability']],
 	// ARV-082a: TLS needs its secret by name and a floor of TLS 1.2 at least.
 	['database TLS without a secret name', ['tls.enabled=true', 'tls.secretName=']],
 	['a database TLS secret name that is not a Kubernetes name', ['tls.enabled=true', 'tls.secretName=Db_TLS']],
@@ -2101,6 +2176,15 @@ for (const [label, file, sets, message, annotation] of [
 	['the validation reader login without a secret name', 'values-k8s-dev.yaml', ['validationReader.secretName=']],
 	['a validation reader secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['validationReader.secretName=Reader_Secret']],
 	['production with an optional validation reader secret', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'validationReader.optional=true']],
+	// ARV-083a: each host's database login, and the availability ledger's, from a secret of its own.
+	['a host login without a secret name', 'values-k8s-dev.yaml', ['databaseLogins.ingest='], 'databaseLogins.ingest must name the secret'],
+	['a host login secret name that is not a Kubernetes name', 'values-k8s-dev.yaml', ['databaseLogins.stream=Stream_Login'], 'databaseLogins.stream must name the secret'],
+	['two hosts on one login secret', 'values-k8s-dev.yaml', ['databaseLogins.cronz=ariva-db-login-main'], 'databaseLogins.cronz names a secret another login uses'],
+	['the availability ledger on api-cronz\'s login secret', 'values-k8s-prd.yaml', ['buildNumber=main-20261001.1', 'databaseLogins.availability=ariva-db-login-cronz'],
+		'databaseLogins.availability names a secret another login uses'],
+	['a host login on the validation reader\'s secret', 'values-k8s-dev.yaml', ['databaseLogins.main=ariva-validation-reader'], 'names the validation reader\'s secret or the appsettings secret'],
+	['a host login on the appsettings secret', 'values-k8s-dev.yaml', ['databaseLogins.integration=base-appsettings-secret'], 'names the validation reader\'s secret or the appsettings secret'],
+	['a login secret for no host', 'values-k8s-dev.yaml', ['databaseLogins.simulation=ariva-db-login-simulation'], 'databaseLogins.simulation is not an Ariva host'],
 	// ARV-111a: the retention periods are whole days within RetentionSettings' bounds, and only the six known keys.
 	['a raw sensing retention below 7 days', 'values-k8s-dev.yaml', ['migration.retention.rawSensingDays=6']],
 	['a raw sensing retention above 3650 days', 'values-k8s-dev.yaml', ['migration.retention.rawSensingDays=3651']],

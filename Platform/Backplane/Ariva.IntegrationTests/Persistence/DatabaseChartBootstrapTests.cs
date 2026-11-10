@@ -108,9 +108,12 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         Query.PurgeDeliveries => "SELECT ariva_retention_purge('report_delivery', 100)",
         Query.PurgeAsInvoker => "ALTER FUNCTION ariva_retention_purge(text, integer) SECURITY INVOKER",
         Query.PurgeAsDefiner => "ALTER FUNCTION ariva_retention_purge(text, integer) SECURITY DEFINER",
+        // ARV-083a: each column judged for the host role that writes the table (Ariva.Api.Cronz the deliveries, Ariva.Api.Integration
+        // the emails' delivery columns and the call record).
         Query.RuntimeColumnUpdates => """
-            SELECT string_agg(t || '.' || c || ':' || has_column_privilege('ariva_runtime', t, c, 'UPDATE')::text, ',' ORDER BY t, c)
-              FROM (VALUES ('report_delivery', 'created_utc'), ('email_message', 'created_utc'), ('integration_call', 'at_utc'), ('report_delivery', 'status')) v(t, c)
+            SELECT string_agg(t || '.' || c || ':' || has_column_privilege(r, t, c, 'UPDATE')::text, ',' ORDER BY t, c)
+              FROM (VALUES ('ariva_cronz', 'report_delivery', 'created_utc'), ('ariva_integration', 'email_message', 'created_utc'),
+                           ('ariva_integration', 'integration_call', 'at_utc'), ('ariva_cronz', 'report_delivery', 'status')) v(r, t, c)
             """,
         Query.PurgeGrantees => """
             SELECT string_agg(a.grantee::regrole::text || ':' || a.privilege_type || CASE WHEN a.is_grantable THEN '+grant' ELSE '' END, ',' ORDER BY a.grantee::regrole::text)
@@ -196,7 +199,8 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
         // login may call it for each of the three data sets (ARV-189: each branch's DELETE is checked as the statement starts, so
         // nothing old enough here, 0 rows, still proves it), and only because it runs as the owner: as SECURITY INVOKER every
         // branch is refused to the runtime login, which may delete none of these rows itself. The reader login may not call it;
-        // EXECUTE belongs to the owner and ariva_runtime only, without grant option, and not to PUBLIC.
+        // EXECUTE belongs to the owner and ariva_cronz only (ARV-083a: the Cronz retention job's role; this login is the vm-local
+        // development login, which holds every host role), without grant option, and not to PUBLIC.
         foreach (var purge in new[] { Query.PurgeEmails, Query.PurgeIntegrationCalls, Query.PurgeDeliveries })
             (await ScalarAsync<int>(runtime, purge)).Should().Be(0, purge.ToString());
         await ScalarAsync<object>(owner, Query.PurgeAsInvoker);
@@ -214,7 +218,7 @@ public sealed class DatabaseChartBootstrapTests : IAsyncLifetime
             "email_message.created_utc:false,integration_call.at_utc:false,report_delivery.created_utc:false,report_delivery.status:true");
         var readerPurge = async () => await ScalarAsync<int>(reader, Query.PurgeIntegrationCalls);
         (await readerPurge.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.InsufficientPrivilege);
-        (await ScalarAsync<string>(owner, Query.PurgeGrantees)).Should().Be($"{MigrationLogin}:EXECUTE,ariva_runtime:EXECUTE");
+        (await ScalarAsync<string>(owner, Query.PurgeGrantees)).Should().Be($"{MigrationLogin}:EXECUTE,ariva_cronz:EXECUTE");
         (await ScalarAsync<bool>(owner, Query.PublicMayPurge)).Should().BeFalse();
     }
 }
