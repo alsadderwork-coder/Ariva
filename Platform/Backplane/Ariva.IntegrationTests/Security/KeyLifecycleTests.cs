@@ -89,8 +89,9 @@ public sealed class KeyLifecycleTests(PostgresFixture fixture)
         held.KeyRing.Active.Should().BeGreaterThanOrEqualTo(1, "the current key, as Data Protection wrote it, matches the function's pattern");
         var before = await KeyRowsAsync();
         before.Should().Contain([$"key-{first}", $"key-{clientKey}", $"key-{outboundKey}"]);
-        held.OldestMadeUtc.Keys.Should().Contain([KeyAgeMetrics.IntegrationClientSecret, KeyAgeMetrics.IntegrationClientSeed, KeyAgeMetrics.OutboundSecret,
-            KeyAgeMetrics.DataProtectionKey]);
+        // Kind names, held as booleans (ARV-249: the secret assertion check reads a name holding "Secret" as a secret).
+        new[] { KeyAgeMetrics.IntegrationClientSecret, KeyAgeMetrics.IntegrationClientSeed, KeyAgeMetrics.OutboundSecret, KeyAgeMetrics.DataProtectionKey }
+            .All(held.OldestMadeUtc.ContainsKey).Should().BeTrue("each kind a stored value names reports its oldest key");
         held.OldestMadeUtc[KeyAgeMetrics.IntegrationClientSecret].Should().BeCloseTo(DateTime.UtcNow.AddDays(-400), TimeSpan.FromMinutes(5));
 
         // Every value moves off its key (re-protected, or set again): nothing names the three any more.

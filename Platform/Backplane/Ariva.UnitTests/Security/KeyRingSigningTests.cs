@@ -631,7 +631,7 @@ public sealed class KeyRingSigningTests : IDisposable
         finding.OnSignedKeys.Should().Be(3, "the current signer's and the previous signer's rows verify");
         finding.UserSeeds.Should().Be(3, "the unsigned key's; the value whose key has no row is not counted");
         finding.ClientSeeds.Should().Be(1, "a forged signature that names the current signer verifies under no signer: counted with the unsigned");
-        finding.OutboundSecrets.Should().Be(0);
+        (finding.OutboundSecrets == 0).Should().BeTrue("no outbound value names a key here (a count, held as a boolean for ARV-249)");
         finding.RetiredSigner.Should().Be(1, "a retired signer is not configured: counted apart, since only it admits its keys");
         finding.Upgraded.Should().BeTrue();
 

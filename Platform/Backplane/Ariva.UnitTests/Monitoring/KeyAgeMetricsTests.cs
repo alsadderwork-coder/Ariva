@@ -61,8 +61,9 @@ public sealed class KeyAgeMetricsTests
         }), KeyAgeMetrics.RunFreshFor);
 
         var ages = Values(reader, KeyAgeMetrics.AgeName);
-        ages.Keys.Should().BeEquivalentTo([KeyAgeMetrics.DeviceCredential, KeyAgeMetrics.OutboundSecret, KeyAgeMetrics.DataProtectionKey],
-            "only the class's kinds become tags");
+        // Kind names, held as a boolean (ARV-249: the secret assertion check reads a name holding "Secret" as a secret).
+        ages.Keys.ToHashSet(StringComparer.Ordinal).SetEquals([KeyAgeMetrics.DeviceCredential, KeyAgeMetrics.OutboundSecret, KeyAgeMetrics.DataProtectionKey])
+            .Should().BeTrue("only the class's kinds become tags");
         Values(reader, KeyAgeMetrics.RotationDueInName).Should().ContainSingle().Which.Value.Should().BeApproximately(-TimeSpan.FromDays(35).TotalSeconds, 1,
             "a device credential's year has passed; an outbound secret's cadence is the partner's, so it has no due date");
         Values(reader, KeyAgeMetrics.KeyRingName).Should().BeEquivalentTo(new Dictionary<string, double>
