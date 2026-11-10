@@ -30,18 +30,25 @@ public sealed record KeyRingUpgradeFinding(long UserSeeds, long ClientSeeds, lon
 
 /// <summary>
 /// The upgrade check of ARV-211 (the review's findings H1 and N1). The key ring's rows written before ARV-211 carry no row signature
-/// (script 0073), and the hosts read them only while <c>DataProtection:Signing:CertificateSignedUntil</c> is open. Two cases, told
-/// apart by whether any stored value names a key a configured signer signed (<see cref="KeyRingUpgradeFinding.Upgraded"/>):
+/// (script 0073), and the hosts read them only while <c>DataProtection:Signing:CertificateSignedUntil</c> is open; a row signed by a
+/// key ring signing certificate that is neither current nor previous (a retired signer, <see cref="KeyRingUpgradeFinding.RetiredSigner"/>)
+/// is never read, whatever the window. Two cases, told apart by whether any stored value names a key a configured signer signed
+/// (<see cref="KeyRingUpgradeFinding.Upgraded"/>):
 /// <list type="bullet">
-/// <item>Never upgraded: an upgrade, or a restore of a backup from before ARV-211, without the window. Every value would be
-/// unreadable at once (users could not sign in with their authenticator, integration clients could not authenticate, outbound calls
-/// would lose their secrets), so the migration job (after its scripts, <c>DatabaseMigration</c>, exit code 2) and every host at start
-/// (<see cref="KeyRingUpgradeGate"/>) refuse, with <see cref="Problem"/>, pointing at wiki 04 section 6.2: set the window.</item>
-/// <item>Upgraded, with leftovers: values the re-protection job could not move (under a revoked or unreadable key, or corrupt), or
-/// a row a database writer planted. The window cannot help them once the job has run, so nothing refuses: the hosts and the
-/// migration job log <see cref="Leftovers"/>, and the hosts at start and the Cronz key lifecycle job every day report the count
-/// (<see cref="KeyAgeMetrics.ProblemsName"/>, outcome <see cref="KeyAgeMetrics.Unsigned"/>, the keyRingUnsigned alert; wiki 10
-/// section 4.25).</item>
+/// <item>Never upgraded: an upgrade, or a restore of a backup from before ARV-211, without the window, or a signing rotation whose
+/// previous signer was removed before any value moved. Values would be unreadable at once (users could not sign in with their
+/// authenticator, integration clients could not authenticate, outbound calls would lose their secrets), so the migration job (after
+/// its scripts, <c>DatabaseMigration</c>, exit code 2) and every host at start (<see cref="KeyRingUpgradeGate"/>) refuse, with
+/// <see cref="Problem"/>: set the window (wiki 04 section 6.2) for keys from before ARV-211; configure the previous signer again for
+/// a retired signer's keys (only the hosts can tell those, the migration job holds no signing certificate). When that signer's
+/// certificate is lost for good, <c>DataProtection:Signing:RetiredSignerAcceptedUntil</c> (at most 7 days ahead, the review's finding
+/// L-1) accepts the loss of its keys: the hosts start with those values unreadable, as in the next case, so that an administrator
+/// can have each set again (wiki 10 section 4.13). It never excuses keys from before ARV-211 outside the window.</item>
+/// <item>Upgraded, with leftovers: values the re-protection job could not move (under a revoked or unreadable key, a retired
+/// signer's, or corrupt), or a row a database writer planted. The window cannot help them once the job has run, so nothing refuses:
+/// the hosts and the migration job log <see cref="Leftovers"/>, and the hosts at start and the Cronz key lifecycle job every day
+/// report the counts of <see cref="Reported"/> (<see cref="KeyAgeMetrics.ProblemsName"/>, outcomes <see cref="KeyAgeMetrics.Unsigned"/>
+/// and <see cref="KeyAgeMetrics.RetiredSigner"/>, the keyRingUnsigned alert; wiki 10 section 4.25).</item>
 /// </list>
 /// A stored value names its key in its first 28 characters (the Data Protection header: magic 09 F0 C9 F0 and the key id in .NET's
 /// byte order), read as script 0072's purge reads it: the same three columns, the same header test, nothing unprotected, constant
@@ -208,14 +215,18 @@ public static partial class KeyRingUpgradeCheck
     /// <summary>
     /// Null unless the installation was never upgraded (no stored value names a key a configured signer signed) and the hosts would refuse
     /// a key the values need: one without a row signature while the window is not open, or one a signer no host has configured signed
-    /// (which the window never admits). Then what to do for each: set the window (wiki 04 section 6.2, the upgrade), configure the
-    /// previous signer again (the signing rotation). Leftovers after an upgrade never refuse.
+    /// (which the window never admits) unless <paramref name="retiredSignerAcceptedUntil"/> accepts the loss of those keys. Then what to
+    /// do for each: set the window (wiki 04 section 6.2, the upgrade), configure the previous signer again (the signing rotation), or,
+    /// when that signer's certificate is lost for good, accept the loss (wiki 10 section 4.13). Leftovers after an upgrade never refuse.
     /// </summary>
-    public static string Problem(KeyRingUpgradeFinding finding, DateTimeOffset? certificateSignedUntil, DateTimeOffset now)
+    public static string Problem(KeyRingUpgradeFinding finding, DateTimeOffset? certificateSignedUntil, DateTimeOffset now,
+        DateTimeOffset? retiredSignerAcceptedUntil = null)
     {
         ArgumentNullException.ThrowIfNull(finding);
-        var unsigned = finding.Unsigned > 0 && !WindowOpen(certificateSignedUntil, now);
-        if (finding.Upgraded || (!unsigned && finding.RetiredSigner == 0))
+        var windowOpen = WindowOpen(certificateSignedUntil, now);
+        var unsigned = finding.Unsigned > 0 && !windowOpen;
+        var retired = finding.RetiredSigner > 0 && !WindowOpen(retiredSignerAcceptedUntil, now);
+        if (finding.Upgraded || (!unsigned && !retired))
             return null;
 
         var steps = new List<string>();
@@ -224,40 +235,78 @@ public static partial class KeyRingUpgradeCheck
                       $"{Window(certificateSignedUntil)}: an upgrade, or a restore of a backup from before ARV-211, without its window. Set " +
                       "DataProtection:Signing:CertificateSignedUntil to a date 7 to 90 days ahead in the environment's base appsettings and run the upgrade " +
                       "again; remove it once SecretReprotection has run (wiki 04 section 6.2, upgrade from the shared key).");
-        if (finding.RetiredSigner > 0)
+        if (retired)
             steps.Add(string.Create(CultureInfo.InvariantCulture, $"{finding.RetiredSigner} stored value(s) need keys signed by a key ring signing certificate ") +
                       "no host has configured: a signing rotation whose previous signer was removed, or never configured, before SecretReprotection moved them, " +
                       "or a restore of a backup from before the rotation. The window does not admit these keys: configure the previous signing certificate " +
                       "again (its tls.crt alone, through dataProtectionSigningPreviousSecretName) and roll out again; remove it once SecretReprotection has " +
-                      "run (wiki 04 section 6.2, signing rotation).");
-        return "No stored value is under a key a configured key ring signer signed, so the hosts would refuse every key the stored values need: the users " +
-               "could not sign in with their authenticator, the integration clients could not authenticate and the outbound endpoints would lose their " +
-               "secrets. " + string.Join(" ", steps);
+                      "run (wiki 04 section 6.2, signing rotation). If that certificate is lost for good, see wiki 10 section 4.13: " +
+                      "DataProtection:Signing:RetiredSignerAcceptedUntil, a UTC date at most 7 days ahead, accepts the loss, so that the hosts start with " +
+                      "these values unreadable and an administrator can have each set again.");
+        else if (finding.RetiredSigner > 0)
+            steps.Add(string.Create(CultureInfo.InvariantCulture, $"{finding.RetiredSigner} stored value(s) need keys signed by a key ring signing certificate ") +
+                      $"no host has configured, and DataProtection:Signing:RetiredSignerAcceptedUntil accepts their loss until {Day(retiredSignerAcceptedUntil)}: " +
+                      "they stay unreadable.");
+
+        // The review's note I-1: what the hosts would refuse, the keys from before ARV-211 only outside the window, a retired signer's always.
+        var refused = (windowOpen ? 0 : finding.Unsigned) + finding.RetiredSigner;
+        var lead = refused == finding.Total
+            ? "No stored value is under a key a configured key ring signer signed, and the hosts would refuse every key the stored values need: "
+            : string.Create(CultureInfo.InvariantCulture,
+                $"No stored value is under a key a configured key ring signer signed, and the hosts would refuse the keys that {refused} of the {finding.Total} stored values need (the window admits the others only until it closes): ");
+        return lead + "the users concerned could not sign in with their authenticator, the integration clients concerned could not authenticate and the " +
+               "outbound endpoints concerned would lose their secrets. " + string.Join(" ", steps);
     }
 
     /// <summary>
-    /// Null unless the installation was upgraded and values still need keys the hosts refuse (without a row signature outside the window,
-    /// or signed by a signer no host has configured): then the warning the hosts and the migration job log, which separates a window or a
-    /// previous signer removed too early from leftovers.
+    /// Null unless the hosts start (<see cref="Problem"/> is null) and values still need keys the hosts refuse (without a row signature
+    /// outside the window, or signed by a signer no host has configured): then the warning the hosts and the migration job log, which
+    /// separates a window or a previous signer removed too early from leftovers, and names a retired signer's keys whose loss
+    /// <paramref name="retiredSignerAcceptedUntil"/> accepts (the one case in which the hosts start with no value under a signed key).
     /// </summary>
-    public static string Leftovers(KeyRingUpgradeFinding finding, DateTimeOffset? certificateSignedUntil, DateTimeOffset now)
+    public static string Leftovers(KeyRingUpgradeFinding finding, DateTimeOffset? certificateSignedUntil, DateTimeOffset now,
+        DateTimeOffset? retiredSignerAcceptedUntil = null)
     {
         ArgumentNullException.ThrowIfNull(finding);
         var unsigned = finding.Unsigned > 0 && !WindowOpen(certificateSignedUntil, now);
-        if (!finding.Upgraded || (!unsigned && finding.RetiredSigner == 0))
+        if ((!unsigned && finding.RetiredSigner == 0) || Problem(finding, certificateSignedUntil, now, retiredSignerAcceptedUntil) is not null)
             return null;
 
+        var accepted = finding.RetiredSigner > 0 && WindowOpen(retiredSignerAcceptedUntil, now);
         var causes = new List<string>();
         if (unsigned)
             causes.Add($"{Describe(finding)} need keys written before ARV-211 and DataProtection:Signing:CertificateSignedUntil {Window(certificateSignedUntil)}: " +
                        "if SecretReprotection has not run successfully since the upgrade, reopen the window and run it (wiki 04 section 6.2).");
-        if (finding.RetiredSigner > 0)
+        if (accepted)
+            causes.Add(string.Create(CultureInfo.InvariantCulture, $"{finding.RetiredSigner} stored value(s) need keys signed by a key ring signing certificate ") +
+                       $"no host has configured and stay unreadable: DataProtection:Signing:RetiredSignerAcceptedUntil accepts their loss until {Day(retiredSignerAcceptedUntil)}. " +
+                       "Have each set again (reset the users' authenticators and the integration client seeds, enter the outbound secrets again), then remove " +
+                       "the setting (wiki 10 section 4.13).");
+        else if (finding.RetiredSigner > 0)
             causes.Add(string.Create(CultureInfo.InvariantCulture, $"{finding.RetiredSigner} stored value(s) need keys signed by a key ring signing certificate ") +
                        "no host has configured: if SecretReprotection has not run successfully since the signing rotation, configure the previous signer again " +
                        "(dataProtectionSigningPreviousSecretName) and run it (wiki 04 section 6.2, signing rotation).");
-        return string.Create(CultureInfo.InvariantCulture, $"{finding.OnSignedKeys} stored value(s) are under signed keys, so the hosts start; ") +
-               string.Join(" ", causes) + " Otherwise these are leftovers: find the rows SecretReprotection named as not re-protected and have each set " +
-               "again, and treat a key row a host did not write as a database writer's (wiki 10 section 4.25).";
+        var lead = finding.Upgraded
+            ? string.Create(CultureInfo.InvariantCulture, $"{finding.OnSignedKeys} stored value(s) are under signed keys, so the hosts start; ")
+            : "No stored value is under a key a configured key ring signer signed; the hosts start only because DataProtection:Signing:RetiredSignerAcceptedUntil holds. ";
+        var tail = unsigned || (finding.RetiredSigner > 0 && !accepted)
+            ? " Otherwise these are leftovers: find the rows SecretReprotection named as not re-protected and have each set again, and treat a key row " +
+              "a host did not write as a database writer's (wiki 10 section 4.25)."
+            : string.Empty;
+        return lead + string.Join(" ", causes) + tail;
+    }
+
+    /// <summary>
+    /// The counts the hosts at start and the key lifecycle job report (<see cref="KeyAgeMetrics.UpgradeCheckReported"/>, the
+    /// keyRingUnsigned alert; the review's note I-5): the values that need keys the hosts refuse now. Those without a row signature
+    /// count only once the window has closed (inside it they are read, and the hosts warn about the window instead); a retired signer's
+    /// always count (an accepted loss leaves them unreadable). So a count is above 0 exactly when <see cref="Problem"/> or
+    /// <see cref="Leftovers"/> applies, and an upgrade with its window open reports 0, which replaces an earlier count at once.
+    /// </summary>
+    public static KeyRingUpgradeFinding Reported(KeyRingUpgradeFinding finding, DateTimeOffset? certificateSignedUntil, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(finding);
+        return WindowOpen(certificateSignedUntil, now) ? finding with { UserSeeds = 0, ClientSeeds = 0, OutboundSecrets = 0 } : finding;
     }
 
     /// <summary>The finding in words: counts only.</summary>
@@ -268,11 +317,14 @@ public static partial class KeyRingUpgradeCheck
             $"{finding.UserSeeds} user TOTP seed(s), {finding.ClientSeeds} integration client seed(s) and {finding.OutboundSecrets} outbound endpoint secret(s)");
     }
 
-    private static bool WindowOpen(DateTimeOffset? certificateSignedUntil, DateTimeOffset now) => certificateSignedUntil is { } until && now < until;
+    /// <summary>Whether a dated setting (the upgrade window, or the accepted loss of a retired signer's keys) still holds.</summary>
+    private static bool WindowOpen(DateTimeOffset? until, DateTimeOffset now) => until is { } end && now < end;
 
     private static string Window(DateTimeOffset? certificateSignedUntil) => certificateSignedUntil is { } closed
         ? $"closed on {closed.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}"
         : "is not set";
+
+    private static string Day(DateTimeOffset? at) => at is { } day ? day.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : "never";
 
     private static Guid? KeyIdOf(string xml)
     {
@@ -289,10 +341,11 @@ public static partial class KeyRingUpgradeCheck
 /// <summary>
 /// Every host outside vm-local (Database:VerifySchemaOnStartup), after the schema check (the review's findings H1 and N1): refuses to
 /// start only in the never-upgraded case of <see cref="KeyRingUpgradeCheck.Problem"/>, verifying each row's signature under the
-/// signers it holds; otherwise it starts, warns while the window is open or values still need keys no configured signer signed
-/// (<see cref="KeyRingUpgradeCheck.Leftovers"/>), and reports their count for <see cref="StartReportFreshFor"/>
-/// (<see cref="KeyAgeMetrics.UpgradeCheckReported"/>). One
-/// pass of two reads with the runtime login, each within the database command timeout.
+/// signers it holds; otherwise it starts, warns while the window is open, while <c>DataProtection:Signing:RetiredSignerAcceptedUntil</c>
+/// holds, or when values still need keys the hosts refuse (<see cref="KeyRingUpgradeCheck.Leftovers"/>). Before any of that it reports
+/// the counts of <see cref="KeyRingUpgradeCheck.Reported"/> for <see cref="StartReportFreshFor"/> (<see cref="KeyAgeMetrics.UpgradeCheckReported"/>):
+/// above 0 only when the check refuses or warns about leftovers, so a normal upgrade with its window open does not raise keyRingUnsigned.
+/// One pass of two reads with the runtime login, each within the database command timeout.
 /// </summary>
 internal sealed class KeyRingUpgradeGate(DatabaseSettings settings, KeyRingSigning signing, TimeProvider time, ILogger<KeyRingUpgradeGate> logger,
     KeyAgeMetrics metrics = null) : IHostedService
@@ -307,8 +360,8 @@ internal sealed class KeyRingUpgradeGate(DatabaseSettings settings, KeyRingSigni
     {
         var now = time.GetUtcNow();
         var finding = await KeyRingUpgradeCheck.FindAsync(settings.BuildConnectionString(), signing, cancellationToken);
-        metrics?.UpgradeCheckReported(finding, StartReportFreshFor);
-        var problem = KeyRingUpgradeCheck.Problem(finding, signing.CertificateSignedUntil, now);
+        metrics?.UpgradeCheckReported(KeyRingUpgradeCheck.Reported(finding, signing.CertificateSignedUntil, now), StartReportFreshFor);
+        var problem = KeyRingUpgradeCheck.Problem(finding, signing.CertificateSignedUntil, now, signing.RetiredSignerAcceptedUntil);
         if (problem is not null)
             throw new InvalidOperationException(problem);
 
@@ -319,7 +372,14 @@ internal sealed class KeyRingUpgradeGate(DatabaseSettings settings, KeyRingSigni
                 signing.CertificateSignedUntil?.UtcDateTime.ToString("O", CultureInfo.InvariantCulture), KeyRingUpgradeCheck.Describe(finding));
         }
 
-        var leftovers = KeyRingUpgradeCheck.Leftovers(finding, signing.CertificateSignedUntil, now);
+        if (signing.AcceptsRetiredSignerLoss(now))
+        {
+            logger.LogWarning(
+                "DataProtection:Signing:RetiredSignerAcceptedUntil holds until {Until}: the hosts start although {Retired} stored value(s) need keys a key ring signing certificate no host has configured signed, which stay unreadable; have them set again and remove the setting (wiki 10 section 4.13)",
+                signing.RetiredSignerAcceptedUntil?.UtcDateTime.ToString("O", CultureInfo.InvariantCulture), finding.RetiredSigner);
+        }
+
+        var leftovers = KeyRingUpgradeCheck.Leftovers(finding, signing.CertificateSignedUntil, now, signing.RetiredSignerAcceptedUntil);
         if (leftovers is not null)
             logger.LogWarning("Key ring upgrade check: {Leftovers}", leftovers);
     }

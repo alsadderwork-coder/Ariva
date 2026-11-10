@@ -16,7 +16,8 @@ public sealed record KeyRingRetention(int Deleted, int Active, int Kept, int Hel
 /// <summary>
 /// What one key lifecycle run did (ARV-207): the key ring purge, and when the oldest key or credential of each dated kind still
 /// in use was made (<see cref="KeyAgeMetrics"/> kinds), for the key-age gauges; and, since the ARV-211 review (finding N1), the
-/// stored values that need a key no configured signer signed (<see cref="KeyRingUpgradeCheck"/>), null when the run had no signer.
+/// stored values that need a key the hosts refuse (<see cref="KeyRingUpgradeCheck.Reported"/>: those without a row signature only
+/// once the upgrade window has closed, a retired signer's always), null when the run had no signer.
 /// </summary>
 public sealed record KeyLifecycleRun(KeyRingRetention KeyRing, IReadOnlyDictionary<string, DateTime> OldestMadeUtc, KeyRingUpgradeFinding Unsigned = null);
 
@@ -32,12 +33,14 @@ public sealed record KeyLifecycleRun(KeyRingRetention KeyRing, IReadOnlyDictiona
 /// display credentials, outbound endpoint secrets) and the oldest key in the ring, one constant statement of aggregates: no
 /// value, hash or name is read.</item>
 /// <item>Since the ARV-211 review (finding N1), after the purge and the re-protection of the night: the stored values that still
-/// need a key no configured signer signed, the leftovers of an upgrade or a rotation, counted with <see cref="KeyRingUpgradeCheck"/>
-/// (each row's signature checked here) and logged; the job reports the count.</item>
+/// need a key the hosts refuse, the leftovers of an upgrade or a rotation, counted with <see cref="KeyRingUpgradeCheck"/> (each
+/// row's signature checked here) as <see cref="KeyRingUpgradeCheck.Reported"/> gives them (while the upgrade window is open the
+/// values it admits are not counted, the review's note I-5) and logged; the job reports the count.</item>
 /// </list>
 /// Logs carry counts only.
 /// </summary>
-public sealed class KeyLifecycleRound(DatabaseSettings database, KeyLifecycleSettings settings, ILogger<KeyLifecycleRound> logger, KeyRingSigning signing = null)
+public sealed class KeyLifecycleRound(DatabaseSettings database, KeyLifecycleSettings settings, ILogger<KeyLifecycleRound> logger, KeyRingSigning signing = null,
+    TimeProvider timeProvider = null)
 {
     #region Constants
 
@@ -77,7 +80,10 @@ public sealed class KeyLifecycleRound(DatabaseSettings database, KeyLifecycleSet
         ring = ring with { Deleted = deleted };
         var oldest = await OldestAsync(connection, ct);
         Report(ring);
-        var unsigned = signing is null ? null : await KeyRingUpgradeCheck.FindAsync(connection, signing, ct);
+        var unsigned = signing is null
+            ? null
+            : KeyRingUpgradeCheck.Reported(await KeyRingUpgradeCheck.FindAsync(connection, signing, ct), signing.CertificateSignedUntil,
+                (timeProvider ?? TimeProvider.System).GetUtcNow());
         if (unsigned is { Total: > 0 })
             logger.LogWarning(
                 "Key lifecycle: {Needed} still need a key without a row signature, and {Retired} value(s) a key signed by a key ring signer no host has configured; reopen the window or configure the previous signer if SecretReprotection has not run since, otherwise find the rows it named as not re-protected (wiki 10 section 4.25)",

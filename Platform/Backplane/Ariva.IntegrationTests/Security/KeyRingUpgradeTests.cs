@@ -29,7 +29,10 @@ namespace Ariva.IntegrationTests.Security;
 /// pointing at wiki 04 section 6.2), even when a host's own start already made a signed key that no value names. Once a stored value is
 /// under a signed key, neither refuses any more: a value the re-protection could not move, and a planted unsigned stub key with a
 /// value a runtime-login writer pointed at it, are leftovers, logged and measured (<c>ariva.keyring.problems</c>, outcome
-/// <c>unsigned</c>), never a stopped host or release. An unsigned copy of a signed key counts for nothing.
+/// <c>unsigned</c>), never a stopped host or release. An unsigned copy of a signed key counts for nothing. While the window is open
+/// the hosts count none of the keys it admits (the review's note I-5). A signing certificate lost for good (finding L-1) leaves the
+/// values under a retired signer's keys: the hosts refuse, and start only once <c>DataProtection:Signing:RetiredSignerAcceptedUntil</c>
+/// accepts the loss, with those values still counted.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class KeyRingUpgradeTests(PostgresFixture fixture)
@@ -87,6 +90,7 @@ public sealed class KeyRingUpgradeTests(PostgresFixture fixture)
         (await MigrateAsync(database, window: window.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))).Should().Be(0);
         var open = KeyRingSigning.From(signing.Current, certificateSignedUntil: window);
         await Gate(settings, open, metrics).StartAsync(Ct);
+        Unsigned(reader).Should().Be(0, "inside the window those keys are read, so an upgrade raises no keyRingUnsigned");
         string moved, third;
         await using (var upgraded = Host(settings, wrapping, open))
         {
@@ -126,6 +130,18 @@ public sealed class KeyRingUpgradeTests(PostgresFixture fixture)
         await Gate(settings, signing, metrics).StartAsync(Ct);
         Unsigned(reader).Should().Be(0);
         (await KeyRingUpgradeCheck.FindAsync(Admin(database), Ct)).Total.Should().Be(0);
+
+        // The signing certificate lost for good: a host given another signer and no previous one finds the one value left under the
+        // lost signer's key and none under its own, so it refuses, pointing at the recovery; accepting the loss lets it start, the
+        // value still unreadable and counted for the alert.
+        var replaced = KeyRingSigning.From(Signer());
+        var lost = () => Gate(settings, replaced, metrics).StartAsync(Ct);
+        (await lost.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("1 stored value(s) need keys signed by a key ring signing certificate")
+            .And.Contain("If that certificate is lost for good, see wiki 10 section 4.13");
+        var accepted = KeyRingSigning.From(replaced.Current, retiredSignerAcceptedUntil: DateTimeOffset.UtcNow.AddDays(3));
+        await Gate(settings, accepted, metrics).StartAsync(Ct);
+        Retired(reader).Should().Be(1, "the value stays unreadable, and keyRingUnsigned counts it");
+        Unsigned(reader).Should().Be(0);
     }
 
     #endregion
@@ -167,6 +183,10 @@ public sealed class KeyRingUpgradeTests(PostgresFixture fixture)
     /// <summary>The upgrade check's last count, as the hosts report it.</summary>
     private static double Unsigned(InstrumentReader reader) =>
         reader.Observe(KeyAgeMetrics.ProblemsName).Single(m => m.Tags["outcome"] == KeyAgeMetrics.Unsigned).Value;
+
+    /// <summary>The upgrade check's last count of values under a retired signer's keys, as the hosts report it.</summary>
+    private static double Retired(InstrumentReader reader) =>
+        reader.Observe(KeyAgeMetrics.ProblemsName).Single(m => m.Tags["outcome"] == KeyAgeMetrics.RetiredSigner).Value;
 
     /// <summary>A statement as the hosts' runtime login runs it: what a writer who holds that login can do.</summary>
     private async Task AsRuntimeAsync(string database, [System.Diagnostics.CodeAnalysis.ConstantExpected] string sql, params (string Name, object Value)[] parameters)

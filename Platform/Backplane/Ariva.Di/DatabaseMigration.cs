@@ -47,14 +47,16 @@ public static class DatabaseMigration
             var now = DateTimeOffset.UtcNow;
             var finding = await KeyRingUpgradeCheck.FindAsync(provider.GetRequiredService<DatabaseSettings>().BuildMigrationConnectionString(), ct);
             var until = KeyRingSigning.CertificateSignedUntilOf(configuration, now);
-            var problem = KeyRingUpgradeCheck.Problem(finding, until, now);
+            // Read here too, so a value the hosts would refuse (more than 7 days ahead, not UTC) stops the release before any pod rolls.
+            var accepted = KeyRingSigning.RetiredSignerAcceptedUntilOf(configuration, now);
+            var problem = KeyRingUpgradeCheck.Problem(finding, until, now, accepted);
             if (problem is not null)
             {
                 logger.LogCritical("Key ring upgrade check refused: {Problem}", problem);
                 return 2;
             }
 
-            var leftovers = KeyRingUpgradeCheck.Leftovers(finding, until, now);
+            var leftovers = KeyRingUpgradeCheck.Leftovers(finding, until, now, accepted);
             if (leftovers is not null)
                 logger.LogWarning("Key ring upgrade check: {Leftovers}", leftovers);
             return 0;

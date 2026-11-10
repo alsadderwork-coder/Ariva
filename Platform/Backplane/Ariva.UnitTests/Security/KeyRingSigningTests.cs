@@ -562,10 +562,11 @@ public sealed class KeyRingSigningTests : IDisposable
     }
 
     [Fact]
-    public void UpgradeCheck_Should_RefuseOnlyTheNeverUpgradedCase_When_NoWindowIsOpen()
+    public void UpgradeCheck_Should_RefuseOnlyTheNeverUpgradedCase_When_ItsValuesNeedKeysTheHostsRefuse()
     {
         // The review's findings H1 and N1: an installation whose values all need keys from before ARV-211 (an upgrade or a restore
-        // without the window) is refused; one already upgraded, with values under signed keys, only warns about its leftovers.
+        // without the window) is refused; one already upgraded, with values under signed keys, only warns about its leftovers. A
+        // retired signer's keys are refused with the window open too (the review's note I-7: this is not only the closed window's case).
         var now = new DateTimeOffset(2026, 11, 10, 0, 0, 0, TimeSpan.Zero);
         var never = new KeyRingUpgradeFinding(UserSeeds: 3, ClientSeeds: 1, OutboundSecrets: 0);
         var leftovers = never with { OnSignedKeys = 40 };
@@ -591,11 +592,132 @@ public sealed class KeyRingSigningTests : IDisposable
             .And.Contain("dataProtectionSigningPreviousSecretName").And.Contain("The window does not admit these keys").And.NotContain("CertificateSignedUntil is not set");
         KeyRingUpgradeCheck.Problem(rotation, null, now).Should().NotBeNull();
         KeyRingUpgradeCheck.Problem(never with { RetiredSigner = 2 }, null, now).Should().Contain("is not set").And.Contain("dataProtectionSigningPreviousSecretName",
-            "each kind of key gets its own fix");
+            "each kind of key gets its own fix").And.Contain("the hosts would refuse every key the stored values need");
+
+        // The review's note I-1: with the window open the keys from before ARV-211 are read, so only the retired signer's are refused,
+        // and the message says so rather than that every key is.
+        KeyRingUpgradeCheck.Problem(never with { RetiredSigner = 2 }, now.AddDays(7), now).Should()
+            .Contain("the hosts would refuse the keys that 2 of the 6 stored values need").And.Contain("the window admits the others")
+            .And.NotContain("every key").And.NotContain("CertificateSignedUntil is not set");
         var rotatedLeftovers = rotation with { OnSignedKeys = 5 };
         KeyRingUpgradeCheck.Problem(rotatedLeftovers, null, now).Should().BeNull("once a value is under a configured signer's key, the hosts start");
         KeyRingUpgradeCheck.Leftovers(rotatedLeftovers, now.AddDays(7), now).Should().Contain("configure the previous signer again")
             .And.Contain("dataProtectionSigningPreviousSecretName", "an open window does not excuse a retired signer's keys");
+    }
+
+    [Fact]
+    public void RetiredSignerAcceptedUntil_Should_BeRefused_When_ItIsMoreThan7DaysAheadOrNotUtc()
+    {
+        // The review's finding L-1: accepting the loss of a retired signer's keys is a recovery step of days, given in UTC, never a
+        // standing setting; it is read as the upgrade window is, and bounded harder.
+        var now = new DateTimeOffset(2026, 11, 10, 0, 0, 0, TimeSpan.Zero);
+        IConfiguration Accepted(string value) => Configuration(new() { ["DataProtection:Signing:RetiredSignerAcceptedUntil"] = value });
+
+        KeyRingSigning.RetiredSignerAcceptedUntilOf(Accepted("2026-11-17"), now).Should().Be(new DateTimeOffset(2026, 11, 17, 0, 0, 0, TimeSpan.Zero), "7 days ahead");
+        KeyRingSigning.RetiredSignerAcceptedUntilOf(Accepted("2026-11-12T06:00:00Z"), now).Should().Be(new DateTimeOffset(2026, 11, 12, 6, 0, 0, TimeSpan.Zero));
+        KeyRingSigning.RetiredSignerAcceptedUntilOf(Accepted("2026-11-01"), now).Should().Be(new DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero),
+            "a date that has passed is kept, and accepts nothing");
+        KeyRingSigning.RetiredSignerAcceptedUntilOf(Configuration(new()), now).Should().BeNull();
+        FluentActions.Invoking(() => KeyRingSigning.RetiredSignerAcceptedUntilOf(Accepted("2026-11-18"), now)).Should().Throw<InvalidOperationException>()
+            .WithMessage("*more than 7 days ahead*wiki 10 section 4.13*");
+        FluentActions.Invoking(() => KeyRingSigning.RetiredSignerAcceptedUntilOf(Accepted("2026-11-12T00:00:00+03:00"), now)).Should().Throw<InvalidOperationException>()
+            .WithMessage("*not in UTC*", "a time with another offset is refused, even within the bound");
+        FluentActions.Invoking(() => KeyRingSigning.RetiredSignerAcceptedUntilOf(Accepted("someday"), now)).Should().Throw<InvalidOperationException>()
+            .WithMessage("*not a date*");
+
+        // A host reads it at start, beside the window; it holds until the date, then accepts nothing.
+        var directory = Folder();
+        var day = new DateTimeOffset(DateTime.UtcNow.Date.AddDays(3), TimeSpan.Zero);
+        var configuration = Configuration(new()
+        {
+            ["DataProtection:UseDevelopmentCertificate"] = "true",
+            ["DataProtection:DevelopmentCertificateDirectory"] = directory,
+            ["DataProtection:Signing:RetiredSignerAcceptedUntil"] = day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+        });
+        var loaded = KeyRingSigning.Load(configuration, DataProtectionCertificates.Load(configuration));
+        loaded.RetiredSignerAcceptedUntil.Should().Be(day);
+        loaded.AcceptsRetiredSignerLoss(DateTimeOffset.UtcNow).Should().BeTrue();
+        loaded.AcceptsRetiredSignerLoss(day).Should().BeFalse("the date itself accepts nothing any more");
+        loaded.CertificateSignedUntil.Should().BeNull("it opens no upgrade window");
+    }
+
+    [Fact]
+    public void UpgradeCheck_Should_LetTheHostsStartWithARetiredSignersValuesUnreadable_When_TheirLossIsAccepted()
+    {
+        // The review's finding L-1: a retired signer's certificate lost for good leaves every value under keys no host can admit
+        // again. Without DataProtection:Signing:RetiredSignerAcceptedUntil the hosts refuse to start, for good; with it they start (the
+        // values stay unreadable) so that an administrator can have each set again. It never excuses keys from before ARV-211 outside
+        // the upgrade window.
+        var now = new DateTimeOffset(2026, 11, 10, 0, 0, 0, TimeSpan.Zero);
+        var accepted = now.AddDays(3);
+        var lost = new KeyRingUpgradeFinding(0, 0, 0, OnSignedKeys: 0, RetiredSigner: 12);
+
+        KeyRingUpgradeCheck.Problem(lost, null, now).Should().Contain("If that certificate is lost for good, see wiki 10 section 4.13")
+            .And.Contain("DataProtection:Signing:RetiredSignerAcceptedUntil").And.Contain("dataProtectionSigningPreviousSecretName");
+        KeyRingUpgradeCheck.Leftovers(lost, null, now).Should().BeNull("without the setting the refusal stands");
+        KeyRingUpgradeCheck.Problem(lost, now.AddDays(7), now).Should().NotBeNull("the upgrade window does not excuse a retired signer's keys");
+        KeyRingUpgradeCheck.Problem(lost, null, now, retiredSignerAcceptedUntil: now.AddDays(-1)).Should().NotBeNull("a date that has passed accepts nothing");
+        KeyRingUpgradeCheck.Problem(lost, null, now, retiredSignerAcceptedUntil: now).Should().NotBeNull("the acceptance ends on its date");
+
+        KeyRingUpgradeCheck.Problem(lost, null, now, accepted).Should().BeNull("the loss is accepted, so the hosts start");
+        KeyRingUpgradeCheck.Leftovers(lost, null, now, accepted).Should()
+            .Contain("12 stored value(s) need keys signed by a key ring signing certificate no host has configured and stay unreadable")
+            .And.Contain("RetiredSignerAcceptedUntil accepts their loss until 2026-11-13").And.Contain("wiki 10 section 4.13")
+            .And.Contain("the hosts start only because").And.NotContain("0 stored value(s) are under signed keys");
+        KeyRingUpgradeCheck.Problem(lost, now.AddDays(7), now, accepted).Should().BeNull();
+        (KeyRingUpgradeCheck.Reported(lost, null, now).RetiredSigner == 12).Should().BeTrue("the metric and the alert still count them");
+
+        // Keys from before ARV-211 outside the window stay refused whatever the setting says; inside it they are read.
+        var both = lost with { UserSeeds = 3 };
+        KeyRingUpgradeCheck.Problem(both, null, now, accepted).Should().Contain("is not set").And.Contain("3 user TOTP seed(s)")
+            .And.Contain("accepts their loss until 2026-11-13").And.NotContain("If that certificate is lost for good");
+        KeyRingUpgradeCheck.Leftovers(both, null, now, accepted).Should().BeNull("the refusal stands");
+        KeyRingUpgradeCheck.Problem(new KeyRingUpgradeFinding(2, 0, 0), now.AddDays(-1), now, accepted).Should().Contain("closed on 2026-11-09",
+            "the setting never stands in for the window");
+        KeyRingUpgradeCheck.Problem(both, now.AddDays(7), now, accepted).Should().BeNull("inside the window the keys from before are read, and the loss is accepted");
+
+        // Once a value is set again it is under a configured signer's key: the hosts start without the setting, and warn as for leftovers.
+        var recovering = lost with { OnSignedKeys = 1 };
+        KeyRingUpgradeCheck.Problem(recovering, null, now).Should().BeNull();
+        KeyRingUpgradeCheck.Leftovers(recovering, null, now).Should().Contain("1 stored value(s) are under signed keys").And.Contain("configure the previous signer again");
+    }
+
+    [Fact]
+    public void Reported_Should_CountOnlyTheValuesTheHostsRefuse_When_TheUpgradeWindowIsOpenOrClosed()
+    {
+        // The review's note I-5: the hosts at start and the key lifecycle job report the values whose keys the hosts refuse now, so an
+        // upgrade with its window open raises no keyRingUnsigned, and a count is above 0 exactly when the check refuses or warns.
+        var now = new DateTimeOffset(2026, 11, 10, 0, 0, 0, TimeSpan.Zero);
+        var upgrading = new KeyRingUpgradeFinding(UserSeeds: 3, ClientSeeds: 1, OutboundSecrets: 2);
+
+        KeyRingUpgradeCheck.Reported(upgrading, now.AddDays(14), now).Total.Should().Be(0, "inside the window those keys are read");
+        KeyRingUpgradeCheck.Reported(upgrading, null, now).Unsigned.Should().Be(6);
+        KeyRingUpgradeCheck.Reported(upgrading, now.AddDays(-1), now).Unsigned.Should().Be(6, "a window that has closed admits nothing");
+        var rotated = upgrading with { OnSignedKeys = 9, RetiredSigner = 2 };
+        var reported = KeyRingUpgradeCheck.Reported(rotated, now.AddDays(14), now);
+        reported.Unsigned.Should().Be(0);
+        reported.RetiredSigner.Should().Be(2, "a retired signer's keys are refused whatever the window");
+        reported.OnSignedKeys.Should().Be(9);
+
+        KeyRingUpgradeFinding[] findings =
+        [
+            upgrading, rotated, upgrading with { OnSignedKeys = 4 }, new KeyRingUpgradeFinding(0, 0, 0, RetiredSigner: 5),
+            new KeyRingUpgradeFinding(0, 0, 0, OnSignedKeys: 7), new KeyRingUpgradeFinding(1, 0, 0, OnSignedKeys: 7, RetiredSigner: 1)
+        ];
+        DateTimeOffset?[] dates = [null, now.AddDays(-1), now.AddDays(3), now.AddDays(14)];
+        foreach (var finding in findings)
+        {
+            foreach (var window in dates)
+            {
+                foreach (var accepted in dates)
+                {
+                    var applies = KeyRingUpgradeCheck.Problem(finding, window, now, accepted) is not null ||
+                                  KeyRingUpgradeCheck.Leftovers(finding, window, now, accepted) is not null;
+                    (KeyRingUpgradeCheck.Reported(finding, window, now).Total > 0).Should().Be(applies,
+                        $"{KeyRingUpgradeCheck.Describe(finding)}, {finding.RetiredSigner} retired and {finding.OnSignedKeys} signed, window {window:O}, accepted {accepted:O}");
+                }
+            }
+        }
     }
 
     [Fact]
@@ -681,6 +803,7 @@ public sealed class KeyRingSigningTests : IDisposable
         configuration["DataProtection:Signing:CertificatePath"].Should().Be("/app/secrets/dataprotection-signing/tls.crt");
         configuration["DataProtection:Signing:KeyPath"].Should().Be("/app/secrets/dataprotection-signing/tls.key");
         configuration["DataProtection:Signing:CertificateSignedUntil"].Should().BeNull();
+        configuration["DataProtection:Signing:RetiredSignerAcceptedUntil"].Should().BeNull("accepting a lost signer's keys is a recovery step, never shipped");
         configuration.GetSection("DataProtection:Signing:Previous").GetChildren().Should().BeEmpty("a rotation's previous signer is the operator's, for its overlap only");
     }
 

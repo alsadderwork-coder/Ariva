@@ -25,8 +25,9 @@ namespace Ariva.Infra.Monitoring;
 /// Since the ARV-211 review (finding N1) also outcomes <see cref="Unsigned"/>, the stored values that need a key without a row
 /// signature (written before ARV-211; the upgrade window admits it), and <see cref="RetiredSigner"/>, those that need a key a signing
 /// certificate no host has configured signed (a rotation's previous signer removed too early; only that signer admits it), from the
-/// upgrade check every host runs at start and the key lifecycle job runs every day (<see cref="KeyRingUpgradeCheck"/>). The
-/// keyRingUnsigned alert reads both.</item>
+/// upgrade check every host runs at start and the key lifecycle job runs every day (<see cref="KeyRingUpgradeCheck"/>), counted as
+/// <see cref="KeyRingUpgradeCheck.Reported"/> gives them: the values whose keys the hosts refuse now, so <see cref="Unsigned"/> is 0
+/// while the upgrade window is open. The keyRingUnsigned alert reads both.</item>
 /// </list>
 /// Every API host reports the certificates it loaded (the Data Protection certificate and the previous ones, the key ring's signing
 /// certificate and the previous ones, ARV-211); Ariva.Api.Cronz reports the rest from its key lifecycle run (the key ring and the

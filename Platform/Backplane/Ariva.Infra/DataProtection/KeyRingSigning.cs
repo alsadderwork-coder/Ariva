@@ -46,6 +46,10 @@ public enum SignerStanding
 /// <see cref="MaxCertificateSignedDays"/> days ahead, and <see cref="KeyRingUpgradeCheck"/> stops the migration job and the
 /// hosts when the stored values need such keys, none is under a signed key yet and the window is not open (an upgrade or a
 /// restore without it); leftovers after the upgrade are measured, never refused.</item>
+/// <item>A retired signer's certificate lost for good (the ARV-211 review's finding L-1): the values under the keys it signed cannot
+/// be read again, and when none is under a configured signer's key the hosts refuse to start. <c>DataProtection:Signing:RetiredSignerAcceptedUntil</c>,
+/// at most <see cref="MaxRetiredSignerAcceptedDays"/> days ahead, accepts that loss: the hosts start, those values stay unreadable,
+/// and an administrator has each set again (wiki 10 section 4.13).</item>
 /// <item>vm-local (<c>DataProtection:UseDevelopmentCertificate</c>): a self-signed P-256 certificate created once beside the
 /// development Data Protection certificate and reused.</item>
 /// </list>
@@ -67,6 +71,12 @@ public sealed class KeyRingSigning
     /// </summary>
     public const int MaxCertificateSignedDays = 90;
 
+    /// <summary>
+    /// The latest <c>DataProtection:Signing:RetiredSignerAcceptedUntil</c> a host accepts, in days after it starts (the ARV-211
+    /// review's finding L-1): the acceptance is a recovery step after a signing certificate was lost for good, never a standing setting.
+    /// </summary>
+    public const int MaxRetiredSignerAcceptedDays = 7;
+
     /// <summary>What every row signature covers first (ARV-211, script 0073), so it can never pass for another signature.</summary>
     public const string RowLabel = "ariva-keyring-row-v1";
 
@@ -85,11 +95,13 @@ public sealed class KeyRingSigning
 
     #region Constructors
 
-    private KeyRingSigning(X509Certificate2 current, IReadOnlyList<X509Certificate2> previous, DateTimeOffset? certificateSignedUntil)
+    private KeyRingSigning(X509Certificate2 current, IReadOnlyList<X509Certificate2> previous, DateTimeOffset? certificateSignedUntil,
+        DateTimeOffset? retiredSignerAcceptedUntil)
     {
         Current = current;
         Previous = previous;
         CertificateSignedUntil = certificateSignedUntil;
+        RetiredSignerAcceptedUntil = retiredSignerAcceptedUntil;
         Signer = SignerOf(current);
         _previous = previous.ToDictionary(SignerOf, c => c, StringComparer.Ordinal);
     }
@@ -109,6 +121,12 @@ public sealed class KeyRingSigning
 
     /// <summary>Until when elements signed with a Data Protection certificate's own key (before ARV-211) are read; null: refused.</summary>
     public DateTimeOffset? CertificateSignedUntil { get; }
+
+    /// <summary>
+    /// Until when the hosts start although every stored value needs a key a signer no host has configured signed (the ARV-211
+    /// review's finding L-1, <see cref="RetiredSignerAcceptedUntilOf"/>); null: such a start is refused. It admits no key.
+    /// </summary>
+    public DateTimeOffset? RetiredSignerAcceptedUntil { get; }
 
     #endregion
 
@@ -138,6 +156,9 @@ public sealed class KeyRingSigning
 
     /// <summary>Whether an element signed with a Data Protection certificate's own key (the format before ARV-211) is still read.</summary>
     public bool ReadsCertificateSigned(DateTimeOffset now) => CertificateSignedUntil is { } until && now < until;
+
+    /// <summary>Whether <see cref="RetiredSignerAcceptedUntil"/> still holds: the loss of a retired signer's keys is accepted, they stay unreadable.</summary>
+    public bool AcceptsRetiredSignerLoss(DateTimeOffset now) => RetiredSignerAcceptedUntil is { } until && now < until;
 
     /// <summary>
     /// The signature a host writes beside a key ring row it stores (ARV-211, script 0073, the review's finding M1): ES256 by the
@@ -238,7 +259,8 @@ public sealed class KeyRingSigning
             previous.Add(X509Certificate2.CreateFromPem(pem));
         }
 
-        return From(current, previous, CertificateSignedUntilOf(configuration, DateTimeOffset.UtcNow), wrapping);
+        var now = DateTimeOffset.UtcNow;
+        return From(current, previous, CertificateSignedUntilOf(configuration, now), wrapping, RetiredSignerAcceptedUntilOf(configuration, now));
     }
 
     /// <summary>Whether PEM text holds a private key block of any kind (PKCS#8, encrypted PKCS#8, RSA or EC), found by its label.</summary>
@@ -257,7 +279,7 @@ public sealed class KeyRingSigning
 
     /// <summary>The signing certificates as given, each checked; <paramref name="wrapping"/> must not hold the same key.</summary>
     public static KeyRingSigning From(X509Certificate2 current, IReadOnlyList<X509Certificate2> previous = null, DateTimeOffset? certificateSignedUntil = null,
-        DataProtectionCertificates wrapping = null)
+        DataProtectionCertificates wrapping = null, DateTimeOffset? retiredSignerAcceptedUntil = null)
     {
         ArgumentNullException.ThrowIfNull(current);
         RequireSigningCertificate(current);
@@ -279,7 +301,7 @@ public sealed class KeyRingSigning
                 throw new InvalidOperationException("The key ring signing certificate holds the same key as a Data Protection certificate; give it a key of its own (ARV-211).");
         }
 
-        return new KeyRingSigning(current, verifiers, certificateSignedUntil);
+        return new KeyRingSigning(current, verifiers, certificateSignedUntil, retiredSignerAcceptedUntil);
     }
 
     /// <summary>
@@ -304,6 +326,37 @@ public sealed class KeyRingSigning
             throw new InvalidOperationException(
                 $"DataProtection:Signing:CertificateSignedUntil {until.UtcDateTime:yyyy-MM-dd} is more than {MaxCertificateSignedDays} days ahead; the upgrade window is a short " +
                 "migration step: set a date 7 to 90 days ahead and remove it after the upgrade (wiki 04 section 6.2).");
+        return until;
+    }
+
+    /// <summary>
+    /// DataProtection:Signing:RetiredSignerAcceptedUntil (the ARV-211 review's finding L-1): until when the hosts start although no
+    /// stored value is under a key a configured signer signed and some need a key a signer no host has configured signed, because
+    /// that signer's certificate is lost for good (wiki 10 section 4.13). It admits no key: those values stay unreadable, and the
+    /// hosts start only so that an administrator can have each set again. It never excuses keys from before ARV-211 outside
+    /// <c>CertificateSignedUntil</c>. A date (YYYY-MM-DD, read as UTC) or a time in UTC; unset, such a start is refused.
+    /// </summary>
+    /// <remarks>
+    /// Read as <see cref="CertificateSignedUntilOf"/> reads its window, and bounded harder: a date more than
+    /// <see cref="MaxRetiredSignerAcceptedDays"/> days after <paramref name="now"/>, or a time with an offset other than UTC, is
+    /// refused, so the acceptance cannot stand; one that has passed is kept as it is (it accepts nothing).
+    /// </remarks>
+    public static DateTimeOffset? RetiredSignerAcceptedUntilOf(IConfiguration configuration, DateTimeOffset now)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        var value = configuration[$"{SectionName}:RetiredSignerAcceptedUntil"];
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        var until = DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
+            ? parsed
+            : throw new InvalidOperationException("DataProtection:Signing:RetiredSignerAcceptedUntil is not a date (use YYYY-MM-DD, UTC).");
+        if (until.Offset != TimeSpan.Zero)
+            throw new InvalidOperationException(
+                "DataProtection:Signing:RetiredSignerAcceptedUntil is not in UTC: give a date (YYYY-MM-DD) or a time that ends in Z (wiki 10 section 4.13).");
+        if (until > now.AddDays(MaxRetiredSignerAcceptedDays))
+            throw new InvalidOperationException(
+                $"DataProtection:Signing:RetiredSignerAcceptedUntil {until.UtcDateTime:yyyy-MM-dd} is more than {MaxRetiredSignerAcceptedDays} days ahead; it is a recovery " +
+                "step for a key ring signing certificate lost for good: set a date at most 7 days ahead and remove it once the values are set again (wiki 10 section 4.13).");
         return until;
     }
 
