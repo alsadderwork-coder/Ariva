@@ -180,6 +180,32 @@ public sealed class PodTransportTests : IDisposable
         AllowedSuites(kestrel).Should().Equal(PodTransportExtensions.CipherSuites);
     }
 
+    [Fact]
+    public void AddAppPodTransport_Should_RestrictTheSuitesAndReportTheServedCertificateOnTheSameHandshake_When_TheHostReportsCertificates()
+    {
+        // ARV-198 review: Kestrel keeps only the last ConfigureHttpsDefaults action (each call replaces the one before), so the
+        // cipher policy and the served certificate's tracking must come from one action, or one of them silently never runs.
+        Assert.SkipUnless(OperatingSystem.IsLinux(), "CipherSuitesPolicy is a Linux feature of SslStream; the images run on Linux.");
+        using var metrics = new Ariva.Infra.Monitoring.CertificateMetrics();
+        using var reader = new InstrumentReader(metrics.Meter);
+        using var provider = new ServiceCollection().AddSingleton(metrics)
+            .AddAppPodTransport(Configuration(Production("as shipped")), ArivaEnvironment.K8sPrd).BuildServiceProvider();
+        var kestrel = new KestrelServerOptions();
+        foreach (var configure in provider.GetServices<IConfigureOptions<KestrelServerOptions>>())
+            configure.Configure(kestrel);
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var served = new CertificateRequest("CN=api-main", key, HashAlgorithmName.SHA256).CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(20));
+
+        var property = typeof(KestrelServerOptions).GetProperty("HttpsDefaults", BindingFlags.Instance | BindingFlags.NonPublic);
+        var https = new HttpsConnectionAdapterOptions();
+        ((Action<HttpsConnectionAdapterOptions>)property.GetValue(kestrel)).Invoke(https);
+        var handshake = new SslServerAuthenticationOptions { ServerCertificate = served };
+        https.OnAuthenticate.Invoke(null, handshake);
+
+        handshake.CipherSuitesPolicy.AllowedCipherSuites.Should().Equal(PodTransportExtensions.CipherSuites, "the cipher policy still applies");
+        PodTlsHoursLeft(reader).Should().BeApproximately(20, 0.1, "the same handshake reports the certificate it presents");
+    }
+
     #endregion
 
     #region The settings files
@@ -402,10 +428,14 @@ public sealed class PodTransportTests : IDisposable
         File.CreateSymbolicLink(Path.Combine(secret, "tls.crt"), Path.Combine("..data", "tls.crt"));
         File.CreateSymbolicLink(Path.Combine(secret, "tls.key"), Path.Combine("..data", "tls.key"));
         var (https, plain) = (FreePort(), FreePort());
-        await using var app = await StartAsync(ArivaEnvironment.K8sPrd, https, plain, Path.Combine(secret, "tls.crt"), Path.Combine(secret, "tls.key"));
+        // ARV-198: the certificate each handshake presents is reported as pod-tls, so the alert reads what is served.
+        using var metrics = new Ariva.Infra.Monitoring.CertificateMetrics();
+        using var reader = new InstrumentReader(metrics.Meter);
+        await using var app = await StartAsync(ArivaEnvironment.K8sPrd, https, plain, Path.Combine(secret, "tls.crt"), Path.Combine(secret, "tls.key"), metrics);
         (await ServedAsync(https)).Should().Be(first);
+        PodTlsHoursLeft(reader).Should().BeApproximately(12, 0.1, "the first certificate, valid for 12 hours, was presented");
 
-        var renewed = Issue(_ca, Path.Combine(secret, "..2026_10_18_07_00_00.000000002"));
+        var renewed = Issue(_ca, Path.Combine(secret, "..2026_10_18_07_00_00.000000002"), hours: 36);
         File.CreateSymbolicLink(Path.Combine(secret, "..data_tmp"), "..2026_10_18_07_00_00.000000002");
         // rename(2) over the old link, as the kubelet's atomic writer does: File.Replace checks with lstat and renames, where
         // File.Move would follow the link to its folder and refuse it.
@@ -422,6 +452,7 @@ public sealed class PodTransportTests : IDisposable
         }
 
         served.Should().Be(renewed, "the same Kestrel serves the renewed certificate within seconds, without a restart");
+        PodTlsHoursLeft(reader).Should().BeApproximately(36, 0.1, "the renewed certificate, valid for 36 hours, is the one reported once it is presented");
         (await Connect(plain)).Should().Be(SocketError.ConnectionRefused, "the rebind brings back the https endpoint only");
     }
 
@@ -503,7 +534,7 @@ public sealed class PodTransportTests : IDisposable
     /// test's certificate on a loopback port in place of /app/secrets/pod-tls on 8443, and <paramref name="plain"/> as the image's
     /// ASPNETCORE_HTTP_PORTS. In k8s-dev it declares the https endpoint only when a certificate is given.
     /// </summary>
-    private async Task<WebApplication> StartAsync(string environment, int https, int plain, string certificate, string key)
+    private async Task<WebApplication> StartAsync(string environment, int https, int plain, string certificate, string key, Ariva.Infra.Monitoring.CertificateMetrics metrics = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = [], EnvironmentName = environment, ContentRootPath = _folder });
         builder.Logging.ClearProviders();
@@ -520,6 +551,8 @@ public sealed class PodTransportTests : IDisposable
         }
 
         builder.Configuration.AddInMemoryCollection(values);
+        if (metrics is not null)
+            builder.Services.AddSingleton(metrics);
         builder.Services.AddAppPodTransport(builder.Configuration, environment);
         var app = builder.Build();
         app.Run(context => context.Response.WriteAsync("pod", context.RequestAborted));
@@ -586,6 +619,11 @@ public sealed class PodTransportTests : IDisposable
         return tls.RemoteCertificate?.GetCertHashString(HashAlgorithmName.SHA256);
     }
 
+    /// <summary>ARV-198: the hours left on the certificate the host reported as pod-tls (its last handshake's).</summary>
+    private static double PodTlsHoursLeft(InstrumentReader reader) =>
+        reader.Observe(Ariva.Infra.Monitoring.CertificateMetrics.ExpiresInName)
+            .Single(m => m.Tags["certificate"] == Ariva.Infra.Monitoring.CertificateMetrics.PodTls).Value / 3600;
+
     /// <summary>As <see cref="ServedAsync"/>, or null while the endpoint is between its stop and its new bind.</summary>
     private async Task<string> ServedOrNullAsync(int port)
     {
@@ -646,7 +684,7 @@ public sealed class PodTransportTests : IDisposable
     /// Writes a pod certificate for <paramref name="name"/> from <paramref name="issuer"/> as tls.crt and tls.key (PEM, as
     /// cert-manager writes the secret) into <paramref name="folder"/>; returns its SHA-256 hash.
     /// </summary>
-    private static string Issue(X509Certificate2 issuer, string folder, string name = PodName, bool rsa = false)
+    private static string Issue(X509Certificate2 issuer, string folder, string name = PodName, bool rsa = false, int hours = 12)
     {
         Directory.CreateDirectory(folder);
         using AsymmetricAlgorithm key = rsa ? RSA.Create(2048) : ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -661,7 +699,7 @@ public sealed class PodTransportTests : IDisposable
         // The CA's own key signs, whatever the leaf's key is (an RSA leaf under the ECDSA CA, as a cluster issuer may sign).
         using var issuerKey = issuer.GetECDsaPrivateKey();
         using var certificate = request.Create(issuer.SubjectName, X509SignatureGenerator.CreateForECDsa(issuerKey), DateTimeOffset.UtcNow.AddMinutes(-1),
-            DateTimeOffset.UtcNow.AddHours(12), RandomNumberGenerator.GetBytes(16));
+            DateTimeOffset.UtcNow.AddHours(hours), RandomNumberGenerator.GetBytes(16));
         File.WriteAllText(Path.Combine(folder, "tls.crt"), certificate.ExportCertificatePem());
         File.WriteAllText(Path.Combine(folder, "tls.key"), key.ExportPkcs8PrivateKeyPem());
         return certificate.GetCertHashString(HashAlgorithmName.SHA256);

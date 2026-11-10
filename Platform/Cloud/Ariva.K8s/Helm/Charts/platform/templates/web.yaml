@@ -3,7 +3,8 @@
 #ConfigMap: the web pod's nginx listener with pod TLS (ARV-082b)
 # Mounted over the image's /etc/nginx/listen.d, which default.conf includes inside its one server block: it hides the image's
 # plain listen.d/plain.conf ("listen 3000"), so nginx answers TLS on 3443 and nothing else. TLS 1.2 and 1.3; the TLS 1.2
-# suites ECDHE with AEAD only, the database's list (ARV-082a). nginx reads the certificate when it starts.
+# suites ECDHE with AEAD only, the database's list (ARV-082a). nginx reads the certificate when it starts or reloads; the image's
+# watcher (40-ariva-tls-reload.sh, ARV-198) reloads it gracefully when the kubelet writes a renewed secret into the volume.
 apiVersion: v1
 kind: ConfigMap
 metadata:

@@ -3056,3 +3056,49 @@ export function releaseCredentialFindings(text, file) {
 	});
 	return findings;
 }
+
+/**
+ * ARV-198: with pod TLS, api-main and only it mounts the web pod's certificate secret, its tls.crt alone (never tls.key), read
+ * only, at /app/secrets/web-certificate, and gets Monitoring__WebCertificatePath naming that file, for the certificateExpiry
+ * alert (certificate web-tls); without pod TLS nothing mounts it. webSecret is the web pod's certificate secret's name.
+ */
+export const WEB_CERTIFICATE = { volume: 'web-certificate', mountPath: '/app/secrets/web-certificate', variable: 'Monitoring__WebCertificatePath', file: '/app/secrets/web-certificate/tls.crt' };
+
+export function webCertificateFindings(docs, { tls, webSecret }) {
+	const findings = [];
+	for (const doc of docs.filter((d) => ['Deployment', 'StatefulSet', 'Job', 'CronJob', 'DaemonSet'].includes(d?.kind))) {
+		const spec = doc.kind === 'CronJob' ? doc.spec?.jobTemplate?.spec?.template?.spec : doc.spec?.template?.spec;
+		if (!spec) continue;
+		const where = `${doc.kind}/${doc.metadata?.name}`;
+		const isMain = doc.kind === 'Deployment' && doc.metadata?.name === 'api-main-deployment';
+		const volumes = (spec.volumes ?? []).filter((volume) => volume.secret?.secretName === webSecret || volume.projected?.sources?.some((source) => source.secret?.name === webSecret));
+		const web = doc.kind === 'Deployment' && doc.metadata?.name === 'web-deployment';
+		if (web) continue; // the web pod's own certificate, held by the pod TLS rules
+		// The ARV-198 review: no container of another workload reads the web secret through its environment either (a variable's
+		// secretKeyRef, which could name tls.key, or envFrom, which takes every key), api-main included.
+		const containers = [...(spec.initContainers ?? []), ...(spec.containers ?? [])];
+		const byEnvironment = [
+			...containers.flatMap((container) => (container.env ?? []).filter((variable) => variable.valueFrom?.secretKeyRef?.name === webSecret).map((variable) => `${container.name} ${variable.name}`)),
+			...containers.flatMap((container) => (container.envFrom ?? []).filter((source) => source.secretRef?.name === webSecret).map(() => `${container.name} envFrom`))
+		];
+		if (byEnvironment.length) findings.push(`${where}: reads the web pod's certificate secret ${webSecret} through its environment (${byEnvironment.join(', ')}); only api-main may read it, its tls.crt alone through the ${WEB_CERTIFICATE.volume} volume`);
+		if (!tls || !isMain) {
+			if (volumes.length) findings.push(`${where}: mounts the web pod's certificate secret ${webSecret}; only api-main may, its tls.crt alone, with pod TLS`);
+			continue;
+		}
+		const volume = volumes.find((v) => v.name === WEB_CERTIFICATE.volume);
+		if (volumes.length !== 1 || !volume) findings.push(`${where}: must mount the web pod's certificate secret ${webSecret} once, as the volume ${WEB_CERTIFICATE.volume} (found ${volumes.length})`);
+		else {
+			const items = volume.secret?.items ?? [];
+			if (!volume.secret || items.length !== 1 || items[0].key !== 'tls.crt' || items[0].path !== 'tls.crt') findings.push(`${where}: the ${WEB_CERTIFICATE.volume} volume must project tls.crt alone from ${webSecret}, never tls.key`);
+			if (volume.secret && volume.secret.optional !== true) findings.push(`${where}: the ${WEB_CERTIFICATE.volume} volume must be optional, so a web secret not yet issued does not hold api-main's pods (web-tls then reads 0 and alerts)`);
+		}
+		const mounts = containers.flatMap((container) => (container.volumeMounts ?? []).filter((mount) => mount.name === WEB_CERTIFICATE.volume).map((mount) => ({ container: container.name, mount })));
+		const host = spec.containers?.[0];
+		if (mounts.length !== 1 || mounts[0].container !== host?.name || mounts[0].mount.mountPath !== WEB_CERTIFICATE.mountPath || mounts[0].mount.readOnly !== true || mounts[0].mount.subPath)
+			findings.push(`${where}: the ${WEB_CERTIFICATE.volume} volume must be mounted once, in the host's container, read-only and whole at ${WEB_CERTIFICATE.mountPath}`);
+		const variable = (host?.env ?? []).find((entry) => entry.name === WEB_CERTIFICATE.variable);
+		if (variable?.value !== WEB_CERTIFICATE.file) findings.push(`${where}: the host's container must get ${WEB_CERTIFICATE.variable}=${WEB_CERTIFICATE.file}`);
+	}
+	return findings;
+}

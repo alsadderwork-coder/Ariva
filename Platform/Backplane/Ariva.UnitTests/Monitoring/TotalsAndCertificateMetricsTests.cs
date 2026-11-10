@@ -7,6 +7,7 @@ using Ariva.Infra.Monitoring;
 using Ariva.Infra.Sensing;
 using Ariva.UnitTests.Setup;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 
 namespace Ariva.UnitTests.Monitoring;
 
@@ -84,5 +85,70 @@ public sealed class TotalsAndCertificateMetricsTests
             "the tag is one of Ariva's names, never a certificate's subject");
         metrics.Track(CertificateMetrics.MqttServer, DateTime.UtcNow.AddDays(10));
         reader.Observe(CertificateMetrics.ExpiresInName).Should().ContainSingle().Which.Tags["certificate"].Should().Be(CertificateMetrics.MqttServer);
+    }
+
+    [Fact]
+    public void WebCertificate_Should_FollowTheKubeletsSwapAndReadZeroWhenUnreadable_When_TheGaugeIsCollected()
+    {
+        // ARV-198: api-main reports the web pods' certificate from its public half (the chart mounts tls.crt alone), laid out as the
+        // kubelet lays out a projected secret: tls.crt links to ..data/tls.crt and ..data to a dated folder, which a renewal replaces
+        // by pointing ..data elsewhere (the link's own time and length never change). A configured file it cannot read reads 0.
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "The kubelet's layout is symbolic links on Linux.");
+        var folder = Directory.CreateTempSubdirectory("ariva-web-tls-").FullName;
+        try
+        {
+            void Dated(string name, string content)
+            {
+                Directory.CreateDirectory(Path.Combine(folder, name));
+                File.WriteAllText(Path.Combine(folder, name, "tls.crt"), content);
+            }
+            void Swap(string name)
+            {
+                var temporary = Path.Combine(folder, "..data_tmp");
+                File.CreateSymbolicLink(temporary, name);
+                // rename(2) over the old link, as the kubelet's atomic writer does (File.Replace checks with lstat; File.Move would
+                // follow the link to its folder).
+                File.Replace(temporary, Path.Combine(folder, "..data"), destinationBackupFileName: null);
+            }
+            var file = Path.Combine(folder, "tls.crt");
+            var configuration = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string> { [CertificateMetrics.WebCertificatePathSetting] = file }).Build();
+            using var metrics = new CertificateMetrics(configuration: configuration);
+            using var reader = new InstrumentReader(metrics.Meter);
+            HoursLeft(reader).Should().Be(0, "a configured file that is not there reads 0, so certificateExpiry fires rather than reading nothing");
+
+            Dated("..2026_11_09_a", Pem(hours: 10));
+            File.CreateSymbolicLink(Path.Combine(folder, "..data"), "..2026_11_09_a");
+            File.CreateSymbolicLink(file, "..data/tls.crt");
+            HoursLeft(reader).Should().BeApproximately(10, 0.1);
+
+            Dated("..2026_11_09_b", Pem(hours: 50));
+            Swap("..2026_11_09_b");
+            HoursLeft(reader).Should().BeApproximately(50, 0.1, "the renewal the kubelet swapped in is read through the links");
+
+            Dated("..2026_11_09_c", "not a certificate");
+            Swap("..2026_11_09_c");
+            HoursLeft(reader).Should().Be(0, "a file without a certificate reads 0, and nothing throws");
+
+            Dated("..2026_11_09_d", Pem(hours: 30) + new string('A', 70_000));
+            Swap("..2026_11_09_d");
+            HoursLeft(reader).Should().Be(0, "a file over 64 KB, measured on the target, is not read");
+            FluentActions.Invoking(() => metrics.TrackFile("ingress CN=airport.example", file)).Should().Throw<ArgumentOutOfRangeException>();
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    private static double HoursLeft(InstrumentReader reader) =>
+        reader.Observe(CertificateMetrics.ExpiresInName).Single(m => m.Tags["certificate"] == CertificateMetrics.WebTls).Value / 3600;
+
+    private static string Pem(int hours)
+    {
+        using var key = System.Security.Cryptography.ECDsa.Create(System.Security.Cryptography.ECCurve.NamedCurves.nistP256);
+        var request = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=web-service", key, System.Security.Cryptography.HashAlgorithmName.SHA256);
+        using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(hours));
+        return certificate.ExportCertificatePem();
     }
 }

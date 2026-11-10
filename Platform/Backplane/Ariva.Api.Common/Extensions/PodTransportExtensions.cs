@@ -103,14 +103,30 @@ public static class PodTransportExtensions
             return services;
 
         EnsureProductionTransport(configuration);
-        if (OperatingSystem.IsLinux())
-        {
-            // One policy for every handshake; Kestrel applies the https defaults to the configured endpoints before their own settings.
-            var policy = Ariva.Infra.Security.ModernTls.CipherSuitesPolicy;
-            services.AddOptions<KestrelServerOptions>().Configure(kestrel => kestrel.ConfigureHttpsDefaults(https => RestrictCipherSuites(https, policy)));
-        }
+        // One registration, one ConfigureHttpsDefaults: Kestrel keeps only the last action given to it (each call replaces the one
+        // before), so the cipher policy and the served certificate's tracking are applied by the same action (ARV-198 review).
+        services.AddOptions<KestrelServerOptions>().Configure<IServiceProvider>((kestrel, provider) =>
+            kestrel.ConfigureHttpsDefaults(https => HttpsDefaults(https, provider.GetService<Ariva.Infra.Monitoring.CertificateMetrics>())));
 
         return services;
+    }
+
+    /// <summary>
+    /// What every https endpoint of a k8s-prd host does on each handshake: on Linux, the one cipher suite policy
+    /// (<c>ModernTls.CipherSuitesPolicy</c>); and, ARV-198, recording the end of validity of the certificate the handshake presents
+    /// as <c>ariva.certificates.expires_in</c> with certificate <c>pod-tls</c>, so the certificateExpiry alert reads what the pod
+    /// serves (a renewal Kestrel took, or one it did not), not the mounted file. Kestrel applies the https defaults to the
+    /// configured endpoints before their own settings.
+    /// </summary>
+    /// <param name="https">The endpoint's https options.</param>
+    /// <param name="metrics">The host's certificate metrics, or null when it reports none.</param>
+    internal static void HttpsDefaults(HttpsConnectionAdapterOptions https, Ariva.Infra.Monitoring.CertificateMetrics metrics)
+    {
+        ArgumentNullException.ThrowIfNull(https);
+        if (OperatingSystem.IsLinux())
+            RestrictCipherSuites(https, Ariva.Infra.Security.ModernTls.CipherSuitesPolicy);
+        if (metrics is not null)
+            TrackServedCertificate(https, metrics);
     }
 
     #endregion
@@ -199,7 +215,24 @@ public static class PodTransportExtensions
                                  parsed.ToString().Split(", ").Any(flag => !ModernNames.Contains(flag, StringComparer.Ordinal)));
     }
 
+    /// <summary>
+    /// ARV-198: records the end of validity of the certificate each handshake presents (Kestrel selects it before OnAuthenticate:
+    /// an endpoint's one certificate, rebound when its files change), the latest handshake winning. Only the end date is kept.
+    /// </summary>
+    private static void TrackServedCertificate(HttpsConnectionAdapterOptions https, Ariva.Infra.Monitoring.CertificateMetrics metrics)
+    {
+        var previous = https.OnAuthenticate;
+        https.OnAuthenticate = (connection, authentication) =>
+        {
+            previous?.Invoke(connection, authentication);
+            var served = authentication.ServerCertificateContext?.TargetCertificate ?? authentication.ServerCertificate as System.Security.Cryptography.X509Certificates.X509Certificate2;
+            if (served is not null)
+                metrics.Track(Ariva.Infra.Monitoring.CertificateMetrics.PodTls, served.NotAfter.ToUniversalTime());
+        };
+    }
+
     /// <summary>Sets the policy on every handshake of an https endpoint, after any callback set before it.</summary>
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     private static void RestrictCipherSuites(HttpsConnectionAdapterOptions https, CipherSuitesPolicy policy)
     {
         var previous = https.OnAuthenticate;

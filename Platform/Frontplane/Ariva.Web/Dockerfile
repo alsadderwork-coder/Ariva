@@ -26,6 +26,11 @@ COPY --from=builder /app/build/nginx/default.conf /etc/nginx/conf.d
 # ConfigMap over /etc/nginx/listen.d, which replaces it with the TLS listener on 3443.
 COPY --from=builder /app/build/nginx/listen.d/plain.conf /etc/nginx/listen.d/plain.conf
 COPY --from=builder /app/build /usr/share/nginx/html/web
+# ARV-198: with pod TLS, a renewed certificate is served without a restart: this script, run by the image's entrypoint before
+# nginx starts, reloads nginx gracefully when the kubelet swaps the mounted certificate (Platform/Frontplane/Ariva.Web/docker;
+# its container test is Platform/Cloud/Ariva.K8s/tests/web-tls-reload.mjs). Root owned, readable and executable by nginx's user,
+# not writable by it.
+COPY --chmod=0755 ./Platform/Frontplane/Ariva.Web/docker/40-ariva-tls-reload.sh /docker-entrypoint.d/40-ariva-tls-reload.sh
 
 # The nginx configuration is copied above from build/nginx, so the web root must not serve it too (ARV-092: before this,
 # GET /nginx/default.conf answered 200 with the server's configuration).

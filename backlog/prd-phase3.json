@@ -693,7 +693,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story"
       ],
       "priority": 61,
-      "passes": false,
+      "passes": true,
       "notes": "Size S. Recorded 2026-10-18 with ARV-082b under the owner's standing decision (low-severity follow-ups wait for Phase 3 unless needed before the pilot; the owner can pull one back). Until then the deployment guide tells the operator to restart the web Deployment after a renewal, or to renew well inside the release cadence. Related residual from ARV-082b: api-cronz and api-integration run one replica in prd (HPA minimum 1), so during their own certificate's rebind new connections can fail for up to about 5 s; a second replica would remove it.",
       "dependsOn": [
         "ARV-082b"

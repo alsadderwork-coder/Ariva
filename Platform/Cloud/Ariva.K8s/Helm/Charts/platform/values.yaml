@@ -164,8 +164,11 @@ databaseConnections:
 #   a renewed certificate from it, which a subPath mount would never receive;
 # - the web pod's nginx serves TLS on 3443 only, from secretNames.web at /etc/nginx/tls (names web-service and so on); the
 #   ConfigMap web-nginx-listen, mounted over the image's /etc/nginx/listen.d, replaces its plain "listen 3000" with
-#   "listen 3443 ssl" (TLS 1.2 and 1.3, the TLS 1.2 suites ECDHE with AEAD only). nginx reads the certificate when it
-#   starts: a renewed one reaches the web pods at their next restart (every release restarts them);
+#   "listen 3443 ssl" (TLS 1.2 and 1.3, the TLS 1.2 suites ECDHE with AEAD only). Since ARV-198 the web image's reload watcher
+#   (/docker-entrypoint.d/40-ariva-tls-reload.sh) reloads nginx gracefully when the kubelet swaps a renewed certificate in, so it
+#   is served within 20 s of the swap without a restart; api-main mounts the web certificate's tls.crt alone
+#   (/app/secrets/web-certificate) and reports its end as web-tls, and each API host the certificate its handshakes present as
+#   pod-tls (ariva.certificates.expires_in, the certificateExpiry alert);
 # - every Service serves 443 (name https) to its pods' https port, so the internal addresses are https://<service> with no
 #   port; every Ingress proxies HTTPS to port 443 and verifies the pod's certificate against caSecretName under the name
 #   <service>.<namespace>.svc, TLS 1.2 or 1.3, with up to two intermediate CAs between the pod's certificate and the

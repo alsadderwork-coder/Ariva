@@ -94,6 +94,18 @@ spec:
         {{- end }}
         {{- if include "ariva-platform.podTls" . }}
         {{- include "ariva-platform.podTlsVolume" (list . "api-main") | nindent 8 }}
+        # ARV-198: the web pod's certificate, its public half alone (never tls.key), for the certificateExpiry alert
+        # (ariva.certificates.expires_in, certificate web-tls); renewed in place like every projected secret
+        - name: web-certificate
+          secret:
+            secretName: {{ include "ariva-platform.podTlsSecretName" (list . "web") | quote }}
+            defaultMode: 0444
+            # Optional: a web secret not yet issued leaves the file absent (web-tls then reads 0 and alerts) rather than holding
+            # every new api-main pod in ContainerCreating.
+            optional: true
+            items:
+              - key: tls.crt
+                path: tls.crt
         {{- end }}
         # Writable scratch space; the root filesystem is read-only (CWE-269). 128Mi: the upload in progress is buffered here
         # (the upload policy takes one per host, 20 MB by default, an advertisement video up to Advertising:Videos:MaxMegabytes,
@@ -164,6 +176,9 @@ spec:
             {{- end }}
             {{- if include "ariva-platform.podTls" . }}
             {{- include "ariva-platform.podTlsMount" . | nindent 12 }}
+            - name: web-certificate
+              mountPath: /app/secrets/web-certificate
+              readOnly: true
             {{- end }}
             - name: tmp
               mountPath: /tmp
@@ -186,6 +201,11 @@ spec:
               subPath: appsettings.service.{{ .Values.environment }}.json
           env:
             {{- include "ariva-platform.otelEnv" . | nindent 12 }}
+            {{- if include "ariva-platform.podTls" . }}
+            # ARV-198: the web pod's certificate (its public half), reported as web-tls in ariva.certificates.expires_in
+            - name: Monitoring__WebCertificatePath
+              value: /app/secrets/web-certificate/tls.crt
+            {{- end }}
             {{- if (.Values.ingressController | default dict).podNetworks }}
             # The ingress controller's pod network, the only trusted proxies (ARV-085): Security:ForwardedHeaders:KnownNetworks
             {{- include "ariva-platform.forwardedHeadersEnv" . | nindent 12 }}

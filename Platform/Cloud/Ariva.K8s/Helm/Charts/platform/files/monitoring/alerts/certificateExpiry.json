@@ -1,7 +1,7 @@
 {
   "alert": "Ariva certificate expiring (${environment})",
   "alertType": "METRIC_BASED_ALERT",
-  "description": "A certificate an Ariva host loaded (the Data Protection certificate, the MQTT server certificate) ends soon (ARV-125b).",
+  "description": "A certificate an Ariva host loaded or serves ends soon (ARV-125b): the Data Protection and MQTT server certificates, and since ARV-198 each API host's served certificate (pod-tls) and the web certificate api-main reads (web-tls, 0 when unreadable).",
   "ruleType": "threshold_rule",
   "version": "v5",
   "schemaVersion": "v2alpha1",

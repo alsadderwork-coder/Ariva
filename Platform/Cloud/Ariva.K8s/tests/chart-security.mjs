@@ -80,7 +80,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
 import { checkManifests, COLLECTOR_CAS, collectorCaFindings, INSTANCE_ID, instanceIdFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
 	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients,
-	clamavDirectives, releaseCredentialFindings, UPLOAD_SCAN, uploadScanFindings } from './checks.mjs';
+	clamavDirectives, releaseCredentialFindings, UPLOAD_SCAN, uploadScanFindings, WEB_CERTIFICATE, webCertificateFindings } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const chart = path.resolve(here, '..', 'Helm', 'Charts', 'platform');
@@ -159,6 +159,47 @@ const POD_TLS_CASES = [
 	['web-listener-subpath', "mounts its listener with subPath, which leaves the image's plain listen.d/plain.conf in place"],
 	['web-subpath-certificate', 'mounts its certificate with subPath']
 ];
+
+/**
+ * ARV-198: the web certificate rule on a minimal api-main and web pair: the good pair clean, each change tripping the rule
+ * (the key projected too, a writable or partial mount, the setting missing, another workload mounting the secret, a mount
+ * without pod TLS).
+ */
+function webCertificateSelfTest() {
+	const secret = 'ariva-web-tls';
+	const docs = () => [
+		{ kind: 'Deployment', metadata: { name: 'api-main-deployment' }, spec: { template: { spec: {
+			volumes: [{ name: WEB_CERTIFICATE.volume, secret: { secretName: secret, defaultMode: 0o444, optional: true, items: [{ key: 'tls.crt', path: 'tls.crt' }] } }],
+			containers: [{ name: 'api-main-container', env: [{ name: WEB_CERTIFICATE.variable, value: WEB_CERTIFICATE.file }],
+				volumeMounts: [{ name: WEB_CERTIFICATE.volume, mountPath: WEB_CERTIFICATE.mountPath, readOnly: true }] }] } } } },
+		{ kind: 'Deployment', metadata: { name: 'web-deployment' }, spec: { template: { spec: { volumes: [{ name: 'pod-tls', secret: { secretName: secret } }], containers: [{ name: 'web-container' }] } } } },
+		{ kind: 'Deployment', metadata: { name: 'api-ingest-deployment' }, spec: { template: { spec: { containers: [{ name: 'api-ingest-container' }] } } } }
+	];
+	const main = (d) => d[0].spec.template.spec;
+	const cases = [
+		['the key projected too', (d) => main(d).volumes[0].secret.items.push({ key: 'tls.key', path: 'tls.key' })],
+		['the whole secret projected', (d) => { delete main(d).volumes[0].secret.items; }],
+		['a writable mount', (d) => { main(d).containers[0].volumeMounts[0].readOnly = false; }],
+		['a mount by subPath', (d) => { main(d).containers[0].volumeMounts[0].subPath = 'tls.crt'; }],
+		['a volume that holds the pod until the secret exists', (d) => { delete main(d).volumes[0].secret.optional; }],
+		['the setting missing', (d) => { main(d).containers[0].env = []; }],
+		['another workload mounting it', (d) => { d[2].spec.template.spec.volumes = [{ name: 'x', secret: { secretName: secret, items: [{ key: 'tls.crt', path: 'tls.crt' }] } }]; }],
+		// The ARV-198 review: the secret through a container's environment, in api-main or another workload, a sidecar included.
+		['the key in api-main through a variable', (d) => main(d).containers[0].env.push({ name: 'WEB_KEY', valueFrom: { secretKeyRef: { name: secret, key: 'tls.key' } } })],
+		['every key in a workload through envFrom', (d) => { d[2].spec.template.spec.containers[0].envFrom = [{ secretRef: { name: secret } }]; }],
+		['the key in an init container', (d) => { d[2].spec.template.spec.initContainers = [{ name: 'init', env: [{ name: 'K', valueFrom: { secretKeyRef: { name: secret, key: 'tls.key' } } }] }]; }]
+	];
+	const failures = [];
+	const clean = webCertificateFindings(docs(), { tls: true, webSecret: secret });
+	if (clean.length) failures.push(`web certificate: the good pair produced findings: ${clean.join('; ')}`);
+	for (const [name, change] of cases) {
+		const changed = docs();
+		change(changed);
+		if (!webCertificateFindings(changed, { tls: true, webSecret: secret }).length) failures.push(`web certificate: ${name} was not caught`);
+	}
+	if (!webCertificateFindings(docs(), { tls: false, webSecret: secret }).some((finding) => finding.includes('only api-main may'))) failures.push('web certificate: a mount without pod TLS was not caught');
+	return { failures, count: cases.length + 2 };
+}
 
 /** ARV-082b: the pod TLS rules against their fixtures: the good one clean, each bad case tripping exactly its rule. */
 function podTlsSelfTest() {
@@ -1273,7 +1314,8 @@ function selfTest() {
 	const scanning = uploadScanSelfTest();
 	const instances = instanceIdSelfTest();
 	const credentials = releaseCredentialSelfTest();
-	const others = [...credentials.failures, ...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
+	const webCertificate = webCertificateSelfTest();
+	const others = [...credentials.failures, ...webCertificate.failures, ...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
 		...collectorCas.failures, ...scanning.failures, ...instances.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
@@ -1285,7 +1327,7 @@ function selfTest() {
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
-		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases ${instances.count} instance id cases and ${credentials.count} release credential cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
+		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases ${instances.count} instance id cases, ${credentials.count} release credential cases and ${webCertificate.count} web certificate cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen} and keeps no nginx configuration in its web root (${webRoot.count} cases); the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
 		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
@@ -1580,6 +1622,8 @@ for (const env of environments) {
 	// ARV-082b: production serves every pod over TLS (values-k8s-prd.yaml); the other environments stay plain.
 	const podTls = env.environment === 'k8s-prd';
 	findings.push(...(podTls ? podTlsRender(result.stdout) : podTlsFindings(parseAsKubernetes(result.stdout), { tls: false })));
+	// ARV-198: with pod TLS, api-main alone gets the web certificate's tls.crt (its public half) for the certificateExpiry alert.
+	findings.push(...webCertificateFindings(parseAsKubernetes(result.stdout), { tls: podTls, webSecret: POD_TLS_SECRETS.web }));
 	// ARV-084: every Ingress's headers, plain HTTP and cookie; and the modes this environment's values give each host.
 	findings.push(...ingressHardeningFindings(parseAsKubernetes(result.stdout), { environment: env.environment }), ...plainHttpModes(docs, env.file));
 	// ARV-085: the NetworkPolicies (production only, by default), the private probes, the Cronz source range, the trusted proxies.
@@ -2220,6 +2264,7 @@ for (const [label, file, sets, message, annotation] of [
 		const docs = parseAsKubernetes(site.stdout);
 		// The site's values file holds one Ingress (to api-main): every pod but its Service checks hold as in production.
 		findings.push(...podTlsRender(site.stdout, { namespace: 'ariva-site', caSecretName: 'site-cluster-ca', secretNames: names }));
+		findings.push(...webCertificateFindings(docs, { tls: true, webSecret: names.web ?? POD_TLS_SECRETS.web }));
 		const ingress = docs.find((doc) => doc?.kind === 'Ingress');
 		if (ingress?.metadata?.annotations?.['nginx.ingress.kubernetes.io/proxy-ssl-secret'] !== 'ariva-site/site-cluster-ca') findings.push('the Ingress does not verify against ariva-site/site-cluster-ca');
 	}
