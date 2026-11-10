@@ -84,7 +84,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
-import { checkManifests, COLLECTOR_CAS, collectorCaFindings, INSTANCE_ID, instanceIdFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
+import { BACKUP, BACKUP_RULES, backupFindings, checkManifests, COLLECTOR_CAS, collectorCaFindings, INSTANCE_ID, instanceIdFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
 	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients,
 	clamavDirectives, releaseCredentialFindings, UPLOAD_SCAN, uploadScanFindings, WEB_CERTIFICATE, webCertificateFindings } from './checks.mjs';
 
@@ -108,8 +108,24 @@ const fixture = (name) => fs.readFileSync(path.join(here, 'fixtures', name), 'ut
 const PRD_SITE = path.join(here, 'fixtures', 'prd-site.yaml');
 /** ARV-092c: the chart's ClamAV pin (values.yaml uploadScan.image): repository, tag and digest. */
 const CHART_SCANNER = parseYaml(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8')).uploadScan.image;
+/** ARV-182: the TimescaleDB chart's pin (repository, tag, digest), which the scheduled backup runs. */
+const CHART_DATABASE = parseYaml(fs.readFileSync(path.join(databaseChart, 'values.yaml'), 'utf8')).image;
 /** ARV-092c: the repository's clamd.conf (ARV-092b), whose limits the chart's clamd.conf must keep. */
 const REPOSITORY_CLAMD = clamavDirectives(fs.readFileSync(path.resolve(here, '..', '..', 'clamav', 'clamd.conf'), 'utf8'));
+/**
+ * ARV-182: the scripts the scheduled backup's ConfigMap must carry, by key: the chart's runner and encryptor, and ariva-db.sh as the
+ * repository's scripts/ops/ariva-db.sh (the operators' tool, which the chart carries a copy of; the copy must stay that file).
+ */
+const OPS_DATABASE_SCRIPT = path.resolve(here, '..', '..', '..', '..', 'scripts', 'ops', 'ariva-db.sh');
+const BACKUP_SCRIPTS = {
+	'ariva-age.py': fs.readFileSync(path.join(chart, 'files', 'backup', 'ariva-age.py'), 'utf8'),
+	'ariva-backup.sh': fs.readFileSync(path.join(chart, 'files', 'backup', 'ariva-backup.sh'), 'utf8'),
+	'ariva-db.sh': fs.readFileSync(OPS_DATABASE_SCRIPT, 'utf8')
+};
+/** ARV-182: a public age recipient for the renders (age-keygen's form; no one holds its identity). */
+const BACKUP_RECIPIENT = 'age1cphnsseglxraev23zahcezm5h9wu5e5nqtty0kwmyqjrheqlt5yqtxvgm2';
+/** ARV-182: an age identity's shape, built here so that no file holds one: what a values file must never carry. */
+const PLANTED_IDENTITY = `${['AGE', 'SECRET', 'KEY', '1'].join('-')}${'QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L'.repeat(2).slice(0, 58)}`;
 
 /** ARV-082a: rules of databaseTlsFindings that did not fire on the TLS fixtures, or a good fixture that produced findings. */
 function databaseTlsSelfTest() {
@@ -1274,6 +1290,149 @@ function releaseCredentialSelfTest() {
 }
 
 /** ARV-209: the release files whose commands give Helm and Helmfile their values: the Azure DevOps pipelines and the archived GitHub workflows. */
+/**
+ * ARV-182 (CWE-269, CWE-532): the scheduled backup's rules (backupFindings) on a render's backup objects as templates/backup.yaml
+ * writes them for k8s-prd: the good set clean under them and under checkManifests, each change tripping exactly its findings;
+ * and the chart's copy of ariva-db.sh is the repository's scripts/ops/ariva-db.sh, byte for byte.
+ */
+function backupSelfTest() {
+	const failures = [];
+	const scripts = { 'ariva-age.py': 'age\n', 'ariva-backup.sh': 'backup\n', 'ariva-db.sh': 'db\n' };
+	const values = {
+		enabled: true, schedule: '30 1 * * *', recipient: BACKUP_RECIPIENT, keep: 14, claimName: 'ariva-backups', activeDeadlineSeconds: 3600,
+		image: `timescale/timescaledb-ha:pg17-ts2.31@sha256:${'c'.repeat(64)}`,
+		database: { host: 'timescaledb', port: 5432, name: 'ariva', login: 'ariva', passwordSecret: { name: 'timescaledb-credentials', key: 'migration-password' }, sslMode: 'verify-full' }
+	};
+	const labels = { app: BACKUP.cronJob };
+	const docs = () => [
+		{ kind: 'ServiceAccount', metadata: { name: BACKUP.serviceAccount, labels: { ...labels } }, automountServiceAccountToken: false },
+		{ kind: 'ConfigMap', metadata: { name: BACKUP.configMap, labels: { ...labels } }, data: { ...scripts } },
+		{ kind: 'CronJob', metadata: { name: BACKUP.cronJob, labels: { ...labels } }, spec: {
+			schedule: values.schedule, timeZone: 'Etc/UTC', concurrencyPolicy: 'Forbid', startingDeadlineSeconds: 3600, successfulJobsHistoryLimit: 3, failedJobsHistoryLimit: 3,
+			jobTemplate: { metadata: { labels: { ...labels } }, spec: { backoffLimit: 0, activeDeadlineSeconds: 3600, ttlSecondsAfterFinished: 26 * 3600,
+				template: { metadata: { labels: { ...labels } }, spec: {
+					serviceAccountName: BACKUP.serviceAccount, automountServiceAccountToken: false, enableServiceLinks: false, restartPolicy: 'Never',
+					imagePullSecrets: [{ name: 'dalilacr-secret' }],
+					securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, fsGroupChangePolicy: 'OnRootMismatch', seccompProfile: { type: 'RuntimeDefault' } },
+					volumes: [
+						{ name: 'tmp', emptyDir: { sizeLimit: '16Mi' } },
+						{ name: 'scripts', configMap: { name: BACKUP.configMap, defaultMode: 0o444 } },
+						{ name: 'backups', persistentVolumeClaim: { claimName: 'ariva-backups' } },
+						{ name: 'database-ca', secret: { secretName: 'ariva-database-ca', defaultMode: 0o444, items: [{ key: 'ca.crt', path: 'ca.crt' }] } }
+					],
+					containers: [{
+						name: BACKUP.container, image: values.image, imagePullPolicy: 'IfNotPresent', command: [...BACKUP.command],
+						securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ['ALL'] }, readOnlyRootFilesystem: true },
+						env: [
+							{ name: 'ARIVA_BACKUP_NAMESPACE', valueFrom: { fieldRef: { fieldPath: 'metadata.namespace' } } },
+							{ name: 'ARIVA_BACKUP_RECIPIENT', value: BACKUP_RECIPIENT },
+							{ name: 'ARIVA_BACKUP_KEEP', value: '14' },
+							{ name: 'ARIVA_BACKUP_DIRECTORY', value: BACKUP.backupsPath },
+							{ name: 'ARIVA_BACKUP_SCRIPTS', value: BACKUP.scriptsPath },
+							{ name: 'ARIVA_DATABASE_HOST', value: 'timescaledb' },
+							{ name: 'ARIVA_DATABASE_PORT', value: '5432' },
+							{ name: 'POSTGRES_DB', value: 'ariva' },
+							{ name: 'ARIVA_MIGRATION_LOGIN', value: 'ariva' },
+							{ name: 'ARIVA_MIGRATION_PASSWORD', valueFrom: { secretKeyRef: { name: 'timescaledb-credentials', key: 'migration-password' } } },
+							{ name: 'PGSSLMODE', value: 'verify-full' },
+							{ name: 'PGREQUIREAUTH', value: 'scram-sha-256' },
+							{ name: 'PGSSLROOTCERT', value: `${BACKUP.caPath}/ca.crt` },
+							{ name: 'PGCHANNELBINDING', value: 'require' }
+						],
+						volumeMounts: [
+							{ name: 'tmp', mountPath: '/tmp' },
+							{ name: 'scripts', mountPath: BACKUP.scriptsPath, readOnly: true },
+							{ name: 'backups', mountPath: BACKUP.backupsPath },
+							{ name: 'database-ca', mountPath: BACKUP.caPath, readOnly: true }
+						],
+						resources: { requests: { cpu: '100m', memory: '256Mi' }, limits: { cpu: '1000m', memory: '1Gi' } }
+					}]
+				} } } } } }
+	];
+	const options = { enabled: true, environment: 'k8s-prd', backup: values, maxAgeHours: 26, scripts };
+	const job = (d) => d[2].spec.jobTemplate.spec;
+	const pod = (d) => job(d).template.spec;
+	const container = (d) => pod(d).containers[0];
+	const variable = (d, name) => container(d).env.find((entry) => entry.name === name);
+	const plain = (d) => {
+		pod(d).volumes = pod(d).volumes.filter((volume) => volume.name !== 'database-ca');
+		container(d).volumeMounts = container(d).volumeMounts.filter((mount) => mount.name !== 'database-ca');
+		container(d).env = container(d).env.filter((entry) => !['PGSSLROOTCERT', 'PGCHANNELBINDING'].includes(entry.name));
+		variable(d, 'PGSSLMODE').value = 'prefer';
+	};
+	const preferred = { ...options, backup: { ...values, database: { ...values.database, sslMode: 'prefer' } } };
+	const cases = [
+		['the schedule in the controller\'s zone', (d) => { delete d[2].spec.timeZone; }, ['must read its schedule in Etc/UTC']],
+		['two runs at once', (d) => { d[2].spec.concurrencyPolicy = 'Allow'; }, ['must run one backup at a time']],
+		['a suspended schedule', (d) => { d[2].spec.suspend = true; }, ['is suspended']],
+		['no succeeded Job kept', (d) => { d[2].spec.successfulJobsHistoryLimit = 0; }, ['must keep a succeeded Job']],
+		['a retried run', (d) => { job(d).backoffLimit = 2; }, ['must not retry a failed run']],
+		['Jobs kept shorter than backupMissing judges', (d) => { job(d).ttlSecondsAfterFinished = 3600; }, ['must keep each finished Job monitoring.alerts.backupMissing.maxAgeHours (ttlSecondsAfterFinished 93600)']],
+		['pods without the app label', (d) => { job(d).template.metadata.labels = {}; }, [`its pods must carry app: ${BACKUP.cronJob}`]],
+		['the default ServiceAccount', (d) => { delete pod(d).serviceAccountName; }, ['must run as its own ServiceAccount ariva-db-backup, not default']],
+		['the token in the pod', (d) => { pod(d).automountServiceAccountToken = true; }, ['must set automountServiceAccountToken false: the backup calls no Kubernetes API']],
+		['the token on the account', (d) => { d[0].automountServiceAccountToken = true; }, ['ServiceAccount/ariva-db-backup: must set automountServiceAccountToken false']],
+		['a RoleBinding to it', (d) => d.push({ kind: 'RoleBinding', metadata: { name: 'backup-reader' }, roleRef: { kind: 'Role', name: 'reader' }, subjects: [{ kind: 'ServiceAccount', name: BACKUP.serviceAccount }] }),
+			['RoleBinding/backup-reader: binds ariva-db-backup']],
+		['root', (d) => { pod(d).securityContext.runAsUser = 0; }, ["must run as the image's postgres user"]],
+		['an init container', (d) => { pod(d).initContainers = [{ name: 'prepare', image: values.image }]; }, ['runs no init container']],
+		['another command', (d) => { container(d).args = ['--anything']; }, ['must run bash /opt/ariva-backup/ariva-backup.sh and nothing else']],
+		['an added capability', (d) => { container(d).securityContext.capabilities.add = ['NET_RAW']; }, ['adds a privilege or a capability']],
+		['another image', (d) => { container(d).image = `postgres:17@sha256:${'d'.repeat(64)}`; }, ['not backup.image']],
+		['the password as a value', (d) => { variable(d, 'ARIVA_MIGRATION_PASSWORD').valueFrom = undefined; variable(d, 'ARIVA_MIGRATION_PASSWORD').value = 'planted'; },
+			['ARIVA_MIGRATION_PASSWORD must come from backup.database.passwordSecret']],
+		['the password from another Secret', (d) => { variable(d, 'ARIVA_MIGRATION_PASSWORD').valueFrom.secretKeyRef.name = 'base-appsettings-secret'; },
+			['ARIVA_MIGRATION_PASSWORD must come from backup.database.passwordSecret']],
+		['another Secret in the environment', (d) => container(d).env.push({ name: 'PGPASSWORD', valueFrom: { secretKeyRef: { name: 'timescaledb-credentials', key: 'superuser-password' } } }),
+			['sets PGPASSWORD, which the backup does not read', 'PGPASSWORD comes from a Secret']],
+		['an envFrom', (d) => { container(d).envFrom = [{ secretRef: { name: 'timescaledb-credentials' } }]; }, ['takes no envFrom']],
+		['an identity as the recipient', (d) => { variable(d, 'ARIVA_BACKUP_RECIPIENT').value = PLANTED_IDENTITY; },
+			['CronJob/ariva-db-backup: holds an age identity', 'ARIVA_BACKUP_RECIPIENT must be backup.recipient']],
+		['an identity in another object', (d) => d.push({ kind: 'ConfigMap', metadata: { name: 'notes' }, data: { key: PLANTED_IDENTITY } }), ['ConfigMap/notes: holds an age identity']],
+		['a signing key mounted', (d) => { pod(d).volumes.push({ name: 'signing', secret: { secretName: 'ops-signing-key' } }); },
+			['its volumes are backups, database-ca, scripts, signing, tmp', 'mounts the Secret volume signing']],
+		['the scripts writable', (d) => { container(d).volumeMounts.find((mount) => mount.name === 'scripts').readOnly = false; }, ['must mount its scripts read-only']],
+		['another ariva-db.sh', (d) => { d[1].data['ariva-db.sh'] = 'another\n'; }, ["ariva-db.sh is not the repository's (scripts/ops/ariva-db.sh)"]],
+		['another key among the scripts', (d) => { d[1].data['extra.sh'] = 'x\n'; }, ['must hold ariva-age.py, ariva-backup.sh, ariva-db.sh and nothing else']],
+		['another claim', (d) => { pod(d).volumes.find((volume) => volume.name === 'backups').persistentVolumeClaim.claimName = 'other'; }, ['the backups go to the claim other']],
+		['the CA from another Secret', (d) => { pod(d).volumes.find((volume) => volume.name === 'database-ca').secret.secretName = 'site-ca'; }, ['the database CA must come from ariva-database-ca']],
+		['the whole CA Secret', (d) => { delete pod(d).volumes.find((volume) => volume.name === 'database-ca').secret.items; }, ['the database CA must come from ariva-database-ca, ca.crt only']],
+		['a variable the script does not read', (d) => container(d).env.push({ name: 'DEBUG', value: '1' }), ['sets DEBUG, which the backup does not read']],
+		['the superuser', (d) => { variable(d, 'ARIVA_MIGRATION_LOGIN').value = 'postgres'; }, ['ARIVA_MIGRATION_LOGIN is postgres, not ariva', 'connects as the superuser postgres']],
+		['an unverified database in production', plain, ['k8s-prd verifies the database server (PGSSLMODE verify-full), not prefer'], preferred],
+		['the CA without verify-full', (d) => { variable(d, 'PGSSLMODE').value = 'prefer'; },
+			['its volumes are backups, database-ca, scripts, tmp, not backups, scripts, tmp', 'sets PGSSLROOTCERT without verify-full', 'PGCHANNELBINDING must be require with verify-full, and unset without it'],
+			{ ...preferred, environment: 'k8s-dev' }],
+		// The ARV-182 review's recommendation: SCRAM-SHA-256 only, and channel binding over the verified TLS channel.
+		['any authentication method', (d) => { container(d).env = container(d).env.filter((entry) => entry.name !== 'PGREQUIREAUTH'); }, ['PGREQUIREAUTH must be scram-sha-256']],
+		['a weaker authentication method', (d) => { variable(d, 'PGREQUIREAUTH').value = 'md5,scram-sha-256'; }, ['PGREQUIREAUTH must be scram-sha-256']],
+		['verify-full without channel binding', (d) => { variable(d, 'PGCHANNELBINDING').value = 'prefer'; }, ['PGCHANNELBINDING must be require with verify-full']],
+		// The ARV-182 review's finding 3: nothing but requests and limits of cpu, memory and ephemeral-storage.
+		['a value among the resources', (d) => { container(d).resources.password = 'planted'; }, ['its resources hold more than requests and limits of cpu, memory and ephemeral-storage']],
+		['another resource', (d) => { container(d).resources.limits['nvidia.com/gpu'] = 1; }, ['its resources hold more than requests and limits of cpu, memory and ephemeral-storage']],
+		['rendered although off', () => {}, ['ServiceAccount/ariva-db-backup: rendered although backup is off', 'ConfigMap/ariva-db-backup-scripts: rendered although backup is off',
+			'CronJob/ariva-db-backup: rendered although backup is off'], { ...options, enabled: false }]
+	];
+	const good = docs();
+	const clean = [...backupFindings(good, options), ...checkManifests(good, { environment: 'k8s-prd' })];
+	const plainGood = docs();
+	plain(plainGood);
+	clean.push(...backupFindings(plainGood, { ...preferred, environment: 'k8s-dev' }), ...backupFindings([], { enabled: false }));
+	if (clean.length) failures.push(`the good backup objects produced findings:\n   ${clean.join('\n   ')}`);
+	for (const [name, change, expected, own = options] of cases) {
+		const changed = docs();
+		change(changed);
+		const found = backupFindings(changed, own);
+		if (!exactly(found, expected)) failures.push(`backup case ${name} must trip ${expected.join(' | ')} alone, tripped ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	// The chart carries the operators' ariva-db.sh, never a variant of it.
+	const copy = path.join(chart, 'files', 'backup', 'ariva-db.sh');
+	if (!fs.existsSync(copy) || fs.readFileSync(copy, 'utf8') !== BACKUP_SCRIPTS['ariva-db.sh']) {
+		failures.push('Charts/platform/files/backup/ariva-db.sh is not scripts/ops/ariva-db.sh: copy the repository\'s file over it (the scheduled backup runs the operators\' tool, ARV-182)');
+	}
+	return { failures, count: cases.length + 4 };
+}
+
 function releaseFiles() {
 	const root = path.resolve(here, '..', '..', '..', '..');
 	const files = [];
@@ -1347,7 +1506,8 @@ function selfTest() {
 	const instances = instanceIdSelfTest();
 	const credentials = releaseCredentialSelfTest();
 	const webCertificate = webCertificateSelfTest();
-	const others = [...credentials.failures, ...webCertificate.failures, ...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
+	const backups = backupSelfTest();
+	const others = [...credentials.failures, ...webCertificate.failures, ...backups.failures, ...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
 		...collectorCas.failures, ...scanning.failures, ...instances.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
@@ -1359,7 +1519,7 @@ function selfTest() {
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
-		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases ${instances.count} instance id cases, ${credentials.count} release credential cases and ${webCertificate.count} web certificate cases each giving exactly their findings; the good fixtures are clean; the web image takes ` +
+		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases ${instances.count} instance id cases, ${credentials.count} release credential cases, ${webCertificate.count} web certificate cases and ${backups.count} scheduled backup cases each giving exactly their findings (the chart's ariva-db.sh the repository's); the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen} and keeps no nginx configuration in its web root (${webRoot.count} cases); the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
 		`without the query string, ${controller.count} changes each trip theirs and ${controller.accepted} accepted changes trip none.`);
 }
@@ -1533,7 +1693,8 @@ const SERVER_CA_WORKLOADS = ['Deployment/api-main-deployment', 'Deployment/api-i
 
 /** ARV-082a: the servers' CAs reach exactly SERVER_CA_WORKLOADS (checkManifests checks each mount), from the given secrets. */
 function serverCaReach(docs, names = { 'database-ca': 'ariva-database-ca', 'redis-ca': 'ariva-redis-ca' }) {
-	const found = serverCaSecrets(docs);
+	// ARV-182: the scheduled backup's pod mounts the database CA alone, with verify-full; backupFindings and its render test judge it.
+	const found = Object.fromEntries(Object.entries(serverCaSecrets(docs)).filter(([id]) => id !== `CronJob/${BACKUP.cronJob}`));
 	const findings = [];
 	const reached = Object.keys(found).sort();
 	if (reached.join(',') !== [...SERVER_CA_WORKLOADS].sort().join(',')) {
@@ -1643,6 +1804,8 @@ for (const env of environments) {
 	const findings = checkManifests(docs, { environment: env.environment, hosts: true });
 	// ARV-125b: every environment ships the alert rules the story names and the dashboards, reading its own environment.
 	findings.push(...missingMonitoringRules(docs), ...monitoringEnvironment(docs, env.environment));
+	// ARV-182: the scheduled backup is off in every shipped environment: no CronJob, account, scripts or rules of it.
+	findings.push(...backupFindings(parseAsKubernetes(result.stdout), { enabled: false }));
 	// ARV-104g1: the validation reader login reaches exactly api-main and the migration job, in every environment.
 	const readers = docs.filter((doc) => (doc?.spec?.template?.spec?.containers ?? []).some((container) =>
 		(container.env ?? []).some((variable) => variable.name === 'Database__ValidationReader__Password' && variable.valueFrom?.secretKeyRef))).map((doc) => `${doc.kind}/${doc.metadata?.name}`).sort();
@@ -2276,7 +2439,8 @@ for (const [label, file, sets, message, annotation] of [
 	const empty = valuesFile({ monitoring: { alerts: { disk: { namespaces: [] } } } });
 	const bad = render('values-k8s-dev.yaml', [], 'Ariva_NS', [empty]);
 	if (bad.status === 0) findings.push('an empty disk namespaces list with a release namespace that is not a Kubernetes name rendered');
-	else if (!bad.stderr.includes("monitoring.alerts.disk.namespaces is empty, so the rule reads the release's namespace")) findings.push(`refused for another reason\n${bad.stderr}`);
+	// Any rule with an empty list says so (ARV-182's backup rules, empty by default, come first by name).
+	else if (!/monitoring\.alerts\.[A-Za-z]+\.namespaces is empty, so the rule reads the release's namespace, and "Ariva_NS"/.test(bad.stderr)) findings.push(`refused for another reason\n${bad.stderr}`);
 	const good = render('values-k8s-dev.yaml', [], 'ariva-dev', [empty]);
 	if (good.status !== 0) findings.push(`an empty disk namespaces list with a valid release namespace failed\n${good.stderr}`);
 	if (findings.length) {
@@ -3137,6 +3301,185 @@ for (const [label, file, sets, message, annotation] of [
 	}
 }
 
+// ARV-182 (CWE-269, CWE-532): the scheduled backup, off in every shipped environment (above). On in dev, with its own values, and
+// in production with the NetworkPolicies: the CronJob, its account and its scripts as the values give them (backupFindings), its
+// two alert rules reading its Jobs in their namespaces (empty: the release's) with their windows and severities and the age the
+// CronJob keeps its Jobs, its pod's flows DNS and the database only, the database CA in production alone; with monitoring off the
+// CronJob alone. Then every release guard for its own reason, none repeating the value it refuses.
+{
+	const findings = [];
+	const counts = [];
+	const on = (more = {}) => ({ backup: { enabled: true, recipient: BACKUP_RECIPIENT, claimName: 'ariva-backups', ...more } });
+	const rule = (docs, key) => JSON.parse(monitoringRule(docs, `${key}.json`) || 'null');
+	for (const [label, file, sets, extra, environment, namespace] of [
+		['dev', 'values-k8s-dev.yaml', [], on(), 'k8s-dev', 'ariva-dev'],
+		['dev with its own schedule, sets, deadline, rules and namespaces', 'values-k8s-dev.yaml', [], {
+			...on({ schedule: '15 */12 * * *', keep: 3, activeDeadlineSeconds: 900 }),
+			monitoring: { alerts: { backupMissing: { maxAgeHours: 13, minutes: 45, namespaces: ['ariva-a'] }, backupFailed: { minutes: 10, severity: 'warning', namespaces: ['ariva-a', 'ariva-b'] } } }
+		}, 'k8s-dev', 'ariva-a'],
+		['production with the NetworkPolicies', 'values-k8s-prd.yaml', [PRD], on(), 'k8s-prd', 'ariva-prd']
+	]) {
+		const result = render(file, sets, namespace, [valuesFile(extra)]);
+		if (result.status !== 0) {
+			findings.push(`${label}: template failed\n${result.stderr}`);
+			continue;
+		}
+		const docs = parseAsKubernetes(result.stdout);
+		const values = mergedValues([file, extra]);
+		const backup = values.backup;
+		const alerts = values.monitoring.alerts;
+		const own = [
+			...checkManifests(docs, { environment, hosts: true }), ...missingMonitoringRules(docs, { backup: true }), ...monitoringEnvironment(docs, environment),
+			...backupFindings(docs, { enabled: true, environment, backup, maxAgeHours: alerts.backupMissing.maxAgeHours, databaseCaSecretName: values.databaseCaSecretName, scripts: BACKUP_SCRIPTS }),
+			...networkFindings(result.stdout, values, environment), ...serverCaReach(docs)
+		];
+		// The database CA in the backup's pod with verify-full (production) alone, and nothing of Redis's.
+		const verify = backup.database.sslMode === 'verify-full';
+		const cas = serverCaSecrets(docs)[`CronJob/${BACKUP.cronJob}`];
+		if (verify ? JSON.stringify(cas) !== JSON.stringify({ 'database-ca': 'ariva-database-ca' }) : cas !== undefined) own.push(`the backup's server CAs are ${JSON.stringify(cas)}, not ${verify ? 'the database CA alone' : 'none'}`);
+		// Each rule reads this CronJob's Jobs in its namespaces with its own window and severity; backupMissing also on no data.
+		for (const [key, metric, op, target] of [['backupFailed', 'k8s.job.failed_pods', 'above', 0], ['backupMissing', 'k8s.job.successful_pods', 'below', 1]]) {
+			const settings = alerts[key];
+			const text = rule(docs, key);
+			if (!text) {
+				own.push(`${key} is not rendered`);
+				continue;
+			}
+			const spec = text.condition?.compositeQuery?.queries?.[0]?.spec;
+			const threshold = text.condition?.thresholds?.spec?.[0];
+			const namespaces = settings.namespaces?.length ? settings.namespaces : [namespace];
+			const scope = `k8s.namespace.name IN [${namespaces.map((name) => `'${name}'`).join(', ')}] AND k8s.job.name LIKE '${BACKUP.cronJob}-%'`;
+			if (spec?.aggregations?.[0]?.metricName !== metric) own.push(`${key} does not read ${metric}`);
+			if (spec?.filter?.expression !== scope) own.push(`${key} reads ${spec?.filter?.expression}, not ${scope}`);
+			if (threshold?.op !== op || threshold?.target !== target || threshold?.name !== settings.severity || text.labels?.severity !== settings.severity) {
+				own.push(`${key}'s threshold is not ${op} ${target}, ${settings.severity}: ${JSON.stringify(threshold)}`);
+			}
+			if (text.evaluation?.spec?.evalWindow !== `${settings.minutes}m`) own.push(`${key} does not evaluate over its ${settings.minutes} minutes`);
+		}
+		const missing = rule(docs, 'backupMissing');
+		if (missing?.condition?.alertOnAbsent !== true || missing?.condition?.absentFor !== alerts.backupMissing.minutes) own.push('backupMissing does not fire when no backup Job is reported');
+		if (!String(missing?.annotations?.summary).includes(`within ${alerts.backupMissing.maxAgeHours} hours`)) own.push("backupMissing's summary does not name its age");
+		findings.push(...own.map((finding) => `${label}: ${finding}`));
+		const job = docs.find((doc) => doc?.kind === 'CronJob')?.spec;
+		counts.push(`${label}: "${job?.schedule}" UTC, ${backup.keep} sets kept, Jobs kept ${job?.jobTemplate?.spec?.ttlSecondsAfterFinished / 3600} hours, ${verify ? 'verify-full against the database CA' : 'sslMode prefer'}`);
+	}
+	// Monitoring off: the CronJob alone, its Jobs kept the default age.
+	const quiet = render('values-k8s-dev.yaml', [], '', [valuesFile({ ...on(), monitoring: { enabled: false } })]);
+	if (quiet.status !== 0) findings.push(`backup with monitoring off: template failed\n${quiet.stderr}`);
+	else {
+		const docs = parseAsKubernetes(quiet.stdout);
+		if (docs.some((doc) => doc?.metadata?.labels?.['app.kubernetes.io/component'] === 'monitoring')) findings.push('backup with monitoring off renders a monitoring object');
+		findings.push(...backupFindings(docs, { enabled: true, environment: 'k8s-dev', backup: mergedValues(['values-k8s-dev.yaml', on()]).backup, maxAgeHours: 26, scripts: BACKUP_SCRIPTS })
+			.map((finding) => `backup with monitoring off: ${finding}`));
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL scheduled backup:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log(`PASS scheduled backup: ${counts.join('; ')}; its own ServiceAccount without a token and bound to nothing, uid 1000 read-only and without capabilities, ` +
+			'the migration password from its Secret alone, the custodian\'s public recipient, no Secret file but the database CA, the scripts the repository\'s (ariva-db.sh byte for byte), ' +
+			'backupFailed and backupMissing reading its Jobs in their namespaces, DNS and the database only under the NetworkPolicies; with monitoring off the CronJob alone');
+	}
+
+	// The guards: each value refused for its own reason; no message repeats an identity, a key or a planted value.
+	const PLANTED_KEY = ['-----BEGIN', 'OPENSSH', 'PRIVATE', 'KEY-----'].join(' ');
+	const ON = ['backup.enabled=true', `backup.recipient=${BACKUP_RECIPIENT}`, 'backup.claimName=ariva-backups'];
+	let guards = 0;
+	for (const [label, file, sets, message, extraValues] of [
+		['a scheduled backup without its recipient', 'values-k8s-dev.yaml', ['backup.enabled=true', 'backup.claimName=ariva-backups'], "backup.recipient must be the backup custodian's public age recipient"],
+		['an age identity as the recipient', 'values-k8s-dev.yaml', [...ON, `backup.recipient=${PLANTED_IDENTITY}`], 'backup holds an age identity (AGE-SECRET-KEY-...), a private key'],
+		['an age identity in the backup values while the backup is off', 'values-k8s-dev.yaml', [`backup.recipient=${PLANTED_IDENTITY.toLowerCase()}`], 'backup holds an age identity'],
+		['a private key in the backup values', 'values-k8s-dev.yaml', [], 'backup holds a private key', { backup: { schedule: `${PLANTED_KEY}\nplanted` } }],
+		// The ARV-182 review's finding 2: an identity pasted as a key is refused by the identity check, before any check names a key.
+		['an age identity as a key of backup', 'values-k8s-dev.yaml', [], 'backup holds an age identity', { backup: { [PLANTED_IDENTITY]: 'x' } }],
+		['an age identity as a key of backup.database', 'values-k8s-dev.yaml', [...ON], 'backup holds an age identity', { backup: { database: { [PLANTED_IDENTITY.toLowerCase()]: 'x' } } }],
+		['a private key as a key of backup', 'values-k8s-dev.yaml', [], 'backup holds a private key', { backup: { [`${PLANTED_KEY} planted`]: 'x' } }],
+		['a key of backup that is no plain word', 'values-k8s-dev.yaml', [], 'backup.<a key that is not a plain word> is not a setting', { backup: { 'planted value!': 'x' } }],
+		['the backup identity as a value', 'values-k8s-dev.yaml', [...ON, 'backup.identity=planted'], 'backup.identity is not a setting'],
+		['a signing key as a value', 'values-k8s-prd.yaml', [PRD, ...ON, 'backup.signingKey=planted'], 'backup.signingKey is not a setting'],
+		['the database password as a value', 'values-k8s-dev.yaml', [...ON, 'backup.database.password=planted'], 'backup.database.password is not a setting'],
+		// The ARV-182 re-review: the names of backup's maps are checked with the backup off too (the default everywhere), or Helm
+		// would keep a planted value in its release record; only the values wait for the backup to be on.
+		['the database password as a value while the backup is off', 'values-k8s-dev.yaml', ['backup.database.password=planted'], 'backup.database.password is not a setting'],
+		['the database password as a value in production while the backup is off', 'values-k8s-prd.yaml', [PRD, 'backup.database.password=planted'], 'backup.database.password is not a setting'],
+		['a database key that is no plain word while the backup is off', 'values-k8s-dev.yaml', [], 'backup.database.<a key that is not a plain word> is not a setting', { backup: { database: { 'planted value!': 'x' } } }],
+		['database values that are not a map while the backup is off', 'values-k8s-dev.yaml', ['backup.database=planted'], 'backup.database must be a map'],
+		['the password itself beside its Secret while the backup is off', 'values-k8s-dev.yaml', ['backup.database.passwordSecret.value=planted'], 'backup.database.passwordSecret must be a map of name and key'],
+		['password Secret values that are not a map while the backup is off', 'values-k8s-dev.yaml', ['backup.database.passwordSecret=planted'], 'backup.database.passwordSecret must be a map of name and key'],
+		['a value among the backup resources while the backup is off', 'values-k8s-dev.yaml', ['backup.resources.password=planted'], 'backup.resources.password is not a setting: requests and limits only'],
+		['a resources key that is no plain word while the backup is off', 'values-k8s-dev.yaml', [], 'backup.resources.<a key that is not a plain word> is not a setting', { backup: { resources: { 'planted value!': 'x' } } }],
+		['backup resources that are not a map while the backup is off', 'values-k8s-dev.yaml', ['backup.resources=planted'], 'backup.resources must be a map'],
+		['backup requests that are not a map while the backup is off', 'values-k8s-dev.yaml', ['backup.resources.requests=planted'], 'backup.resources.requests must be a map of cpu, memory and ephemeral-storage'],
+		['another resource while the backup is off', 'values-k8s-dev.yaml', ['backup.resources.limits.hugepages-2Mi=1Gi'], 'backup.resources.limits.hugepages-2Mi is not a resource: cpu, memory and ephemeral-storage only'],
+		['backup values that are not a map', 'values-k8s-dev.yaml', ['backup=on'], 'backup must be a map'],
+		['a backup enabled that is not true or false', 'values-k8s-dev.yaml', ['backup.enabled=yes'], 'backup.enabled must be true or false'],
+		['a schedule of four fields', 'values-k8s-dev.yaml', [...ON, 'backup.schedule=30 1 * *'], 'backup.schedule must be five cron fields'],
+		['a schedule macro', 'values-k8s-dev.yaml', [...ON, 'backup.schedule=@daily'], 'backup.schedule must be five cron fields'],
+		['a schedule with a time zone', 'values-k8s-dev.yaml', [...ON, 'backup.schedule=CRON_TZ=Asia/Dubai 30 1 * * *'], 'backup.schedule must be five cron fields'],
+		['a recipient that is not one', 'values-k8s-dev.yaml', [...ON, 'backup.recipient=age1planted'], "backup.recipient must be the backup custodian's public age recipient"],
+		['an upper-case recipient', 'values-k8s-dev.yaml', [...ON, `backup.recipient=${BACKUP_RECIPIENT.toUpperCase()}`], "backup.recipient must be the backup custodian's public age recipient"],
+		['an SSH key as the recipient', 'values-k8s-dev.yaml', [...ON, 'backup.recipient=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIplanted'], "backup.recipient must be the backup custodian's public age recipient"],
+		['no set kept', 'values-k8s-dev.yaml', [...ON, 'backup.keep=0'], 'backup.keep must be a whole number of backup sets from 1 to 90'],
+		['more than 90 sets kept', 'values-k8s-dev.yaml', [...ON, 'backup.keep=91'], 'backup.keep must be a whole number of backup sets from 1 to 90'],
+		['part of a set kept', 'values-k8s-dev.yaml', [...ON], 'backup.keep must be a whole number of backup sets from 1 to 90', { backup: { keep: 2.5 } }],
+		['a scheduled backup without its claim', 'values-k8s-dev.yaml', ['backup.enabled=true', `backup.recipient=${BACKUP_RECIPIENT}`], 'backup.claimName must name the backup claim'],
+		['a claim that is not a Kubernetes name', 'values-k8s-dev.yaml', [...ON, 'backup.claimName=Backups_Claim'], 'backup.claimName must name the backup claim'],
+		['a backup image without a digest', 'values-k8s-dev.yaml', [...ON, `backup.image=timescale/timescaledb-ha:${CHART_DATABASE.tag}`], 'backup.image must be one reference with a tag (not latest) and a sha256 digest'],
+		['a backup image without a tag', 'values-k8s-dev.yaml', [...ON, `backup.image=timescale/timescaledb-ha@${CHART_DATABASE.digest}`], 'backup.image must be one reference with a tag (not latest) and a sha256 digest'],
+		['the latest backup image', 'values-k8s-dev.yaml', [...ON, `backup.image=timescale/timescaledb-ha:latest@${CHART_DATABASE.digest}`], 'backup.image must be one reference with a tag (not latest) and a sha256 digest'],
+		['a run deadline under 5 minutes', 'values-k8s-dev.yaml', [...ON, 'backup.activeDeadlineSeconds=299'], 'backup.activeDeadlineSeconds must be a whole number of seconds from 300 to 86400'],
+		['a run deadline over a day', 'values-k8s-dev.yaml', [...ON, 'backup.activeDeadlineSeconds=86401'], 'backup.activeDeadlineSeconds must be a whole number of seconds from 300 to 86400'],
+		['backup resources that are not a map', 'values-k8s-dev.yaml', [...ON, 'backup.resources=small'], 'backup.resources must be a map'],
+		// The ARV-182 review's finding 3: requests and limits of cpu, memory and ephemeral-storage, quantities only.
+		['a value among the backup resources', 'values-k8s-dev.yaml', [...ON, 'backup.resources.password=planted'], 'backup.resources.password is not a setting: requests and limits only'],
+		['another resource', 'values-k8s-dev.yaml', [...ON, 'backup.resources.limits.hugepages-2Mi=1Gi'], 'backup.resources.limits.hugepages-2Mi is not a resource: cpu, memory and ephemeral-storage only'],
+		['a resource amount that is no quantity', 'values-k8s-dev.yaml', [...ON, 'backup.resources.requests.memory=planted'], 'backup.resources.requests.memory must be a Kubernetes quantity'],
+		['backup requests that are not a map', 'values-k8s-dev.yaml', [...ON, 'backup.resources.requests=small'], 'backup.resources.requests must be a map of cpu, memory and ephemeral-storage'],
+		['database values that are not a map', 'values-k8s-dev.yaml', [...ON, 'backup.database=timescaledb'], 'backup.database must be a map'],
+		['a database host with a scheme', 'values-k8s-dev.yaml', [...ON, 'backup.database.host=postgres://timescaledb'], 'backup.database.host must be a lower-case host name'],
+		['a database port above 65535', 'values-k8s-dev.yaml', [...ON, 'backup.database.port=65536'], 'backup.database.port must be a port number from 1 to 65535'],
+		['a database name that is not an identifier', 'values-k8s-dev.yaml', [...ON, 'backup.database.name=ariva; drop'], 'backup.database.name must be a plain lower-case identifier'],
+		['a login that is not an identifier', 'values-k8s-dev.yaml', [...ON, 'backup.database.login=Ariva'], 'backup.database.login must be a plain lower-case identifier'],
+		['the superuser as the backup login', 'values-k8s-dev.yaml', [...ON, 'backup.database.login=postgres'], 'never the superuser postgres'],
+		['a password Secret without a name', 'values-k8s-dev.yaml', [...ON, 'backup.database.passwordSecret.name='], 'backup.database.passwordSecret.name must be a Kubernetes secret name'],
+		['a password Secret key that is not one', 'values-k8s-dev.yaml', [...ON, 'backup.database.passwordSecret.key=pass word'], 'backup.database.passwordSecret.key must be a key of a Kubernetes Secret'],
+		['password Secret values that are not a map', 'values-k8s-dev.yaml', [...ON, 'backup.database.passwordSecret=timescaledb-credentials'], 'backup.database.passwordSecret must be a map of name and key'],
+		['the password itself beside its Secret', 'values-k8s-dev.yaml', [...ON, 'backup.database.passwordSecret.value=planted'], 'backup.database.passwordSecret must be a map of name and key'],
+		['an sslMode that is not one', 'values-k8s-dev.yaml', [...ON, 'backup.database.sslMode=disable'], 'backup.database.sslMode must be prefer or verify-full'],
+		['production without verify-full', 'values-k8s-prd.yaml', [PRD, ...ON, 'backup.database.sslMode=prefer'], 'k8s-prd verifies the database server: set backup.database.sslMode verify-full'],
+		['a backup age under 6 hours', 'values-k8s-dev.yaml', [...ON, 'monitoring.alerts.backupMissing.maxAgeHours=5'], 'monitoring.alerts.backupMissing.maxAgeHours must be a whole number of hours from 6 to 168 (ARV-182'],
+		['a backup age over a week', 'values-k8s-dev.yaml', [...ON, 'monitoring.alerts.backupMissing.maxAgeHours=169'], 'monitoring.alerts.backupMissing.maxAgeHours must be a whole number of hours from 6 to 168'],
+		['a failed backup window of 0 minutes', 'values-k8s-dev.yaml', [...ON, 'monitoring.alerts.backupFailed.minutes=0'], 'monitoring.alerts.backupFailed.minutes must be a whole number from 1 to 1440'],
+		['a backup rule severity that is not one', 'values-k8s-dev.yaml', [...ON, 'monitoring.alerts.backupMissing.severity=page'], 'monitoring.alerts.backupMissing.severity must be warning or critical'],
+		['a backup rule namespace that is not a Kubernetes name', 'values-k8s-dev.yaml', [...ON, 'monitoring.alerts.backupFailed.namespaces={Ariva_NS}'], 'monitoring.alerts.backupFailed.namespaces: "Ariva_NS" is not a Kubernetes namespace name'],
+		['the backup rules without their values', 'values-k8s-dev.yaml', [...ON, 'monitoring.alerts.backupMissing=null'], 'monitoring.alerts.backupMissing is missing']
+	]) {
+		guards++;
+		const result = render(file, sets, '', extraValues ? [valuesFile(extraValues)] : []);
+		const repeats = [PLANTED_IDENTITY, PLANTED_IDENTITY.toLowerCase(), PLANTED_KEY, 'planted'].some((value) => (result.stderr ?? '').toLowerCase().includes(value.toLowerCase()));
+		if (result.status === 0) {
+			failed = true;
+			console.error(`FAIL release guard: rendering ${label} must fail but succeeded`);
+		} else if (!result.stderr.includes(message)) {
+			failed = true;
+			console.error(`FAIL release guard: rendering ${label} failed for another reason than "${message}"\n${result.stderr}`);
+		} else if (repeats) {
+			failed = true;
+			console.error(`FAIL release guard: rendering ${label} repeats the value it refuses in its message`);
+		} else {
+			console.log(`PASS release guard: ${label} is refused`);
+		}
+	}
+	console.log(`PASS scheduled backup guards: ${guards} values refused, each for its own reason and none repeated`);
+	const leftOut = render('values-k8s-dev.yaml', ['backup.database=null', 'backup.resources=null'], '');
+	if (leftOut.status !== 0) {
+		failed = true;
+		console.error(`FAIL release guard: the backup off with its database and resources left out must render\n${leftOut.stderr}`);
+	} else {
+		console.log('PASS release guard: the backup off with its database and resources left out renders (their names are checked, their values only with the backup on)');
+	}
+}
+
 // ARV-062: the Helmfile the release pipelines apply renders for every environment, installs the database before the
 // platform, and refuses production without a build number. Needs Helmfile 1.x (HELMFILE or on PATH); required in a pipeline
 // and under the local gates (ARIVA_GATE, ARV-295), skipped elsewhere.
@@ -3167,6 +3510,8 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 		if (!docs.some((doc) => doc?.kind === 'StatefulSet' && doc.metadata?.name === 'timescaledb')) findings.push('the timescaledb release is not installed');
 		if (!docs.some((doc) => doc?.kind === 'Job' && doc.metadata?.name === 'kafka-topics')) findings.push('the kafka-topics job is not rendered');
 		findings.push(...missingMonitoringRules(docs), ...monitoringEnvironment(docs, contextEnvironment));
+		// ARV-182: no scheduled backup unless a site's values turn it on.
+		findings.push(...backupFindings(parseAsKubernetes(result.stdout), { enabled: false }));
 		// ARV-082a: TimescaleDB with TLS in prd only (state value timescaledbTls), from the chart's default secret.
 		const tls = environment === 'prd';
 		findings.push(...databaseTlsFindings(parseAsKubernetes(result.stdout), { tls }), ...serverCaReach(docs));
@@ -3432,6 +3777,19 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 					findings.push('a site databaseValues file moved the TimescaleDB image away from the chart\'s tag and digest');
 				}
 			}
+			// ARV-182: a site that turns the scheduled backup on runs it on the database's image from the mirror, under the database
+			// chart's tag and digest (values/timescaledb-image.yaml), whatever image its own file names.
+			const backupSite = path.join(staged, 'backup-site.yaml');
+			fs.writeFileSync(backupSite, `backup:\n  enabled: true\n  recipient: ${BACKUP_RECIPIENT}\n  claimName: site-backups\n  image: "other.example/timescaledb:pg17@${digestOf('planted')}"\n`);
+			const withBackup = offline('prd', ['--state-values-set', `mirror=${mirror}`, '--state-values-set', `siteValues=${backupSite}`]);
+			if (withBackup.status !== 0) findings.push(`-e prd with the scheduled backup: template failed\n${withBackup.stderr}`);
+			else {
+				const docs = parseAsKubernetes(withBackup.stdout);
+				const image = docs.find((doc) => doc?.kind === 'CronJob' && doc.metadata?.name === BACKUP.cronJob)?.spec?.jobTemplate?.spec?.template?.spec?.containers?.[0]?.image;
+				const expected = `${mirror}/timescale/timescaledb-ha:${CHART_DATABASE.tag}@${CHART_DATABASE.digest}`;
+				if (image !== expected) findings.push(`-e prd with the scheduled backup: the backup runs ${image}, not the mirror's TimescaleDB under the chart's pin (${expected})`);
+				findings.push(...missingMonitoringRules(docs, { backup: true }).map((finding) => `-e prd with the scheduled backup: ${finding}`));
+			}
 			// A dry run's bundle pins no digest: its Helmfile must refuse to render, whatever the site's files say.
 			const dry = fs.mkdtempSync(path.join(os.tmpdir(), 'ariva-offline-dry-'));
 			try {
@@ -3449,7 +3807,7 @@ if (spawnSync(helmfile, ['--version'], { encoding: 'utf8', shell: false }).statu
 			failed = true;
 			console.error(`FAIL offline bundle Helmfile:\n  ${findings.join('\n  ')}`);
 		} else {
-			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment (the NetworkPolicies included), the Ingresses\' headers and plain HTTP held, every image from the mirror by digest (ClamAV under the chart\'s pin), no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS, pod TLS, the NetworkPolicies, log shipping or the malware scan off in prd (but name the certificates, the collector, the log key\'s Secret and the signature source), prd refused without either TLS, the NetworkPolicies, log shipping, the malware scan or a signature source');
+			console.log('PASS offline bundle Helmfile: the same objects as helmfile-k8s in every environment (the NetworkPolicies included), the Ingresses\' headers and plain HTTP held, every image from the mirror by digest (ClamAV under the chart\'s pin), no render without a mirror or with a dry run\'s unpinned images, site values reach their release without moving an image or turning the database TLS, pod TLS, the NetworkPolicies, log shipping or the malware scan off in prd (but name the certificates, the collector, the log key\'s Secret and the signature source), prd refused without either TLS, the NetworkPolicies, log shipping, the malware scan or a signature source; a site\'s scheduled backup on the mirror\'s TimescaleDB under the chart\'s pin');
 		}
 	}
 }

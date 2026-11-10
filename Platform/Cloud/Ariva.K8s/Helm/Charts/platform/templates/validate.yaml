@@ -12,6 +12,14 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   operators' share, fit serverMaxConnections less superuserReserved.
 - The retention periods (ARV-111a, migration.retention) are whole numbers of days within their bounds (the same bounds as
   RetentionSettings in Ariva.Infra), and no other key is given.
+- The scheduled backup (ARV-182, values backup) is a map of enabled, schedule, recipient, keep, claimName, image,
+  activeDeadlineSeconds, database (host, port, name, login, passwordSecret with name and key, sslMode) and resources, nothing
+  else, so the backup identity, a signing key or the database password can never be a value; an age identity
+  (AGE-SECRET-KEY-...) or a private key anywhere in it is refused, enabled or not. With it on: five cron fields read in UTC, the
+  custodian's age recipient (age1 and 58 Bech32 characters), keep 1 to 90 sets, the claim a Kubernetes name, the image one
+  reference with a tag (not latest) and a sha256 digest, a deadline of 300 to 86,400 seconds, the database host a host name,
+  its port 1 to 65,535, its name and login plain identifiers and the login never postgres (the superuser), the password's
+  Secret a Kubernetes secret name and key, sslMode prefer or verify-full and verify-full in k8s-prd. No message repeats a value.
 - The monitoring thresholds (ARV-125b) are in range: minutes 1 to 1440, a severity of warning or critical, usedPercent
   1 to 99, share above 0 and at most 1, criticalDays below warningDays (both 1 to 365), hours 6 to 168 (ARV-092c, the bounds of
   the hosts' MalwareScan:MaxSignatureAgeHours), records 0 or more, zones a whole number from 0 to 10,000 and only for zonesDegraded (ARV-259e3), claims,
@@ -701,6 +709,136 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- fail (printf "migration.retention.%s must be a whole number of days from %d to %d (ARV-111a)" $key (index $range 0) (index $range 1)) }}
 {{- end }}
 {{- end }}
+{{- /*
+ARV-182: the scheduled backup. No message repeats a backup value: an identity or a key pasted by mistake stays out of the log.
+The identity and private key checks read every key and value of backup (toJson) before any check that names a key, and a key
+is named in a message only when it is a plain word (its review: an identity pasted as a key was echoed).
+*/}}
+{{- $backup := .Values.backup }}
+{{- if not (kindIs "map" $backup) }}
+{{- fail "backup must be a map: enabled, schedule, recipient, keep, claimName, image, activeDeadlineSeconds, database and resources (ARV-182)" }}
+{{- end }}
+{{- if regexMatch "(?i)AGE-SECRET-KEY-" (toJson $backup) }}
+{{- fail "backup holds an age identity (AGE-SECRET-KEY-...), a private key: give backup.recipient the custodian's public recipient (age1..., from age-keygen -y) only; the identity never enters the cluster or a values file (ARV-182)" }}
+{{- end }}
+{{- if regexMatch "PRIVATE KEY" (toJson $backup) }}
+{{- fail "backup holds a private key: the signing key stays with its operator and the identity with the custodian, never in the cluster or a values file (ARV-182)" }}
+{{- end }}
+{{- range $key, $_ := $backup }}
+{{- if not (has $key (list "enabled" "schedule" "recipient" "keep" "claimName" "image" "activeDeadlineSeconds" "database" "resources")) }}
+{{- fail (printf "backup.%s is not a setting (enabled, schedule, recipient, keep, claimName, image, activeDeadlineSeconds, database, resources; ARV-182): the backup identity, the signing key and the database password never enter the values" (ternary $key "<a key that is not a plain word>" (regexMatch "^[A-Za-z][A-Za-z0-9]{0,40}$" $key))) }}
+{{- end }}
+{{- end }}
+{{- if not (kindIs "bool" $backup.enabled) }}
+{{- fail "backup.enabled must be true or false (ARV-182)" }}
+{{- end }}
+{{- /* The shape of backup's maps, on or off (its re-review: with the backup off, the default, a key such as
+backup.database.password, backup.resources.password or backup.database.passwordSecret.value rendered, and Helm kept its
+value in the release record). Only names are checked here, and named only when they are plain words; a map left out (null)
+passes while the backup is off. The values are checked with the backup on, below. */}}
+{{- $shapeResources := $backup.resources }}
+{{- if not (or (kindIs "invalid" $shapeResources) (kindIs "map" $shapeResources)) }}
+{{- fail "backup.resources must be a map of requests and limits (ARV-182)" }}
+{{- end }}
+{{- range $part, $amounts := ($shapeResources | default dict) }}
+{{- if not (has $part (list "requests" "limits")) }}
+{{- fail (printf "backup.resources.%s is not a setting: requests and limits only (ARV-182)" (ternary $part "<a key that is not a plain word>" (regexMatch "^[A-Za-z][A-Za-z0-9]{0,40}$" $part))) }}
+{{- end }}
+{{- if not (kindIs "map" $amounts) }}
+{{- fail (printf "backup.resources.%s must be a map of cpu, memory and ephemeral-storage (ARV-182)" $part) }}
+{{- end }}
+{{- range $resource, $_ := $amounts }}
+{{- if not (has $resource (list "cpu" "memory" "ephemeral-storage")) }}
+{{- fail (printf "backup.resources.%s.%s is not a resource: cpu, memory and ephemeral-storage only (ARV-182)" $part (ternary $resource "<a key that is not a plain word>" (regexMatch "^[A-Za-z][A-Za-z0-9-]{0,40}$" $resource))) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $shapeDatabase := $backup.database }}
+{{- if not (or (kindIs "invalid" $shapeDatabase) (kindIs "map" $shapeDatabase)) }}
+{{- fail "backup.database must be a map of host, port, name, login, passwordSecret and sslMode (ARV-182)" }}
+{{- end }}
+{{- range $key, $_ := ($shapeDatabase | default dict) }}
+{{- if not (has $key (list "host" "port" "name" "login" "passwordSecret" "sslMode")) }}
+{{- fail (printf "backup.database.%s is not a setting (host, port, name, login, passwordSecret, sslMode; ARV-182): the password comes from passwordSecret, never a value" (ternary $key "<a key that is not a plain word>" (regexMatch "^[A-Za-z][A-Za-z0-9]{0,40}$" $key))) }}
+{{- end }}
+{{- end }}
+{{- $shapeSecret := ($shapeDatabase | default dict).passwordSecret }}
+{{- if not (kindIs "invalid" $shapeSecret) }}
+{{- if or (not (kindIs "map" $shapeSecret)) (without (keys $shapeSecret) "name" "key") }}
+{{- fail "backup.database.passwordSecret must be a map of name and key: the Secret holding the migration login's password (ARV-182)" }}
+{{- end }}
+{{- end }}
+{{- if $backup.enabled }}
+{{- if not (regexMatch "^[0-9*/,-]+( [0-9*/,-]+){4}$" (toString $backup.schedule)) }}
+{{- fail "backup.schedule must be five cron fields (minute hour day month weekday) of digits, *, /, comma and -, read in UTC (ARV-182)" }}
+{{- end }}
+{{- if not (regexMatch "^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$" (toString $backup.recipient)) }}
+{{- fail "backup.recipient must be the backup custodian's public age recipient: age1 and 58 lower-case Bech32 characters, from age-keygen -y (ARV-182)" }}
+{{- end }}
+{{- $keep := $backup.keep }}
+{{- if or (not (or (kindIs "float64" $keep) (kindIs "int64" $keep) (kindIs "int" $keep))) (lt (float64 $keep) 1.0) (gt (float64 $keep) 90.0) (ne (float64 $keep) (float64 (int $keep))) }}
+{{- fail "backup.keep must be a whole number of backup sets from 1 to 90 (ARV-182)" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$" (toString ($backup.claimName | default ""))) }}
+{{- fail "backup.claimName must name the backup claim, a PersistentVolumeClaim created out of band (ARV-182)" }}
+{{- end }}
+{{- $image := toString ($backup.image | default "") }}
+{{- if or (not (regexMatch "^[a-z0-9][a-z0-9._:/-]{0,254}:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}@sha256:[0-9a-f]{64}$" $image)) (contains ":latest@" $image) }}
+{{- fail "backup.image must be one reference with a tag (not latest) and a sha256 digest, repository:tag@sha256:<digest>: the TimescaleDB image the database runs (ARV-182)" }}
+{{- end }}
+{{- $deadline := $backup.activeDeadlineSeconds }}
+{{- if or (not (or (kindIs "float64" $deadline) (kindIs "int64" $deadline) (kindIs "int" $deadline))) (lt (float64 $deadline) 300.0) (gt (float64 $deadline) 86400.0) (ne (float64 $deadline) (float64 (int $deadline))) }}
+{{- fail "backup.activeDeadlineSeconds must be a whole number of seconds from 300 to 86400 (ARV-182)" }}
+{{- end }}
+{{- /* The container's resources: requests and limits of cpu, memory and ephemeral-storage (their names checked above, on or
+off), quantities only (its review: any other key rendered into the pod spec). */}}
+{{- if not (kindIs "map" $backup.resources) }}
+{{- fail "backup.resources must be a map of requests and limits (ARV-182)" }}
+{{- end }}
+{{- range $part, $amounts := $backup.resources }}
+{{- range $resource, $amount := $amounts }}
+{{- if not (regexMatch "^[0-9]+(\\.[0-9]+)?(m|k|M|G|T|Ki|Mi|Gi|Ti)?$" (toString $amount)) }}
+{{- fail (printf "backup.resources.%s.%s must be a Kubernetes quantity, for example 500m or 1Gi (ARV-182)" $part $resource) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $database := $backup.database }}
+{{- if not (kindIs "map" $database) }}
+{{- fail "backup.database must be a map of host, port, name, login, passwordSecret and sslMode (ARV-182)" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$" (toString ($database.host | default ""))) }}
+{{- fail "backup.database.host must be a lower-case host name or IPv4 address: the database Service (timescaledb) (ARV-182)" }}
+{{- end }}
+{{- $port := $database.port }}
+{{- if or (not (or (kindIs "float64" $port) (kindIs "int64" $port) (kindIs "int" $port))) (lt (float64 $port) 1.0) (gt (float64 $port) 65535.0) (ne (float64 $port) (float64 (int $port))) }}
+{{- fail "backup.database.port must be a port number from 1 to 65535 (ARV-182)" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z_][a-z0-9_]{0,62}$" (toString ($database.name | default ""))) }}
+{{- fail "backup.database.name must be a plain lower-case identifier: the database (Database:Name) (ARV-182)" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z_][a-z0-9_]{0,62}$" (toString ($database.login | default ""))) }}
+{{- fail "backup.database.login must be a plain lower-case identifier: the migration login (ARV-182)" }}
+{{- end }}
+{{- if eq (toString $database.login) "postgres" }}
+{{- fail "backup.database.login must be the migration login, never the superuser postgres: the backup runs as the database's owner, which is not a superuser (ARV-126, CWE-269)" }}
+{{- end }}
+{{- $secret := $database.passwordSecret }}
+{{- if or (not (kindIs "map" $secret)) (without (keys ($secret | default dict)) "name" "key") }}
+{{- fail "backup.database.passwordSecret must be a map of name and key: the Secret holding the migration login's password (ARV-182)" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$" (toString ($secret.name | default ""))) }}
+{{- fail "backup.database.passwordSecret.name must be a Kubernetes secret name (ARV-182)" }}
+{{- end }}
+{{- if not (regexMatch "^[-._a-zA-Z0-9]{1,253}$" (toString ($secret.key | default ""))) }}
+{{- fail "backup.database.passwordSecret.key must be a key of a Kubernetes Secret (ARV-182)" }}
+{{- end }}
+{{- if not (has (toString $database.sslMode) (list "prefer" "verify-full")) }}
+{{- fail "backup.database.sslMode must be prefer or verify-full (ARV-182)" }}
+{{- end }}
+{{- if and (eq .Values.environment "k8s-prd") (ne (toString $database.sslMode) "verify-full") }}
+{{- fail "k8s-prd verifies the database server: set backup.database.sslMode verify-full, with the database CA in databaseCaSecretName (ARV-082a, ARV-182)" }}
+{{- end }}
+{{- end }}
 {{- with .Values.monitoring }}
 {{- if not (kindIs "bool" .enabled) }}
 {{- fail "monitoring.enabled must be true or false" }}
@@ -757,7 +895,7 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- fail (printf "monitoring.alerts.%s.%s must be a whole number of days from 1 to 365" $key $field) }}
 {{- end }}
 {{- if and (hasSuffix "Hours" $field) (or (not $number) (lt (float64 $value) 6.0) (gt (float64 $value) 168.0) (ne (float64 $value) (float64 (int $value)))) }}
-{{- fail (printf "monitoring.alerts.%s.%s must be a whole number of hours from 6 to 168 (the bounds of the hosts' MalwareScan:MaxSignatureAgeHours)" $key $field) }}
+{{- fail (printf "monitoring.alerts.%s.%s must be a whole number of hours from 6 to 168%s" $key $field (ternary " (the bounds of the hosts' MalwareScan:MaxSignatureAgeHours)" " (ARV-182: the age of the newest backup that succeeded, above the time between runs)" (ne $key "backupMissing"))) }}
 {{- end }}
 {{- if or (eq $field "claims") (eq $field "services") }}
 {{- if or (not (kindIs "slice" $value)) (eq (len $value) 0) }}

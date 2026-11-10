@@ -3,10 +3,10 @@
   "labels": {
     "ariva": ["certificate", "check", "contract", "feed", "feed_kind", "group", "kind", "outcome", "site", "topic"],
     "resource": ["deployment.environment", "k8s.cluster.name", "k8s.deployment.name", "k8s.namespace.name", "k8s.pod.name", "service.instance.id", "service.name", "service.namespace"],
-    "external": ["k8s.persistentvolumeclaim.name", "k8s.volume.type", "namespace", "exported_namespace"]
+    "external": ["k8s.persistentvolumeclaim.name", "k8s.volume.type", "namespace", "exported_namespace", "k8s.job.name"]
   },
   "forbidden": "user|name|mail|person|officer|travel|passenger|document|passport|nationality|phone|address|^ip$|token|secret|password|credential|key|auth|cookie|session|client|subject|serial",
-  "forbiddenExceptions": ["service.name", "k8s.cluster.name", "k8s.deployment.name", "k8s.namespace.name", "k8s.pod.name", "service.namespace", "k8s.persistentvolumeclaim.name", "namespace", "exported_namespace"],
+  "forbiddenExceptions": ["service.name", "k8s.cluster.name", "k8s.deployment.name", "k8s.namespace.name", "k8s.pod.name", "service.namespace", "k8s.persistentvolumeclaim.name", "namespace", "exported_namespace", "k8s.job.name"],
   "externalMetrics": [
     {
       "metric": "k8s.volume.available",
@@ -22,6 +22,16 @@
       "metric": "certmanager_certificate_expiration_timestamp_seconds",
       "source": "cert-manager's own metric, scraped by the site collector's Prometheus receiver; its namespace label is namespace, or exported_namespace when the scrape adds a namespace label of its own. The ingress certificate is in no Ariva pod (CWE-269: no pod mounts its key for this).",
       "rules": ["ingressCertificateExpiry"]
+    },
+    {
+      "metric": "k8s.job.failed_pods",
+      "source": "The site collector's Kubernetes cluster receiver (SigNoz k8s-infra, k8s_cluster): failed pods of each Job, read for the scheduled backup's Jobs (ariva-db-backup-...) only. A backup Job runs no Ariva host, so it exports nothing of its own (ARV-182).",
+      "rules": ["backupFailed"]
+    },
+    {
+      "metric": "k8s.job.successful_pods",
+      "source": "The site collector's Kubernetes cluster receiver (SigNoz k8s-infra, k8s_cluster): succeeded pods of each Job still kept, read for the scheduled backup's Jobs only; the CronJob keeps a finished Job backupMissing.maxAgeHours, so no succeeded Job means no backup within that age (ARV-182).",
+      "rules": ["backupMissing"]
     }
   ],
   "criterionRules": [
@@ -30,7 +40,7 @@
     "consumedTopicMissing", "consumerUnconnected", "scannerSignaturesStale", "scannerNotAnswering", "queueRefused",
     "outboxBrokerStreak", "consumerHeld", "streamCheckpointStale", "devicesDegraded", "zonesDegraded", "aodbFeedStale",
     "amanCodesUnmapped", "integrationLockout", "clockUnreliable", "binsOverdue", "retentionFailed",
-    "policyJobsFailed", "displaysStale", "zonesUnknown"
+    "policyJobsFailed", "displaysStale", "zonesUnknown", "backupFailed", "backupMissing"
   ],
   "severities": ["warning", "critical"],
   "runbook": "wiki/10-Operations-Runbook.md#"

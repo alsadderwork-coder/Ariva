@@ -10,6 +10,10 @@
 # Commands (stdout carries data only: a dump, a manifest or a report; messages go to stderr):
 #   backup [--output FILE|-]        pg_dump (custom format) as the migration login; "-" (the default) streams to stdout
 #   manifest                        JSON about the database (versions, scripts, key ring certificates); no secret
+#   backup and manifest take --host NAME (ARV-182): the database server at that name instead of 127.0.0.1, for the chart's
+#                                   scheduled backup (a CronJob pod of the same image beside the database pod, which reaches
+#                                   the server through its Service); every other command refuses it, since its superuser steps
+#                                   go to this pod's own socket and must never meet another server than its TCP steps
 #   check-dump [--input FILE|-] [--allow-extension NAME]... [--timescaledb-version VERSION]
 #                                   reads a dump's table of contents (kinds, names, owners; not the SQL) and refuses one
 #                                   this script would not restore; since ARV-244 also reads the TimescaleDB version the dump
@@ -90,7 +94,7 @@
 #                                   Ariva deployments scaled to 0 (ARV-236; wiki 04 section 6.8)
 #
 # Logins (CWE-269). Every Ariva step runs as the migration login (the database owner: CREATEROLE, never superuser) over
-# TCP to 127.0.0.1, with the password the pod already holds in its environment (ARIVA_MIGRATION_PASSWORD, from the
+# TCP to 127.0.0.1 (backup and manifest: to --host), with the password the pod already holds in its environment (ARIVA_MIGRATION_PASSWORD, from the
 # timescaledb-credentials secret); the password is never on a command line. TimescaleDB allows a logical restore only to
 # a superuser: timescaledb_pre_restore() stops its background workers, and pg_restore writes the extension's catalog and
 # creates chunks in _timescaledb_internal, which belong to the extension owner. Those three steps run as the database
@@ -513,6 +517,7 @@ unset ARIVA_MIGRATION_PASSWORD POSTGRES_PASSWORD PGPASSWORD
 DATABASE="${POSTGRES_DB:-ariva}"
 LOGIN="${ARIVA_MIGRATION_LOGIN:-}"
 SUPERUSER="${POSTGRES_USER:-postgres}"
+HOST=127.0.0.1
 PORT=5432
 SOCKET_DIR=/var/run/postgresql
 
@@ -531,6 +536,7 @@ check_settings() {
   valid_identifier "$DATABASE" || die "the database name is not a plain lower-case identifier"
   valid_identifier "$LOGIN" || die "set ARIVA_MIGRATION_LOGIN (or --login) to the migration login, a plain lower-case identifier"
   valid_identifier "$SUPERUSER" || die "the superuser name is not a plain lower-case identifier"
+  [[ "$HOST" =~ ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$ ]] || die "the host is not a lower-case host name or IPv4 address"
   [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || die "the port is not a number"
   [[ "$SOCKET_DIR" =~ ^/[A-Za-z0-9._/-]{1,200}$ && "$SOCKET_DIR" != *..* ]] || die "the socket directory is not a plain absolute path"
   [[ -n "$MIGRATION_PASSWORD" ]] || die "ARIVA_MIGRATION_PASSWORD is not set (the TimescaleDB pod has it from the timescaledb-credentials secret)"
@@ -540,7 +546,7 @@ check_settings() {
 # the server for one call (a constant: check reads template1's system functions, ARV-183).
 as_migration() {
   PGPASSWORD="$MIGRATION_PASSWORD" PGAPPNAME=ariva-ops PGCONNECT_TIMEOUT=15 psql --no-psqlrc --quiet --no-password \
-    --set=ON_ERROR_STOP=1 --host=127.0.0.1 --port="$PORT" --username="$LOGIN" --dbname="${ON_DATABASE:-$DATABASE}" "$@"
+    --set=ON_ERROR_STOP=1 --host="$HOST" --port="$PORT" --username="$LOGIN" --dbname="${ON_DATABASE:-$DATABASE}" "$@"
 }
 
 # psql as the database superuser over the local socket (peer authentication; the restore's TimescaleDB steps, the
@@ -562,7 +568,7 @@ SELECT r.rolsuper, d.datdba = r.oid, r.rolreplication, r.rolbypassrls
   FROM pg_roles r, pg_database d
  WHERE r.rolname = current_user AND d.datname = current_database();
 SQL
-)" || die "cannot sign in as the migration login $LOGIN to database $DATABASE over 127.0.0.1"
+)" || die "cannot sign in as the migration login $LOGIN to database $DATABASE over $HOST"
   [[ "$row" == "f|t|f|f" ]] || die "the migration login must own database $DATABASE and be neither superuser, replication nor bypassrls (found superuser|owner|replication|bypassrls = $row)"
 }
 
@@ -595,7 +601,7 @@ SQL
 )"
   [[ "$has_schema" == "t" ]] || die "database $DATABASE has no schema_version table: not an Ariva database"
   say "backing up database $DATABASE as $LOGIN (custom format)"
-  local args=(--format=custom --no-password --host=127.0.0.1 --port="$PORT" --username="$LOGIN" --dbname="$DATABASE")
+  local args=(--format=custom --no-password --host="$HOST" --port="$PORT" --username="$LOGIN" --dbname="$DATABASE")
   if [[ "$output" != "-" ]]; then
     args+=(--file="$output")
   fi
@@ -2715,11 +2721,16 @@ main() {
       --database) (($# >= 2)) || usage; DATABASE="$2"; shift 2 ;;
       --login) (($# >= 2)) || usage; LOGIN="$2"; shift 2 ;;
       --superuser) (($# >= 2)) || usage; SUPERUSER="$2"; shift 2 ;;
+      --host) (($# >= 2)) || usage; HOST="$2"; shift 2 ;;
       --port) (($# >= 2)) || usage; PORT="$2"; shift 2 ;;
       --socket-dir) (($# >= 2)) || usage; SOCKET_DIR="$2"; shift 2 ;;
       *) rest+=("$1"); shift ;;
     esac
   done
+  # ARV-182: another server than this pod's only for the two commands that never run as the superuser.
+  if [[ "$HOST" != "127.0.0.1" && "$command" != "backup" && "$command" != "manifest" ]]; then
+    die "--host applies to backup and manifest only: $command runs in the database pod against its own server"
+  fi
   case "$command" in
     backup) cmd_backup "${rest[@]}" ;;
     manifest) cmd_manifest "${rest[@]}" ;;

@@ -361,6 +361,68 @@ kafkaTopics:
   backoffLimit: 1
   activeDeadlineSeconds: 600
 
+# Scheduled database backup (ARV-182; wiki 04 section 10.3a, wiki 10 section 4.13a). Off by default: operator-run backups are
+# the pilot's method (the owner's decision of 2026-10-15). With it on, the CronJob ariva-db-backup takes one backup set a day
+# with the ARV-126 tooling (scripts/ops/ariva-db.sh backup and manifest, carried in the ConfigMap ariva-db-backup-scripts and
+# held equal to the repository's by the chart test) and keeps the newest keep sets in the claim claimName:
+#   ariva-scheduled-<namespace>-<UTC time>.dump.age       pg_dump as the migration login, encrypted while it streams to
+#                                                         recipient only
+#   ariva-scheduled-<namespace>-<UTC time>.manifest.json  the set's manifest (ariva-backup-set/1, takenBy
+#                                                         cronjob/ariva-db-backup), unsigned: an operator signs it outside the
+#                                                         cluster (ssh-keygen -Y sign -n ariva-backup) before a restore relies on it
+# Each published file must have the SHA-256 and size of what the run wrote (taken from the stream, not read back from the claim),
+# or the run fails and removes it; the pod's last log line gives both hashes. Pruning touches the CronJob's own sets only.
+# The cluster never holds the backup identity or a signing key: recipient is the custodian's public age recipient (age1...), and
+# the chart refuses an identity (AGE-SECRET-KEY-...) in it, or a key for anything else, without repeating it. With enabled
+# false too it refuses an identity or a private key anywhere here and any key that is not a setting of backup, database,
+# passwordSecret or resources (such as database.password), so Helm's release record never keeps one; values wait for enabled.
+# - schedule: five cron fields, read in UTC (the CronJob's timeZone Etc/UTC); a quiet hour, apart from Cronz's 03:15 jobs.
+# - keep: the sets kept, 1 to 90 (14 Proposed by TC-34; wiki 04 section 10.3). A set is pruned only after the new one is
+#   complete, so a failing run never removes one.
+# - claimName: required with enabled. A claim created out of band, writable by uid or gid 1000 (the pod's fsGroup), on storage
+#   the custodian reads from outside the cluster (an NFS or SMB share, Azure Files): the sets leave the cluster from there to be
+#   signed and kept. A claim on a cluster disk keeps them beside the database; copy them out (wiki 04 section 10.3a).
+# - image: the TimescaleDB image (bash, pg_dump of the server's version, Python 3 with pyca/cryptography, jq), pinned by tag and
+#   digest as one reference; scripts/base-images.mjs holds it to Charts/timescaledb/values.yaml's pin, and the offline bundle's
+#   Helmfile takes it from the site's mirror. The image has no age binary: files/backup/ariva-age.py writes the age format with
+#   the image's pyca/cryptography (wiki 04 section 10.3a).
+# - activeDeadlineSeconds: the run's limit, 300 to 86,400; past it the run fails and the backupFailed alert fires.
+# - database: the migration login's connection, as the TimescaleDB release creates it (host, port, name and login are its
+#   Service, database and migrationLogin; never the superuser), its password from passwordSecret (the release's
+#   timescaledb-credentials, key migration-password), never a value. sslMode: prefer, or verify-full against the database CA
+#   (databaseCaSecretName, ca.crt only); k8s-prd requires verify-full (its database runs with TLS). The connection takes
+#   SCRAM-SHA-256 only (PGREQUIREAUTH) and, with verify-full, channel binding (PGCHANNELBINDING require).
+# - resources: the backup container's requests and limits of cpu, memory and ephemeral-storage (quantities), nothing else.
+# The pod runs as the image's postgres user (uid 1000) with every restriction of the chart's pods, its own ServiceAccount
+# ariva-db-backup without a token and no Role or RoleBinding (it calls no Kubernetes API), and with networkPolicies on it may
+# reach DNS and the database only. Its connection counts in databaseConnections.operators. The alerts backupFailed and
+# backupMissing (monitoring.alerts) are rendered with it; each finished Job is kept monitoring.alerts.backupMissing.maxAgeHours
+# (ttlSecondsAfterFinished), which is what backupMissing reads.
+backup:
+  enabled: false
+  schedule: "30 1 * * *"
+  recipient: ""
+  keep: 14
+  claimName: ""
+  image: "timescale/timescaledb-ha:pg17-ts2.31@sha256:cae378810532f8402c306d5a2bc6acc2c7550193d12f2b5ef9b2532efe0e98c0"
+  activeDeadlineSeconds: 3600
+  database:
+    host: timescaledb
+    port: 5432
+    name: ariva
+    login: ariva
+    passwordSecret:
+      name: timescaledb-credentials
+      key: migration-password
+    sslMode: prefer
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
 # The simulation host (sensor, AODB and AMAN emulators) is deployed unless an environment turns it off.
 simulationEnabled: true
 
@@ -577,6 +639,16 @@ monitoring:
     # 10 minutes, MalwareScan:SignatureCheckMinutes) for the whole window, when its pod refuses every upload.
     scannerSignaturesStale: { enabled: true, minutes: 15, maxAgeHours: 48, severity: warning }
     scannerNotAnswering: { enabled: true, minutes: 20, severity: critical }
+    # The scheduled backup (ARV-182), rendered only with backup.enabled; both read the backup Jobs in namespaces (empty: the
+    # release's) from the site collector's Kubernetes cluster metrics (external, SigNoz k8s-infra's k8s_cluster receiver).
+    # backupFailed: a backup Job with a failed pod (a run that failed or passed its deadline) in the window; it stays until the
+    # failed Job is deleted or reaches its age (backupMissing.maxAgeHours).
+    backupFailed: { enabled: true, minutes: 5, severity: critical, namespaces: [] }
+    # backupMissing: no backup Job that succeeded within maxAgeHours, for the whole window: the CronJob keeps each finished Job
+    # maxAgeHours (ttlSecondsAfterFinished), so a success older than that has no Job left; also when no backup Job is reported at
+    # all (the schedule stopped, the CronJob suspended or gone, the collector not reading it). Keep maxAgeHours above the time
+    # between runs plus activeDeadlineSeconds: 26 for a daily run.
+    backupMissing: { enabled: true, minutes: 30, maxAgeHours: 26, severity: critical, namespaces: [] }
 
 # ARV-209 (crypto inventory K40): the chart renders no registry pull secret and refuses registry credentials as values, which
 # Helm would keep in its release record in the namespace. Every workload pulls with the Secret dalilacr-secret (type

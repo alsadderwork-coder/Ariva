@@ -429,11 +429,11 @@
     },
     {
       "id": "ARV-182",
-      "title": "[E17] Scheduled encrypted backups and a session reset after a restore",
+      "title": "[E17] Scheduled encrypted backups (the session reset after a restore split into ARV-182a)",
       "description": "From ARV-126 (2026-10-15). (1) Owner decision 2026-10-15: operator-run backups are enough for the pilot; a scheduled backup comes later: a CronJob in the chart running the ARV-126 tooling daily, encrypting to the backup custodian's public age recipient (no private key in the cluster), signing as ARV-126 requires (or handing the unsigned file to a signing step outside the cluster), keeping N copies, and a monitoring alert when a backup is missing or failed. (2) A restore brings back sessions and access revoked after the backup; today the runbook has the operator re-apply those changes by hand. A command that ends every session after a restore touches authentication, so it waits for the owner's login freeze to lift. (3) DatabaseChartBootstrapTests duplicates the new ChartDatabase helper. CWEs to review: CWE-269, CWE-532, CWE-613.",
       "acceptanceCriteria": [
         "A chart CronJob (off by default, validated values) runs the daily backup with the ARV-126 tooling, encrypted to a public recipient only, with retention and a failure or missing-backup alert in the ARV-125b rules; chart render tests and release guards",
-        "After a restore, every session issued before the restore can be ended with one audited command (once the login freeze lifts), and the runbook uses it",
+        "After a restore, every session issued before the restore can be ended with one audited command (once the login freeze lifts), and the runbook uses it: split into ARV-182a on 2026-11-10 (authentication code, under the sign-in freeze); the runbook (wiki 04 section 10.4 step 8, wiki 10 section 4.13) points to it",
         "DatabaseChartBootstrapTests reuses ChartDatabase",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
@@ -443,9 +443,33 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
-      "notes": "Size M. Phase 3 (the owner's decision of 2026-10-15 for the schedule; the login freeze for the session reset).",
+      "passes": true,
+      "notes": "Size M. Phase 3 (the owner's decision of 2026-10-15 for the schedule; the login freeze for the session reset). 2026-11-10: built (the CronJob ariva-db-backup, its encryptor and the alerts); the session reset split into ARV-182a (sign-in freeze).",
       "dependsOn": [
+        "ARV-126"
+      ]
+    },
+    {
+      "id": "ARV-182a",
+      "title": "[E17] End every session issued before a restore with one audited command",
+      "description": "Split from ARV-182 (2026-11-10): it touches authentication, which the owner's sign-in freeze excludes; build it once the freeze lifts. A restore brings back the database as it was at the backup, so sessions and refresh token families revoked after the backup are active again (wiki 04 section 10.4 step 8). One audited command (for example Ariva.Api.Main --end-sessions-before <UTC time>, the signed manifest's takenUtc or the restore's own time, run after the migration job and before the hosts start) revokes every user session and refresh token family issued before that time, break-glass sessions included, idempotent, with one security event and one audit entry naming the operator, the time and the count, and no token, session id or cookie in any log. The runbook uses it instead of re-applying revocations by hand. CWEs to review: CWE-613, CWE-384, CWE-532, CWE-862.",
+      "acceptanceCriteria": [
+        "One command ends every user session and refresh token family issued before a given UTC time; it refuses a time in the future or not in UTC and is idempotent",
+        "It writes an audit entry and a security event (operator, time, count) and logs no token, session id or cookie",
+        "After a restore in BackupRestoreTests, a refresh with a token issued before the restore is refused and a new sign-in works",
+        "wiki 04 section 10.4 step 8 and wiki 10 section 4.13 use the command",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "The story's API end-to-end tests pass through node scripts/verify.mjs story --specs <files>, with the smoke set and the permission matrix",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for CWE-613, CWE-384, CWE-532 and CWE-862",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 41,
+      "passes": false,
+      "notes": "Size S to M. Phase 3, after the owner lifts the sign-in freeze (authentication code). Split from ARV-182 on 2026-11-10.",
+      "dependsOn": [
+        "ARV-182",
         "ARV-126"
       ]
     },

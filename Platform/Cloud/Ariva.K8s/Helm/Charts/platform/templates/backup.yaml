@@ -1,0 +1,188 @@
+{{- /*
+Scheduled database backup (ARV-182; values backup, wiki 04 section 10.3a, wiki 10 section 4.13a). Off by default. With
+backup.enabled: a ServiceAccount of its own without a token and with no Role or RoleBinding (the pod calls no Kubernetes API,
+CWE-269), a ConfigMap of the three scripts and the CronJob ariva-db-backup, which runs files/backup/ariva-backup.sh daily in a
+pod of the TimescaleDB image as its postgres user (uid 1000), read-only root, no capability. The script runs the ARV-126
+tooling's own commands (files/backup/ariva-db.sh, the repository's scripts/ops/ariva-db.sh byte for byte: backup and manifest
+as the migration login, to the database Service with --host), encrypts the dump while it streams to backup.recipient, the
+custodian's public age recipient (files/backup/ariva-age.py: the age v1 format written with the image's pyca/cryptography),
+holds the published files to the hashes of what it wrote, writes the set's manifest unsigned (takenBy cronjob/ariva-db-backup)
+and keeps the newest backup.keep of its own sets (ariva-scheduled-<namespace>-<UTC time>) on backup.claimName. libpq takes
+SCRAM-SHA-256 only (PGREQUIREAUTH) and, with verify-full, channel binding (PGCHANNELBINDING require). No identity and no signing key is
+ever in the cluster: an operator signs each manifest outside it (ssh-keygen -Y sign -n ariva-backup). The migration password
+reaches the pod from passwordSecret only (secretKeyRef). validate.yaml checks every value; tests/chart-security.mjs holds the
+render (backupFindings in checks.mjs) and every guard.
+- UTC only: the schedule is read in Etc/UTC.
+- One run at a time (concurrencyPolicy Forbid, and a lock on the claim), no retry (backoffLimit 0): a failed run is a page
+  (backupFailed), and the next one comes at the schedule or by hand (kubectl create job --from=cronjob/ariva-db-backup).
+- Each finished Job is kept monitoring.alerts.backupMissing.maxAgeHours (ttlSecondsAfterFinished): backupMissing fires when no
+  Job that succeeded is left, so the age it judges is this one.
+*/ -}}
+{{- $backup := .Values.backup | default dict }}
+{{- if $backup.enabled }}
+{{- $alerts := (.Values.monitoring | default dict).alerts | default dict }}
+{{- $missing := $alerts.backupMissing | default dict }}
+{{- $keepJobHours := int ($missing.maxAgeHours | default 26) }}
+{{- $database := $backup.database }}
+{{- $verify := eq (toString $database.sslMode) "verify-full" }}
+---
+#ServiceAccount: the backup pod's own (ARV-182). No token is mounted and no Role or RoleBinding names it: it may do nothing in
+#the Kubernetes API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ariva-db-backup
+  labels:
+    app: ariva-db-backup
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+automountServiceAccountToken: false
+---
+#ConfigMap: the scheduled backup's scripts (ARV-182), mounted read-only. ariva-db.sh is the repository's scripts/ops/ariva-db.sh
+#(the chart test holds the copy equal); nothing here is secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ariva-db-backup-scripts
+  labels:
+    app: ariva-db-backup
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+data:
+  ariva-backup.sh: |
+{{ .Files.Get "files/backup/ariva-backup.sh" | indent 4 }}
+  ariva-age.py: |
+{{ .Files.Get "files/backup/ariva-age.py" | indent 4 }}
+  ariva-db.sh: |
+{{ .Files.Get "files/backup/ariva-db.sh" | indent 4 }}
+---
+#CronJob: the daily encrypted database backup (ARV-182).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ariva-db-backup
+  labels:
+    app: ariva-db-backup
+    {{- include "ariva-platform.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ $backup.schedule | quote }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  # A run the controller could not start within an hour of its time is skipped (backupMissing sees it), never piled up.
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: ariva-db-backup
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ int $backup.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ mul $keepJobHours 3600 }}
+      template:
+        metadata:
+          labels:
+            app: ariva-db-backup
+        spec:
+          serviceAccountName: ariva-db-backup
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: dalilacr-secret
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            # The claim becomes writable by the postgres user's group; checked only when its root does not match.
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 16Mi
+            - name: scripts
+              configMap:
+                name: ariva-db-backup-scripts
+                defaultMode: 0444
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ $backup.claimName | quote }}
+            {{- if $verify }}
+            # TimescaleDB server CA (ARV-082a): ca.crt only; libpq verifies the server and its name against it
+            - name: database-ca
+              secret:
+                secretName: {{ .Values.databaseCaSecretName | default "ariva-database-ca" }}
+                defaultMode: 0444
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+            {{- end }}
+          containers:
+            - name: backup
+              image: {{ $backup.image | quote }}
+              imagePullPolicy: IfNotPresent
+              command: ["bash", "/opt/ariva-backup/ariva-backup.sh"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              env:
+                - name: ARIVA_BACKUP_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: ARIVA_BACKUP_RECIPIENT
+                  value: {{ $backup.recipient | quote }}
+                - name: ARIVA_BACKUP_KEEP
+                  value: {{ int $backup.keep | quote }}
+                - name: ARIVA_BACKUP_DIRECTORY
+                  value: /backups
+                - name: ARIVA_BACKUP_SCRIPTS
+                  value: /opt/ariva-backup
+                - name: ARIVA_DATABASE_HOST
+                  value: {{ $database.host | quote }}
+                - name: ARIVA_DATABASE_PORT
+                  value: {{ int $database.port | quote }}
+                - name: POSTGRES_DB
+                  value: {{ $database.name | quote }}
+                - name: ARIVA_MIGRATION_LOGIN
+                  value: {{ $database.login | quote }}
+                - name: ARIVA_MIGRATION_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $database.passwordSecret.name | quote }}
+                      key: {{ $database.passwordSecret.key | quote }}
+                - name: PGSSLMODE
+                  value: {{ $database.sslMode | quote }}
+                # The server must authenticate with SCRAM-SHA-256 (libpq refuses any other method, a plain-text password
+                # request among them), and with verify-full also bind it to the TLS channel (SCRAM-SHA-256-PLUS)
+                - name: PGREQUIREAUTH
+                  value: scram-sha-256
+                {{- if $verify }}
+                - name: PGSSLROOTCERT
+                  value: /app/secrets/database-ca/ca.crt
+                - name: PGCHANNELBINDING
+                  value: require
+                {{- end }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                - name: scripts
+                  mountPath: /opt/ariva-backup
+                  readOnly: true
+                - name: backups
+                  mountPath: /backups
+                {{- if $verify }}
+                - name: database-ca
+                  mountPath: /app/secrets/database-ca
+                  readOnly: true
+                {{- end }}
+              resources:
+                {{- toYaml $backup.resources | nindent 16 }}
+{{- end }}

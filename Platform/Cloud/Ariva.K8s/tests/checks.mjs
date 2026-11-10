@@ -820,22 +820,205 @@ function monitoringFindings(doc, id) {
 /** The rules off unless a border deployment turns them on (ARV-125b, ARV-259). */
 export const BORDER_RULES = ['amanFeedStale', 'amanCodesUnmapped'];
 
+/** ARV-182: the rules rendered with the scheduled backup (backup.enabled) only. */
+export const BACKUP_RULES = ['backupFailed', 'backupMissing'];
+
 /**
  * ARV-125b: the criterion rules a render lacks. Every rule of tests/monitoring.json must be a key of ariva-monitoring-alerts
- * (hostDown once per host, as hostDown-<host>), but for the border rules, which are off unless the render turns them on.
+ * (hostDown once per host, as hostDown-<host>), but for the border rules, which are off unless the render turns them on, and
+ * the scheduled backup's rules (ARV-182), which are there exactly when the backup is on.
  */
-export function missingMonitoringRules(docs, { border = false } = {}) {
+export function missingMonitoringRules(docs, { border = false, backup = false } = {}) {
 	const alerts = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-alerts');
 	if (!alerts) return ['ConfigMap/ariva-monitoring-alerts: not rendered'];
 	const keys = Object.keys(alerts.data ?? {}).map((key) => key.replace(/\.json$/, ''));
 	const missing = MONITORING.criterionRules
 		.filter((rule) => !BORDER_RULES.includes(rule) || border)
+		.filter((rule) => !BACKUP_RULES.includes(rule) || backup)
 		.filter((rule) => !keys.some((key) => key === rule || key.startsWith(`${rule}-`)))
 		.map((rule) => `ConfigMap/ariva-monitoring-alerts: rule ${rule} is missing`);
 	for (const rule of BORDER_RULES.filter((rule) => !border && keys.includes(rule)))
 		missing.push(`ConfigMap/ariva-monitoring-alerts: ${rule} is rendered although it is off`);
+	for (const rule of BACKUP_RULES.filter((rule) => !backup && keys.includes(rule)))
+		missing.push(`ConfigMap/ariva-monitoring-alerts: ${rule} is rendered although the scheduled backup is off`);
 	if (!docs.some((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === 'ariva-monitoring-dashboards')) missing.push('ConfigMap/ariva-monitoring-dashboards: not rendered');
 	return missing;
+}
+
+/**
+ * ARV-182: the scheduled backup's objects as the chart renders them (templates/backup.yaml): the CronJob, its ServiceAccount and
+ * the ConfigMap of its scripts, the command it runs, its mounts and the age Jobs are kept, which the backupMissing rule reads.
+ */
+export const BACKUP = {
+	cronJob: 'ariva-db-backup',
+	serviceAccount: 'ariva-db-backup',
+	configMap: 'ariva-db-backup-scripts',
+	container: 'backup',
+	command: ['bash', '/opt/ariva-backup/ariva-backup.sh'],
+	user: 1000,
+	scriptsPath: '/opt/ariva-backup',
+	backupsPath: '/backups',
+	caPath: '/app/secrets/database-ca',
+	scripts: ['ariva-age.py', 'ariva-backup.sh', 'ariva-db.sh'],
+	recipient: /^age1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$/,
+	/** The variables the container gets, and nothing else (the password from its Secret, the namespace from the pod). */
+	env: ['ARIVA_BACKUP_NAMESPACE', 'ARIVA_BACKUP_RECIPIENT', 'ARIVA_BACKUP_KEEP', 'ARIVA_BACKUP_DIRECTORY', 'ARIVA_BACKUP_SCRIPTS',
+		'ARIVA_DATABASE_HOST', 'ARIVA_DATABASE_PORT', 'POSTGRES_DB', 'ARIVA_MIGRATION_LOGIN', 'ARIVA_MIGRATION_PASSWORD', 'PGSSLMODE', 'PGSSLROOTCERT',
+		'PGREQUIREAUTH', 'PGCHANNELBINDING']
+};
+
+/**
+ * An age identity (a private key), wherever it appears: the cluster holds the custodian's public recipient only (ARV-182). The
+ * whole shape (the prefix, 1 and 58 Bech32 characters), since the scripts name the prefix to refuse it.
+ */
+const AGE_IDENTITY = /AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}/i;
+
+/**
+ * ARV-182 (CWE-269, CWE-532): findings for the scheduled backup of a render, against the values that made it: enabled, the
+ * environment, backup (the merged backup values), maxAgeHours (monitoring.alerts.backupMissing.maxAgeHours), the database CA's
+ * Secret name and scripts (the text each ConfigMap key must hold: files/backup's, and scripts/ops/ariva-db.sh for ariva-db.sh).
+ * In every render no object holds an age identity. Off: no object of the backup and none of its rules. On:
+ * - the CronJob reads its schedule in Etc/UTC, runs one at a time (Forbid), is not suspended, keeps a succeeded Job, retries
+ *   nothing (backoffLimit 0), stops at activeDeadlineSeconds and keeps each finished Job maxAgeHours, the age backupMissing
+ *   judges; its pods carry the app label the NetworkPolicies select;
+ * - least privilege: its own ServiceAccount, without a token on the account or in the pod, bound by no RoleBinding or
+ *   ClusterRoleBinding; no service links; the image's postgres user (runAsNonRoot, uid, gid and fsGroup 1000); one container
+ *   running the backup script and nothing else (no init container, no argument, no privilege or added capability);
+ * - secrets: the migration password from passwordSecret alone (secretKeyRef, not optional), no other variable from a Secret,
+ *   no envFrom, only the variables the script reads; the recipient a public age recipient; no Secret volume but, with
+ *   verify-full, the database CA (ca.crt only, read-only), which k8s-prd requires; libpq held to SCRAM-SHA-256
+ *   (PGREQUIREAUTH) and, with verify-full, to channel binding (PGCHANNELBINDING require);
+ * - its resources requests and limits of cpu, memory and ephemeral-storage only;
+ * - the volumes /tmp, the scripts (read-only, the ConfigMap holding the three scripts and nothing else, each the repository's
+ *   byte for byte) and the claim at /backups, nothing more.
+ */
+export function backupFindings(docs, { enabled, environment, backup = {}, maxAgeHours = 26, databaseCaSecretName = 'ariva-database-ca', scripts = {} }) {
+	const findings = [];
+	for (const doc of docs.filter(Boolean)) {
+		if (AGE_IDENTITY.test(JSON.stringify(doc))) findings.push(`${doc.kind}/${doc.metadata?.name ?? '?'}: holds an age identity; the cluster holds the custodian's public recipient only`);
+	}
+	const own = docs.filter((doc) => doc && (doc.metadata?.labels?.app === BACKUP.cronJob || [BACKUP.cronJob, BACKUP.configMap].includes(doc.metadata?.name)));
+	if (!enabled) {
+		for (const doc of own) findings.push(`${doc.kind}/${doc.metadata?.name}: rendered although backup is off`);
+		return findings;
+	}
+	const cronJobs = docs.filter((doc) => doc?.kind === 'CronJob' && doc.metadata?.name === BACKUP.cronJob);
+	if (cronJobs.length !== 1) return [...findings, `CronJob/${BACKUP.cronJob}: rendered ${cronJobs.length} times, not once`];
+	const id = `CronJob/${BACKUP.cronJob}`;
+	const spec = cronJobs[0].spec ?? {};
+	const job = spec.jobTemplate?.spec ?? {};
+	const pod = job.template?.spec ?? {};
+	if (spec.schedule !== backup.schedule) findings.push(`${id}: schedule is ${spec.schedule}, not backup.schedule (${backup.schedule})`);
+	if (spec.timeZone !== 'Etc/UTC') findings.push(`${id}: must read its schedule in Etc/UTC (timeZone), not ${spec.timeZone ?? "the controller's zone"}`);
+	if (spec.concurrencyPolicy !== 'Forbid') findings.push(`${id}: must run one backup at a time (concurrencyPolicy Forbid)`);
+	if (spec.suspend === true) findings.push(`${id}: is suspended`);
+	if (!(Number(spec.successfulJobsHistoryLimit) >= 1)) findings.push(`${id}: must keep a succeeded Job (successfulJobsHistoryLimit 1 or more): backupMissing reads them`);
+	if (job.backoffLimit !== 0) findings.push(`${id}: must not retry a failed run (backoffLimit 0): a failure is a page`);
+	if (job.activeDeadlineSeconds !== backup.activeDeadlineSeconds) findings.push(`${id}: activeDeadlineSeconds is ${job.activeDeadlineSeconds}, not backup.activeDeadlineSeconds (${backup.activeDeadlineSeconds})`);
+	if (job.ttlSecondsAfterFinished !== maxAgeHours * 3600) {
+		findings.push(`${id}: must keep each finished Job monitoring.alerts.backupMissing.maxAgeHours (ttlSecondsAfterFinished ${maxAgeHours * 3600}), the age backupMissing judges, not ${job.ttlSecondsAfterFinished}`);
+	}
+	if (job.template?.metadata?.labels?.app !== BACKUP.cronJob) findings.push(`${id}: its pods must carry app: ${BACKUP.cronJob}, which the NetworkPolicies select`);
+
+	// Least privilege (CWE-269): its own ServiceAccount, no token anywhere, bound to nothing.
+	if (pod.serviceAccountName !== BACKUP.serviceAccount) findings.push(`${id}: must run as its own ServiceAccount ${BACKUP.serviceAccount}, not ${pod.serviceAccountName ?? 'default'}`);
+	if (pod.automountServiceAccountToken !== false) findings.push(`${id}: must set automountServiceAccountToken false: the backup calls no Kubernetes API`);
+	if (pod.enableServiceLinks !== false) findings.push(`${id}: must set enableServiceLinks false`);
+	if (pod.restartPolicy !== 'Never') findings.push(`${id}: restartPolicy must be Never`);
+	const account = docs.find((doc) => doc?.kind === 'ServiceAccount' && doc.metadata?.name === BACKUP.serviceAccount);
+	if (!account) findings.push(`ServiceAccount/${BACKUP.serviceAccount}: not rendered`);
+	else if (account.automountServiceAccountToken !== false) findings.push(`ServiceAccount/${BACKUP.serviceAccount}: must set automountServiceAccountToken false`);
+	for (const binding of docs.filter((doc) => ['RoleBinding', 'ClusterRoleBinding'].includes(doc?.kind))) {
+		if ((binding.subjects ?? []).some((subject) => subject?.kind === 'ServiceAccount' && subject.name === BACKUP.serviceAccount)) {
+			findings.push(`${binding.kind}/${binding.metadata?.name}: binds ${BACKUP.serviceAccount}, which needs no Kubernetes API right`);
+		}
+	}
+	const psc = pod.securityContext ?? {};
+	if (psc.runAsNonRoot !== true || psc.runAsUser !== BACKUP.user || psc.runAsGroup !== BACKUP.user || psc.fsGroup !== BACKUP.user) {
+		findings.push(`${id}: must run as the image's postgres user (runAsNonRoot true, runAsUser, runAsGroup and fsGroup ${BACKUP.user})`);
+	}
+	if ((pod.initContainers ?? []).length) findings.push(`${id}: runs no init container`);
+	const containers = pod.containers ?? [];
+	if (containers.length !== 1 || containers[0]?.name !== BACKUP.container) return [...findings, `${id}: must run one container, ${BACKUP.container}`];
+	const container = containers[0];
+	const cid = `${id} container ${BACKUP.container}`;
+	if (container.image !== backup.image) findings.push(`${cid}: runs ${container.image}, not backup.image`);
+	if (JSON.stringify(container.command) !== JSON.stringify(BACKUP.command) || container.args !== undefined) findings.push(`${cid}: must run ${BACKUP.command.join(' ')} and nothing else`);
+	if (container.securityContext?.privileged === true || (container.securityContext?.capabilities?.add ?? []).length) findings.push(`${cid}: adds a privilege or a capability`);
+
+	// Secrets (CWE-532): the migration password from its Secret alone; the recipient public; no other secret in the pod.
+	if ((container.envFrom ?? []).length) findings.push(`${cid}: takes no envFrom: every variable is named`);
+	const env = Object.fromEntries((container.env ?? []).map((variable) => [variable.name, variable]));
+	const unknown = Object.keys(env).filter((name) => !BACKUP.env.includes(name));
+	if (unknown.length) findings.push(`${cid}: sets ${unknown.join(', ')}, which the backup does not read`);
+	const password = env.ARIVA_MIGRATION_PASSWORD?.valueFrom?.secretKeyRef;
+	const secret = backup.database?.passwordSecret ?? {};
+	if (!password || password.name !== secret.name || password.key !== secret.key || password.optional === true || env.ARIVA_MIGRATION_PASSWORD.value !== undefined) {
+		findings.push(`${cid}: ARIVA_MIGRATION_PASSWORD must come from backup.database.passwordSecret (${secret.name}, key ${secret.key}), not optional, never a value`);
+	}
+	for (const variable of container.env ?? []) {
+		if (variable.valueFrom?.secretKeyRef && variable.name !== 'ARIVA_MIGRATION_PASSWORD') findings.push(`${cid}: ${variable.name} comes from a Secret; only the migration password does`);
+	}
+	const value = (name) => env[name]?.value;
+	if (value('ARIVA_BACKUP_RECIPIENT') !== backup.recipient || !BACKUP.recipient.test(String(value('ARIVA_BACKUP_RECIPIENT') ?? ''))) {
+		findings.push(`${cid}: ARIVA_BACKUP_RECIPIENT must be backup.recipient, the custodian's public age recipient (age1...)`);
+	}
+	if (value('ARIVA_BACKUP_KEEP') !== String(backup.keep)) findings.push(`${cid}: ARIVA_BACKUP_KEEP is ${value('ARIVA_BACKUP_KEEP')}, not backup.keep (${backup.keep})`);
+	if (env.ARIVA_BACKUP_NAMESPACE?.valueFrom?.fieldRef?.fieldPath !== 'metadata.namespace') findings.push(`${cid}: ARIVA_BACKUP_NAMESPACE must be the pod's namespace (fieldRef metadata.namespace)`);
+	if (value('ARIVA_BACKUP_DIRECTORY') !== BACKUP.backupsPath || value('ARIVA_BACKUP_SCRIPTS') !== BACKUP.scriptsPath) findings.push(`${cid}: must write to ${BACKUP.backupsPath} and run the scripts of ${BACKUP.scriptsPath}`);
+	const database = backup.database ?? {};
+	for (const [name, expected] of [['ARIVA_DATABASE_HOST', database.host], ['ARIVA_DATABASE_PORT', String(database.port)], ['POSTGRES_DB', database.name], ['ARIVA_MIGRATION_LOGIN', database.login]]) {
+		if (value(name) !== expected) findings.push(`${cid}: ${name} is ${value(name)}, not ${expected} (backup.database)`);
+	}
+	if (value('ARIVA_MIGRATION_LOGIN') === 'postgres') findings.push(`${cid}: connects as the superuser postgres; the backup runs as the migration login`);
+	const verify = database.sslMode === 'verify-full';
+	if (value('PGSSLMODE') !== database.sslMode) findings.push(`${cid}: PGSSLMODE is ${value('PGSSLMODE')}, not backup.database.sslMode (${database.sslMode})`);
+	if (environment === 'k8s-prd' && value('PGSSLMODE') !== 'verify-full') findings.push(`${cid}: k8s-prd verifies the database server (PGSSLMODE verify-full), not ${value('PGSSLMODE')}`);
+
+	// The volumes: /tmp, the scripts, the claim and, with verify-full, the database CA alone.
+	const volumes = Object.fromEntries((pod.volumes ?? []).map((volume) => [volume.name, volume]));
+	const wanted = ['backups', 'scripts', 'tmp', ...(verify ? ['database-ca'] : [])].sort();
+	if (JSON.stringify(Object.keys(volumes).sort()) !== JSON.stringify(wanted)) findings.push(`${id}: its volumes are ${Object.keys(volumes).sort().join(', ')}, not ${wanted.join(', ')}`);
+	for (const volume of pod.volumes ?? []) {
+		if ((volume.secret || volume.projected) && volume.name !== 'database-ca') findings.push(`${id}: mounts the Secret volume ${volume.name}; the backup reads no Secret file but the database CA (no identity, no signing key)`);
+	}
+	if (!volumes.tmp?.emptyDir) findings.push(`${id}: /tmp must be an emptyDir`);
+	if (volumes.scripts?.configMap?.name !== BACKUP.configMap) findings.push(`${id}: the scripts must come from the ConfigMap ${BACKUP.configMap}`);
+	if (volumes.backups?.persistentVolumeClaim?.claimName !== backup.claimName) findings.push(`${id}: the backups go to the claim ${volumes.backups?.persistentVolumeClaim?.claimName}, not backup.claimName (${backup.claimName})`);
+	const mounts = Object.fromEntries((container.volumeMounts ?? []).map((mount) => [mount.name, mount]));
+	if (mounts.scripts?.mountPath !== BACKUP.scriptsPath || mounts.scripts.readOnly !== true) findings.push(`${cid}: must mount its scripts read-only at ${BACKUP.scriptsPath}`);
+	if (mounts.backups?.mountPath !== BACKUP.backupsPath) findings.push(`${cid}: must mount the backup claim at ${BACKUP.backupsPath}`);
+	if (verify) {
+		const ca = volumes['database-ca']?.secret;
+		if (ca?.secretName !== databaseCaSecretName || (ca.items ?? []).length !== 1 || ca.items[0].key !== 'ca.crt' || ca.items[0].path !== 'ca.crt') {
+			findings.push(`${id}: the database CA must come from ${databaseCaSecretName}, ca.crt only`);
+		}
+		const caMount = mounts['database-ca'];
+		if (caMount?.mountPath !== BACKUP.caPath || caMount.readOnly !== true || caMount.subPath) findings.push(`${cid}: must mount the database CA read-only and whole at ${BACKUP.caPath}`);
+		if (value('PGSSLROOTCERT') !== `${BACKUP.caPath}/ca.crt`) findings.push(`${cid}: PGSSLROOTCERT must be ${BACKUP.caPath}/ca.crt with verify-full`);
+	} else if (env.PGSSLROOTCERT) {
+		findings.push(`${cid}: sets PGSSLROOTCERT without verify-full`);
+	}
+	if (value('PGREQUIREAUTH') !== 'scram-sha-256') findings.push(`${cid}: PGREQUIREAUTH must be scram-sha-256, so libpq takes no other authentication method`);
+	if (verify ? value('PGCHANNELBINDING') !== 'require' : env.PGCHANNELBINDING !== undefined) {
+		findings.push(`${cid}: PGCHANNELBINDING must be require with verify-full${verify ? '' : ', and unset without it (no TLS channel to bind)'}`);
+	}
+	const resources = container.resources ?? {};
+	if (Object.keys(resources).some((part) => !['requests', 'limits'].includes(part))
+		|| Object.values(resources).some((amounts) => !amounts || typeof amounts !== 'object' || Object.keys(amounts).some((name) => !['cpu', 'memory', 'ephemeral-storage'].includes(name)))) {
+		findings.push(`${cid}: its resources hold more than requests and limits of cpu, memory and ephemeral-storage`);
+	}
+
+	// The scripts: the repository's, byte for byte, and nothing else.
+	const map = docs.find((doc) => doc?.kind === 'ConfigMap' && doc.metadata?.name === BACKUP.configMap);
+	if (!map) findings.push(`ConfigMap/${BACKUP.configMap}: not rendered`);
+	else {
+		if (JSON.stringify(Object.keys(map.data ?? {}).sort()) !== JSON.stringify(BACKUP.scripts) || map.binaryData) findings.push(`ConfigMap/${BACKUP.configMap}: must hold ${BACKUP.scripts.join(', ')} and nothing else`);
+		for (const [key, text] of Object.entries(scripts)) {
+			if (map.data?.[key] !== text) findings.push(`ConfigMap/${BACKUP.configMap}: ${key} is not the repository's (${key === 'ariva-db.sh' ? 'scripts/ops/ariva-db.sh' : `files/backup/${key}`})`);
+		}
+	}
+	return findings;
 }
 
 /**
@@ -1681,9 +1864,11 @@ export const NETWORK = {
 	apiHosts: ['api-main', 'api-ingest', 'api-stream', 'api-cronz', 'api-integration'],
 	jobs: ['database-migration', 'kafka-topics'],
 	/** The hosts the simulator calls on their plain port (dev and demo only). */
-	simulatorTargets: ['api-main', 'api-ingest', 'api-integration']
+	simulatorTargets: ['api-main', 'api-ingest', 'api-integration'],
+	/** ARV-182: the scheduled backup's pod (backup.enabled), the chart's own although it runs the TimescaleDB image. */
+	backup: 'ariva-db-backup'
 };
-NETWORK.workloads = [...NETWORK.apiHosts, 'web', 'simulation', ...NETWORK.jobs];
+NETWORK.workloads = [...NETWORK.apiHosts, 'web', 'simulation', ...NETWORK.jobs, NETWORK.backup];
 
 /** The port a pod serves the ingress controller on (ARV-082b): an API host 8443 with pod TLS or 8080, the web pod 3443 or 3000, the simulator 8080. */
 export function servingPort(app, podTls) {
@@ -1717,7 +1902,8 @@ function podsOf(docs) {
 		const template = doc.kind === 'CronJob' ? doc.spec?.jobTemplate?.spec?.template : doc.spec?.template;
 		const pod = template?.spec ?? {};
 		const labels = template?.metadata?.labels ?? {};
-		const ariva = [...(pod.initContainers ?? []), ...(pod.containers ?? [])].some((container) => ARIVA_IMAGES.has(imageName(container.image ?? '')));
+		const ariva = [...(pod.initContainers ?? []), ...(pod.containers ?? [])].some((container) => ARIVA_IMAGES.has(imageName(container.image ?? '')))
+			|| (doc.kind === 'CronJob' && doc.metadata?.name === NETWORK.backup && labels.app === NETWORK.backup);
 		return { app: labels.app ?? doc.metadata?.name, id: `${doc.kind}/${doc.metadata?.name ?? '?'}`, labels, ariva };
 	});
 }
@@ -1758,7 +1944,8 @@ function routedApps(docs) {
  *   simulator; Loki for the API hosts; the SMTP relay for api-integration and api-cronz (the scheduled reports); each outbound
  *   endpoint for api-integration; the simulator to the three hosts and api-integration to the simulator; with the malware scan
  *   on and its signatures from the public mirrors or the site's (ARV-092c), the signature mirror for api-main, whose freshclam
- *   sidecar updates them (clamd answers api-main on the pod's loopback, which no NetworkPolicy filters).
+ *   sidecar updates them (clamd answers api-main on the pod's loopback, which no NetworkPolicy filters); with the scheduled
+ *   backup (ARV-182), DNS and the database for its pod, which takes nothing in.
  */
 export function expectedNetworkFlows(values, docs) {
 	const pods = podsOf(docs);
@@ -1791,6 +1978,10 @@ export function expectedNetworkFlows(values, docs) {
 	add(['api-cronz', 'api-integration'], 'out', np.smtp?.to, tcp(np.smtp?.ports));
 	for (const endpoint of np.outbound ?? []) add(['api-integration'], 'out', endpoint?.to, tcp(endpoint?.ports));
 	if (values.uploadScan?.enabled && ['public', 'mirror'].includes(values.uploadScan.source)) add(['api-main'], 'out', np.clamavMirror?.to, tcp(np.clamavMirror?.ports ?? [443]));
+	if (values.backup) {
+		add([NETWORK.backup], 'out', np.dns?.to, ['UDP/53', 'TCP/53']);
+		add([NETWORK.backup], 'out', np.database?.to, tcp(np.database?.ports));
+	}
 	return flows;
 }
 
@@ -1889,7 +2080,8 @@ export function networkValues(values) {
 		mqtt: values?.mqtt?.enabled ? { port: values.mqtt.port ?? 8883 } : null,
 		networkPolicies: values?.networkPolicies ?? {},
 		ingressController: values?.ingressController ?? {},
-		uploadScan: { enabled: values?.uploadScan?.enabled === true, source: String(values?.uploadScan?.signatures?.source ?? '') }
+		uploadScan: { enabled: values?.uploadScan?.enabled === true, source: String(values?.uploadScan?.signatures?.source ?? '') },
+		backup: values?.backup?.enabled === true
 	};
 }
 

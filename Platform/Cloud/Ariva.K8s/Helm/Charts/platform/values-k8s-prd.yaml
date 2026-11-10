@@ -116,6 +116,13 @@ migration:
     reportDeliveryDays: 400
     advertisingPlayDays: 400
 
+# Scheduled database backup (ARV-182; values.yaml, wiki 04 section 10.3a): off, as in every environment, until the owner moves
+# from operator-run backups. A site that turns it on gives the custodian's recipient and the backup claim; production connects
+# to the database over TLS verified against the database CA (ariva-database-ca, ca.crt), and the chart refuses another mode.
+backup:
+  database:
+    sslMode: verify-full
+
 # The database's max_connections (ARV-232) is not set here: with api-main, api-ingest and api-stream at up to 4 replicas and a
 # rolling update's extra pod the hosts may hold more than the chart's default allows (wiki 04 section 6.9), so the Helmfile sets
 # databaseConnections.serverMaxConnections and the timescaledb release's maxConnections from its state value

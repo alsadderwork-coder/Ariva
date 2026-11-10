@@ -826,6 +826,10 @@ const steps = {
     const CHART_TESTS = path.join(ROOT, 'Platform', 'Cloud', 'Ariva.K8s', 'tests');
     if (!fs.existsSync(path.join(CHART_TESTS, 'node_modules'))) run('chart tests npm ci', 'npm', ['ci'], CHART_TESTS);
     run('chart security (pod security context, read-only root, TLS, release guards)', 'node', ['chart-security.mjs'], CHART_TESTS);
+    // ARV-182: the scheduled backup's age encryptor against age itself and an independent reading of the format; under these
+    // gates (ARIVA_GATE) and in a pipeline it fails without age or a Python 3 with pyca/cryptography (docs/harness/README.md),
+    // and skips with a notice only when run by hand without them (ScheduledBackupTests runs it in the pinned image).
+    run('scheduled backup encryption (age format interop)', 'node', ['backup-age.mjs'], CHART_TESTS);
     nugetAudit();
     // ARV-096: the three npm trees CI installs from a lock file, dev dependencies included, failing on high or critical as ci.yml does.
     if (fs.existsSync(path.join(WEB, 'package-lock.json'))) run('npm audit (web)', 'npm', ['audit', '--audit-level=high'], WEB, { optional: true });

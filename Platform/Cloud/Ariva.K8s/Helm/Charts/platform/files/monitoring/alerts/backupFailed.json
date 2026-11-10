@@ -1,0 +1,92 @@
+{
+  "alert": "Ariva scheduled backup failed (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "A Job of the scheduled database backup (the CronJob ariva-db-backup, ARV-182) has a failed pod, in the release's namespaces, from the site collector's Kubernetes cluster metrics (external): the run failed or passed its deadline, so no backup set was written by it. The failed Job is kept until it is deleted or reaches backupMissing's age.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "k8s.job.failed_pods",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "k8s.namespace.name IN ${backupFailed.namespaces} AND k8s.job.name LIKE 'ariva-db-backup-%'"
+            },
+            "groupBy": [
+              {
+                "name": "k8s.job.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "k8s.namespace.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${backupFailed.severity}",
+          "op": "above",
+          "matchType": "at_least_once",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${backupFailed.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "k8s.namespace.name",
+      "k8s.job.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "backupFailed",
+    "environment": "${environment}",
+    "severity": "${backupFailed.severity}"
+  },
+  "annotations": {
+    "summary": "Backup job {{$k8s.job.name}} failed",
+    "description": "The scheduled backup's Job {{$k8s.job.name}} in {{$k8s.namespace.name}} has {{$value}} failed pod: the run wrote no set and kept every older one. Read the pod's log for its outcome line and step, fix the cause, then run a backup by hand.",
+    "runbook": "wiki/10-Operations-Runbook.md#413a-scheduled-backup-failed-or-missing-arv-182"
+  },
+  "disabled": false
+}

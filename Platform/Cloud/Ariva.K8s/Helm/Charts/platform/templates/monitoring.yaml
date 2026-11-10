@@ -15,13 +15,16 @@ The rule sources in files/monitoring/alerts/<key>.json carry tokens that the val
                   metric, in the rules and the dashboards, reads that deployment.environment only, so one SigNoz may take
                   several environments (the external disk and certificate rules are scoped by namespace instead);
   ${service}      is set for a rule whose values hold a services list: the rule is rendered once per service.
-A rule whose values say enabled false is left out. A token left unresolved, or a source without values, fails the render.
+A rule whose values say enabled false is left out, and so are the scheduled backup's rules (backupFailed, backupMissing) while
+backup.enabled is false (ARV-182): without the CronJob nothing would ever satisfy backupMissing. A token left unresolved, or a
+source without values, fails the render.
 templates/validate.yaml checks every value before it reaches a rule.
 */ -}}
 {{- if .Values.monitoring.enabled }}
 {{- $alerts := .Values.monitoring.alerts | default dict }}
 {{- $channels := .Values.monitoring.channels | default list }}
 {{- $environment := toString (.Values.monitoring.environment | default .Values.environment) }}
+{{- $backupOn := and (kindIs "map" .Values.backup) .Values.backup.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -41,7 +44,7 @@ data:
 {{- if not $settings }}
 {{- fail (printf "monitoring.alerts.%s is missing: every rule in files/monitoring/alerts has its values" $key) }}
 {{- end }}
-{{- if ne (toString (get $settings "enabled")) "false" }}
+{{- if and (ne (toString (get $settings "enabled")) "false") (or $backupOn (not (has $key (list "backupFailed" "backupMissing")))) }}
 {{- $text := $.Files.Get $path }}
 {{- range $field, $value := $settings }}
 {{- if and (eq $field "namespaces") (empty $value) }}

@@ -1,0 +1,89 @@
+{
+  "alert": "Ariva scheduled backup missing (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "No Job of the scheduled database backup (the CronJob ariva-db-backup, ARV-182) that succeeded within ${backupMissing.maxAgeHours} hours, in the release's namespaces, from the site collector's Kubernetes cluster metrics (external). The CronJob keeps each finished Job that long, so a success older than that has no Job left; it fires too when no backup Job is reported at all (the schedule stopped, the CronJob suspended or removed, or the collector not reading it).",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "k8s.job.successful_pods",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "k8s.namespace.name IN ${backupMissing.namespaces} AND k8s.job.name LIKE 'ariva-db-backup-%'"
+            },
+            "groupBy": [
+              {
+                "name": "k8s.namespace.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "alertOnAbsent": true,
+    "absentFor": "${backupMissing.minutes}",
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${backupMissing.severity}",
+          "op": "below",
+          "matchType": "all_the_times",
+          "target": 1,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${backupMissing.minutes}m",
+      "frequency": "5m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "k8s.namespace.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "4h",
+      "alertStates": [
+        "firing",
+        "nodata"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "backupMissing",
+    "environment": "${environment}",
+    "severity": "${backupMissing.severity}"
+  },
+  "annotations": {
+    "summary": "No scheduled backup within ${backupMissing.maxAgeHours} hours",
+    "description": "No backup Job that succeeded within ${backupMissing.maxAgeHours} hours is reported for ${backupMissing.minutes} minutes: the last day's backup is missing or failed. Check the CronJob ariva-db-backup and its last Jobs, then run a backup by hand.",
+    "runbook": "wiki/10-Operations-Runbook.md#413a-scheduled-backup-failed-or-missing-arv-182"
+  },
+  "disabled": false
+}
