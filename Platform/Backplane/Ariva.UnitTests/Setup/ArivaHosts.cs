@@ -351,6 +351,8 @@ internal sealed class ArivaWebApplicationFactory<TEntryPoint>(string environment
         // No mounted certificate and no Redis in-process: a development Data Protection certificate and a memory-only
         // cache, whatever the environment under test.
         builder.UseSetting("DataProtection:CertificatePath", string.Empty);
+        // ARV-211: and the key ring's development signing certificate beside it, whatever the environment's mounted paths.
+        builder.UseSetting("DataProtection:Signing:CertificatePath", string.Empty);
         builder.UseSetting("DataProtection:UseDevelopmentCertificate", "true");
         builder.UseSetting("Redis:Enabled", "false");
 

@@ -64,6 +64,8 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
     private string _backupDirectory;
     private string _certificatePath;
     private string _keyPath;
+    private string _signingCertificatePath;
+    private string _signingKeyPath;
     private string _certificateThumbprint;
     private string _privateKeyPem;
     private ChartDatabase _source;
@@ -91,6 +93,17 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         await File.WriteAllTextAsync(_keyPath, _privateKeyPem, Ct);
         File.SetUnixFileMode(_keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         _certificateThumbprint = certificate.GetCertHashString(HashAlgorithmName.SHA256);
+
+        // ARV-211: the ariva-dataprotection-signing secret as the chart mounts it: the key ring's own ECDSA P-256 signing certificate.
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var signingRequest = new CertificateRequest("CN=Ariva key ring signing (restore test)", ecdsa, HashAlgorithmName.SHA256);
+        signingRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, critical: true));
+        using var signing = signingRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
+        _signingCertificatePath = Path.Combine(secrets, "signing.crt");
+        _signingKeyPath = Path.Combine(secrets, "signing.key");
+        await File.WriteAllTextAsync(_signingCertificatePath, signing.ExportCertificatePem(), Ct);
+        await File.WriteAllTextAsync(_signingKeyPath, ecdsa.ExportPkcs8PrivateKeyPem(), Ct);
+        File.SetUnixFileMode(_signingKeyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
         var servers = await Task.WhenAll(ChartDatabase.StartAsync(_backupDirectory, Ct), ChartDatabase.StartAsync(_backupDirectory, Ct));
         (_source, _target) = (servers[0], servers[1]);
@@ -715,7 +728,9 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         ["Database:Username"] = RuntimeLogin,
         ["Database:Password"] = runtimePassword,
         ["DataProtection:CertificatePath"] = _certificatePath,
-        ["DataProtection:KeyPath"] = _keyPath
+        ["DataProtection:KeyPath"] = _keyPath,
+        ["DataProtection:Signing:CertificatePath"] = _signingCertificatePath,
+        ["DataProtection:Signing:KeyPath"] = _signingKeyPath
     };
 
     private static IConfiguration Configuration(Dictionary<string, string> settings) => new ConfigurationBuilder().AddInMemoryCollection(settings).Build();

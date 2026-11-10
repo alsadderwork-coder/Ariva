@@ -106,6 +106,11 @@ public sealed partial class MetricTagTests
             certificates.Track(CertificateMetrics.DataProtection, DateTime.UtcNow.AddDays(90));
             certificates.Track(CertificateMetrics.MqttServer, DateTime.UtcNow.AddDays(30));
         },
+        // ARV-207: the key lifecycle job's report gives every gauge of the meter a measurement (a kind with a cryptoperiod among them).
+        [typeof(KeyAgeMetrics)] = m => ((KeyAgeMetrics)m).Reported(new Ariva.Infra.DataProtection.KeyLifecycleRun(
+            new Ariva.Infra.DataProtection.KeyRingRetention(1, 1, 0, 0),
+            new Dictionary<string, DateTime> { [KeyAgeMetrics.DeviceCredential] = DateTime.UtcNow.AddDays(-10), [KeyAgeMetrics.DataProtectionKey] = DateTime.UtcNow.AddDays(-20) }),
+            TimeSpan.FromHours(1)),
         [typeof(OutboxMetrics)] = m =>
         {
             var outbox = (OutboxMetrics)m;

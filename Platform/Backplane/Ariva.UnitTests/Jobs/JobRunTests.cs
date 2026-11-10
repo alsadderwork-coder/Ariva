@@ -161,7 +161,7 @@ public sealed class JobRunTests
             .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
             .Where(m => m.GetCustomAttribute<TickerFunctionAttribute>() is not null)
             .ToList();
-        functions.Select(f => f.DeclaringType!.Name).Should().BeEquivalentTo(["AvailabilityJobs", "ReportJobs", "RetentionJobs", "SecretJobs", "StaffingJobs", "TimescaleJobs"]);
+        functions.Select(f => f.DeclaringType!.Name).Should().BeEquivalentTo(["AvailabilityJobs", "KeyLifecycleJobs", "ReportJobs", "RetentionJobs", "SecretJobs", "StaffingJobs", "TimescaleJobs"]);
 
         foreach (var function in functions)
         {

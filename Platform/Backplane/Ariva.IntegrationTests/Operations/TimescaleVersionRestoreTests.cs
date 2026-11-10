@@ -61,6 +61,8 @@ public sealed partial class TimescaleVersionRestoreTests : IAsyncLifetime
     private readonly string _workDirectory = Path.Combine(Path.GetTempPath(), "ariva-it-timescale-restore-" + Guid.NewGuid().ToString("N"));
     private string _certificatePath;
     private string _keyPath;
+    private string _signingCertificatePath;
+    private string _signingKeyPath;
     private ChartDatabase _source;
     private ChartDatabase _target;
     private ChartDatabase _planted;
@@ -85,6 +87,17 @@ public sealed partial class TimescaleVersionRestoreTests : IAsyncLifetime
         await File.WriteAllTextAsync(_certificatePath, certificate.ExportCertificatePem(), Ct);
         await File.WriteAllTextAsync(_keyPath, rsa.ExportPkcs8PrivateKeyPem(), Ct);
         File.SetUnixFileMode(_keyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        // ARV-211: the ariva-dataprotection-signing secret as the chart mounts it: the key ring's own ECDSA P-256 signing certificate.
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var signingRequest = new CertificateRequest("CN=Ariva key ring signing (TimescaleDB version restore test)", ecdsa, HashAlgorithmName.SHA256);
+        signingRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, critical: true));
+        using var signing = signingRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
+        _signingCertificatePath = Path.Combine(secrets, "signing.crt");
+        _signingKeyPath = Path.Combine(secrets, "signing.key");
+        await File.WriteAllTextAsync(_signingCertificatePath, signing.ExportCertificatePem(), Ct);
+        await File.WriteAllTextAsync(_signingKeyPath, ecdsa.ExportPkcs8PrivateKeyPem(), Ct);
+        File.SetUnixFileMode(_signingKeyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
         var servers = await Task.WhenAll(ChartDatabase.StartAsync(backup, Ct), ChartDatabase.StartAsync(backup, Ct),
             ChartDatabase.StartAsync(backup, Ct), ChartDatabase.StartAsync(backup, Ct));
@@ -380,7 +393,9 @@ public sealed partial class TimescaleVersionRestoreTests : IAsyncLifetime
         ["Database:Username"] = RuntimeLogin,
         ["Database:Password"] = runtimePassword,
         ["DataProtection:CertificatePath"] = _certificatePath,
-        ["DataProtection:KeyPath"] = _keyPath
+        ["DataProtection:KeyPath"] = _keyPath,
+        ["DataProtection:Signing:CertificatePath"] = _signingCertificatePath,
+        ["DataProtection:Signing:KeyPath"] = _signingKeyPath
     };
 
     private static async Task<HttpStatusCode> StartupProbeAsync(HttpClient client)

@@ -1066,6 +1066,22 @@ export function checkManifests(docs, { environment, hosts = false }) {
 			if (/^api-[a-z]+-deployment$/.test(doc.metadata?.name ?? '') && !secretVolumes.some((name) => name.includes('token-public'))) {
 				findings.push(`${id}: API pods must mount the token public keys`);
 			}
+			// ARV-211 (the review's finding L5): the key ring's signing key (ariva-dataprotection-signing, and a previous signer's
+			// certificate during a rotation) reaches the API pods alone, owner-only and read-only, and a previous signer's volume
+			// projects its tls.crt alone (a previous signer only verifies).
+			const signingVolumes = (pod.volumes ?? []).filter((volume) => (volume.secret?.secretName ?? '').includes('dataprotection-signing') ||
+				(volume.name ?? '').startsWith('dataprotection-signing'));
+			if (signingVolumes.length && !/^api-[a-z]+-deployment$/.test(doc.metadata?.name ?? '')) {
+				findings.push(`${id}: only the API deployments may mount the key ring signing key`);
+			}
+			for (const volume of signingVolumes) {
+				if (![256, 400, '0400'].includes(volume.secret?.defaultMode)) findings.push(`${id}: the key ring signing volume ${volume.name} must be owner-only (defaultMode 0400)`);
+				const mounts = [...(pod.containers ?? []), ...(pod.initContainers ?? [])].flatMap((container) => (container.volumeMounts ?? []).filter((mount) => mount.name === volume.name));
+				if (mounts.some((mount) => mount.readOnly !== true)) findings.push(`${id}: the key ring signing volume ${volume.name} must be mounted read-only`);
+				if (volume.name === 'dataprotection-signing-previous' && JSON.stringify((volume.secret?.items ?? []).map((item) => [item.key, item.path])) !== JSON.stringify([['tls.crt', 'tls.crt']])) {
+					findings.push(`${id}: a previous key ring signer's volume must project its tls.crt alone (a previous signer only verifies)`);
+				}
+			}
 			if (doc.kind === 'Deployment' && /^api-[a-z]+-deployment$/.test(doc.metadata?.name ?? '')) {
 				const grace = Number(pod.terminationGracePeriodSeconds);
 				if (!(grace >= MIN_GRACE_SECONDS)) {

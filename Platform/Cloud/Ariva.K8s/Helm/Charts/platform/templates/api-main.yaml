@@ -120,6 +120,17 @@ spec:
           secret:
             secretName: {{ .Values.dataProtectionSecretName | default "ariva-dataprotection" }}
             defaultMode: 0400
+        # The key ring's own signing certificate (ARV-211): kubernetes.io/tls secret with an ECDSA P-256 key, read-only. It signs the
+        # key ring; the certificate above only wraps it
+        - name: dataprotection-signing
+          secret:
+            secretName: {{ .Values.dataProtectionSigningSecretName | default "ariva-dataprotection-signing" }}
+            defaultMode: 0400
+        # During a rotation (ARV-211, wiki 04 section 6.2): the previous Data Protection certificate and the previous signer's
+        # certificate alone, each when its secret name is set
+        {{- with include "ariva-platform.dataProtectionPreviousVolumes" . | trim }}
+        {{- . | nindent 8 }}
+        {{- end }}
         # Access token public keys (ARV-010a): public.pem, and previous.pem during a key rotation; read-only
         - name: token-public
           secret:
@@ -187,6 +198,12 @@ spec:
             - name: dataprotection-certificate
               mountPath: /app/secrets/dataprotection
               readOnly: true
+            - name: dataprotection-signing
+              mountPath: /app/secrets/dataprotection-signing
+              readOnly: true
+            {{- with include "ariva-platform.dataProtectionPreviousMounts" . | trim }}
+            {{- . | nindent 12 }}
+            {{- end }}
             - name: token-public
               mountPath: /app/secrets/token-public
               readOnly: true
@@ -201,6 +218,10 @@ spec:
               subPath: appsettings.service.{{ .Values.environment }}.json
           env:
             {{- include "ariva-platform.otelEnv" . | nindent 12 }}
+            {{- with include "ariva-platform.dataProtectionPreviousEnv" . | trim }}
+            # The previous certificates during a rotation (ARV-211): DataProtection:Previous:0 and DataProtection:Signing:Previous:0
+            {{- . | nindent 12 }}
+            {{- end }}
             {{- if include "ariva-platform.podTls" . }}
             # ARV-198: the web pod's certificate (its public half), reported as web-tls in ariva.certificates.expires_in
             - name: Monitoring__WebCertificatePath

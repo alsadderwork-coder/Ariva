@@ -856,7 +856,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 300,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-19 from the ARV-094 documents. A deployment-wide revoke-everything tool (inventory section 5 item 8) would end every session, so it waits for the login freeze and is not part of this story.",
       "dependsOn": []
     },
@@ -925,7 +925,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 300,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-10-19 from the ARV-094 security review; recorded meanwhile as a deviation in key-management.md.",
       "dependsOn": []
     },

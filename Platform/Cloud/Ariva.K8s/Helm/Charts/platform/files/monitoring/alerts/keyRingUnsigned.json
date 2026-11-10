@@ -1,0 +1,86 @@
+{
+  "alert": "Ariva stored secrets under Data Protection keys no signer signed (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The upgrade check of ARV-211 (every API host at start, Cronz's KeyLifecycle job every day) found stored values (user TOTP seeds, integration client seeds, outbound secrets) that need a Data Protection key the hosts refuse, in an installation already upgraded, by outcome. unsigned: a key without a row signature (written before ARV-211): the window DataProtection:Signing:CertificateSignedUntil was closed before SecretReprotection moved them, a value it could not move, or a row a database writer added. retired-signer: a key signed by a key ring signing certificate no host has configured: a rotation's previous signer removed before SecretReprotection moved them, which only configuring that signer again (dataProtectionSigningPreviousSecretName) fixes; the window does not admit these keys. Those values no longer unprotect, so those users cannot sign in with their authenticator and those clients and endpoints fail; the hosts start nonetheless.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.keyring.problems",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}' AND outcome IN ['unsigned', 'retired-signer']"
+            },
+            "groupBy": [
+              {
+                "name": "outcome",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${keyRingUnsigned.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${keyRingUnsigned.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "outcome"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "24h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "keyRingUnsigned",
+    "environment": "${environment}",
+    "severity": "${keyRingUnsigned.severity}"
+  },
+  "annotations": {
+    "summary": "Stored secrets under keys the hosts refuse: {{$outcome}}",
+    "description": "{{$value}} stored values need a Data Protection key the hosts refuse ({{$outcome}}), held for ${keyRingUnsigned.minutes} minutes. unsigned: if SecretReprotection has not run since the upgrade, reopen the window and run it. retired-signer: if it has not run since the signing rotation, configure the previous signer again (dataProtectionSigningPreviousSecretName) and run it. Otherwise find the rows it named as not re-protected and have them set again, and treat a key row no host wrote as a database writer's work.",
+    "runbook": "wiki/10-Operations-Runbook.md#425-key-lifecycle-key-rotation-due-and-key-ring-held-arv-207"
+  },
+  "disabled": false
+}

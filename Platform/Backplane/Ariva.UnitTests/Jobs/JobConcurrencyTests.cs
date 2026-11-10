@@ -23,6 +23,7 @@ public sealed class JobConcurrencyTests
         [StaffingJobs.Recommendations] = "site advisory lock (class 51), skipped when held; lane minutes inserted ON CONFLICT DO NOTHING",
         [RetentionJobs.Purge] = "session advisory lock (class 52), skipped when held",
         [SecretJobs.Reprotect] = "compare-and-swap UPDATE of each value under an older key",
+        [KeyLifecycleJobs.Lifecycle] = "the database function deletes only the keys its rule lets go, and a row a concurrent copy deleted first is skipped; the dates are read only, and each report replaces the last",
         [TimescaleJobs.PolicyJobs] = "reads only; each check's report replaces the last, so two copies report the same counts"
     };
 

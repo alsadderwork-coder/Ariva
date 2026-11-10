@@ -43,6 +43,8 @@ public static class TelemetryExtensions
         Ariva.Infra.Monitoring.HealthStatusMetrics.MeterName,
         // The expiry of the certificates the host loaded (ARV-125a).
         Ariva.Infra.Monitoring.CertificateMetrics.MeterName,
+        // The age of the keys and dated credentials, and the key ring's states (ARV-207); the database's part Ariva.Api.Cronz only.
+        Ariva.Infra.Monitoring.KeyAgeMetrics.MeterName,
         // The outbox backlog (ARV-125a).
         Ariva.Infra.Messaging.Outbox.OutboxMetrics.MeterName,
         // The queue stream worker's consumer lag (ARV-125a).

@@ -1482,7 +1482,12 @@ function selfTest() {
 		'has no evaluation window', 'is not valid JSON', 'field apiKey looks like a credential', 'is not a SigNoz dashboard of schemaVersion v6',
 		'has no panel', 'a monitoring object must be a ConfigMap',
 		"reads ariva.health.status without the filter deployment.environment = 'k8s-dev'", "reads ariva.outbox.unsent without the filter",
-		'reads k8s.volume.available outside a namespace filter', 'a PromQL query reads no namespace', 'has no environment annotation'
+		'reads k8s.volume.available outside a namespace filter', 'a PromQL query reads no namespace', 'has no environment annotation',
+		// ARV-211 (the review's finding L5): the key ring's signing key, in the API pods alone, owner-only and read-only.
+		'Deployment/bad-signing-reader: only the API deployments may mount the key ring signing key',
+		'Deployment/api-stream-deployment: the key ring signing volume dataprotection-signing must be owner-only (defaultMode 0400)',
+		'Deployment/api-stream-deployment: the key ring signing volume dataprotection-signing must be mounted read-only',
+		"Deployment/api-stream-deployment: a previous key ring signer's volume must project its tls.crt alone"
 	];
 	const missing = expected.filter((rule) => !bad.some((finding) => finding.includes(rule)));
 	// ARV-125b: a render without a rule the story names is caught (the good fixture holds one rule of them).
@@ -1947,6 +1952,50 @@ for (const [label, sets, accepted] of [
 	}
 }
 
+// ARV-211 (the review's finding M2): during a rotation the previous Data Protection certificate (tls.crt and tls.key) and the
+// previous key ring signing certificate (tls.crt alone) reach every API deployment from their own secrets, owner-only and
+// read-only at fixed paths, with the settings that name them; by default neither is mounted.
+{
+	const hosts = ['api-main', 'api-ingest', 'api-stream', 'api-cronz', 'api-integration'];
+	const findings = [];
+	const set = render('values-k8s-dev.yaml', ['dataProtectionPreviousSecretName=site-dp-2026', 'dataProtectionSigningPreviousSecretName=site-dp-signing-2026']);
+	const unset = render('values-k8s-dev.yaml');
+	if (set.status !== 0 || unset.status !== 0) findings.push(`template failed\n${set.stderr}${unset.stderr}`);
+	else {
+		const expected = {
+			'dataprotection-previous': ['site-dp-2026', [['tls.crt', 'tls.crt'], ['tls.key', 'tls.key']], '/app/secrets/dataprotection-previous',
+				{ DataProtection__Previous__0__CertificatePath: '/app/secrets/dataprotection-previous/tls.crt', DataProtection__Previous__0__KeyPath: '/app/secrets/dataprotection-previous/tls.key' }],
+			'dataprotection-signing-previous': ['site-dp-signing-2026', [['tls.crt', 'tls.crt']], '/app/secrets/dataprotection-signing-previous',
+				{ DataProtection__Signing__Previous__0__CertificatePath: '/app/secrets/dataprotection-signing-previous/tls.crt' }]
+		};
+		const docs = parse(set.stdout);
+		findings.push(...checkManifests(docs, { environment: 'k8s-dev' }).filter((finding) => finding.includes('signing')));
+		for (const host of hosts) {
+			const pod = docs.find((doc) => doc.kind === 'Deployment' && doc.metadata?.name === `${host}-deployment`)?.spec?.template?.spec;
+			const container = pod?.containers?.find((c) => c.name === `${host}-container`);
+			for (const [volumeName, [secretName, items, mountPath, env]] of Object.entries(expected)) {
+				const volume = pod?.volumes?.find((v) => v.name === volumeName);
+				if (volume?.secret?.secretName !== secretName || ![256, 400, '0400'].includes(volume?.secret?.defaultMode) ||
+					JSON.stringify((volume?.secret?.items ?? []).map((i) => [i.key, i.path])) !== JSON.stringify(items))
+					findings.push(`${host}: ${volumeName} is not ${secretName}, owner-only, projecting ${items.map((i) => i[0]).join(' and ')}: ${JSON.stringify(volume)}`);
+				const mount = container?.volumeMounts?.find((m) => m.name === volumeName);
+				if (mount?.mountPath !== mountPath || mount?.readOnly !== true) findings.push(`${host}: ${volumeName} is not mounted read-only at ${mountPath}`);
+				for (const [name, value] of Object.entries(env))
+					if (container?.env?.find((variable) => variable.name === name)?.value !== value) findings.push(`${host}: ${name} is not ${value}`);
+			}
+		}
+		const plain = parse(unset.stdout).filter((doc) => doc?.kind === 'Deployment');
+		if (JSON.stringify(plain).includes('dataprotection-previous') || JSON.stringify(plain).includes('dataprotection-signing-previous') || JSON.stringify(plain).includes('__Previous__'))
+			findings.push('a release without a rotation mounts a previous certificate or names one');
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL previous Data Protection certificates during a rotation:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log('PASS previous Data Protection certificates during a rotation: every API deployment mounts the previous certificate and the previous signer\'s tls.crt alone, owner-only and read-only, and names them; none by default');
+	}
+}
+
 // ARV-082a: TimescaleDB with TLS: the defaults (secret timescaledb-tls, TLS 1.2 at least), and a site's secret with TLS 1.3.
 for (const [label, sets, secretName, floor] of [
 	['timescaledb with tls.enabled', ['tls.enabled=true'], 'timescaledb-tls', 'TLSv1.2'],
@@ -2066,6 +2115,10 @@ for (const [label, file, sets, message, annotation] of [
 	// without its values, a claim that is not a name.
 	['a disk threshold above 99 percent', 'values-k8s-dev.yaml', ['monitoring.alerts.disk.usedPercent=150']],
 	['a critical certificate expiry not below the warning', 'values-k8s-dev.yaml', ['monitoring.alerts.certificateExpiry.criticalDays=40']],
+	['a critical key rotation not below the warning (ARV-207)', 'values-k8s-dev.yaml', ['monitoring.alerts.keyRotationDue.criticalDays=30']],
+	['a key ring held window of no minutes (ARV-207)', 'values-k8s-dev.yaml', ['monitoring.alerts.keyRingHeld.minutes=0']],
+	['a key lifecycle failure window of no minutes (ARV-207)', 'values-k8s-dev.yaml', ['monitoring.alerts.keyLifecycleFailed.minutes=0']],
+	['an unsigned key ring window of no minutes (ARV-211)', 'values-k8s-dev.yaml', ['monitoring.alerts.keyRingUnsigned.minutes=0']],
 	// ARV-092c: the scanner's signature age limit stays within the hosts' MalwareScan:MaxSignatureAgeHours bounds, in whole hours.
 	['a signature age limit under 6 hours', 'values-k8s-dev.yaml', ['monitoring.alerts.scannerSignaturesStale.maxAgeHours=5'], 'monitoring.alerts.scannerSignaturesStale.maxAgeHours must be a whole number of hours from 6 to 168'],
 	['a signature age limit over a week', 'values-k8s-dev.yaml', ['monitoring.alerts.scannerSignaturesStale.maxAgeHours=169'], 'must be a whole number of hours from 6 to 168'],
@@ -3118,7 +3171,13 @@ for (const [label, file, sets, message, annotation] of [
 			// ARV-259d: the enabled displays whose board would be stale, a gauge of Api.Main's leader sweep, per site.
 			displaysStale: ['ariva.displays.stale', 'max', 'all_the_times', '5m', 'warning', ['site']],
 			// ARV-259e3: the queue zones Unknown, a gauge every Stream replica reports for its own zones, so summed per site.
-			zonesUnknown: ['ariva.stream.zones_unknown', 'sum', 'all_the_times', '5m', 'critical', ['site']]
+			zonesUnknown: ['ariva.stream.zones_unknown', 'sum', 'all_the_times', '5m', 'critical', ['site']],
+			// ARV-207: the Data Protection keys held past their retention at the key lifecycle run (Cronz), the largest copy.
+			keyRingHeld: ['ariva.keyring.keys', 'max', 'all_the_times', '30m', 'warning', []],
+			// ARV-207 (the review's finding L7): the key lifecycle run that failed as a whole, the largest copy (Cronz).
+			keyLifecycleFailed: ['ariva.keyring.problems', 'max', 'all_the_times', '5m', 'warning', []],
+			// ARV-211 (the review's finding N1): stored values under keys the hosts refuse, by outcome, the largest copy of every host's.
+			keyRingUnsigned: ['ariva.keyring.problems', 'max', 'all_the_times', '30m', 'warning', ['outcome']]
 		};
 		for (const [key, [metric, space, match, window, severity, groups]] of Object.entries(existing)) {
 			const rule = JSON.parse(monitoringRule(docs, `${key}.json`) || 'null');
@@ -3134,6 +3193,29 @@ for (const [label, file, sets, message, annotation] of [
 			if (threshold?.op !== 'above' || threshold?.matchType !== match || threshold?.target !== 0 || threshold?.name !== severity)
 				findings.push(`${key}'s threshold is not above 0, ${match}, ${severity}: ${JSON.stringify(threshold)}`);
 			if (rule.evaluation?.spec?.evalWindow !== window) findings.push(`${key} does not evaluate over ${window}`);
+		}
+		// ARV-207: the key ring rule reads the held keys alone; the key rotation rule counts down to each kind's cryptoperiod, per
+		// kind and host, below its warning and critical days, as certificateExpiry does to a certificate's end.
+		const held = JSON.parse(monitoringRule(docs, 'keyRingHeld.json') || 'null');
+		if (!String(held?.condition?.compositeQuery?.queries?.[0]?.spec?.filter?.expression).includes("AND kind = 'held'"))
+			findings.push('keyRingHeld does not read the held keys alone');
+		// The two rules over ariva.keyring.problems each read their own outcomes (a failed run; the values under keys without a row
+		// signature and under a retired signer's keys, by outcome).
+		for (const [rule, outcomes] of [['keyLifecycleFailed', " AND outcome = 'run'"], ['keyRingUnsigned', " AND outcome IN ['unsigned', 'retired-signer']"]]) {
+			const json = JSON.parse(monitoringRule(docs, `${rule}.json`) || 'null');
+			if (!String(json?.condition?.compositeQuery?.queries?.[0]?.spec?.filter?.expression).endsWith(outcomes))
+				findings.push(`${rule} does not read${outcomes} alone`);
+		}
+		const due = JSON.parse(monitoringRule(docs, 'keyRotationDue.json') || 'null');
+		const dueSpec = due?.condition?.compositeQuery?.queries?.[0]?.spec;
+		const dueThresholds = due?.condition?.thresholds?.spec ?? [];
+		if (!due) findings.push('keyRotationDue is not rendered');
+		else {
+			if (dueSpec?.aggregations?.[0]?.metricName !== 'ariva.keys.rotation_due_in' || dueSpec?.aggregations?.[0]?.spaceAggregation !== 'min')
+				findings.push('keyRotationDue does not read the least ariva.keys.rotation_due_in');
+			if (JSON.stringify((dueSpec?.groupBy ?? []).map((g) => g.name)) !== JSON.stringify(['kind', 'service.name'])) findings.push('keyRotationDue is not grouped by kind and host');
+			if (JSON.stringify(dueThresholds.map((t) => [t.name, t.op, t.target])) !== JSON.stringify([['warning', 'below', 30 * 86400], ['critical', 'below', 7 * 86400]]))
+				findings.push(`keyRotationDue's thresholds are not 30 and 7 days below: ${JSON.stringify(dueThresholds)}`);
 		}
 	}
 	// ARV-259e3: the zones rules' window, severity and count come from their values.

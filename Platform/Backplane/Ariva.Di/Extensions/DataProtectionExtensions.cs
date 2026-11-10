@@ -15,8 +15,9 @@ namespace Ariva.Di.Extensions;
 /// ASP.NET Core Data Protection with one key ring for every host (ARV-008): keys in PostgreSQL through
 /// <see cref="PostgresXmlRepository"/>, encrypted at rest with the certificate from the ariva-dataprotection secret
 /// (<see cref="DataProtectionCertificates"/>) by <see cref="OaepGcmXmlEncryptor"/> (RSA-OAEP-SHA256 and AES-256-GCM,
-/// ARV-080). Keys roll every 90 days. The application name is fixed, so every host
-/// and every release reads the same purpose strings.
+/// ARV-080), and signed since ARV-211 with the key ring's own signing certificate from the ariva-dataprotection-signing
+/// secret (<see cref="KeyRingSigning"/>, ES256), each element and each row (script 0073). Keys roll every 90 days. The
+/// application name is fixed, so every host and every release reads the same purpose strings.
 /// </summary>
 public static class DataProtectionExtensions
 {
@@ -27,8 +28,14 @@ public static class DataProtectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        return services.AddArivaDataProtection(DatabaseSettings.FromConfiguration(configuration), DataProtectionCertificates.Load(configuration),
-            LegacyFormatUntil(configuration));
+        var certificates = DataProtectionCertificates.Load(configuration);
+        var database = DatabaseSettings.FromConfiguration(configuration);
+        services.AddArivaDataProtection(database, certificates, KeyRingSigning.Load(configuration, certificates), LegacyFormatUntil(configuration));
+        // ARV-211 (the review's finding H1): outside vm-local, after the schema check, a host refuses to start while a stored value
+        // needs a key from before ARV-211 and the upgrade window is not open, and warns while it is open.
+        if (database.VerifySchemaOnStartup)
+            services.AddHostedService<KeyRingUpgradeGate>();
+        return services;
     }
 
     /// <summary>
@@ -48,13 +55,15 @@ public static class DataProtectionExtensions
     }
 
     public static IServiceCollection AddArivaDataProtection(this IServiceCollection services, DatabaseSettings database, DataProtectionCertificates certificates,
-        DateTimeOffset? legacyFormatUntil = null)
+        KeyRingSigning signing, DateTimeOffset? legacyFormatUntil = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(database);
         ArgumentNullException.ThrowIfNull(certificates);
+        ArgumentNullException.ThrowIfNull(signing);
 
         services.AddSingleton(certificates);
+        services.AddSingleton(signing);
         // ARV-080: re-protects stored secrets under the current key; Cronz runs it (SecretJobs).
         services.TryAddScoped<SecretReprotection>();
         services.TryAddSingleton<SecretReprotectionRound>();
@@ -74,12 +83,12 @@ public static class DataProtectionExtensions
             .UnprotectKeysWithAnyCertificate([.. certificates.All]);
 
         // ARV-080: our repository behind the trusted key filter, and new keys wrapped with RSA-OAEP-SHA256 and AES-256-GCM
-        // and signed (OaepGcmXmlEncryptor).
+        // and signed (OaepGcmXmlEncryptor); ARV-211: signed with the key ring's own signing key, checked before a key enters.
         services.AddOptions<KeyManagementOptions>().Configure<ILoggerFactory>((options, loggers) =>
         {
-            options.XmlRepository = new TrustedKeyRingRepository(new PostgresXmlRepository(database), legacyFormatUntil, TimeProvider.System,
+            options.XmlRepository = new TrustedKeyRingRepository(new PostgresXmlRepository(database), certificates, signing, legacyFormatUntil, TimeProvider.System,
                 loggers.CreateLogger<TrustedKeyRingRepository>());
-            options.XmlEncryptor = new OaepGcmXmlEncryptor(certificates);
+            options.XmlEncryptor = new OaepGcmXmlEncryptor(certificates, signing);
         });
         return services;
     }

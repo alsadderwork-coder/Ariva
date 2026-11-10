@@ -141,6 +141,45 @@ public sealed class TotalsAndCertificateMetricsTests
         }
     }
 
+    [Fact]
+    public void ExpiresIn_Should_ReportTheSigningCertificateAndEachCaFileTheHostUses_When_Configured()
+    {
+        // ARV-207: the key ring's signing certificate (ARV-211) and the CA files a host verifies its services against, each by its
+        // own constant; a CA bundle reports its earliest end (during a rotation the older CA is the one to act on); a setting the
+        // host does not use (Redis off) is not reported.
+        var folder = Directory.CreateTempSubdirectory("ariva-ca-").FullName;
+        try
+        {
+            var bundle = Path.Combine(folder, "ca.crt");
+            // A bundle as a CA file holds it: one certificate per PEM block, each block on lines of its own (ExportCertificatePem
+            // ends without a line break, so two exports glued together would read as no certificate at all).
+            File.WriteAllText(bundle, Pem(hours: 500) + "\n" + Pem(hours: 20) + "\n");
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string>
+            {
+                ["Database:UseEncryption"] = "true",
+                ["Database:RootCertificate"] = bundle,
+                ["Redis:Enabled"] = "false",
+                ["Redis:CaCertificatePath"] = bundle,
+                ["Kafka:SslCaLocation"] = Path.Combine(folder, "missing.crt"),
+                ["Otlp:RootCertificate"] = bundle
+            }).Build();
+            using var signer = Ariva.UnitTests.Security.KeyRingSigningTests.SigningCertificate();
+            using var metrics = new CertificateMetrics(configuration: configuration, signing: KeyRingSigning.From(signer));
+            using var reader = new InstrumentReader(metrics.Meter);
+
+            var measured = reader.Observe(CertificateMetrics.ExpiresInName).ToDictionary(m => m.Tags["certificate"], m => m.Value / 3600, StringComparer.Ordinal);
+
+            measured.Keys.Should().BeEquivalentTo([CertificateMetrics.DataProtectionSigning, CertificateMetrics.DatabaseCa, CertificateMetrics.KafkaCa, CertificateMetrics.OtlpCa]);
+            measured[CertificateMetrics.DatabaseCa].Should().BeApproximately(20, 0.1, "the earliest end in the bundle");
+            measured[CertificateMetrics.KafkaCa].Should().Be(0, "a configured CA file that is not there reads 0, so certificateExpiry fires");
+            measured[CertificateMetrics.DataProtectionSigning].Should().BeApproximately((signer.NotAfter.ToUniversalTime() - DateTime.UtcNow).TotalHours, 0.1);
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
     private static double HoursLeft(InstrumentReader reader) =>
         reader.Observe(CertificateMetrics.ExpiresInName).Single(m => m.Tags["certificate"] == CertificateMetrics.WebTls).Value / 3600;
 

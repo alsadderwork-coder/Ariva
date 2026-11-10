@@ -71,6 +71,7 @@ public sealed class JobsDashboardTests
         var tickers = await answer.Content.ReadAsStringAsync(ct);
         tickers.Should().Contain(ReportJobs.Deliveries).And.Contain("0 */5 * * * *");
         tickers.Should().Contain(SecretJobs.Reprotect).And.Contain("0 40 2 * * *", "the key ring's stored secrets are re-protected daily (ARV-080)");
+        tickers.Should().Contain(KeyLifecycleJobs.Lifecycle).And.Contain("0 10 3 * * *", "expired keys no stored value needs are deleted daily, after the re-protection (ARV-207)");
 
         // A keyed request returns the hub ticket: HttpOnly, Secure, SameSite=Strict, only for the hub's path, never the key.
         var setCookie = answer.Headers.GetValues("Set-Cookie").Single(c => c.StartsWith(JobsDashboardGuard.TicketCookie + "=", StringComparison.Ordinal));

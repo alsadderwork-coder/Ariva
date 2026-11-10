@@ -155,27 +155,39 @@ public sealed partial class OpsScriptTests
     }
 
     [Fact]
-    public void Check_Should_PassOnlyTheRetentionPurgeAsShipped_When_ItLooksForSecurityDefinerFunctions()
+    public void Check_Should_PassOnlyTheRetentionPurgesAsShipped_When_ItLooksForSecurityDefinerFunctions()
     {
-        // ARV-111a: the shipped scripts hold exactly one SECURITY DEFINER function, and the check after a restore lets it pass
-        // only with the body script 0054 ships (PostgreSQL stores the text between the dollar quotes as the function's source).
+        // ARV-111a and ARV-207: the shipped scripts hold exactly two SECURITY DEFINER functions, the relational retention purge
+        // (0054) and the key ring purge (0072), and the check after a restore lets each pass only with the body its script
+        // ships (PostgreSQL stores the text between the dollar quotes as the function's source).
         var definers = SqlScriptCatalog.Embedded().Where(script => script.Sql.Contains("SECURITY DEFINER", StringComparison.Ordinal)).Select(script => script.Name);
-        definers.Should().Equal(["0054_retention_period.sql"], "a new SECURITY DEFINER function needs its own entry in the restore check");
+        definers.Should().Equal(["0054_retention_period.sql", "0072_data_protection_key_retention.sql"],
+            "a new SECURITY DEFINER function needs its own entry in the restore check");
 
-        var sql = SqlScriptCatalog.Embedded().Single(script => script.Name == "0054_retention_period.sql").Sql;
-        var start = sql.IndexOf("AS $$", sql.IndexOf("CREATE FUNCTION ariva_retention_purge(", StringComparison.Ordinal), StringComparison.Ordinal) + "AS $$".Length;
-        var body = sql[start..sql.IndexOf("$$", start, StringComparison.Ordinal)];
-        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(body)));
+        foreach (var (script, function, arguments) in new[]
+                 {
+                     ("0054_retention_period.sql", "ariva_retention_purge", "text, integer"),
+                     ("0072_data_protection_key_retention.sql", "ariva_data_protection_key_purge", "integer, integer")
+                 })
+        {
+            var sql = SqlScriptCatalog.Embedded().Single(s => s.Name == script).Sql;
+            var start = sql.IndexOf("AS $$", sql.IndexOf($"CREATE FUNCTION {function}(", StringComparison.Ordinal), StringComparison.Ordinal) + "AS $$".Length;
+            var body = sql[start..sql.IndexOf("$$", start, StringComparison.Ordinal)];
+            var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(body)));
+            var anchor = $"p.oid = to_regprocedure('public.{function}({arguments})') AND p.proowner = (SELECT oid FROM me)";
+            Script.Value.Should().Contain(anchor, $"the check names {function} with its owner");
+            var pin = Script.Value[Script.Value.IndexOf(anchor, StringComparison.Ordinal)..];
+            pin = pin[..pin.IndexOf("OR a.is_grantable))", StringComparison.Ordinal)];
 
-        Script.Value.Should().Contain($"encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') = '{hash}'", "the check pins the purge's body as shipped")
-            .And.Contain("p.oid = to_regprocedure('public.ariva_retention_purge(text, integer)') AND p.proowner = (SELECT oid FROM me)")
-            .And.Contain("p.proconfig = ARRAY['search_path=pg_catalog, pg_temp', 'TimeZone=UTC']")
-            .And.Contain("AND p.proacl IS NOT NULL")
-            .And.Contain("WHERE a.grantee NOT IN ((SELECT oid FROM me), 'ariva_runtime'::regrole) OR a.is_grantable",
-                "EXECUTE for the owner and ariva_runtime only, without grant option (a NULL ACL means PUBLIC may run it)");
-        sql.Should().Contain("SET search_path = pg_catalog, pg_temp\n    SET TimeZone = 'UTC'", "the settings the check pins, in that order");
-        sql.Should().Contain("REVOKE ALL ON FUNCTION ariva_retention_purge(text, integer) FROM PUBLIC")
-            .And.Contain("GRANT EXECUTE ON FUNCTION ariva_retention_purge(text, integer) TO ariva_runtime", "the grants the check pins");
+            pin.Should().Contain($"encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') = '{hash}'", $"the check pins {function}'s body as shipped")
+                .And.Contain("p.proconfig = ARRAY['search_path=pg_catalog, pg_temp', 'TimeZone=UTC']")
+                .And.Contain("AND p.proacl IS NOT NULL")
+                .And.Contain("WHERE a.grantee NOT IN ((SELECT oid FROM me), 'ariva_runtime'::regrole)",
+                    "EXECUTE for the owner and ariva_runtime only, without grant option (a NULL ACL means PUBLIC may run it)");
+            sql.Should().Contain("SET search_path = pg_catalog, pg_temp\n    SET TimeZone = 'UTC'", "the settings the check pins, in that order");
+            sql.Should().Contain($"REVOKE ALL ON FUNCTION {function}({arguments}) FROM PUBLIC")
+                .And.Contain($"GRANT EXECUTE ON FUNCTION {function}({arguments}) TO ariva_runtime", "the grants the check pins");
+        }
     }
 
     [Fact]
@@ -197,6 +209,8 @@ public sealed partial class OpsScriptTests
         listed.Groups["entries"].Value.Replace("\\\n", string.Empty, StringComparison.Ordinal).Split(',').Order(StringComparer.Ordinal)
             .Should().Equal(shipped, "every function body the shipped scripts create, and nothing else:\n" + string.Join(",\\\n", shipped));
         shipped.Should().Contain("ariva_retention_purge:535ad38b539587c302aa4ea85e1c3508d55e5d5df6bf4f0675bbadf0076f78d7", "the body the purge's own check pins");
+        shipped.Should().Contain("ariva_data_protection_key_purge:9d886614f2343b230d50749c2f10b04df075e698c8758c163f80ca9ff15d975b",
+            "the body the key ring purge's own check pins (ARV-207)");
         shipped.Select(entry => entry[..entry.IndexOf(':', StringComparison.Ordinal)]).Distinct(StringComparer.Ordinal).Should().HaveCountGreaterThan(20);
     }
 

@@ -325,6 +325,45 @@ spec:
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
           volumeMounts: [{ name: tmp, mountPath: /tmp }, { name: database-ca, mountPath: /app/secrets/database-ca }, { name: redis-ca, mountPath: /app/secrets/redis-ca, readOnly: true }]
 ---
+# ARV-211 (the review's finding L5): the key ring's signing key in a pod that is not an API host.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: bad-signing-reader }
+spec:
+  template:
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: dataprotection-signing, secret: { secretName: ariva-dataprotection-signing, defaultMode: 0400 } }
+      containers:
+        - name: app
+          image: registry.example/web:main-20261001.1
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }, { name: dataprotection-signing, mountPath: /app/secrets/dataprotection-signing, readOnly: true }]
+---
+# ARV-211 (L5): in an API host, the signing key readable by others and writable, and a previous signer's volume with its key.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api-stream-deployment }
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: token-public, secret: { secretName: ariva-token-public } }
+        - { name: dataprotection-signing, secret: { secretName: ariva-dataprotection-signing, defaultMode: 0444 } }
+        - { name: dataprotection-signing-previous, secret: { secretName: ariva-dataprotection-signing-2026, defaultMode: 0400, items: [{ key: tls.crt, path: tls.crt }, { key: tls.key, path: tls.key }] } }
+      containers:
+        - name: app
+          image: registry.example/api-stream:main-20261001.1
+          env: [{ name: DOTNET_ENVIRONMENT, value: k8s-prd }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }, { name: dataprotection-signing, mountPath: /app/secrets/dataprotection-signing },
+            { name: dataprotection-signing-previous, mountPath: /app/secrets/dataprotection-signing-previous, readOnly: true }]
+---
 # ARV-125b: monitoring objects that break the rules.
 apiVersion: v1
 kind: ConfigMap

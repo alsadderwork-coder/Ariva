@@ -11,6 +11,8 @@ spec:
         - { name: token-public, secret: { secretName: ariva-token-public } }
         - { name: integration-token-public, secret: { secretName: ariva-integration-token-public } }
         - { name: integration-token-signing, secret: { secretName: ariva-integration-token-signing, defaultMode: 0400 } }
+        - { name: dataprotection-signing, secret: { secretName: ariva-dataprotection-signing, defaultMode: 0400 } }
+        - { name: dataprotection-signing-previous, secret: { secretName: ariva-dataprotection-signing-2026, defaultMode: 0400, items: [{ key: tls.crt, path: tls.crt }] } }
         - { name: database-ca, secret: { secretName: ariva-database-ca, optional: true, defaultMode: 0444, items: [{ key: ca.crt, path: ca.crt }] } }
         - { name: redis-ca, secret: { secretName: ariva-redis-ca, optional: true, defaultMode: 0444, items: [{ key: ca.crt, path: ca.crt }] } }
       containers:
@@ -19,7 +21,9 @@ spec:
           envFrom: [{ configMapRef: { name: api-main-configmap } }]
           startupProbe: { httpGet: { path: /health/startup, port: 8080 }, initialDelaySeconds: 10, periodSeconds: 15, failureThreshold: 9 }
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] }, readOnlyRootFilesystem: true }
-          volumeMounts: [{ name: tmp, mountPath: /tmp }, { name: database-ca, mountPath: /app/secrets/database-ca, readOnly: true }, { name: redis-ca, mountPath: /app/secrets/redis-ca, readOnly: true }]
+          volumeMounts: [{ name: tmp, mountPath: /tmp }, { name: database-ca, mountPath: /app/secrets/database-ca, readOnly: true }, { name: redis-ca, mountPath: /app/secrets/redis-ca, readOnly: true },
+            { name: dataprotection-signing, mountPath: /app/secrets/dataprotection-signing, readOnly: true },
+            { name: dataprotection-signing-previous, mountPath: /app/secrets/dataprotection-signing-previous, readOnly: true }]
 ---
 apiVersion: apps/v1
 kind: Deployment

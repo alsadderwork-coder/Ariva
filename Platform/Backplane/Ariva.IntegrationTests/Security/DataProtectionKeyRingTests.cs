@@ -70,8 +70,20 @@ public sealed class DataProtectionKeyRingTests(PostgresFixture fixture)
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddArivaDataProtection(settings, certificates);
+        services.AddArivaDataProtection(settings, certificates, Signing);
         return services.BuildServiceProvider();
+    }
+
+    /// <summary>ARV-211: the key ring's own signing certificate, shared by every host of the deployment.</summary>
+    private static readonly KeyRingSigning Signing = KeyRingSigning.From(SigningCertificate());
+
+    private static X509Certificate2 SigningCertificate()
+    {
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var request = new CertificateRequest("CN=Ariva key ring signing (test)", ecdsa, HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, critical: true));
+        using var created = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+        return X509CertificateLoader.LoadPkcs12(created.Export(X509ContentType.Pkcs12, "test"), "test", X509KeyStorageFlags.Exportable);
     }
 
     private static IDataProtector Protector(IServiceProvider host) =>

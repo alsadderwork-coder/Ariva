@@ -1,0 +1,78 @@
+{
+  "alert": "Ariva key lifecycle job failed (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The last run of Cronz's key lifecycle job (KeyLifecycle, daily) failed as a whole (ARV-207, the review's finding L7): the database was out of reach, the key ring purge was refused or the run passed its timeout. Expired Data Protection keys are not destroyed when the policy says, and the key ages read from the database (integration client secrets and seeds, device and display credentials, the key ring) lapse a day and two hours after the last run that finished.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.keyring.problems",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}' AND outcome = 'run'"
+            },
+            "groupBy": []
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${keyLifecycleFailed.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${keyLifecycleFailed.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "24h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "keyLifecycleFailed",
+    "environment": "${environment}",
+    "severity": "${keyLifecycleFailed.severity}"
+  },
+  "annotations": {
+    "summary": "Key lifecycle job failed",
+    "description": "The last key lifecycle run failed as a whole, held for ${keyLifecycleFailed.minutes} minutes. Check the Cronz log for KeyLifecycle and the database; expired keys past their retention are kept until a run finishes.",
+    "runbook": "wiki/10-Operations-Runbook.md#425-key-lifecycle-key-rotation-due-and-key-ring-held-arv-207"
+  },
+  "disabled": false
+}

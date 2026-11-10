@@ -170,6 +170,8 @@ public sealed class PostgresFixture : IAsyncLifetime
             TestDatabase.EnvironmentLocal => "CREATE DATABASE it_environment_local",
             TestDatabase.EnvironmentReplay => "CREATE DATABASE it_environment_replay",
             TestDatabase.RunTimeoutStatements => "CREATE DATABASE it_run_timeout_statements",
+            TestDatabase.KeyLifecycle => "CREATE DATABASE it_key_lifecycle",
+            TestDatabase.KeyRingUpgrade => "CREATE DATABASE it_key_ring_upgrade",
             _ => throw new ArgumentOutOfRangeException(nameof(database))
         };
         var name = sql["CREATE DATABASE ".Length..];
@@ -360,7 +362,9 @@ public enum TestDatabase
     EnvironmentDeployed,
     EnvironmentLocal,
     EnvironmentReplay,
-    RunTimeoutStatements
+    RunTimeoutStatements,
+    KeyLifecycle,
+    KeyRingUpgrade
 }
 
 [CollectionDefinition(Name)]

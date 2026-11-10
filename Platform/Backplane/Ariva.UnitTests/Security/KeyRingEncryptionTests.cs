@@ -6,8 +6,8 @@ using Ariva.Infra.DataProtection;
 using Ariva.Infra.Settings;
 using FluentAssertions;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.AuthenticatedEncryption.ConfigurationModel;
 using Microsoft.AspNetCore.DataProtection.KeyManagement;
-using Microsoft.AspNetCore.DataProtection.Repositories;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -32,8 +32,8 @@ public sealed class KeyRingEncryptionTests
         using var certificate = Certificate(3072);
         var original = new XElement("key", new XAttribute("id", "42"), new XElement("secret", "master-key-material"));
 
-        var encrypted = OaepGcmXml.Encrypt(original, certificate);
-        var decrypted = OaepGcmXml.Decrypt(encrypted, [certificate]);
+        var encrypted = OaepGcmXml.Encrypt(original, certificate, SharedSigning.Current);
+        var decrypted = OaepGcmXml.Decrypt(encrypted, [certificate], SharedSigning, DateTimeOffset.UtcNow);
 
         XNode.DeepEquals(decrypted, original).Should().BeTrue();
         encrypted.ToString().Should().NotContain("master-key-material");
@@ -48,32 +48,32 @@ public sealed class KeyRingEncryptionTests
     public void Decrypt_Should_Refuse_When_APartWasAltered(string part)
     {
         using var certificate = Certificate(3072);
-        var encrypted = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate);
+        var encrypted = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate, SharedSigning.Current);
         var element = encrypted.Element(OaepGcmXml.Namespace + part)!;
         var bytes = Convert.FromBase64String(element.Value);
         bytes[0] ^= 0x01;
         element.Value = Convert.ToBase64String(bytes);
 
-        var decrypt = () => OaepGcmXml.Decrypt(encrypted, [certificate]);
+        var decrypt = () => OaepGcmXml.Decrypt(encrypted, [certificate], SharedSigning, DateTimeOffset.UtcNow);
 
-        decrypt.Should().Throw<CryptographicException>("GCM authenticates the key and the wrapped key decrypts only unaltered");
+        decrypt.Should().Throw<CryptographicException>("the signature covers every part, and GCM authenticates the key");
     }
 
     [Fact]
     public void Decrypt_Should_Refuse_When_TheSignatureIsMissingOrAltered()
     {
         using var certificate = Certificate(3072);
-        var unsigned = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate);
+        var unsigned = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate, SharedSigning.Current);
         unsigned.Element(OaepGcmXml.Namespace + "signature")!.Remove();
-        var altered = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate);
+        var altered = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate, SharedSigning.Current);
         var signature = altered.Element(OaepGcmXml.Namespace + "signature")!;
         var bytes = Convert.FromBase64String(signature.Value);
         bytes[^1] ^= 0x01;
         signature.Value = Convert.ToBase64String(bytes);
 
-        FluentActions.Invoking(() => OaepGcmXml.Decrypt(unsigned, [certificate])).Should().Throw<CryptographicException>(
+        FluentActions.Invoking(() => OaepGcmXml.Decrypt(unsigned, [certificate], SharedSigning, DateTimeOffset.UtcNow)).Should().Throw<CryptographicException>(
             "an element made with the public certificate alone has no valid signature");
-        FluentActions.Invoking(() => OaepGcmXml.Decrypt(altered, [certificate])).Should().Throw<CryptographicException>().WithMessage("*signature*");
+        FluentActions.Invoking(() => OaepGcmXml.Decrypt(altered, [certificate], SharedSigning, DateTimeOffset.UtcNow)).Should().Throw<CryptographicException>().WithMessage("*signature*");
     }
 
     [Fact]
@@ -81,14 +81,15 @@ public sealed class KeyRingEncryptionTests
     {
         using var certificate = Certificate(3072);
         using var other = Certificate(3072);
-        var relabelled = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate);
+        var relabelled = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate, SharedSigning.Current);
         relabelled.SetAttributeValue("algorithm", "RSA1_5+A256CBC");
-        var reassigned = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate);
+        var reassigned = OaepGcmXml.Encrypt(new XElement("key", "material"), certificate, SharedSigning.Current);
         reassigned.SetAttributeValue("certificate", other.GetCertHashString(HashAlgorithmName.SHA256));
+        var now = DateTimeOffset.UtcNow;
 
-        FluentActions.Invoking(() => OaepGcmXml.Decrypt(relabelled, [certificate])).Should().Throw<CryptographicException>();
-        FluentActions.Invoking(() => OaepGcmXml.Decrypt(reassigned, [certificate, other])).Should().Throw<CryptographicException>();
-        FluentActions.Invoking(() => OaepGcmXml.Decrypt(OaepGcmXml.Encrypt(new XElement("key"), certificate), [other]))
+        FluentActions.Invoking(() => OaepGcmXml.Decrypt(relabelled, [certificate], SharedSigning, now)).Should().Throw<CryptographicException>();
+        FluentActions.Invoking(() => OaepGcmXml.Decrypt(reassigned, [certificate, other], SharedSigning, now)).Should().Throw<CryptographicException>();
+        FluentActions.Invoking(() => OaepGcmXml.Decrypt(OaepGcmXml.Encrypt(new XElement("key"), certificate, SharedSigning.Current), [other], SharedSigning, now))
             .Should().Throw<CryptographicException>().WithMessage("*No Data Protection certificate*");
     }
 
@@ -100,7 +101,7 @@ public sealed class KeyRingEncryptionTests
     public void Keys_Should_BeWrappedWithOaepAndGcm_When_TheHostsWriteThem()
     {
         using var certificate = Certificate(3072);
-        var repository = new MemoryRepository();
+        var repository = new MemoryKeyRing();
         using var host = Host(repository, DataProtectionCertificates.From(certificate));
 
         var protectedValue = Protector(host).Protect("totp-seed");
@@ -124,7 +125,7 @@ public sealed class KeyRingEncryptionTests
     public void NewKeys_Should_ProtectPayloadsWithAesGcm_When_Created()
     {
         using var certificate = Certificate(3072);
-        var repository = new MemoryRepository();
+        var repository = new MemoryKeyRing();
         using var host = Host(repository, DataProtectionCertificates.From(certificate));
 
         Protector(host).Protect("anything");
@@ -138,14 +139,14 @@ public sealed class KeyRingEncryptionTests
     public void Unprotect_Should_ReadPayloadsOfAKeyWrittenBeforeArv080_When_ItsCertificateIsConfigured()
     {
         using var certificate = Certificate(3072);
-        var repository = new MemoryRepository();
+        var repository = new MemoryKeyRing();
         string legacyPayload;
         using (var legacy = LegacyHost(repository, certificate))
             legacyPayload = Protector(legacy).Protect("outbound-secret");
         repository.GetAllElements().Single().ToString().Should().Contain("EncryptedData", "the fixture is a key in the old format");
 
-        using var host = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: DateTimeOffset.UtcNow.AddDays(1));
-        using var closed = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: null);
+        using var host = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: DateTimeOffset.UtcNow.AddDays(1), signing: WindowSigning);
+        using var closed = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: null, signing: WindowSigning);
 
         (Protector(host).Unprotect(legacyPayload) == "outbound-secret").Should().BeTrue("old keys stay readable during the migration window");
         FluentActions.Invoking(() => Protector(closed).Unprotect(legacyPayload)).Should().Throw<CryptographicException>(
@@ -156,7 +157,7 @@ public sealed class KeyRingEncryptionTests
     public void KeyRing_Should_IgnoreAPlantedPlaintextKey_When_ItWouldBecomeTheDefault()
     {
         using var certificate = Certificate(3072);
-        var repository = new MemoryRepository();
+        var repository = new MemoryKeyRing();
         using (var first = Host(repository, DataProtectionCertificates.From(certificate)))
             Protector(first).Protect("creates the genuine key");
 
@@ -166,7 +167,7 @@ public sealed class KeyRingEncryptionTests
         attacker.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(90));
         repository.GetAllElements().Should().Contain(e => e.ToString().Contains("<value>"), "the fixture plants a plaintext key");
 
-        using var host = Host(repository, DataProtectionCertificates.From(certificate));
+        using var host = Host(repository, DataProtectionCertificates.From(certificate), signing: WindowSigning);
         var payload = Protector(host).Protect("totp-seed");
 
         FluentActions.Invoking(() => Protector(attacker).Unprotect(payload)).Should().Throw<CryptographicException>(
@@ -178,7 +179,7 @@ public sealed class KeyRingEncryptionTests
     public void KeyRing_Should_IgnoreAPlantedKey_When_ItHidesAGenuineEncryptedSecretAsADecoy()
     {
         using var certificate = Certificate(3072);
-        var repository = new MemoryRepository();
+        var repository = new MemoryKeyRing();
         using (var first = Host(repository, DataProtectionCertificates.From(certificate)))
             Protector(first).Protect("creates the genuine key");
         var genuine = repository.GetAllElements().Single().Descendants().Single(e => e.Name.LocalName == "encryptedSecret");
@@ -194,7 +195,7 @@ public sealed class KeyRingEncryptionTests
             planted.Descendants().Single(e => e.Name.LocalName == "masterKey").Parent!.Add(new XElement("decoy", new XElement(genuine)));
         });
 
-        using var host = Host(repository, DataProtectionCertificates.From(certificate));
+        using var host = Host(repository, DataProtectionCertificates.From(certificate), signing: WindowSigning);
         var payload = Protector(host).Protect("totp-seed");
 
         FluentActions.Invoking(() => Protector(attacker).Unprotect(payload)).Should().Throw<CryptographicException>(
@@ -205,7 +206,7 @@ public sealed class KeyRingEncryptionTests
     public void KeyRing_Should_NeverProtectWithALegacyKey_When_OneIsPlantedDuringTheMigrationWindow()
     {
         using var certificate = Certificate(3072);
-        var repository = new MemoryRepository();
+        var repository = new MemoryKeyRing();
         using (var first = Host(repository, DataProtectionCertificates.From(certificate)))
             Protector(first).Protect("creates the genuine key");
 
@@ -214,7 +215,7 @@ public sealed class KeyRingEncryptionTests
         Thread.Sleep(20);
         planter.GetRequiredService<IKeyManager>().CreateNewKey(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(90));
 
-        using var host = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: DateTimeOffset.UtcNow.AddDays(30));
+        using var host = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: DateTimeOffset.UtcNow.AddDays(30), signing: WindowSigning);
         var payload = Protector(host).Protect("totp-seed");
 
         using var reader = LegacyHost(repository, certificate);
@@ -226,7 +227,7 @@ public sealed class KeyRingEncryptionTests
     public void KeyRing_Should_NeverProtectWithALegacyKey_When_ItHidesItsRealExpiryBehindANamespacedDecoy()
     {
         using var certificate = Certificate(3072);
-        var repository = new MemoryRepository();
+        var repository = new MemoryKeyRing();
         using (var first = Host(repository, DataProtectionCertificates.From(certificate)))
             Protector(first).Protect("creates the genuine key");
 
@@ -239,13 +240,14 @@ public sealed class KeyRingEncryptionTests
             planted.Element("expirationDate")!.AddBeforeSelf(new XElement(XName.Get("expirationDate", "urn:decoy"), "2000-01-01T00:00:00Z"));
         });
 
-        using var host = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: DateTimeOffset.UtcNow.AddDays(30));
+        using var host = Host(repository, DataProtectionCertificates.From(certificate), legacyFormatUntil: DateTimeOffset.UtcNow.AddDays(30), signing: WindowSigning);
         var payload = Protector(host).Protect("totp-seed");
 
         using var reader = LegacyHost(repository, certificate);
         FluentActions.Invoking(() => Protector(reader).Unprotect(payload)).Should().Throw<CryptographicException>(
             "a namespaced copy of a date cannot hide the date Data Protection reads");
-        new TrustedKeyRingRepository(new MemoryRepository(), DateTimeOffset.UtcNow.AddDays(30), TimeProvider.System, NullLogger.Instance)
+        new TrustedKeyRingRepository(new MemoryKeyRing(), DataProtectionCertificates.From(certificate), SharedSigning, DateTimeOffset.UtcNow.AddDays(30),
+                TimeProvider.System, NullLogger.Instance)
             .Verdict(repository.GetAllElements().Last()).Should().Contain("exactly one unqualified expirationDate");
     }
 
@@ -256,23 +258,33 @@ public sealed class KeyRingEncryptionTests
         var until = new DateTimeOffset(2027, 1, 6, 0, 0, 0, TimeSpan.Zero);
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddArivaDataProtection(new DatabaseSettings(), DataProtectionCertificates.From(certificate), until);
+        services.AddArivaDataProtection(new DatabaseSettings(), DataProtectionCertificates.From(certificate), SharedSigning, until);
         using var provider = services.BuildServiceProvider();
 
         var options = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<KeyManagementOptions>>().Value;
 
-        options.XmlRepository.Should().BeOfType<TrustedKeyRingRepository>().Which.LegacyFormatUntil.Should().Be(until);
+        var filter = options.XmlRepository.Should().BeOfType<TrustedKeyRingRepository>().Subject;
+        filter.LegacyFormatUntil.Should().Be(until);
+        filter.Signing.Should().BeSameAs(SharedSigning, "ARV-211: every element's signature is checked against the key ring's signing certificates before it enters");
         options.XmlEncryptor.Should().BeOfType<OaepGcmXmlEncryptor>();
+        provider.GetRequiredService<KeyRingSigning>().Should().BeSameAs(SharedSigning, "the decryptor checks the signature again with the same signers");
     }
 
     [Fact]
     public void Verdict_Should_AdmitOnlyArivaKeys_When_TheRingIsRead()
     {
-        var filter = new TrustedKeyRingRepository(new MemoryRepository(), null, TimeProvider.System, NullLogger.Instance);
-        XElement Key(string decryptor) => new("key", new XAttribute("id", Guid.NewGuid()),
+        using var certificate = Certificate(3072);
+        var filter = new TrustedKeyRingRepository(new MemoryKeyRing(), DataProtectionCertificates.From(certificate), SharedSigning, null, TimeProvider.System,
+            NullLogger.Instance);
+        // The encrypted secret holds a genuine element (ARV-211: its signature is checked before the key enters), in the descriptor
+        // Data Protection writes with Ariva's settings (ARV-211 review, M1: no other is admitted).
+        XElement Key(string decryptor) => new("key", new XAttribute("id", Guid.NewGuid()), new XAttribute("version", 1),
             new XElement("creationDate", "2026-10-06T00:00:00Z"), new XElement("activationDate", "2026-10-06T00:00:00Z"),
             new XElement("expirationDate", "2027-01-04T00:00:00Z"),
-            new XElement("descriptor", new XElement("descriptor", new XElement("encryptedSecret", new XAttribute("decryptorType", decryptor)))));
+            new XElement("descriptor", new XAttribute("deserializerType", typeof(AuthenticatedEncryptorDescriptorDeserializer).AssemblyQualifiedName),
+                new XElement("descriptor", new XElement("encryption", new XAttribute("algorithm", "AES_256_GCM")),
+                    new XElement("encryptedSecret", new XAttribute("decryptorType", decryptor),
+                        OaepGcmXml.Encrypt(new XElement("masterKey", new XElement("value", "AAAA")), certificate, SharedSigning.Current)))));
 
         filter.Verdict(Key(typeof(OaepGcmXmlDecryptor).AssemblyQualifiedName!)).Should().BeNull();
         filter.Verdict(Key("Microsoft.AspNetCore.DataProtection.XmlEncryption.EncryptedXmlDecryptor, Microsoft.AspNetCore.DataProtection")).Should().Contain("LegacyFormatUntil");
@@ -375,20 +387,31 @@ public sealed class KeyRingEncryptionTests
 
     #region Helpers
 
-    private static ServiceProvider Host(MemoryRepository repository, DataProtectionCertificates certificates, DateTimeOffset? legacyFormatUntil = null)
+    /// <summary>ARV-211: the signing certificate the hosts of a test share (every host of a deployment mounts the same one).</summary>
+    private static readonly KeyRingSigning SharedSigning = KeyRingSigning.From(KeyRingSigningTests.SigningCertificate());
+
+    /// <summary>
+    /// The same signer with the upgrade window open (ARV-211): rows without a row signature (a host before ARV-211, or a writer
+    /// with INSERT alone) then reach the shape checks below, the most a planted row can get past.
+    /// </summary>
+    private static readonly KeyRingSigning WindowSigning = KeyRingSigning.From(SharedSigning.Current, certificateSignedUntil: DateTimeOffset.UtcNow.AddDays(30));
+
+    private static ServiceProvider Host(MemoryKeyRing repository, DataProtectionCertificates certificates, DateTimeOffset? legacyFormatUntil = null,
+        KeyRingSigning signing = null)
     {
+        signing ??= SharedSigning;
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddArivaDataProtection(new DatabaseSettings(), certificates, legacyFormatUntil);
-        // After AddArivaDataProtection: this repository replaces PostgreSQL behind the same trusted key filter, and the
+        services.AddArivaDataProtection(new DatabaseSettings(), certificates, signing, legacyFormatUntil);
+        // After AddArivaDataProtection: this table replaces PostgreSQL behind the same trusted key filter, and the
         // encryptor stays the hosts' one.
         services.Configure<KeyManagementOptions>(options => options.XmlRepository =
-            new TrustedKeyRingRepository(repository, legacyFormatUntil, TimeProvider.System, NullLogger.Instance));
+            new TrustedKeyRingRepository(repository, certificates, signing, legacyFormatUntil, TimeProvider.System, NullLogger.Instance));
         return services.BuildServiceProvider();
     }
 
     /// <summary>Someone with INSERT on the key table: writes a key whose master key is in plain text.</summary>
-    private static ServiceProvider PlaintextKeyWriter(MemoryRepository repository)
+    private static ServiceProvider PlaintextKeyWriter(MemoryKeyRing repository)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -398,7 +421,7 @@ public sealed class KeyRingEncryptionTests
     }
 
     /// <summary>The configuration before ARV-080: the framework's certificate encryptor (EncryptedXml).</summary>
-    private static ServiceProvider LegacyHost(MemoryRepository repository, X509Certificate2 certificate)
+    private static ServiceProvider LegacyHost(MemoryKeyRing repository, X509Certificate2 certificate)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -420,30 +443,6 @@ public sealed class KeyRingEncryptionTests
         using var created = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
         // Round trip through PKCS#12 so the private key is usable on every platform, as a mounted PEM pair would be.
         return X509CertificateLoader.LoadPkcs12(created.Export(X509ContentType.Pkcs12, "test"), "test", X509KeyStorageFlags.Exportable);
-    }
-
-    private sealed class MemoryRepository : IXmlRepository
-    {
-        private readonly List<XElement> _elements = [];
-
-        public IReadOnlyCollection<XElement> GetAllElements()
-        {
-            lock (_elements)
-                return [.. _elements.Select(e => new XElement(e))];
-        }
-
-        public void StoreElement(XElement element, string friendlyName)
-        {
-            lock (_elements)
-                _elements.Add(new XElement(element));
-        }
-
-        /// <summary>Changes the stored rows in place, as a database writer could.</summary>
-        public void Mutate(Action<List<XElement>> change)
-        {
-            lock (_elements)
-                change(_elements);
-        }
     }
 
     #endregion

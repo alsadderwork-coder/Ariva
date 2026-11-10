@@ -202,7 +202,8 @@ jobs:
       - name: The one-time secrets exist
         run: |
           missing=()
-          for secret in ariva-dataprotection ariva-token-public ariva-token-signing ariva-integration-token-public ariva-integration-token-signing ariva-tls; do
+          # ARV-211: the key ring's own signing certificate (ariva-dataprotection-signing) beside the Data Protection certificate.
+          for secret in ariva-dataprotection ariva-dataprotection-signing ariva-token-public ariva-token-signing ariva-integration-token-public ariva-integration-token-signing ariva-tls; do
             kubectl get secret "$secret" -n "$NAMESPACE" > /dev/null 2>&1 || missing+=("$secret")
           done
           if [ "${#missing[@]}" -gt 0 ]; then

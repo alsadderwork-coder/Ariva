@@ -1,0 +1,78 @@
+{
+  "alert": "Ariva Data Protection keys held past their retention (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The key lifecycle job's last run (Cronz, KeyLifecycle, daily) found expired Data Protection keys past their retention still in the key ring (ARV-207): a stored TOTP seed or outbound secret still names them because SecretReprotection could not move it (an unreadable value, or the job does not run), or no unexpired key is in the ring. They are kept, so they are not destroyed when the policy says.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.keyring.keys",
+                "timeAggregation": "max",
+                "spaceAggregation": "max"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}' AND kind = 'held'"
+            },
+            "groupBy": []
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "${keyRingHeld.severity}",
+          "op": "above",
+          "matchType": "all_the_times",
+          "target": 0,
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "${keyRingHeld.minutes}m",
+      "frequency": "1m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [],
+    "renotify": {
+      "enabled": true,
+      "interval": "24h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "keyRingHeld",
+    "environment": "${environment}",
+    "severity": "${keyRingHeld.severity}"
+  },
+  "annotations": {
+    "summary": "Data Protection keys held past their retention",
+    "description": "The last key lifecycle run kept {{$value}} expired Data Protection keys past their retention, held for ${keyRingHeld.minutes} minutes. Find the values SecretReprotection could not move (its log names their rows) and have them set again.",
+    "runbook": "wiki/10-Operations-Runbook.md#425-key-lifecycle-key-rotation-due-and-key-ring-held-arv-207"
+  },
+  "disabled": false
+}

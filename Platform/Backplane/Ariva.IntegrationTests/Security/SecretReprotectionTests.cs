@@ -78,7 +78,7 @@ public sealed class SecretReprotectionTests(PostgresFixture fixture)
             // The hosts' Data Protection (signed OAEP and GCM key ring) with an in-memory repository, instead of the
             // ephemeral one.
             services.RemoveAll<IDataProtectionProvider>();
-            services.AddArivaDataProtection(new DatabaseSettings(), DataProtectionCertificates.From(Certificate()));
+            services.AddArivaDataProtection(new DatabaseSettings(), DataProtectionCertificates.From(Certificate()), KeyRingSigning.From(SigningCertificate()));
             var repository = new MemoryRepository();
             services.Configure<KeyManagementOptions>(options => options.XmlRepository = repository);
             services.AddSingleton<ILoggerProvider>(_logs);
@@ -274,6 +274,16 @@ public sealed class SecretReprotectionTests(PostgresFixture fixture)
         await using var command = new NpgsqlCommand("""SELECT totp_secret_protected FROM "user" WHERE id = @id""", connection);
         command.Parameters.AddWithValue("id", userId);
         return (string)await command.ExecuteScalarAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>ARV-211: the key ring's own signing certificate (ECDSA P-256, digital signature only).</summary>
+    private static X509Certificate2 SigningCertificate()
+    {
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var request = new CertificateRequest("CN=Ariva key ring signing (reprotect)", ecdsa, HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, critical: true));
+        using var created = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+        return X509CertificateLoader.LoadPkcs12(created.Export(X509ContentType.Pkcs12, "test"), "test", X509KeyStorageFlags.Exportable);
     }
 
     private static X509Certificate2 Certificate()

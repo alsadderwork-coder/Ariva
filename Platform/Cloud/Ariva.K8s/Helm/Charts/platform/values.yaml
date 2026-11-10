@@ -105,6 +105,17 @@ clusterName: k8s-dev
 # Data Protection key-protection certificate (ARV-008): a kubernetes.io/tls secret created out of band (cert-manager or
 # kubectl create secret tls), mounted read-only into every API pod at /app/secrets/dataprotection.
 dataProtectionSecretName: ariva-dataprotection
+# The key ring's own signing certificate (ARV-211): a kubernetes.io/tls secret with an ECDSA P-256 key and the key usage
+# digitalSignature, created out of band (wiki 04 section 6.2), mounted read-only into every API pod at
+# /app/secrets/dataprotection-signing. An API pod does not start without it.
+dataProtectionSigningSecretName: ariva-dataprotection-signing
+# During a rotation only (ARV-211, wiki 04 section 6.2), empty otherwise: the previous Data Protection certificate's
+# kubernetes.io/tls secret (tls.crt and tls.key, mounted at /app/secrets/dataprotection-previous as DataProtection:Previous:0),
+# kept until the keys it wraps have expired and SecretReprotection has run; and the previous key ring signing certificate's
+# secret, of which only tls.crt is mounted (at /app/secrets/dataprotection-signing-previous, as
+# DataProtection:Signing:Previous:0:CertificatePath), until SecretReprotection has run after the rotation.
+dataProtectionPreviousSecretName: ""
+dataProtectionSigningPreviousSecretName: ""
 
 # Access token keys (ARV-010a, ADR-0026), created out of band; see wiki/04-Deployment-Guide.md for generation and the
 # 90-day rotation. ariva-token-public (public.pem, plus previous.pem during a rotation) is mounted into every API pod;
@@ -571,6 +582,23 @@ monitoring:
     disk: { enabled: true, minutes: 15, usedPercent: 75, severity: critical, claims: [data-timescaledb-0], namespaces: [] }
     # A certificate an Ariva host loaded ends within warningDays (warning) or criticalDays (critical).
     certificateExpiry: { enabled: true, warningDays: 30, criticalDays: 7 }
+    # ARV-207: the oldest key or credential of a kind rotated by hand (the Data Protection and key ring signing certificates,
+    # integration client secrets and seeds, device and display credentials) reaches the end of its cryptoperiod (the hosts'
+    # Monitoring:Cryptoperiods, key-management.md section 3.4) within warningDays (warning) or criticalDays (critical).
+    keyRotationDue: { enabled: true, warningDays: 30, criticalDays: 7 }
+    # ARV-207: the last key lifecycle run (Cronz, daily) kept expired Data Protection keys past their retention, any, for the whole
+    # window: a stored value still needs them (SecretReprotection could not move it) or no unexpired key is in the ring. Held a
+    # day and two hours after the run, so 30 minutes is enough to be sure.
+    keyRingHeld: { enabled: true, minutes: 30, severity: warning }
+    # ARV-207 (the review's finding L7): the last key lifecycle run (Cronz, daily) failed as a whole: the database out of reach, the
+    # purge refused or the run timeout, so no key is destroyed and the database's key ages lapse. Held a day and two hours after
+    # the run, so 5 minutes is enough to be sure.
+    keyLifecycleFailed: { enabled: true, minutes: 5, severity: warning }
+    # ARV-211 (the review's finding N1): stored values (TOTP seeds, client seeds, outbound secrets) that need a Data Protection key no
+    # configured key ring signer signed, in an installation already upgraded, for the whole window: the upgrade window closed before
+    # SecretReprotection moved them, a value it could not move, or a planted row. The hosts start nonetheless; those values do not
+    # unprotect. Reported by every API host at start and by Cronz's KeyLifecycle run each day.
+    keyRingUnsigned: { enabled: true, minutes: 30, severity: warning }
     # The certificate cert-manager manages in namespaces (empty: the release's namespace) that ends soonest (the ingress
     # certificate among them), from cert-manager's metric scraped by the site collector (external; silent where
     # cert-manager is not scraped). namespaceLabel is the label that carries the certificate's namespace in SigNoz:

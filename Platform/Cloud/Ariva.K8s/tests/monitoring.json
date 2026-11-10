@@ -40,7 +40,8 @@
     "consumedTopicMissing", "consumerUnconnected", "scannerSignaturesStale", "scannerNotAnswering", "queueRefused",
     "outboxBrokerStreak", "consumerHeld", "streamCheckpointStale", "devicesDegraded", "zonesDegraded", "aodbFeedStale",
     "amanCodesUnmapped", "integrationLockout", "clockUnreliable", "binsOverdue", "retentionFailed",
-    "policyJobsFailed", "displaysStale", "zonesUnknown", "backupFailed", "backupMissing"
+    "policyJobsFailed", "displaysStale", "zonesUnknown", "backupFailed", "backupMissing", "keyRotationDue",
+    "keyRingHeld", "keyLifecycleFailed", "keyRingUnsigned"
   ],
   "severities": ["warning", "critical"],
   "runbook": "wiki/10-Operations-Runbook.md#"

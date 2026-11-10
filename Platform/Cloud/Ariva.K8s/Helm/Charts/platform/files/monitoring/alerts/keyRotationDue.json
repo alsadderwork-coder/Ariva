@@ -1,0 +1,100 @@
+{
+  "alert": "Ariva key rotation due (${environment})",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The oldest key or credential of a kind rotated by hand reaches the end of its cryptoperiod soon (ARV-207, key-management.md section 3.4): the Data Protection and key ring signing certificates (2 years, every API host), integration client secrets and seeds, device and display credentials (1 year, from Cronz's daily key lifecycle run). Monitoring:Cryptoperiods sets the periods.",
+  "ruleType": "threshold_rule",
+  "version": "v5",
+  "schemaVersion": "v2alpha1",
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "unit": "s",
+      "queries": [
+        {
+          "type": "builder_query",
+          "spec": {
+            "name": "A",
+            "signal": "metrics",
+            "stepInterval": 60,
+            "aggregations": [
+              {
+                "metricName": "ariva.keys.rotation_due_in",
+                "timeAggregation": "min",
+                "spaceAggregation": "min"
+              }
+            ],
+            "filter": {
+              "expression": "deployment.environment = '${environment}'"
+            },
+            "groupBy": [
+              {
+                "name": "kind",
+                "fieldContext": "attribute",
+                "fieldDataType": "string"
+              },
+              {
+                "name": "service.name",
+                "fieldContext": "resource",
+                "fieldDataType": "string"
+              }
+            ],
+            "legend": "{{kind}} ({{service.name}})"
+          }
+        }
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {
+      "kind": "basic",
+      "spec": [
+        {
+          "name": "warning",
+          "op": "below",
+          "matchType": "last",
+          "target": "${keyRotationDue.warningSeconds}",
+          "channels": "${channels}"
+        },
+        {
+          "name": "critical",
+          "op": "below",
+          "matchType": "last",
+          "target": "${keyRotationDue.criticalSeconds}",
+          "channels": "${channels}"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "kind": "rolling",
+    "spec": {
+      "evalWindow": "15m",
+      "frequency": "15m"
+    }
+  },
+  "notificationSettings": {
+    "groupBy": [
+      "kind",
+      "service.name"
+    ],
+    "renotify": {
+      "enabled": true,
+      "interval": "24h",
+      "alertStates": [
+        "firing"
+      ]
+    },
+    "usePolicy": false
+  },
+  "labels": {
+    "product": "ariva",
+    "rule": "keyRotationDue",
+    "environment": "${environment}"
+  },
+  "annotations": {
+    "summary": "Key rotation due: {{$kind}}",
+    "description": "The oldest {{$kind}} reported by {{$service.name}} reaches the end of its cryptoperiod in {{$value}} seconds (negative: passed; warning at ${keyRotationDue.warningDays} days, critical at ${keyRotationDue.criticalDays}). Rotate it as the key management policy says.",
+    "runbook": "wiki/10-Operations-Runbook.md#425-key-lifecycle-key-rotation-due-and-key-ring-held-arv-207"
+  },
+  "disabled": false
+}

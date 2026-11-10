@@ -130,6 +130,63 @@ Usage: {{- include "ariva-platform.serverCaVolumes" . | nindent 8 }} and {{- inc
 {{- end }}
 
 {{/*
+ARV-211 (the review's finding M2): during a rotation (wiki 04 section 6.2), the previous Data Protection certificate (K3) and
+the previous key ring signing certificate (K49), each from a Secret of its own, mounted read-only and owner-only in every API
+pod at a fixed path, with the settings that name them. dataProtectionPreviousSecretName: the previous K3, tls.crt and tls.key
+(it still unwraps the keys it wrapped); dataProtectionSigningPreviousSecretName: the previous K49, its tls.crt alone (a
+previous signer only verifies, and the host refuses a key for it). Empty (the default): not mounted. Usage, in an API host's
+volumes, volumeMounts and env: {{- include "ariva-platform.dataProtectionPreviousVolumes" . | nindent 8 }}
+*/}}
+{{- define "ariva-platform.dataProtectionPreviousVolumes" -}}
+{{- if .Values.dataProtectionPreviousSecretName }}
+- name: dataprotection-previous
+  secret:
+    secretName: {{ .Values.dataProtectionPreviousSecretName | quote }}
+    defaultMode: 0400
+    items:
+      - key: tls.crt
+        path: tls.crt
+      - key: tls.key
+        path: tls.key
+{{- end }}
+{{- if .Values.dataProtectionSigningPreviousSecretName }}
+- name: dataprotection-signing-previous
+  secret:
+    secretName: {{ .Values.dataProtectionSigningPreviousSecretName | quote }}
+    defaultMode: 0400
+    items:
+      - key: tls.crt
+        path: tls.crt
+{{- end }}
+{{- end }}
+
+{{- define "ariva-platform.dataProtectionPreviousMounts" -}}
+{{- if .Values.dataProtectionPreviousSecretName }}
+- name: dataprotection-previous
+  mountPath: /app/secrets/dataprotection-previous
+  readOnly: true
+{{- end }}
+{{- if .Values.dataProtectionSigningPreviousSecretName }}
+- name: dataprotection-signing-previous
+  mountPath: /app/secrets/dataprotection-signing-previous
+  readOnly: true
+{{- end }}
+{{- end }}
+
+{{- define "ariva-platform.dataProtectionPreviousEnv" -}}
+{{- if .Values.dataProtectionPreviousSecretName }}
+- name: DataProtection__Previous__0__CertificatePath
+  value: /app/secrets/dataprotection-previous/tls.crt
+- name: DataProtection__Previous__0__KeyPath
+  value: /app/secrets/dataprotection-previous/tls.key
+{{- end }}
+{{- if .Values.dataProtectionSigningPreviousSecretName }}
+- name: DataProtection__Signing__Previous__0__CertificatePath
+  value: /app/secrets/dataprotection-signing-previous/tls.crt
+{{- end }}
+{{- end }}
+
+{{/*
 The collectors' CA secret names (ARV-200): otel.caSecretName and logging.lokiCaSecretName, or empty when unset (or when otel or
 logging is not a map, which validate.yaml refuses). Usage: {{- if include "ariva-platform.otlpCaSecretName" . }}
 */}}

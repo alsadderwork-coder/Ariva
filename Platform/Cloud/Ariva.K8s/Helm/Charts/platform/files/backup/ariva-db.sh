@@ -31,7 +31,8 @@
 #   check [--runtime-login NAME] [--reader-login NAME] [--allow-extension NAME]... [--allow-login NAME]... [--allow-setting NAME]...
 #                                   owners, the runtime role's privileges, members of Ariva's roles, no C, untrusted-language
 #                                   or SECURITY DEFINER function (but Ariva's retention purge exactly as script 0054 ships
-#                                   it, grants included), other language, extension or event trigger outside the
+#                                   it and its key ring purge exactly as script 0072 ships it, grants included), other
+#                                   language, extension or event trigger outside the
 #                                   extensions, TimescaleDB's extensions at the image's versions, schema_version and
 #                                   TimescaleDB jobs. Since ARV-183 also: no role but the bootstrap superuser and the
 #                                   migration login with SUPERUSER, CREATEROLE, REPLICATION or BYPASSRLS, and none holding
@@ -81,7 +82,8 @@
 #                                   TimescaleDB extension's members digest and the system functions' digest; with --full
 #                                   each object's normalised definition and each extension member, one line each, so that
 #                                   two databases' outputs compare line by line (read-only, as the migration login)
-#   keyring [--certificate-sha256 HEX]...   the Data Protection keys and the certificate each needs
+#   keyring [--certificate-sha256 HEX]...   the Data Protection keys, the certificate each needs and the signing certificate
+#                                   that signed it (ARV-211; "the certificate" for a key written before ARV-211)
 #   after-kafka-loss --confirm-stream-stopped [--dry-run]
 #                                   re-sends the newest event of every key of the compacted topics and clears the
 #                                   stream worker's saved positions, after Kafka's topics were recreated empty
@@ -176,6 +178,7 @@ advertising_schedule_guard:4db8de8d13bee5fdb96ff795f78e5f1c3777c11d21ff179ef4cc2
 alert_keep_raise:52af781790c93f2eab47e7cc2b99b6e592da013f16804c725a0dc1b20b5f4805,\
 alert_keep_raise:7da479242dafa3d0ffae451c6f31cd9e9301a2be48720b166dc10ef985dc4190,\
 alert_rule_identity:b1bbde2c3162fc34a948fb06dca87e4334b5dcec9c474a7f387f52dfdf9efee1,\
+ariva_data_protection_key_purge:9d886614f2343b230d50749c2f10b04df075e698c8758c163f80ca9ff15d975b,\
 ariva_ensure_runtime_login:6864027ae91766a330f29144c95cdaafbc7d7d277c67b93f1e0fd38587aadd03,\
 ariva_ensure_validation_reader_login:80844ccdbfee88483d1b2b8f3eb810b19c9886998d9ab90174ebfcaef9317acb,\
 ariva_retention_purge:535ad38b539587c302aa4ea85e1c3508d55e5d5df6bf4f0675bbadf0076f78d7,\
@@ -209,7 +212,7 @@ zone_profile_immutable:c3c11583ac7dd5add9f4bafea3c4ba323d27a97cd9adeebd77b06ef9f
 # reflects), so a restore that lost a revoke, or gained a grant, is reported. OpsScriptTests refuses a later script that
 # grants to or revokes from ariva_runtime, or creates a view, until this list (or ARIVA_VIEWS) and its script move with it;
 # BackupRestoreTests holds the list equal to a migrated database.
-readonly ARIVA_RUNTIME_PRIVILEGES_AT="0068_outage_and_staffing_reads.sql"
+readonly ARIVA_RUNTIME_PRIVILEGES_AT="0072_data_protection_key_retention.sql"
 readonly ARIVA_RUNTIME_PRIVILEGES="advertising_media=SELECT,INSERT,UPDATE;\
 advertising_play=SELECT,INSERT;\
 advertising_playlist=SELECT,INSERT,UPDATE;\
@@ -331,7 +334,7 @@ readonly ARIVA_VIEWS="line_minute_15m=line_minute;overflow_bin_15m=overflow_minu
 # ARIVA_SCHEMA_AT, the latest script (any script may change them), so a trigger, constraint, grant or function a forged dump
 # left out, changed or added is reported even where no other line looks. OpsScriptTests holds ARIVA_SCHEMA_AT at the
 # latest script; BackupRestoreTests holds the list equal to a database the release's migration job migrated (and prints it).
-readonly ARIVA_SCHEMA_AT="0071_advertising_policy_stamped.sql"
+readonly ARIVA_SCHEMA_AT="0073_data_protection_key_row_signature.sql"
 readonly ARIVA_SCHEMA="advertising_media=2cb17c8c169d81de441d4192fdc21b0c;\
 advertising_media_guard()=0c14e39356e12f186a82b88895cc130a;\
 advertising_play=d5f1179d8cfaccdcc0d9c7d9c3634258;\
@@ -348,6 +351,7 @@ alert_rule=667a50186480b9515162c8790ab9d2dc;\
 alert_rule_identity()=895b6cc23a25603fadff715c72460978;\
 alert_rule_state=33e6047c3886060ebd4fc368a29373be;\
 aman_pull_cursor=2b1f0d463807d44bf7e9550223bb1bf9;\
+ariva_data_protection_key_purge(p_after_days integer, p_limit integer)=38851ffa83823933dbd844d305281aec;\
 ariva_ensure_runtime_login(login_name text, login_password text)=a34b831ffc5ede64cdd0f70840744ab4;\
 ariva_ensure_validation_reader_login(login_name text, login_verifier text)=a933282b920424704f9a04912201735e;\
 ariva_retention_purge(p_data_set text, p_limit integer)=a7ff57e7b5404c01e5cb1715f4416c2c;\
@@ -362,7 +366,7 @@ border_desk_session=9f55be74e4a68f69813c1dd90063d42e;\
 border_egate_interval=f58e79376e4e7c851af7bb68b5cf1302;\
 checkpoint=f39bbc7b8379b08fca1a398490927d55;\
 counter_allocation=9160c214b4875f087f813c0fa69702ab;\
-data_protection_key=c325c22f8a9977960ad76a2bd20fc808;\
+data_protection_key=1bdb6d157bcbf9c56ef37a12b00b98cf;\
 database=b90a9d25f2cafa4afcdf86348a4884ea;\
 database_environment=e52adb8c3538e5988c62134485224f03;\
 desk=7e2fd78689a8e39df7d7718eb47ff4c2;\
@@ -1505,14 +1509,20 @@ risky_functions AS (
      WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
        AND (p.prosecdef OR NOT l.lanpltrusted OR l.lanname NOT IN ('sql', 'plpgsql'))
-       -- ARV-111a: Ariva's one SECURITY DEFINER function (script 0054, the retention purge the Cronz job calls), exactly as
-       -- shipped: its name and arguments, the migration login as owner, plpgsql, its settings (search path and time zone),
-       -- the SHA-256 of its body (OpsScriptTests keeps this hash equal to the script) and its grants: EXECUTE for the owner
-       -- and ariva_runtime only, without grant option (a NULL ACL would mean PUBLIC may run it). Anything else under its name
-       -- is reported.
+       -- ARV-111a: Ariva's SECURITY DEFINER functions (script 0054, the retention purge the Cronz job calls; script 0072,
+       -- ARV-207, the key ring purge the Cronz key lifecycle job calls), each exactly as shipped: its name and arguments, the
+       -- migration login as owner, plpgsql, its settings (search path and time zone), the SHA-256 of its body
+       -- (OpsScriptTests keeps these hashes equal to the scripts) and its grants: EXECUTE for the owner and ariva_runtime
+       -- only, without grant option (a NULL ACL would mean PUBLIC may run it). Anything else under their names is reported.
        AND NOT (p.oid = to_regprocedure('public.ariva_retention_purge(text, integer)') AND p.proowner = (SELECT oid FROM me)
                 AND l.lanname = 'plpgsql' AND p.proconfig = ARRAY['search_path=pg_catalog, pg_temp', 'TimeZone=UTC']
                 AND encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') = '535ad38b539587c302aa4ea85e1c3508d55e5d5df6bf4f0675bbadf0076f78d7'
+                AND p.proacl IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM aclexplode(p.proacl) a
+                                 WHERE a.grantee NOT IN ((SELECT oid FROM me), 'ariva_runtime'::regrole) OR a.is_grantable))
+       AND NOT (p.oid = to_regprocedure('public.ariva_data_protection_key_purge(integer, integer)') AND p.proowner = (SELECT oid FROM me)
+                AND l.lanname = 'plpgsql' AND p.proconfig = ARRAY['search_path=pg_catalog, pg_temp', 'TimeZone=UTC']
+                AND encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') = '9d886614f2343b230d50749c2f10b04df075e698c8758c163f80ca9ff15d975b'
                 AND p.proacl IS NOT NULL
                 AND NOT EXISTS (SELECT 1 FROM aclexplode(p.proacl) a
                                  WHERE a.grantee NOT IN ((SELECT oid FROM me), 'ariva_runtime'::regrole) OR a.is_grantable))),
@@ -1733,7 +1743,7 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'group members|only the migration l
                  FROM extra_members
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'held roles|Ariva''s group roles hold no role' || CASE WHEN :'reader' = '' THEN '' ELSE ', ' || :'reader' || ' only ariva_validation_reader' END
                       ELSE 'FAIL held roles|' || string_agg(name, ', ' ORDER BY name) END FROM held_by_ariva
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'functions|no C, untrusted-language or SECURITY DEFINER function outside the extensions, but the retention purge as script 0054 ships it'
+UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'functions|no C, untrusted-language or SECURITY DEFINER function outside the extensions, but the retention purges as scripts 0054 and 0072 ship them'
                       ELSE 'FAIL functions|' || count(*) || ' outside the extensions: ' || string_agg(name, ', ' ORDER BY name) END FROM risky_functions
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'languages|plpgsql only'
                       ELSE 'FAIL languages|' || string_agg(name, ', ' ORDER BY name) END FROM other_languages
@@ -2440,6 +2450,10 @@ WITH k AS (
            substring(xml from '<expirationDate>([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,7})?(Z|[+-][0-9]{2}:[0-9]{2}))</expirationDate>') AS expires,
            upper(substring(xml from '<encryptedKey [^>]*certificate="([0-9A-Fa-f]{64})"')) AS certificate,
            substring(xml from '<encryptedKey [^>]*algorithm="([A-Za-z0-9+-]{1,40})"') AS algorithm,
+           -- ARV-211: the key ring signing certificate that signed the key (none before ARV-211: the wrapping certificate's key).
+           upper(substring(xml from '<encryptedKey [^>]*signer="([0-9A-Fa-f]{64})"')) AS signer,
+           -- ARV-211 (script 0073): whether the row carries the hosts' row signature (none before ARV-211); checked by the hosts only.
+           signature IS NOT NULL AS row_signed,
            xml ~ '^<revocation' AS revocation
       FROM data_protection_key)
 SELECT CASE
@@ -2454,6 +2468,8 @@ SELECT CASE
                           ELSE 'FAIL missing ' END
                    ELSE 'expired ' END
               || key_id || ' expires ' || coalesce(expires, 'unknown') || ' certificate ' || certificate
+              || ' signer ' || coalesce(signer, 'the certificate (before ARV-211)')
+              || CASE WHEN row_signed THEN ' row signed' ELSE ' row not signed (before ARV-211: read only inside DataProtection:Signing:CertificateSignedUntil)' END
        END
   FROM k ORDER BY friendly_name;
 SQL

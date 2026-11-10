@@ -36,8 +36,10 @@ public sealed class RunTimeoutInventoryTests
         ["Ariva.Infra.Messaging.Kafka.KafkaProducerLifetime"] = "flushes the producer at stop within KafkaProduce.FlushTimeout",
         ["Ariva.Infra.Messaging.Kafka.KafkaEndpointsLifetime"] = "stops the endpoints at stop within KafkaEndpoints.StopTimeout",
         ["Ariva.Infra.Monitoring.CertificateMetrics"] = "reads the host's certificate files for a gauge; no database or network",
+        ["Ariva.Infra.Monitoring.KeyAgeMetrics"] = "ARV-207: the dates of the certificates the host loaded and the key lifecycle job's last report, for a gauge; no database or network",
         ["Ariva.Infra.Timescale.DevelopmentMigrationService"] = "vm-local only: migrates at start, its scripts without a timeout by design (as the migration job)",
         ["Ariva.Infra.Timescale.SchemaVersionGate"] = "one read at start within the database command timeout",
+        ["Ariva.Infra.DataProtection.KeyRingUpgradeGate"] = "ARV-211 review (H1): one read at start, after the schema check, within the database command timeout",
         ["Ariva.Infra.Timescale.ValidationReaderGuard"] = "checks the validation reader's settings at start",
         ["Ariva.Infra.Timescale.IdleTransactionLimitGate"] = "one SHOW at start within the database command timeout (ARV-294)",
         ["Ariva.Infra.Storage.UploadScanStartNotice"] = "writes one line at start",
@@ -122,7 +124,7 @@ public sealed class RunTimeoutInventoryTests
         await using var app = ArivaHosts.Create(ArivaHosts.Cronz);
         await using var scope = app.Services.CreateAsyncScope();
 
-        JobTypes().Select(t => t.Name).Should().BeEquivalentTo(["AvailabilityJobs", "ReportJobs", "RetentionJobs", "SecretJobs", "StaffingJobs", "TimescaleJobs"]);
+        JobTypes().Select(t => t.Name).Should().BeEquivalentTo(["AvailabilityJobs", "KeyLifecycleJobs", "ReportJobs", "RetentionJobs", "SecretJobs", "StaffingJobs", "TimescaleJobs"]);
         foreach (var type in JobTypes())
         {
             var job = ActivatorUtilities.CreateInstance(scope.ServiceProvider, type);
