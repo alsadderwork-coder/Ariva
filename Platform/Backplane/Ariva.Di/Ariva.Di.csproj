@@ -20,6 +20,7 @@
     <ItemGroup>
         <!-- ARV-254: the unit tests connect a registered consumer's endpoint on a mocked rider to check its settings. -->
         <InternalsVisibleTo Include="Ariva.UnitTests" />
+        <InternalsVisibleTo Include="Ariva.IntegrationTests" />
     </ItemGroup>
 
     <ItemGroup>

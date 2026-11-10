@@ -6057,3 +6057,14 @@ Project `Ariva.UnitTests` has the following vulnerable packages
 - Gotchas:
   - NHibernate's DriverConnectionProvider exposes GetConnection(string) and GetConnectionAsync(string, CancellationToken) as overridable; sealing the synchronous override keeps a derived provider from opening synchronously again.
   - A provider derived from Ariva's can tell a synchronous request from its stack before the first await, which is how the integration test counts them.
+
+## 2026-11-10: ARV-260 [E17] The replay command reads the database's environment (the break-glass part split into ARV-260a)
+
+- Split: ARV-260's break-glass command is account code under the owner's sign-in freeze, so it moved to ARV-260a; ARV-260 keeps the replay command.
+- What changed: `ReplayCommand` (Ariva.Di), run as vm-local, reads the database's recorded environment (`database_environment`, ARV-180) with its runtime login before it reads the site's profile or writes the run, and stops with exit code 4 on a database that records another environment (logged at critical with the reason; `ReplayCommand.AnotherEnvironmentsAsync`). Outside vm-local nothing is read: the check refuses only a vm-local process. A connection failure is the replay's usual failure (exit 1).
+- Tests: integration `DatabaseEnvironmentTests`: a vm-local replay on a k8s-dev database exits 4 and writes no run, while the same replay as k8s-dev reads on and fails on the missing profile (exit 1); a vm-local replay on its own database reads on (exit 1 on the missing profile, not 4); the helper called directly.
+- Docs: wiki 10 sections 4.10 (the replay's exit codes) and 4.23 (naming ARV-260a), cwe-controls.md CWE-269, asvs-l2.md V6.3.2.
+- Files: Platform/Backplane/Ariva.Di/ReplayCommand.cs, Ariva.Di/Ariva.Di.csproj (InternalsVisibleTo the integration tests), Ariva.IntegrationTests/Persistence/DatabaseEnvironmentTests.cs, Ariva.IntegrationTests/Setup/PostgresFixture.cs; wiki/10-Operations-Runbook.md, docs/security/cwe-controls.md, docs/security/asvs-l2.md; backlog/prd-phase3.json (ARV-260a filed)
+- Gates: GATES
+- Security review: security-reviewer PASS (CWE-269, CWE-287). Its Low items were taken: the direct test of the helper and the docs rows.
+- Gotchas: the replay's argument check comes first (LogShippingTests run it in k8s-prd without a database and expect exit 2), so the environment check sits just before the run.

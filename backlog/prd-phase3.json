@@ -1857,10 +1857,10 @@
     },
     {
       "id": "ARV-260",
-      "title": "[E17] The break-glass and replay commands read the database's environment",
+      "title": "[E17] The replay command reads the database's environment (the break-glass part split into ARV-260a)",
       "description": "From the ARV-180 security review (2026-10-26, Low 5). ARV-180 records each database's environment (script 0064) and a vm-local host refuses another environment's database before it migrates or seeds. The one-shot commands BreakGlassCommand (--rotate-break-glass) and ReplayCommand (Ariva.Di) build persistence without hosted services and never read the record: a vm-local --rotate-break-glass whose Database settings reach a deployed store would rotate that environment's break-glass credential and print a new administrator credential on the developer's machine. The E2E global setup is protected already (it checks that its database is the hosts' before it runs break-glass). The break-glass part changes account code and waits for the sign-in freeze to lift. CWEs to review: CWE-269, CWE-287.",
       "acceptanceCriteria": [
-        "Both commands, run as vm-local, stop before any write on a database that records another environment (DatabaseEnvironment.EnsureMayUseAsync), with integration tests as DatabaseEnvironmentTests'",
+        "Both commands, run as vm-local, stop before any write on a database that records another environment (DatabaseEnvironment.EnsureMayUseAsync), with integration tests as DatabaseEnvironmentTests': built by ARV-260 for ReplayCommand (exit code 4, before any read of the topics or write); BreakGlassCommand is ARV-260a's, under the sign-in freeze",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "Integration tests for the story's areas pass through node scripts/verify.mjs story (the full suite when the change is wide or adds a script; test cadence in docs/harness/test-cadence.md)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -1868,10 +1868,29 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 40,
-      "passes": false,
-      "notes": "Size S. Phase 3; the break-glass part under the sign-in freeze. Low 5 of the ARV-180 review (backlog/progress.md, 2026-10-26).",
+      "passes": true,
+      "notes": "Size S. Phase 3; the break-glass part under the sign-in freeze. Low 5 of the ARV-180 review (backlog/progress.md, 2026-10-26). 2026-11-10: the replay part built; the break-glass part split into ARV-260a (account code, under the sign-in freeze).",
       "dependsOn": [
         "ARV-180"
+      ]
+    },
+    {
+      "id": "ARV-260a",
+      "title": "[E17] The break-glass command reads the database's environment",
+      "description": "Split from ARV-260 on 2026-11-10. BreakGlassCommand (--rotate-break-glass, Ariva.Di) builds persistence without hosted services and never reads the database's recorded environment (script 0064): a vm-local run whose Database settings reach a deployed store would rotate that environment's break-glass credential and print a new administrator credential on the developer's machine. Do as ReplayCommand does since ARV-260 (ReplayCommand.AnotherEnvironmentsAsync). It changes account code, so it waits for the owner's sign-in freeze to lift. CWEs to review: CWE-269, CWE-287.",
+      "acceptanceCriteria": [
+        "BreakGlassCommand, run as vm-local, stops before any write on a database that records another environment (DatabaseEnvironment.EnsureMayUseAsync), with a distinct exit code and an integration test as DatabaseEnvironmentTests' replay cases",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "Integration tests for the story's areas pass through node scripts/verify.mjs story",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 40,
+      "passes": false,
+      "notes": "Split from ARV-260 on 2026-11-10. Waits for the sign-in freeze (account code).",
+      "dependsOn": [
+        "ARV-260"
       ]
     },
     {

@@ -133,9 +133,55 @@ public sealed class DatabaseEnvironmentTests(PostgresFixture fixture)
         (await MigrateAsync(database, "vm-local")).Should().Be(1, "from then on vm-local stops on it");
     }
 
+    [Fact]
+    public async Task LocalReplay_Should_StopBeforeReadingOrWriting_When_TheDatabaseRecordsAnotherEnvironment()
+    {
+        // ARV-260: the replay command writes its run into the database it is given. Run as vm-local it stops on another
+        // environment's database (exit 4) before it reads the site's profile; the same replay as the database's own environment
+        // gets as far as the profile, which this migrated database lacks (exit 1, nothing written either way).
+        var database = await DeployedAsync();
+        string[] replay = ["--replay", "--replay-site=ENV", "--replay-from=2026-09-28T17:00:00Z", "--replay-to=2026-09-28T17:10:00Z"];
+
+        using var local = new StringWriter();
+        (await ReplayCommand.RunAsync(Configuration(Settings(database, "vm-local")), replay, local, Ct)).Should().Be(4,
+            "a vm-local replay stops on another environment's database");
+        using var own = new StringWriter();
+        (await ReplayCommand.RunAsync(Configuration(Settings(database, "k8s-dev")), replay, own, Ct)).Should().Be(1,
+            "the database's own environment reads on and fails on the missing profile");
+
+        local.ToString().Should().BeEmpty("no run summary");
+        (await ReplayRunsAsync(database)).Should().Be(0, "no run was written");
+        (await RecordedAsync(database)).Should().Be("k8s-dev");
+    }
+
+    [Fact]
+    public async Task LocalReplay_Should_ReadOn_When_TheDatabaseIsVmLocals()
+    {
+        var database = await fixture.CreateDatabaseAsync(TestDatabase.EnvironmentReplay);
+        (await MigrateAsync(database, "vm-local")).Should().Be(0);
+        string[] replay = ["--replay", "--replay-site=ENV", "--replay-from=2026-09-28T17:00:00Z", "--replay-to=2026-09-28T17:10:00Z"];
+
+        using var output = new StringWriter();
+        (await ReplayCommand.RunAsync(Configuration(Settings(database, "vm-local")), replay, output, Ct)).Should().Be(1,
+            "its own database: the replay reads on and fails on the missing profile, not on the environment");
+        // The check itself, on its own: no problem with vm-local's own database, and the record's problem with another's.
+        await using (var own = new ServiceCollection().AddLogging().AddArivaPersistence(Configuration(Settings(database, "vm-local"))).BuildServiceProvider())
+            (await ReplayCommand.AnotherEnvironmentsAsync(own, Ct)).Should().BeNull("vm-local may replay into its own database");
+        await using (var deployed = new ServiceCollection().AddLogging().AddArivaPersistence(Configuration(Settings(await DeployedAsync(), "vm-local"))).BuildServiceProvider())
+            (await ReplayCommand.AnotherEnvironmentsAsync(deployed, Ct)).Should().Contain("belongs to the environment 'k8s-dev'");
+    }
+
     #endregion
 
     #region Helpers
+
+    private async Task<long> ReplayRunsAsync(string database)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString(database));
+        await connection.OpenAsync(Ct);
+        await using var count = new NpgsqlCommand("SELECT count(*) FROM replay_run", connection);
+        return (long)(await count.ExecuteScalarAsync(Ct) ?? 0L);
+    }
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 

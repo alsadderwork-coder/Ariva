@@ -4,7 +4,9 @@ using Ariva.Core.Queueing.Replay;
 using Ariva.Core.Sensing;
 using Ariva.Di.Extensions;
 using Ariva.Infra.Sensing;
+using Ariva.Infra.Settings;
 using Ariva.Infra.Streaming;
+using Ariva.Infra.Timescale;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -18,7 +20,8 @@ namespace Ariva.Di;
 /// <item><c>--replay --replay-site=DMO [--replay-zone=A-VIS ...] --replay-from=2026-09-28T17:00:00Z --replay-to=2026-09-28T20:30:00Z
 /// [--replay-profile-version=12] [--replay-output=path]</c> replays the archive and prints the manifest and hashes as JSON;
 /// with an output path the export (one JSON line per input and output, hash-chained) is written there, a new file with
-/// owner-only permissions. Exit code 0, or 1 on failure (logged), 2 for bad arguments.</item>
+/// owner-only permissions. Exit code 0, or 1 on failure (logged), 2 for bad arguments, 4 when, run as vm-local, it stops before
+/// reading or writing anything on a database that records another environment (ARV-260, <see cref="DatabaseEnvironment"/>).</item>
 /// <item><c>--verify-replay=path</c> checks an export's chains and looks its replay hash up in replay_run. Exit code 0
 /// when the chains hold and the run is on record, 3 otherwise.</item>
 /// </list>
@@ -108,6 +111,12 @@ public static class ReplayCommand
 
         try
         {
+            if (await AnotherEnvironmentsAsync(provider, ct) is { } refused)
+            {
+                logger.LogCritical("Replay: {Problem}", refused);
+                return 4;
+            }
+
             ReplayRun run;
             if (string.IsNullOrWhiteSpace(outputPath))
             {
@@ -128,6 +137,22 @@ public static class ReplayCommand
             logger.LogCritical(ex, "Replay failed");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// ARV-260 (CWE-269; ARV-180): a replay writes its run into the database it is given, so a vm-local replay, a developer's,
+    /// reads the database's recorded environment first and stops on another environment's (its Database settings reach a
+    /// deployed store through a tunnel or a port forward), as a vm-local host and the migration do. Outside vm-local nothing is
+    /// read: the check refuses only a vm-local process. Returns why the replay may not use the database, or null when it may.
+    /// </summary>
+    internal static async Task<string> AnotherEnvironmentsAsync(IServiceProvider provider, CancellationToken ct)
+    {
+        var environment = provider.GetRequiredService<DatabaseEnvironment>();
+        if (!environment.IsVmLocal)
+            return null;
+        await using var connection = PostgresConnections.Create(provider.GetRequiredService<DatabaseSettings>().BuildConnectionString());
+        await connection.OpenAsync(ct);
+        return environment.ProblemWith(await DatabaseEnvironment.RecordedAsync(connection, ct));
     }
 
     /// <summary>What the command prints for a run: its id, manifest, hashes, counters and row hash (the anchor to keep outside the database).</summary>
