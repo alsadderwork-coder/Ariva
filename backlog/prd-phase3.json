@@ -2437,10 +2437,29 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 305,
-      "passes": false,
-      "notes": "Size M. Phase 3. Filed 2026-11-02 from the ARV-284 security review round 1 (advisories A1 to A4, A6, A7). Chart and chart tests only; no sign-in code.",
+      "passes": true,
+      "notes": "Size M. Phase 3. Filed 2026-11-02 from the ARV-284 security review round 1 (advisories A1 to A4, A6, A7). Chart and chart tests only; no sign-in code. 2026-11-10: built and reviewed (PASS); auth-url, global-auth-url, auth-signin and auth-proxy-set-headers, and the confirmation of libmodsecurity v3.0.14 against the 1.15 image, filed as ARV-288a.",
       "dependsOn": [
         "ARV-284"
+      ]
+    },
+    {
+      "id": "ARV-288a",
+      "title": "[E17] The external auth annotations refused, and the ingress image's libmodsecurity confirmed",
+      "description": "Filed 2026-11-10 by the ARV-288 security review (advisories 1 and 2). ingress-nginx renders nginx.ingress.kubernetes.io/auth-url (and the controller's global-auth-url) into an auth_request subrequest proxied to any URL, forwarding the original Authorization and Cookie headers by default: a one-annotation copy of credentials to another host that no directive guard sees, since its value is a URL (CWE-918, CWE-522). auth-signin and auth-proxy-set-headers belong with it. Ariva uses none of them. Separately, ARV-288 refuses ModSecurity's SecRuleScript, exec:, @inspectFile and the upload keeps by their text, not by SecLang's tokenizer, and records libmodsecurity v3.0.14's behaviour in the 1.15 image as To confirm: whether a backslash and newline inside a keyword is joined again after nginx hands the rules over, and whether the build carries Lua. CWEs to review: CWE-918, CWE-78, CWE-94.",
+      "acceptanceCriteria": [
+        "validate.yaml refuses the auth-url, auth-signin, auth-proxy-set-headers and related external auth annotations in every environment, and controllerValuesFindings refuses global-auth-url and its siblings in the controller values, each with a case (or records why one stays allowed)",
+        "The ingress-nginx 1.15 image's libmodsecurity is checked (its version, Lua support, and whether a backslash and newline inside a SecLang keyword is joined) and the ModSecurity refusals are made to hold against what it does, with cases; the CWE-78 row records the result",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 305,
+      "passes": false,
+      "notes": "Filed 2026-11-10 from the ARV-288 security review. Chart and chart tests only; the image check needs the controller image, which this environment cannot pull.",
+      "dependsOn": [
+        "ARV-288"
       ]
     },
     {

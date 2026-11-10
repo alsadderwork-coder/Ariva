@@ -43,6 +43,12 @@
 // audit log back on, writes a modsecurity, access_log, error_log, log_format or rewrite_log directive (read as nginx reads it,
 // ARV-284), or routes /hubs without tokenInQuery; and, in every environment, an include, client_body_in_file_only or a *_by_lua
 // directive (ARV-284).
+// ARV-288 (CWE-94, CWE-78, CWE-532, CWE-501): the release guards also refuse, in every environment, a modsecurity-snippet with
+// SecRuleScript, an exec: action, @inspectFile, SecUploadKeepFiles or SecTmpSaveUploadedFiles, an annotation value with a js_,
+// perl, *_pass or mirror directive, and the enable-rewrite-log and mirror- annotations; an accepted render with names that only
+// begin like a refused one pins the shared directive pattern's boundaries; the controller values check reads the stream-snippet
+// and refuses load_module, ssl_engine, the Lua module paths, js_ and perl directives and the plugins key; and the rendered
+// Ingresses carry no include, client_body_in_file_only, *_by_lua or rewrite_log (ingressPrivacyFindings).
 // ARV-091a (ASVS 5.0 V16.4.2, V16.4.3, CWE-532): with logging.pseudonymKeySecret (prd, required there by the chart and by both
 // Helmfiles through the state value logShipping) the five API hosts, and only they, get Logging__PseudonymKey from that Secret
 // (secretKeyRef, not optional, never a literal or a ConfigMap), and from logging.lokiCredentialsSecret Loki__Username and
@@ -395,6 +401,23 @@ const CONTROLLER_CASES = [
 	// global auth snippet is held to the log directives too.
 	['a server-snippet that logs its rewrites', (v) => { v.controller.config['server-snippet'] = 'rewrite_log on;'; }, 'server-snippet writes rewrite_log:'],
 	['a global auth snippet with an access log', (v) => { v.controller.config['global-auth-snippet'] = 'access_log /dev/stdout combined;'; }, 'global-auth-snippet writes access_log:'],
+	// ARV-288: the stream-snippet is read like the others; no module or OpenSSL engine, no Lua module path or plugin, and no njs or
+	// perl directive in any snippet, each read as nginx's tokenizer reads a statement (quoted names before ")" included).
+	['a stream-snippet that includes files', (v) => { v.controller.config['stream-snippet'] = 'include /etc/nginx/extra/stream.conf;'; }, 'stream-snippet writes include:'],
+	['a stream-snippet with a Lua preread block', (v) => { v.controller.config['stream-snippet'] = 'preread_by_lua_block { ngx.log(ngx.ERR, "site") }'; }, 'stream-snippet writes a *_by_lua directive:'],
+	['a stream-snippet with an access log', (v) => { v.controller.config['stream-snippet'] = 'access_log /dev/stdout site;'; }, 'stream-snippet writes access_log:'],
+	['a main-snippet that loads a module', (v) => { v.controller.config['main-snippet'] = 'load_module /etc/nginx/modules/ngx_http_js_module.so;'; }, 'main-snippet writes load_module:'],
+	['a main-snippet with a quoted OpenSSL engine before a parenthesis', (v) => { v.controller.config['main-snippet'] = '"ssl_engine")site;'; }, 'main-snippet writes ssl_engine:'],
+	['a plugins key', (v) => { v.controller.config.plugins = 'site_plugin'; }, 'controller.config plugins is set'],
+	['a plugins key of one space', (v) => { v.controller.config.plugins = ' '; }, 'controller.config plugins is set'],
+	['an http-snippet with a Lua module path', (v) => { v.controller.config['http-snippet'] = 'lua_package_path "/tmp/site/?.lua;;";'; }, 'http-snippet writes lua_package_path:'],
+	['an http-snippet with a single-quoted Lua C module path', (v) => { v.controller.config['http-snippet'] = "'lua_package_cpath' '/tmp/site/?.so;;';"; }, 'http-snippet writes lua_package_cpath:'],
+	['an http-snippet that imports njs', (v) => { v.controller.config['http-snippet'] = 'js_import site from /tmp/site.js;'; }, 'http-snippet writes js_import:'],
+	['a location-snippet that answers with njs', (v) => { v.controller.config['location-snippet'] = 'js_content site.handler;'; }, 'location-snippet writes js_content:'],
+	['a server-snippet with a quoted js_set before a parenthesis', (v) => { v.controller.config['server-snippet'] = '"js_set")$site site.value;'; }, 'server-snippet writes js_set:'],
+	['a location-snippet that answers with perl', (v) => { v.controller.config['location-snippet'] = 'perl Site::handler;'; }, 'location-snippet writes perl:'],
+	['an http-snippet that loads a perl module', (v) => { v.controller.config['http-snippet'] = 'perl_require /tmp/site.pm;'; }, 'http-snippet writes perl_require:'],
+	['an http-snippet with a single-quoted perl module path', (v) => { v.controller.config['http-snippet'] = "'perl_modules' /tmp/site;"; }, 'http-snippet writes perl_modules:'],
 	['a global auth cache key', (v) => { v.controller.config['global-auth-cache-key'] = '$remote_user$http_authorization'; }, 'global-auth-cache-key is set'],
 	['a global auth cache key of one space', (v) => { v.controller.config['global-auth-cache-key'] = ' '; }, 'global-auth-cache-key is set']
 ];
@@ -409,7 +432,12 @@ const CONTROLLER_ACCEPTED = [
 	(v) => { v.controller.config['location-snippet'] = 'proxy_no_cache 1;\nproxy_cache_bypass 1;\nproxy_cache_valid 200 1m;'; },
 	(v) => { v.controller.config['global-auth-cache-key'] = ''; },
 	// ARV-284: names that only begin like a refused one, and include inside a header's text, not a directive.
-	(v) => { v.controller.config['server-snippet'] = 'error_page 404 /404.html;\nlog_subrequest off;\nmore_set_headers "X-Policy: includeSubDomains";'; }
+	(v) => { v.controller.config['server-snippet'] = 'error_page 404 /404.html;\nlog_subrequest off;\nmore_set_headers "X-Policy: includeSubDomains";'; },
+	// ARV-288: an empty plugins key; main and stream snippets that write none of the refused names; names in a header's text
+	// after a semicolon that only begin like a refused one, and an njs name glued to the closing quote (not a statement).
+	(v) => { v.controller.config.plugins = ''; },
+	(v) => { v.controller.config['main-snippet'] = 'worker_rlimit_nofile 65536;'; v.controller.config['stream-snippet'] = 'proxy_timeout 10m;'; },
+	(v) => { v.controller.config['http-snippet'] = 'more_set_headers "X-Note: max-age=1;includeSubDomains;perlish;load_modules;ssl_engines;lua_package_paths;js_note";'; }
 ];
 
 function controllerValuesSelfTest() {
@@ -535,7 +563,11 @@ const INGRESS_PRIVACY_CASES = [
 	['allowlist-everyone', '0.0.0.0/0 is wider than /8'], ['allowlist-ipv6-everyone', '::/0 is wider than /16'],
 	['cronz-open', 'the Cronz dashboard has no allowlist-source-range'],
 	['rewrite-target-site', 'sets rewrite-target; the probes\' 404 is judged on the request\'s own path'], ['use-regex-site', 'sets use-regex; the probes\' 404 is judged'],
-	['snippet-rewrite', 'configuration-snippet writes a rewrite directive'], ['snippet-quoted-rewrite', 'configuration-snippet writes a rewrite directive']
+	['snippet-rewrite', 'configuration-snippet writes a rewrite directive'], ['snippet-quoted-rewrite', 'configuration-snippet writes a rewrite directive'],
+	// ARV-288: the rendered Ingresses are held to what validate.yaml refuses in every environment (INGRESS_REFUSED_DIRECTIVES).
+	['snippet-include', 'configuration-snippet writes include:'], ['snippet-quoted-include', 'configuration-snippet writes include:'],
+	['snippet-body-in-file', 'configuration-snippet writes client_body_in_file_only:'], ['snippet-lua', 'configuration-snippet writes a *_by_lua directive:'],
+	['snippet-rewrite-log', 'server-snippet writes rewrite_log:']
 	];
 const PRODUCTION_ONLY_PRIVACY = ['allowlist-everyone', 'allowlist-ipv6-everyone', 'cronz-open'];
 
@@ -2063,6 +2095,37 @@ for (const [label, file, sets, message, annotation] of [
 	['a configuration-snippet with a Lua file in the demo', 'values-k8s-demo.yaml', [], 'configuration-snippet writes a *_by_lua directive', 'configuration-snippet: "log_by_lua_file /tmp/site.lua;"'],
 	['a server-snippet that logs the server\'s rewrites in production', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an access_log, error_log, log_format or rewrite_log directive',
 		'server-snippet: "client_header_timeout 30s; rewrite_log on;"'],
+	// ARV-288: no ModSecurity Lua (SecRuleScript, the exec: action), no @inspectFile (a program through the shell with the
+	// inspected value, or Lua) and no upload kept on the controller's disk (SecUploadKeepFiles, SecTmpSaveUploadedFiles), in any
+	// case, as ModSecurity reads its names, and in every environment.
+	['a modsecurity-snippet that runs a Lua rule script', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet writes SecRuleScript or an exec: action',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecRuleScript /etc/nginx/lua/site.lua "id:100300,phase:2,deny,status:403"' } })] }],
+	['a modsecurity-snippet whose rule runs a Lua script, in capitals, in the demo', 'values-k8s-demo.yaml', [], 'the modsecurity-snippet writes SecRuleScript or an exec: action',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecRule REQUEST_URI "@beginsWith /api" "id:100301,phase:1,pass,nolog,EXEC:/etc/nginx/lua/site.lua"' } })] }],
+	['a modsecurity-snippet that inspects the arguments through a program in production', 'values-k8s-prd.yaml', [PRD], 'the modsecurity-snippet uses @inspectFile',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/modsecurity-snippet': 'SecRule ARGS "!@inspectFile /bin/echo" "id:100302,phase:2,pass,nolog"' } })] }],
+	['a modsecurity-snippet that keeps the uploaded files', 'values-k8s-dev.yaml', [], 'the modsecurity-snippet sets SecUploadKeepFiles or SecTmpSaveUploadedFiles', 'modsecurity-snippet: "SecUploadDir /tmp\\nSecUploadKeepFiles On"'],
+	['a modsecurity-snippet that saves the uploads to its temporary folder, in lower case, in production', 'values-k8s-prd.yaml', [PRD], 'the modsecurity-snippet sets SecUploadKeepFiles or SecTmpSaveUploadedFiles',
+		'modsecurity-snippet: "sectmpsaveuploadedfiles On"'],
+	// ARV-288: no njs or perl directive, read as nginx's tokenizer reads a statement, in every environment.
+	['a server-snippet that imports njs', 'values-k8s-dev.yaml', [], 'server-snippet writes a js_ or perl directive', 'server-snippet: "js_import site from /tmp/site.js;"'],
+	['a configuration-snippet with a quoted js_content before a parenthesis in the demo', 'values-k8s-demo.yaml', [], 'configuration-snippet writes a js_ or perl directive', 'configuration-snippet: "\\"js_content\\")site.handler;"'],
+	['a configuration-snippet that answers with perl in production', 'values-k8s-prd.yaml', [PRD], 'configuration-snippet writes a js_ or perl directive', 'configuration-snippet: "perl Site::handler;"'],
+	['a server-snippet that loads a perl module', 'values-k8s-dev.yaml', [], 'server-snippet writes a js_ or perl directive', "server-snippet: \"client_header_timeout 30s; 'perl_require' /tmp/site.pm;\""],
+	// ARV-288: no *_pass or mirror directive and no mirror annotation in any environment, outside pod TLS too: a proxy_pass
+	// changes the upstream or its path after the probes' check, and a mirror copies every request, sign-in bodies included;
+	// and no enable-rewrite-log, which writes rewrite_log on in the Ingress's locations.
+	['a configuration-snippet that proxies to the readiness probe outside pod TLS', 'values-k8s-dev.yaml', [], 'configuration-snippet writes a *_pass directive',
+		'configuration-snippet: "proxy_pass http://api-main-service:8080/health/readiness;"'],
+	['a server-snippet with a single-quoted proxy_pass before a parenthesis in the demo', 'values-k8s-demo.yaml', [], 'server-snippet writes a *_pass directive',
+		"server-snippet: \"location /copy { 'proxy_pass')http://site-copy.example; }\""],
+	['an auth-snippet that passes to FastCGI', 'values-k8s-dev.yaml', [], 'auth-snippet writes a *_pass directive', 'auth-snippet: "fastcgi_pass 127.0.0.1:9000;"'],
+	['a configuration-snippet that mirrors every request', 'values-k8s-dev.yaml', [], 'configuration-snippet writes a mirror directive', 'configuration-snippet: "mirror /copy;\\nmirror_request_body on;"'],
+	['a server-snippet with a quoted mirror in production', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes a mirror directive', "server-snippet: \"client_header_timeout 30s; 'mirror' /copy;\""],
+	['a mirror target annotation', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/mirror-target is refused: ingress-nginx\'s mirror annotations copy every request',
+		'mirror-target: "https://site-copy.example$request_uri"'],
+	['the rewrite log annotation', 'values-k8s-dev.yaml', [], 'enable-rewrite-log writes rewrite_log on in the Ingress\'s locations', 'enable-rewrite-log: "true"'],
+	['the rewrite log annotation in production', 'values-k8s-prd.yaml', [PRD], 'enable-rewrite-log writes rewrite_log on in the Ingress\'s locations', 'enable-rewrite-log: "true"'],
 	['a site annotation that turns OpenTelemetry on for the live hub', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/enable-opentelemetry is set by the chart',
 		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-opentelemetry': 'true' } })] }],
 	['the Ingresses of one host with different server-snippets', 'values-k8s-dev.yaml', [], 'the Ingresses of host api-integration-test carry different server-snippet annotations',
@@ -2325,6 +2388,40 @@ for (const [label, file, sets, message, annotation] of [
 		console.error(`FAIL ingress site snippets and modes:\n  ${findings.join('\n  ')}`);
 	} else {
 		console.log('PASS ingress site snippets and modes: a site\'s server-snippet and configuration-snippet follow the chart\'s on every Ingress of a host and the rules still hold; a machine host may redirect outside production');
+	}
+}
+
+// ARV-288: an accepted site render whose snippets hold names that only begin like a refused one (error_page, log_subrequest,
+// mirror_request_body, proxy_pass_header, SecUploadFileLimit, an argument named execution) or stand in a header's text after a
+// semicolon (includeSubDomains with and without a space, perlish, mirrors, and js_note glued to the closing quote). It pins the
+// boundaries of the shared directive pattern (ariva-platform.directive in validate.yaml, nginxDirective in tests/checks.mjs): a
+// bare name is a directive only when a blank, ";", "{" or the end follows it, so a longer name or a name glued to text is not
+// one. It renders in dev and in production (pod TLS on, so the ARV-082b _pass rule reads it too), the site's text reaches the
+// Ingress, and the rendered checks find nothing.
+{
+	const findings = [];
+	const siteServer = 'error_page 404 /404.html;\nlog_subrequest off;\n';
+	const siteLocation = 'more_set_headers "X-Ariva-Policy: max-age=1;includeSubDomains; includeSubDomains;perlish;mirrors;js_note";\nmirror_request_body off;\nproxy_pass_header X-Request-Id;\n';
+	const siteModsecurity = 'SecUploadFileLimit 10\nSecRule ARGS:execution "@rx ^[a-z]+$" "id:100210,phase:2,pass,nolog"\n';
+	const annotations = { 'nginx.ingress.kubernetes.io/server-snippet': siteServer, 'nginx.ingress.kubernetes.io/configuration-snippet': siteLocation, 'nginx.ingress.kubernetes.io/modsecurity-snippet': siteModsecurity };
+	for (const [file, sets, environment] of [['values-k8s-dev.yaml', [], 'k8s-dev'], ['values-k8s-prd.yaml', [PRD], 'k8s-prd']]) {
+		const result = render(file, sets, '', [valuesFile({ ingresses: [ingressEntry('api-integration', 'api-integration-service', 'api-integration-test', { annotations })] })]);
+		if (result.status !== 0) {
+			findings.push(`${environment}: template failed\n${result.stderr}`);
+			continue;
+		}
+		const docs = parseAsKubernetes(result.stdout);
+		findings.push(...checkManifests(parse(result.stdout), { environment }), ...ingressHardeningFindings(docs, { environment }), ...hubRefusalFindings(docs), ...ingressPrivacyFindings(docs, { environment }));
+		const rendered = docs.find((doc) => doc?.kind === 'Ingress')?.metadata?.annotations ?? {};
+		for (const [key, text] of Object.entries(annotations)) {
+			if (!String(rendered[key] ?? '').endsWith(text)) findings.push(`${environment}: the rendered ${key} does not end with the site's near-miss text`);
+		}
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL near-miss site snippets:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log('PASS near-miss site snippets: error_page, log_subrequest, mirror_request_body, proxy_pass_header, SecUploadFileLimit, an argument named execution and names in a header\'s text after a semicolon render in dev and production and the rendered checks find nothing');
 	}
 }
 

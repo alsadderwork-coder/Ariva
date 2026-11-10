@@ -1420,6 +1420,13 @@ export function ingressHardeningFindings(docs, { environment }) {
 }
 
 /**
+ * ARV-091, ARV-206, ARV-284, ARV-288: the controller's own snippets (its ConfigMap keys), which every snippet rule of
+ * controllerValuesFindings reads: the main, http, server and location snippets, the global auth location's and, since
+ * ARV-288, the stream block's (stream-snippet: an include or a preread_by_lua_block there was not read before).
+ */
+export const CONTROLLER_SNIPPETS = ['main-snippet', 'http-snippet', 'server-snippet', 'location-snippet', 'global-auth-snippet', 'stream-snippet'];
+
+/**
  * ARV-091 (ASVS 5.0 V16.2.5, CWE-532): the controller's access log format. controllerDefault is ingress-nginx 1.15's
  * log-format-upstream (internal/ingress/controller/config/config.go at controller-v1.15.0), whose "$request" is the request
  * line with its query string; Ariva's values write requestLine in its place and keep every other field. No format may write
@@ -1434,7 +1441,7 @@ export const INGRESS_LOG_FORMAT = {
 	/** error-log-level values that write no request headers (info and debug do; ingress-nginx's nginx is built with debug). */
 	errorLevels: ['notice', 'warn', 'error', 'crit', 'alert', 'emerg'],
 	/** The controller's own snippets, in which no log or ModSecurity directive may appear (they would get around the guards). */
-	snippets: ['main-snippet', 'http-snippet', 'server-snippet', 'location-snippet', 'global-auth-snippet'],
+	snippets: CONTROLLER_SNIPPETS,
 	/** A log or ModSecurity directive, read as nginx's tokenizer reads a statement (nginxDirective). */
 	directive: nginxDirective('access_log|log_format|error_log|rewrite_log|modsecurity(_[a-z_]+)?')
 };
@@ -1463,19 +1470,56 @@ export const directiveName = (match) => match.slice(2).find(Boolean);
  */
 export const INGRESS_CACHE_DIRECTIVE = /\b((proxy|fastcgi|uwsgi|scgi)_(cache|cache_path|store))\b/i;
 
-/** ARV-206: the controller's snippets the cache name is looked for in; since ARV-284 the same five as INGRESS_LOG_FORMAT's (main, http, server, location and the global auth location's). */
-const CACHE_SNIPPETS = ['main-snippet', 'http-snippet', 'server-snippet', 'location-snippet', 'global-auth-snippet'];
+/**
+ * ARV-284, ARV-288: what no snippet writes, in the controller's snippets (controllerValuesFindings) and in the rendered Ingresses'
+ * annotations (ingressPrivacyFindings) alike, as [name, pattern, why, story]: an include (read as nginx's tokenizer reads a
+ * statement, nginxDirective), and client_body_in_file_only and a *_by_lua directive anywhere in the text. validate.yaml refuses
+ * the same in every site annotation, in every environment. A name left undefined is reported as the directive nginxDirective
+ * found (directiveName).
+ */
+export const SNIPPET_REFUSED_DIRECTIVES = [
+	['include', nginxDirective('include'), 'it reads a file on the controller\'s disk into the configuration, which gets around every directive guard', 'ARV-284'],
+	['client_body_in_file_only', /client_body_in_file_only/i, 'it keeps every request body (sign-in passwords, TOTP codes, uploads) as a file on the controller', 'ARV-284'],
+	['a *_by_lua directive', /_by_lua/i, 'a Lua block can copy request bodies and headers into the controller\'s shared dictionaries or files', 'ARV-284']
+];
 
 /**
- * ARV-284: what none of the controller's snippets (CACHE_SNIPPETS) writes, each with why: an include (read as nginx reads a
- * statement), client_body_in_file_only and a *_by_lua directive (anywhere in the text), and a rewrite (as nginx reads it).
+ * ARV-284, ARV-288: what none of the controller's snippets (CONTROLLER_SNIPPETS) writes: SNIPPET_REFUSED_DIRECTIVES, a rewrite,
+ * and, each read as nginx's tokenizer reads a statement and in any snippet (nginx takes load_module and ssl_engine in the main
+ * context only, lua_package_path and lua_package_cpath in http only; more is refused, never less): load_module and ssl_engine
+ * (a shared object of the controller's disk loaded into nginx, a module or an OpenSSL engine), lua_package_path and
+ * lua_package_cpath (the controller's Lua loads modules from other paths), and every js_ and perl directive (njs and nginx's
+ * perl module load scripts from the controller's disk and run them on the requests, if its nginx carries them: js_import,
+ * js_content, js_set, perl, perl_require, perl_modules and the others).
  */
 export const CONTROLLER_REFUSED_DIRECTIVES = [
-	['include', nginxDirective('include'), 'it reads a file on the controller\'s disk into the configuration, which gets around every directive guard'],
-	['client_body_in_file_only', /client_body_in_file_only/i, 'it keeps every request body (sign-in passwords, TOTP codes, uploads) as a file on the controller'],
-	['a *_by_lua directive', /_by_lua/i, 'a Lua block can copy request bodies and headers into the controller\'s shared dictionaries or files'],
-	['rewrite', nginxDirective('rewrite'), 'it changes the path after the chart\'s health probe check, so another path could reach /health on a pod']
+	...SNIPPET_REFUSED_DIRECTIVES,
+	['rewrite', nginxDirective('rewrite'), 'it changes the path after the chart\'s health probe check, so another path could reach /health on a pod', 'ARV-284'],
+	[undefined, nginxDirective('load_module|ssl_engine'), 'it loads a shared object of the controller\'s disk into nginx (a module or an OpenSSL engine), code no guard here reads', 'ARV-288'],
+	[undefined, nginxDirective('lua_package_path|lua_package_cpath'), 'it makes the controller\'s Lua load its modules (Lua or C) from other paths of its disk, code no guard here reads', 'ARV-288'],
+	[undefined, nginxDirective('js_[a-z0-9_]+'), 'njs loads JavaScript from the controller\'s disk and runs it on the requests (bodies and headers included), code no guard here reads', 'ARV-288'],
+	[undefined, nginxDirective('perl(_[a-z_]+)?'), 'nginx\'s perl module loads Perl from the controller\'s disk and runs it on the requests (bodies and headers included), code no guard here reads', 'ARV-288']
 ];
+
+/**
+ * ARV-288: what no rendered Ingress's annotation writes beside a rewrite (ingressPrivacyFindings): SNIPPET_REFUSED_DIRECTIVES and
+ * rewrite_log, read as nginx's tokenizer reads a statement. A second line behind validate.yaml, which refuses them in every site
+ * annotation, and the proof that the chart's own snippets write none of them.
+ */
+export const INGRESS_REFUSED_DIRECTIVES = [
+	...SNIPPET_REFUSED_DIRECTIVES,
+	['rewrite_log', nginxDirective('rewrite_log'), 'it logs the rewrite checks of its server or location (the chart\'s server-level ones run on every request) at notice, with the request line and its query string (the live hub\'s access token)', 'ARV-288']
+];
+
+/** Every refused directive of a table (SNIPPET_REFUSED_DIRECTIVES and the others) that a text writes, as [name, why, story] (ARV-288). */
+export function refusedDirectives(table, text) {
+	const found = [];
+	for (const [name, pattern, why, story] of table) {
+		const match = pattern.exec(String(text ?? ''));
+		if (match) found.push([name ?? directiveName(match), why, story]);
+	}
+	return found;
+}
 
 /** A ConfigMap boolean as ingress-nginx reads it (mapstructure, weakly typed: strconv.ParseBool). */
 const configTrue = (value) => /^(1|t|true)$/i.test(String(value ?? ''));
@@ -1494,7 +1538,9 @@ const configTrue = (value) => /^(1|t|true)$/i.test(String(value ?? ''));
  * in those snippets or the global auth snippet, and no global-auth-cache-key (ingress-nginx would cache the global external
  * authentication answers in its auth_cache zone). ARV-284: the log and ModSecurity names are read as nginx's tokenizer reads a
  * statement (nginxDirective), and no snippet writes an include, client_body_in_file_only, a *_by_lua directive or a rewrite
- * (CONTROLLER_REFUSED_DIRECTIVES).
+ * (CONTROLLER_REFUSED_DIRECTIVES). ARV-288: every snippet rule reads the stream-snippet too (CONTROLLER_SNIPPETS); no snippet
+ * writes load_module, ssl_engine, lua_package_path, lua_package_cpath or a js_ or perl directive (CONTROLLER_REFUSED_DIRECTIVES);
+ * and no plugins key (Lua plugins from the controller's disk) but empty.
  */
 export function controllerValuesFindings(values) {
 	const findings = [];
@@ -1539,17 +1585,21 @@ export function controllerValuesFindings(values) {
 		const match = INGRESS_LOG_FORMAT.directive.exec(String(config[key] ?? ''));
 		if (match) findings.push(`controller.config ${key} writes ${directiveName(match)}: the controller's snippets write no access_log, log_format, error_log, rewrite_log or modsecurity directive, which would get around the access log format and the Ingresses' audit log and logging guards`);
 	}
-	for (const key of CACHE_SNIPPETS) {
+	for (const key of CONTROLLER_SNIPPETS) {
 		const cache = INGRESS_CACHE_DIRECTIVE.exec(String(config[key] ?? ''));
 		if (cache) {
 			findings.push(`controller.config ${key} writes ${cache[1]}: the controller keeps no copy of an answer (no cache zone, cache or stored answer), as Ariva's answers carry credentials, ` +
 				'border data and personal data that no cache outside Ariva may hold (ARV-206)');
 		}
 	}
-	for (const key of CACHE_SNIPPETS) {
-		for (const [name, pattern, why] of CONTROLLER_REFUSED_DIRECTIVES) {
-			if (pattern.test(String(config[key] ?? ''))) findings.push(`controller.config ${key} writes ${name}: ${why} (ARV-284)`);
-		}
+	for (const key of CONTROLLER_SNIPPETS) {
+		for (const [name, why, story] of refusedDirectives(CONTROLLER_REFUSED_DIRECTIVES, config[key])) findings.push(`controller.config ${key} writes ${name}: ${why} (${story})`);
+	}
+	// ARV-288: ingress-nginx loads each Lua plugin this key names from the controller's disk (/etc/nginx/lua/plugins) and runs it in
+	// every request's phases, on every Ingress; any value but empty is refused, spaces included, as for global-auth-cache-key.
+	if (String(config.plugins ?? '') !== '') {
+		findings.push('controller.config plugins is set: ingress-nginx loads the Lua plugins it names from the controller\'s disk (/etc/nginx/lua/plugins) and runs them on every request of every Ingress, ' +
+			'code no guard here reads (ARV-288)');
 	}
 	// Any value but empty, spaces included: ingress-nginx tests the string as it is, so " " would cache with one key per location.
 	if (String(config['global-auth-cache-key'] ?? '') !== '') {
@@ -1860,6 +1910,8 @@ export const HEALTH_PROBES = {
  *   404 carries it, as the 421 does), and answers none of HEALTH_PROBES.others;
  * - no Ingress sets rewrite-target or use-regex and no annotation value writes a rewrite directive: the 404 is judged on the
  *   request's own path, so a rewrite could take another path to /health on the pod;
+ * - ARV-288: no annotation value writes an include, client_body_in_file_only, a *_by_lua directive or rewrite_log
+ *   (INGRESS_REFUSED_DIRECTIVES), a second line behind validate.yaml that also proves the chart's own snippets write none;
  * - allowlist-source-range, when set, is a list of CIDRs (network addresses), in k8s-prd none wider than /8 (IPv4) or /16
  *   (IPv6); no Ingress sets whitelist-source-range (the alias ingress-nginx reads only without allowlist-source-range);
  * - in k8s-prd every Ingress to api-cronz-service (the TickerQ dashboard) has allowlist-source-range.
@@ -1892,6 +1944,7 @@ export function ingressPrivacyFindings(docs, { environment }) {
 		}
 		for (const [key, value] of Object.entries(annotations)) {
 			if (nginxDirective('rewrite').test(String(value))) findings.push(`${id}: ${key} writes a rewrite directive, which changes the path after the probes' check`);
+			for (const [name, why, story] of refusedDirectives(INGRESS_REFUSED_DIRECTIVES, value)) findings.push(`${id}: ${key} writes ${name}: ${why} (${story})`);
 		}
 		if (annotations[`${NGINX}whitelist-source-range`] !== undefined) findings.push(`${id}: sets whitelist-source-range, the alias; the chart writes allowlist-source-range, the name ingress-nginx reads first`);
 		const allow = annotations[`${NGINX}allowlist-source-range`];

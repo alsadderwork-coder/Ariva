@@ -103,9 +103,28 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   the configuration and get around every guard here), client_body_in_file_only anywhere in its text (it keeps every request
   body, sign-in passwords and TOTP codes included, as a file on the controller) or a *_by_lua directive anywhere in its text
   (a Lua block can copy bodies and headers into the controller's shared dictionaries or files). The controller values Ariva
-  ships write none of them, nor a rewrite, in their snippets (tests/checks.mjs controllerValuesFindings). Not covered here
-  (ARV-288): ModSecurity's own Lua and file actions in a modsecurity-snippet, the controller's stream-snippet, load_module,
-  njs and perl, and a proxy_pass or mirror outside pod TLS.
+  ships write none of them, nor a rewrite, in their snippets (tests/checks.mjs controllerValuesFindings).
+- No code, copy or kept upload from a site's snippets (ARV-288, CWE-94, CWE-78, CWE-532, CWE-501), in every environment:
+  - a modsecurity-snippet writes no SecRuleScript and no exec: action (both run a Lua script inside ModSecurity), no
+    @inspectFile (libmodsecurity v3 runs the file it names, a Lua script through Lua and any other through the shell, popen,
+    with the inspected value, a request's own text, as its argument) and no SecUploadKeepFiles or SecTmpSaveUploadedFiles (the
+    uploads written to the controller's disk). ModSecurity reads these names in any case, and nginx's escapes inside the
+    modsecurity_rules string give only quotes, backslashes and blanks, so a name ModSecurity reads stands in the text as
+    written: each is refused anywhere in the text, a comment included (more is refused, never less), exec as a whole word
+    followed by ":";
+  - no annotation value writes a js_ or perl directive (njs and nginx's perl module load code from the controller's disk),
+    a *_pass directive (proxy_pass and the grpc_, fastcgi_, uwsgi_, scgi_ and memcached_ ones: an upstream the chart does
+    not name, or the Ingress's own under another path after the health probe check, which the rewrite guard refuses for a
+    rewrite) or a mirror directive (a copy of every request, sign-in bodies included), each read as nginx's tokenizer reads a
+    statement (ariva-platform.directive); with podTls the ARV-082b rule above refuses any _pass first;
+  - no annotation sets enable-rewrite-log (rewrite_log in the Ingress's locations, as a rewrite_log directive would) or an
+    ingress-nginx mirror annotation (mirror-target and the other mirror- keys: a copy of every request to another target).
+  The controller values Ariva ships read the stream-snippet like the others and write no load_module, ssl_engine,
+  lua_package_path, lua_package_cpath, js_ or perl directive and no plugins key, and the rendered Ingresses carry no include,
+  client_body_in_file_only, *_by_lua or rewrite_log (tests/checks.mjs controllerValuesFindings, ingressPrivacyFindings). Not
+  covered, the trust model the controller values state (whoever may write a snippet writes nginx configuration): a deny-list
+  cannot stop a deliberate snippet author, for example a server-snippet whose if reads a variable it sets only later, which
+  makes nginx warn of an uninitialized variable with the request line (the live hub's access token on /hubs) on every request.
 - Log shipping and the log pseudonym key (ARV-091a, ASVS 5.0 V16.4.2, V16.4.3, CWE-532; values logging):
   - logging is a map of collector, pseudonymKeySecret (name and key), lokiCredentialsSecret (name, usernameKey and passwordKey)
     and required, nothing else, so neither the key nor Loki's credentials can ever be a value; collector is otlp, loki or empty;
@@ -330,6 +349,12 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if eq $key "nginx.ingress.kubernetes.io/custom-headers" }}
 {{- fail (printf "ingresses %s: custom-headers names a ConfigMap the chart cannot read, whose headers would replace the chart's; write headers in a snippet (ARV-084)" $name) }}
 {{- end }}
+{{- if eq $key "nginx.ingress.kubernetes.io/enable-rewrite-log" }}
+{{- fail (printf "ingresses %s: enable-rewrite-log writes rewrite_log on in the Ingress's locations, which logs their rewrite checks at notice with the request line and its query string; the controller's values and the chart decide what is logged, so it is refused in every environment, as a rewrite_log directive is (ARV-288)" $name) }}
+{{- end }}
+{{- if hasPrefix "nginx.ingress.kubernetes.io/mirror-" $key }}
+{{- fail (printf "ingresses %s: %s is refused: ingress-nginx's mirror annotations copy every request, its body included (sign-in passwords, TOTP codes, uploads), to another target; Ariva mirrors no request, in any environment (ARV-288)" $name $key) }}
+{{- end }}
 {{- if regexMatch "(?i)strict-transport-security|x-content-type-options|content-security-policy|more_clear_headers" (toString $value) }}
 {{- fail (printf "ingresses %s: %s names Strict-Transport-Security, X-Content-Type-Options, Content-Security-Policy or more_clear_headers; the chart sets those headers on every response and no annotation replaces or removes them (ARV-084)" $name $key) }}
 {{- end }}
@@ -338,6 +363,15 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if and (eq $key "nginx.ingress.kubernetes.io/modsecurity-snippet") (regexMatch "(?i)%\\{\\s*(REQUEST_(HEADERS|COOKIES|LINE|URI|BODY)|FULL_REQUEST|QUERY_STRING|ARGS|MATCHED_VARS?\\b|XML|TX[.:][0-9])" (toString $value)) }}
 {{- fail (printf "ingresses %s: the modsecurity-snippet expands a macro of the request's values (REQUEST_HEADERS, REQUEST_COOKIES, REQUEST_LINE, REQUEST_URI, REQUEST_BODY, FULL_REQUEST, QUERY_STRING, ARGS, XML, MATCHED_VAR or a TX capture) in a rule; ModSecurity writes a rule's msg and logdata to the controller's error log, so those macros would copy bearer tokens, cookies or the live hub's access_token there (ARV-091)" $name) }}
+{{- end }}
+{{- if and (eq $key "nginx.ingress.kubernetes.io/modsecurity-snippet") (regexMatch "(?i)SecRuleScript|\\bexec\\s*:" (toString $value)) }}
+{{- fail (printf "ingresses %s: the modsecurity-snippet writes SecRuleScript or an exec: action: both run a Lua script inside ModSecurity on the controller, which reads every request value (bodies, headers, cookies) and can reach the controller's files, so no site rule runs one, whatever the controller's build (ARV-288)" $name) }}
+{{- end }}
+{{- if and (eq $key "nginx.ingress.kubernetes.io/modsecurity-snippet") (regexMatch "(?i)@\\s*inspectFile" (toString $value)) }}
+{{- fail (printf "ingresses %s: the modsecurity-snippet uses @inspectFile: libmodsecurity v3 runs the file it names on the controller, a Lua script through Lua and any other file through the shell (popen) with the inspected value, a request's own text, as its argument (CWE-78), so no site rule uses it (ARV-288)" $name) }}
+{{- end }}
+{{- if and (eq $key "nginx.ingress.kubernetes.io/modsecurity-snippet") (regexMatch "(?i)SecUploadKeepFiles|SecTmpSaveUploadedFiles" (toString $value)) }}
+{{- fail (printf "ingresses %s: the modsecurity-snippet sets SecUploadKeepFiles or SecTmpSaveUploadedFiles: ModSecurity would write the requests' uploaded files (floor plans, schedules, imports, configuration bundles) to the controller's disk, outside Ariva's malware scan, retention and access control, and keep them after the request with SecUploadKeepFiles (ARV-288)" $name) }}
 {{- end }}
 {{- if mustRegexMatch (include "ariva-platform.directive" "modsecurity(_[a-z_]+)?") (toString $value) }}
 {{- fail (printf "ingresses %s: %s writes a modsecurity directive; the chart configures ModSecurity with enable-modsecurity and its modsecurity-snippet only, so no snippet loads the controller's modsecurity.conf (its audit log records bearer tokens and cookies), turns ModSecurity off or re-enables the audit log (ARV-091)" $name $key) }}
@@ -356,6 +390,15 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- end }}
 {{- if regexMatch "(?i)_by_lua" (toString $value) }}
 {{- fail (printf "ingresses %s: %s writes a *_by_lua directive: a Lua block can copy request bodies and headers into the controller's shared dictionaries or files, so none is written in any environment (ARV-284)" $name $key) }}
+{{- end }}
+{{- if mustRegexMatch (include "ariva-platform.directive" "js_[a-z0-9_]+|perl(_[a-z_]+)?") (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes a js_ or perl directive (js_import, js_content, js_set, perl, perl_require, perl_modules and the others): njs and nginx's perl module load code from the controller's disk and run it on the requests, which no guard here reads, so none is written in any environment, whether or not the controller's nginx carries them (ARV-288)" $name $key) }}
+{{- end }}
+{{- if mustRegexMatch (include "ariva-platform.directive" "(proxy|grpc|fastcgi|uwsgi|scgi|memcached)_pass") (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes a *_pass directive (proxy_pass, grpc_pass, fastcgi_pass, uwsgi_pass, scgi_pass or memcached_pass): it sends the requests to an upstream the chart does not name, or to the Ingress's own under another path, after the chart's health probe check (the effect the rewrite guard refuses: another path could reach /health on the pod); ingress-nginx writes the proxy to the Ingress's service itself, so none is written in any environment (ARV-288)" $name $key) }}
+{{- end }}
+{{- if mustRegexMatch (include "ariva-platform.directive" "mirror") (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes a mirror directive: it copies every request, its body included (sign-in passwords, TOTP codes, uploads), to another location, which can send it anywhere, so none is written in any environment (ARV-288)" $name $key) }}
 {{- end }}
 {{- if has $key (list "nginx.ingress.kubernetes.io/auth-cache-key" "nginx.ingress.kubernetes.io/auth-cache-duration") }}
 {{- fail (printf "ingresses %s: %s makes ingress-nginx cache the external authentication answers (proxy_cache auth_cache) on the controller's disk; Ariva uses no external authentication and the ingress keeps no copy of an answer (ARV-206)" $name $key) }}

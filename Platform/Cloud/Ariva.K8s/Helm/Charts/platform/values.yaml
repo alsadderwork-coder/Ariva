@@ -609,7 +609,9 @@ imageCredentials:
 # Every Ingress keeps the ModSecurity audit log off (SecAuditEngine Off, ARV-091): it would record the request line and
 # headers (bearer tokens, the refresh cookie). A site's modsecurity-snippet may not turn it back on, and no annotation may
 # write a modsecurity, access_log, error_log, log_format or rewrite_log directive, nor, in any environment, an include,
-# client_body_in_file_only or a *_by_lua directive (validate.yaml; names read as nginx reads them, ARV-284).
+# client_body_in_file_only or a *_by_lua directive (validate.yaml; names read as nginx reads them, ARV-284), nor (ARV-288) a
+# js_, perl, *_pass or mirror directive, enable-rewrite-log or a mirror- annotation, or a modsecurity-snippet with
+# SecRuleScript, an exec: action, @inspectFile, SecUploadKeepFiles or SecTmpSaveUploadedFiles.
 # Every Ingress answers 404 to /health, /healthz and anything under them, at its host's server level, before any location
 # (ARV-085): the probes stay private, on the pods' own ports, and no Ingress routes them (validate.yaml refuses such a path).
 # The 404 is judged on the request's own path, so no Ingress rewrites one: validate.yaml refuses the annotations rewrite-target

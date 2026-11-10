@@ -586,7 +586,9 @@ site annotation for any other key here. Usage: {{ include "ariva-platform.ingres
   OWASP CRS (enable-owasp-core-rules; ingress-nginx writes its file after this snippet, and the CRS sets no audit engine but
   Off) keeps the audit log off and gets one deny line per blocked request (its anomaly score); the CRS's own matches, with
   excerpts of the matched input (Matched Data ... found within ARGS:...), are info. validate.yaml refuses a site annotation
-  that would turn the audit log back on, write a debug log or copy request values into a rule's message.
+  that would turn the audit log back on, write a debug log or copy request values into a rule's message, and (ARV-288) a
+  site rule that runs Lua (SecRuleScript, exec:), runs a file through @inspectFile or keeps uploads on the controller's disk
+  (SecUploadKeepFiles, SecTmpSaveUploadedFiles).
 - The live hub's Ingress (tokenInQuery) also keeps no access log, its configuration-snippet logs only critical errors, and
   OpenTelemetry stays off on it (enable-opentelemetry "false", a key of the chart's, so no site annotation turns it on): the
   ingress's OpenTelemetry module exports the request target with its query string (http.target), the access token included.

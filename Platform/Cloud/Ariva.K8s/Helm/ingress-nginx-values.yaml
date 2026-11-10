@@ -5,7 +5,9 @@
 # tests/checks.mjs), and scripts/ops/tls-check.mjs checks the result on the live hosts in the release gate.
 #
 # The controller is shared: these settings reach every Ingress it serves. The two snippet settings let anyone who may create
-# an Ingress for it write nginx configuration; where other teams create Ingresses, give Ariva a controller of its own.
+# an Ingress for it write nginx configuration; where other teams create Ingresses, give Ariva a controller of its own. The
+# Ariva chart refuses a list of directives in its own Ingresses' site annotations (templates/validate.yaml), which keeps a
+# careless snippet out but cannot stop a deliberate author: that is the trust model these two settings state.
 controller:
   # The Ariva chart's Ingresses carry server-snippet, configuration-snippet and modsecurity-snippet annotations (the response
   # headers, the 421 for other hosts, the plain HTTP refusal, the upload rule); without this the controller drops them. The
@@ -66,9 +68,13 @@ controller:
     # - log-format-escape-none: off (on, nginx writes control characters unescaped, so a request could forge log lines);
     # - enable-opentelemetry: off (on, the controller exports a span per request whose http.target holds the query string;
     #   the chart also keeps it off on the live hub's Ingress, and the Ariva hosts trace themselves with query values redacted);
-    # - main-snippet, http-snippet, server-snippet, location-snippet, global-auth-snippet: none with an access_log,
-    #   log_format, error_log, rewrite_log or modsecurity directive (they would get around the format above and the chart's
-    #   per Ingress guards), none naming proxy_cache_path, proxy_cache or proxy_store, or the fastcgi_, uwsgi_ or scgi_ one,
-    #   and none writing an include, client_body_in_file_only, a *_by_lua directive or a rewrite (ARV-284);
+    # - main-snippet, http-snippet, server-snippet, location-snippet, global-auth-snippet and stream-snippet (ARV-288): none
+    #   with an access_log, log_format, error_log, rewrite_log or modsecurity directive (they would get around the format
+    #   above and the chart's per Ingress guards), none naming proxy_cache_path, proxy_cache or proxy_store, or the fastcgi_,
+    #   uwsgi_ or scgi_ one, none writing an include, client_body_in_file_only, a *_by_lua directive or a rewrite (ARV-284),
+    #   and none writing load_module, ssl_engine, lua_package_path, lua_package_cpath or a js_ or perl directive (code from
+    #   the controller's disk: a module, an OpenSSL engine, Lua modules, njs or Perl; ARV-288);
+    # - plugins: unset or empty (ingress-nginx runs each Lua plugin it names, from /etc/nginx/lua/plugins, on every request
+    #   of every Ingress; ARV-288);
     # - global-auth-cache-key: unset (set, ingress-nginx caches the global external authentication answers in its auth_cache
     #   zone). ARV-206: the controller keeps no copy of an answer, which can carry a credential, border data or personal data.
