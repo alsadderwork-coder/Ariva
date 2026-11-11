@@ -1,6 +1,6 @@
 # Use runtime-deps for self-contained deployment
 
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.13@sha256:da5846024d0008b48259b53a8953d39381fe5b7ec99ef1449ba4ba927f201490 AS base
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.13@sha256:1c20bc9ebda297198be069d82b6c5d1716faeeec8b8dca53ef963f9c92d3e2e3 AS base
 
 # OS security fixes published after Microsoft built the base image (Trivy gate in images.yml). The digest pins the
 # starting point; Dependabot moves it forward when Microsoft rebuilds.
