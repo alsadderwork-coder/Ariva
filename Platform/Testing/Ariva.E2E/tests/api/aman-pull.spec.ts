@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, databaseAvailable, login, totpCode } from '../support/accounts';
+import { amanIds, anchorsOf } from '../support/aman-anchor';
 import { expectNoLeak } from '../support/api-assertions';
 import { hosts } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
@@ -10,6 +11,7 @@ import { expectStatus } from '../support/expect-status';
 // Integration host exchanges the client id, secret and a TOTP code for a token, calls each contract's feed with the
 // token and an X-TOTP-Code, keeps its position per contract and hands the records to the immigration intake. A wrong
 // secret is recorded as a failure without the secret anywhere; other authentication kinds and paths are refused.
+// ARV-279c: the records counted are this run's play's, by the anchor their source event ids carry, never an earlier run's.
 
 test.skip(!databaseAvailable, 'the pull writes to the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true)');
 test.describe.configure({ mode: 'serial' });
@@ -103,8 +105,10 @@ test('the Integration host pulls every contract from the mock AMAN with a token 
 	// The waits below (pulledWithin) and the calls around them.
 	test.setTimeout(45_000);
 	// The AMAN emulator fills the mock's feed when it plays a minute: before the endpoints exist, so their first pull finds it.
+	const before = Date.now();
 	const played = await call('POST', `${feeds}/play`, { headers: operator, data: { minute: 1110 } });
 	await expectStatus(played, 200);
+	const anchors = anchorsOf(1110, before, Date.now());
 
 	const created = await call('POST', endpoints, { token: admin, data: endpoint(`ap-${run}`, secret) });
 	await expectStatus(created, 201);
@@ -129,9 +133,12 @@ test('the Integration host pulls every contract from the mock AMAN with a token 
 	expect(status[0], JSON.stringify(status[0])).toMatchObject({ consecutive_failures: 0 });
 	expect(status[0].last_status).toMatch(/^Pulled \d+ AMAN records: \d+ applied, \d+ unchanged, 0 refused, 0 unreadable\.$/);
 
-	// The records are in Ariva (from this pull or, the same records, from AMAN's other transports of the emulator).
+	// The records are in Ariva (from this pull or, the same records, from AMAN's other transports of the emulator): this play's
+	// records, by the anchor of their ids (ARV-279c), so an earlier run's never count.
 	const stored = await query<{ n: string }>(
-		`SELECT count(*) AS n FROM border_desk_interval WHERE site_code = 'DMO' AND received_utc > now() - interval '10 minutes'`
+		`SELECT count(*) AS n FROM border_desk_interval
+		 WHERE site_code = 'DMO' AND received_utc > now() - interval '10 minutes' AND source_event_id LIKE ANY($1::text[])`,
+		[amanIds(anchors)]
 	);
 	expect(Number(stored[0].n)).toBeGreaterThan(0);
 

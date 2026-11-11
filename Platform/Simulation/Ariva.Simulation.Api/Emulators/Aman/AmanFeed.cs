@@ -75,7 +75,9 @@ public sealed record AmanMinute(
 /// </list>
 /// E-gate counts are whole numbers: a fractional share is rounded up with a deterministic probability (its fraction), so
 /// the feed adds up to the scenario on average; desk counts add up to the scenario through the desks' transactions.
-/// Times come from <see cref="FeedTime"/>.
+/// Times come from <see cref="FeedTime"/>. A source event id names the system, the seed, the anchor the day is laid on
+/// (<see cref="IdTag"/>, ARV-279c), the record's kind, and the desk or gate and the minute (a lane demand: the flight key and
+/// which of its two computations).
 /// </summary>
 public static class AmanFeed
 {
@@ -103,6 +105,21 @@ public static class AmanFeed
     }
 
     /// <summary>
+    /// What the pseudo-random counts hash (e-gate attempts and rejects, the rejects' categories): the system, the seed and
+    /// the UTC date of the demo day's minute 0, so they are the same for every anchor of one date.
+    /// </summary>
+    internal static string CountTag(string system, uint seed, DateTime dayStart) =>
+        string.Create(CultureInfo.InvariantCulture, $"{system}-{seed}-{dayStart:yyyyMMdd}");
+
+    /// <summary>
+    /// What every source event id starts with (ARV-279c): the system, the seed and the anchor, the UTC minute the demo day's
+    /// minute 0 is laid on (<c>yyyyMMdd'T'HHmm</c>), so the same minute laid on another anchor of the same date (a second run,
+    /// a demo restarted or jumped) gets ids Ariva has not kept, and one anchor always gets the same ids.
+    /// </summary>
+    internal static string IdTag(string system, uint seed, DateTime dayStart) =>
+        string.Create(CultureInfo.InvariantCulture, $"{system}-{seed}-{dayStart:yyyyMMdd'T'HHmm}");
+
+    /// <summary>
     /// What AMAN publishes when demo minute <paramref name="minute"/> completes, for <paramref name="sides"/>.
     /// <paramref name="timeOf"/> gives a demo minute's UTC time; <paramref name="firstOfRun"/> states every open desk.
     /// </summary>
@@ -112,8 +129,11 @@ public static class AmanFeed
         ArgumentNullException.ThrowIfNull(day);
         ArgumentNullException.ThrowIfNull(timeOf);
         var at = new DateTimeOffset(timeOf(minute), TimeSpan.Zero);
-        // Source event ids are the system's own: AMAN's and another immigration system's never coincide.
-        var tag = $"{system}-{day.Seed.ToString(CultureInfo.InvariantCulture)}-{timeOf(0):yyyyMMdd}";
+        // Source event ids are the system's own: AMAN's and another immigration system's never coincide. ARV-279c: they carry
+        // the anchor (IdTag), while the counts keep hashing the date alone (CountTag).
+        var dayStart = timeOf(0);
+        var tag = CountTag(system, day.Seed, dayStart);
+        var ids = IdTag(system, day.Seed, dayStart);
         var sessions = new List<DeskSessionChanged>();
         var desks = new List<DeskIntervalStats>();
         var gates = new List<EGateIntervalStats>();
@@ -124,12 +144,12 @@ public static class AmanFeed
             if ((sides & sideFlag) == 0)
                 continue;
             foreach (var lane in new[] { "CRW", "CIT", "RES", "VIS" })
-                Desks(day, ScenarioModel.Q(side + "-" + lane), lane, minute, at, siteCode, tag, firstOfRun, sessions, desks);
-            Gates(day, side, minute, at, siteCode, tag, gates);
+                Desks(day, ScenarioModel.Q(side + "-" + lane), lane, minute, at, siteCode, ids, firstOfRun, sessions, desks);
+            Gates(day, side, minute, at, siteCode, tag, ids, gates);
         }
 
         if ((sides & BorderSides.Arrival) != 0)
-            Demand(day, minute, timeOf, siteCode, tag, firstOfRun, demand);
+            Demand(day, minute, timeOf, siteCode, ids, firstOfRun, demand);
         return new AmanMinute(minute, sessions, desks, gates, demand);
     }
 
@@ -140,7 +160,7 @@ public static class AmanFeed
         _ => DeskSessionState.Opened
     };
 
-    private static void Desks(ScenarioDay day, int q, string lane, int minute, DateTimeOffset at, string siteCode, string tag, bool firstOfRun,
+    private static void Desks(ScenarioDay day, int q, string lane, int minute, DateTimeOffset at, string siteCode, string ids, bool firstOfRun,
         List<DeskSessionChanged> sessions, List<DeskIntervalStats> desks)
     {
         var now = day.ServerStates(q, minute);
@@ -154,7 +174,7 @@ public static class AmanFeed
             if (firstOfRun ? state is not null : state != previous)
             {
                 sessions.Add(new DeskSessionChanged(siteCode, code, state ?? DeskSessionState.Closed, state is null ? string.Empty : lane, at,
-                    $"{tag}-ds-{code}-{minute.ToString("D4", CultureInfo.InvariantCulture)}"));
+                    $"{ids}-ds-{code}-{minute.ToString("D4", CultureInfo.InvariantCulture)}"));
             }
 
             if (state is null)
@@ -162,11 +182,11 @@ public static class AmanFeed
             // ARV-117c: what the desk completed in the interval, from the scenario's served passengers as transactions.
             var figures = state == DeskSessionState.Opened ? AmanDeskProcess.Of(day, q, k, minute) : DeskIntervalFigures.Empty;
             desks.Add(new DeskIntervalStats(siteCode, code, at, 60, figures.Transactions, figures.Documents, figures.MeanServiceSeconds, figures.P90ServiceSeconds,
-                figures.MeanCycleSeconds, lane, $"{tag}-dk-{code}-{minute.ToString("D4", CultureInfo.InvariantCulture)}"));
+                figures.MeanCycleSeconds, lane, $"{ids}-dk-{code}-{minute.ToString("D4", CultureInfo.InvariantCulture)}"));
         }
     }
 
-    private static void Gates(ScenarioDay day, string side, int minute, DateTimeOffset at, string siteCode, string tag, List<EGateIntervalStats> gates)
+    private static void Gates(ScenarioDay day, string side, int minute, DateTimeOffset at, string siteCode, string tag, string ids, List<EGateIntervalStats> gates)
     {
         var q = ScenarioModel.Q(side + "-EG");
         var i = minute + ScenarioModel.Pre;
@@ -182,7 +202,7 @@ public static class AmanFeed
             var attempts = Whole(each, tag, code, minute, 3);
             var rejected = Math.Min(attempts, Whole(each * rate, tag, code, minute, 4));
             gates.Add(new EGateIntervalStats(siteCode, code, at, 60, attempts, attempts - rejected, rejected, Categories(rejected, tag, code, minute),
-                Math.Round(gate.Svc, 1), $"{tag}-eg-{code}-{minute.ToString("D4", CultureInfo.InvariantCulture)}"));
+                Math.Round(gate.Svc, 1), $"{ids}-eg-{code}-{minute.ToString("D4", CultureInfo.InvariantCulture)}"));
         }
     }
 
@@ -206,7 +226,7 @@ public static class AmanFeed
         return result;
     }
 
-    private static void Demand(ScenarioDay day, int minute, Func<int, DateTime> timeOf, string siteCode, string tag, bool firstOfRun, List<InboundFlightLaneDemand> demand)
+    private static void Demand(ScenarioDay day, int minute, Func<int, DateTime> timeOf, string siteCode, string ids, bool firstOfRun, List<InboundFlightLaneDemand> demand)
     {
         foreach (var flight in day.Schedule.Arrivals)
         {
@@ -223,7 +243,7 @@ public static class AmanFeed
             var origin = timeOf(flight.Sched - BlockMinutes(flight.Code));
             var key = FlightKey(flight.Code, origin, arrival: true);
             demand.Add(LaneDemand(siteCode, key, timeOf(flight.Sched), passengers, flight.Mix, new DateTimeOffset(timeOf(minute), TimeSpan.Zero),
-                $"{tag}-ld-{key}-{which.ToString(CultureInfo.InvariantCulture)}"));
+                $"{ids}-ld-{key}-{which.ToString(CultureInfo.InvariantCulture)}"));
         }
     }
 

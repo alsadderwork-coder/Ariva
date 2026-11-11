@@ -17,8 +17,9 @@ public sealed record ImmigrationFeedStatus(string Name, string SiteCode, BorderS
 /// gives the minute's records for the sides it covers; Kafka gets every record on its topic; the REST transport sends
 /// each contract as a batch to Ariva's immigration endpoints
 /// (<c>api/v1/integration/sites/{site}/immigration/{contract}</c>, <c>{ "items": [...] }</c>, at most 500 items, an
-/// <c>Idempotency-Key</c> of the seed, date, minute and contract so a replayed minute is a replay for Ariva).
-/// Failures are counted and logged, never fatal.
+/// <c>Idempotency-Key</c> of the seed, the anchor the day is laid on (the date and UTC minute of its minute 0, ARV-279c),
+/// the minute and the contract, <see cref="BatchKey"/>, so a replayed minute is a replay for Ariva and the same minute on
+/// another anchor is a batch of its own). Failures are counted and logged, never fatal.
 /// </summary>
 public sealed class ImmigrationFeedEmulator : IDemoMinuteSink
 {
@@ -61,6 +62,15 @@ public sealed class ImmigrationFeedEmulator : IDemoMinuteSink
 
     public string Name { get; }
 
+    /// <summary>
+    /// The <c>Idempotency-Key</c> of a contract's batch (ARV-279c): <c>sim-</c>, the seed, the anchor
+    /// (<c>yyyyMMdd'T'HHmm</c> of the demo day's minute 0 in UTC), the minute, the contract and, after the first 500
+    /// items, the part. One anchor always gives the same keys; another anchor of the same date gives others.
+    /// </summary>
+    internal static string BatchKey(uint seed, DateTime dayStart, int minute, string kind, int part) => part == 0
+        ? string.Create(CultureInfo.InvariantCulture, $"sim-{seed}-{dayStart:yyyyMMdd'T'HHmm}-{minute:D4}-{kind}")
+        : string.Create(CultureInfo.InvariantCulture, $"sim-{seed}-{dayStart:yyyyMMdd'T'HHmm}-{minute:D4}-{kind}-{part}");
+
     public ImmigrationFeedStatus Status()
     {
         var settings = _settings();
@@ -102,8 +112,7 @@ public sealed class ImmigrationFeedEmulator : IDemoMinuteSink
         if (records.Count == 0)
             return;
 
-        var tag = $"sim-{day.Seed.ToString(CultureInfo.InvariantCulture)}-{dayStart:yyyyMMdd}-{minute.ToString("D4", CultureInfo.InvariantCulture)}";
-        await Task.WhenAll(KafkaAsync(records, ct), RestAsync(records, tag, ct));
+        await Task.WhenAll(KafkaAsync(records, ct), RestAsync(records, (kind, part) => BatchKey(day.Seed, dayStart, minute, kind, part), ct));
     }
 
     private async Task KafkaAsync(AmanMinute records, CancellationToken ct)
@@ -123,7 +132,7 @@ public sealed class ImmigrationFeedEmulator : IDemoMinuteSink
         }
     }
 
-    private async Task RestAsync(AmanMinute records, string tag, CancellationToken ct)
+    private async Task RestAsync(AmanMinute records, Func<string, int, string> keyOf, CancellationToken ct)
     {
         if (!_rest.IsConfigured)
             return;
@@ -133,7 +142,7 @@ public sealed class ImmigrationFeedEmulator : IDemoMinuteSink
             for (var start = 0; start < items.Count; start += MaxBatch)
             {
                 var batch = items.Skip(start).Take(MaxBatch).Select(i => i.Record).ToList();
-                var key = start == 0 ? $"{tag}-{kind}" : $"{tag}-{kind}-{(start / MaxBatch).ToString(CultureInfo.InvariantCulture)}";
+                var key = keyOf(kind, start / MaxBatch);
                 var result = await _rest.SendAsync(HttpMethod.Post, $"api/v1/integration/sites/{site}/immigration/{kind}",
                     JsonContent.Create(new { items = batch }, options: AmanContracts.Json), key, ct);
                 _restCounter.LastStatus = result.Status;

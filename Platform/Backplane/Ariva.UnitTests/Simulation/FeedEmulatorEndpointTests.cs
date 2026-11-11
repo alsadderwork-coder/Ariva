@@ -312,7 +312,7 @@ public sealed class FeedEmulatorEndpointTests
             Ariva.Simulation.Api.Emulators.Aman.AmanContracts.All.Select(k => "/api/v1/integration/sites/DMO/immigration/" + k));
         foreach (var (call, body) in batches)
         {
-            call.Headers.GetValues("Idempotency-Key").Single().Should().MatchRegex("^sim-9303-20261003-1110-[a-z-]+$");
+            call.Headers.GetValues("Idempotency-Key").Single().Should().MatchRegex("^sim-9303-20261003T0000-1110-[a-z-]+$");
             call.Headers.Contains("X-TOTP-Code").Should().BeTrue();
             JsonDocument.Parse(body).RootElement.GetProperty("items").GetArrayLength().Should().BeGreaterThan(0);
         }
@@ -323,6 +323,67 @@ public sealed class FeedEmulatorEndpointTests
         status.LastMinute.Should().Be(1110);
         status.Transports.Single(t => t.Transport == "rest").Failures.Should().Be(0);
         buffer.After(Ariva.Simulation.Api.Emulators.Aman.AmanContracts.DeskIntervalStats, 0, 500).Items.Should().NotBeEmpty();
+    }
+
+    /// <summary>A batch body's items: their source event ids, and everything else but the ids, times and flight keys.</summary>
+    private static (List<string> Ids, List<string> Figures) ItemsOf(string body)
+    {
+        var ids = new List<string>();
+        var figures = new List<string>();
+        foreach (var item in JsonDocument.Parse(body).RootElement.GetProperty("items").EnumerateArray())
+        {
+            ids.Add(item.GetProperty("sourceEventId").GetString());
+            figures.Add(string.Join(" ", item.EnumerateObject()
+                .Where(p => p.Name is not ("sourceEventId" or "intervalStartUtc" or "occurredAtUtc" or "computedAtUtc" or "scheduledArrivalUtc" or "flightKey"))
+                .Select(p => p.Name + "=" + p.Value.GetRawText())));
+        }
+
+        return (ids, figures);
+    }
+
+    [Fact]
+    public async Task BorderFeed_Should_SendOtherKeysAndIdsWithTheSameFigures_When_TheMinuteIsLaidOnAnotherAnchorOfTheDate()
+    {
+        // ARV-279c: a second E2E run the same UTC date, or a demo restarted or jumped, plays minute 1110 on another anchor.
+        var ariva = new FakeAriva();
+        var clock = new Clock();
+        var client = new ArivaIntegrationClient("aman", () => Http(ariva), clock, NullLogger.Instance);
+        client.Use(new IntegrationClientSettings { ClientId = ClientId, ClientSecret = ClientSecret, TotpSecret = AmanSeed, PerRequestTotp = true });
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string> { ["Simulation:Seed"] = "9303" }).Build();
+        var engine = new Ariva.Simulation.Api.Scenarios.ScenarioEngine(configuration, NullLogger<Ariva.Simulation.Api.Scenarios.ScenarioEngine>.Instance, clock);
+        var time = new FeedTime();
+        var feed = new Ariva.Simulation.Api.Emulators.Aman.ImmigrationFeedEmulator("aman", engine, time,
+            () => ("DMO", Ariva.Simulation.Api.Emulators.Aman.BorderSides.Both, 180), () => "DMO", client, kafka: null,
+            new Ariva.Simulation.Api.Emulators.Aman.AmanFeedBuffer(), NullLogger.Instance);
+
+        await feed.PlayAsync(1110, _ => new DateTime(2026, 10, 3, 18, 30, 12, DateTimeKind.Utc), Ct);
+        var first = ariva.Calls.Count;
+        // The demo restarted: the next minute played is laid on its own wall minute, 01:15 for minute 0.
+        time.Restart();
+        await feed.PlayAsync(1110, _ => new DateTime(2026, 10, 3, 19, 45, 12, DateTimeKind.Utc), Ct);
+
+        var batches = ariva.Calls.Select((call, index) => (Call: call, Body: ariva.Bodies[index], Index: index))
+            .Where(b => b.Call.RequestUri.AbsolutePath != "/api/v1/auth").ToList();
+        var midnight = batches.Where(b => b.Index < first).ToList();
+        var later = batches.Where(b => b.Index >= first).ToList();
+        midnight.Should().HaveCount(Ariva.Simulation.Api.Emulators.Aman.AmanContracts.All.Count);
+        later.Should().HaveCount(midnight.Count);
+
+        string KeyOf((HttpRequestMessage Call, string Body, int Index) batch) => batch.Call.Headers.GetValues("Idempotency-Key").Single();
+        midnight.Select(KeyOf).Should().OnlyContain(k => k.StartsWith("sim-9303-20261003T0000-1110-", StringComparison.Ordinal) && Ariva.Core.Integration.IntegrationBatches.IsKey(k));
+        later.Select(KeyOf).Should().OnlyContain(k => k.StartsWith("sim-9303-20261003T0115-1110-", StringComparison.Ordinal) && Ariva.Core.Integration.IntegrationBatches.IsKey(k));
+        later.Select(KeyOf).Should().NotIntersectWith(midnight.Select(KeyOf), "the same minute on another anchor is a batch of its own, never a replay");
+
+        var before = midnight.Select(b => ItemsOf(b.Body)).ToList();
+        var after = later.Select(b => ItemsOf(b.Body)).ToList();
+        var idsBefore = before.SelectMany(i => i.Ids).ToList();
+        var idsAfter = after.SelectMany(i => i.Ids).ToList();
+        idsBefore.Should().NotBeEmpty().And.OnlyContain(id => id.StartsWith("aman-9303-20261003T0000-", StringComparison.Ordinal) && Ariva.Core.Border.ImmigrationRules.IsSourceEventId(id));
+        idsAfter.Should().OnlyContain(id => id.StartsWith("aman-9303-20261003T0115-", StringComparison.Ordinal) && Ariva.Core.Border.ImmigrationRules.IsSourceEventId(id))
+            .And.NotIntersectWith(idsBefore, "records Ariva has not kept");
+        after.SelectMany(i => i.Figures).Should().Equal(before.SelectMany(i => i.Figures), "the counts are the same within a UTC date");
+        feed.Status().Transports.Single(t => t.Transport == "rest").Failures.Should().Be(0);
     }
 
     [Fact]

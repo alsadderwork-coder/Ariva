@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import pg from 'pg';
 import { accounts, call, databaseAvailable, integrationSeedsFile, login, totpCode } from '../support/accounts';
+import { amanIds, anchorsOf } from '../support/aman-anchor';
 import { expectNoLeak, expectProblemDetails } from '../support/api-assertions';
 import { hosts, kafkaAvailable } from '../support/hosts';
 import { expectStatus } from '../support/expect-status';
@@ -13,7 +14,8 @@ import { expectStatus } from '../support/expect-status';
 // and e-gate codes are resolved through the demo airport's AMAN desk code mappings. The endpoints read strictly (unknown
 // members, numeric enums), enforce one-minute intervals, sums and small-cell suppression per record, keep a record once
 // by its source event id, replay a batch under its Idempotency-Key, and refuse a record of another site, a call without
-// the code, and a client without the scope.
+// the code, and a client without the scope. ARV-279c: the simulator's ids and batch keys carry the anchor its play is laid
+// on, so a run on services an earlier run used sends records of its own, and the Kafka counts read this run's alone.
 
 test.skip(!databaseAvailable, 'the feed is stored in the E2E database (ARIVA_E2E_SCHEMA_UPDATE=true) with the DMO demo seed');
 test.describe.configure({ mode: 'serial' });
@@ -128,11 +130,14 @@ test.beforeAll(async () => {
 
 test('the AMAN emulator feeds Ariva over Kafka, codes resolved through the AMAN desk code mappings', async () => {
 	test.skip(!kafkaAvailable, 'needs ARIVA_E2E_KAFKA_BOOTSTRAP');
+	const before = Date.now();
 	const played = await call('POST', `${feeds}/play`, {
 		headers: operator,
 		data: { minute: 1100 }
 	});
 	await expectStatus(played, 200);
+	// ARV-279c: every count reads this play's records alone, by the anchor their ids carry, never an earlier run's.
+	const anchors = anchorsOf(1100, before, Date.now());
 	const kafka = (await played.json()).aman.transports.find((t: { transport: string }) => t.transport === 'kafka');
 	expect(kafka, JSON.stringify(kafka)).toMatchObject({
 		configured: true,
@@ -140,7 +145,10 @@ test('the AMAN emulator feeds Ariva over Kafka, codes resolved through the AMAN 
 	});
 
 	const rows = await until(
-		() => query<{ n: string }>(`SELECT count(*) AS n FROM border_desk_interval WHERE feed = 'aman-kafka' AND source_event_id LIKE 'aman-%-dk-%-1100'`),
+		() =>
+			query<{ n: string }>(`SELECT count(*) AS n FROM border_desk_interval WHERE feed = 'aman-kafka' AND source_event_id LIKE ANY($1::text[])`, [
+				amanIds(anchors, 'dk-%-1100')
+			]),
 		(r) => Number(r[0].n) > 10
 	);
 	expect(Number(rows[0].n), 'the minute 18:20 desk intervals arrived over Kafka').toBeGreaterThan(10);
@@ -148,7 +156,9 @@ test('the AMAN emulator feeds Ariva over Kafka, codes resolved through the AMAN 
 	const mapped = await until(
 		() =>
 			query<{ code: string; kind: string }>(
-				`SELECT d.code, d.kind FROM border_desk_interval b JOIN desk d ON d.id = b.desk_id WHERE b.feed = 'aman-kafka' AND b.desk_code = 'IN09' LIMIT 1`
+				`SELECT d.code, d.kind FROM border_desk_interval b JOIN desk d ON d.id = b.desk_id
+				 WHERE b.feed = 'aman-kafka' AND b.desk_code = 'IN09' AND b.source_event_id LIKE ANY($1::text[]) LIMIT 1`,
+				[amanIds(anchors)]
 			),
 		(r) => r.length > 0
 	);
@@ -157,12 +167,19 @@ test('the AMAN emulator feeds Ariva over Kafka, codes resolved through the AMAN 
 		kind: 'Desk'
 	});
 	const sessions = await until(
-		() => query<{ n: string }>(`SELECT count(*) AS n FROM border_desk_session WHERE feed = 'aman-kafka'`),
+		() =>
+			query<{ n: string }>(`SELECT count(*) AS n FROM border_desk_session WHERE feed = 'aman-kafka' AND source_event_id LIKE ANY($1::text[])`, [
+				amanIds(anchors)
+			]),
 		(r) => Number(r[0].n) > 0
 	);
 	expect(Number(sessions[0].n)).toBeGreaterThan(0);
 	const gates = await until(
-		() => query<{ n: string }>(`SELECT count(*) AS n FROM border_egate_interval WHERE feed = 'aman-kafka' AND desk_id IS NOT NULL`),
+		() =>
+			query<{ n: string }>(
+				`SELECT count(*) AS n FROM border_egate_interval WHERE feed = 'aman-kafka' AND desk_id IS NOT NULL AND source_event_id LIKE ANY($1::text[])`,
+				[amanIds(anchors)]
+			),
 		(r) => Number(r[0].n) > 0
 	);
 	expect(Number(gates[0].n)).toBeGreaterThan(0);

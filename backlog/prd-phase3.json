@@ -2274,8 +2274,8 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md"
       ],
       "priority": 47,
-      "passes": false,
-      "notes": "Size S. Phase 3. Owner decision needed first (the locked fingerprint). Also fixes a demo restarted or jumped the same UTC day, whose AMAN records Ariva now keeps as unchanged. No sign-in code.",
+      "passes": true,
+      "notes": "Size S. Phase 3. Owner decision needed first (the locked fingerprint). Also fixes a demo restarted or jumped the same UTC day, whose AMAN records Ariva now keeps as unchanged. No sign-in code. 2026-11-11: the owner approved the change and the new golden values; built (the ids and batch keys carry the anchor minute, the figures unchanged).",
       "dependsOn": [
         "ARV-279a"
       ]

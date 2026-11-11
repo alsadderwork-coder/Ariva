@@ -1,7 +1,10 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Ariva.Business.Contracts.Aman.V1;
+using Ariva.Core.Border;
 using Ariva.Core.Flights;
+using Ariva.Core.Integration;
 using Ariva.Infra.Flights.Acris;
 using Ariva.Infra.Flights.Aidx;
 using Ariva.Simulation.Api.Emulators;
@@ -17,7 +20,9 @@ namespace Ariva.UnitTests.Simulation;
 /// desks open, pause and close; desk and e-gate intervals that add up to what the scenario's lanes processed; reject
 /// categories that sum and are suppressed under 3; lane demand with the reference split), carries no identities and is
 /// deterministic; AMAN's codes map one to one onto the demo airport's desks. The AODB's AIDX messages and ACRIS answers
-/// are read and mapped by Ariva's own readers without a refusal, and their times move as the day plays.
+/// are read and mapped by Ariva's own readers without a refusal, and their times move as the day plays. ARV-279c: the
+/// source event ids and the REST batches' Idempotency-Keys name the anchor the day is laid on (one anchor, one set; another
+/// anchor of the same date, other ids and keys with the same figures), and pass Ariva's own rules at their longest.
 /// </summary>
 public sealed class FeedEmulatorTests
 {
@@ -138,6 +143,127 @@ public sealed class FeedEmulatorTests
         departures.Gates.Should().OnlyContain(g => g.GateCode.StartsWith("EGOUT", StringComparison.Ordinal));
         departures.Demand.Should().BeEmpty("inbound lane demand belongs to arrivals");
     }
+
+    #region ARV-279c: the anchor in the ids and batch keys
+
+    /// <summary>Every source event id of a minute, sessions, desks, gates and lane demand in that order.</summary>
+    private static IEnumerable<string> Ids(AmanMinute minute) =>
+        minute.Sessions.Select(s => s.SourceEventId).Concat(minute.Desks.Select(d => d.SourceEventId)).Concat(minute.Gates.Select(g => g.SourceEventId))
+            .Concat(minute.Demand.Select(d => d.SourceEventId));
+
+    /// <summary>
+    /// A minute's figures without its ids, times and flight keys (a flight key holds the origin date, which moves with the
+    /// anchor): what the counts hashing the date alone keep the same on every anchor of one date.
+    /// </summary>
+    private static List<string> Figures(AmanMinute minute)
+    {
+        var figures = new List<string>();
+        foreach (var s in minute.Sessions)
+            figures.Add(string.Create(CultureInfo.InvariantCulture, $"ds {s.DeskCode} {s.State} {s.LaneCategory}"));
+        foreach (var d in minute.Desks)
+        {
+            figures.Add(string.Create(CultureInfo.InvariantCulture,
+                $"dk {d.DeskCode} {d.IntervalSeconds} {d.TransactionsProcessed} {d.DocumentsProcessed} {d.MeanServiceSeconds:R} {d.P90ServiceSeconds:R} {d.MeanCycleSeconds:R} {d.LaneCategory}"));
+        }
+
+        foreach (var g in minute.Gates)
+        {
+            var categories = string.Join(",", g.RejectsByCategory.Select(c => string.Create(CultureInfo.InvariantCulture, $"{c.Key}={c.Value}")));
+            figures.Add(string.Create(CultureInfo.InvariantCulture, $"eg {g.GateCode} {g.IntervalSeconds} {g.Attempts} {g.Accepted} {g.Rejected} {categories} {g.MeanCycleSeconds:R}"));
+        }
+
+        foreach (var d in minute.Demand)
+        {
+            var lanes = string.Join(",", d.PassengersByLane.Select(l => string.Create(CultureInfo.InvariantCulture, $"{l.Key}={l.Value}")));
+            figures.Add(string.Create(CultureInfo.InvariantCulture, $"ld {d.BoardedTotal} {lanes} {d.EGateEligible}"));
+        }
+
+        return figures;
+    }
+
+    [Fact]
+    public void SourceEventIds_Should_NameTheSystemSeedAndAnchor_When_AMinuteIsBuilt()
+    {
+        // <system>-<seed>-<yyyyMMdd'T'HHmm of minute 0 in UTC>-<kind>-<code>-<minute>; a lane demand ends with its flight key and computation.
+        var anchor = new DateTime(2026, 10, 3, 5, 17, 0, DateTimeKind.Utc);
+        var aman = AmanFeed.Build(Day, 1110, m => anchor.AddMinutes(m), "DMO", BorderSides.Both, firstOfRun: true);
+        var other = AmanFeed.Build(Day, 1110, m => anchor.AddMinutes(m), "DMO", BorderSides.Departure, firstOfRun: true, system: "imm");
+
+        aman.Sessions.Should().NotBeEmpty().And.OnlyContain(s => s.SourceEventId == "aman-9303-20261003T0517-ds-" + s.DeskCode + "-1110");
+        aman.Desks.Should().NotBeEmpty().And.OnlyContain(d => d.SourceEventId == "aman-9303-20261003T0517-dk-" + d.DeskCode + "-1110");
+        aman.Gates.Should().NotBeEmpty().And.OnlyContain(g => g.SourceEventId == "aman-9303-20261003T0517-eg-" + g.GateCode + "-1110");
+        aman.Demand.Should().NotBeEmpty().And.OnlyContain(d => d.SourceEventId == "aman-9303-20261003T0517-ld-" + d.FlightKey + "-1" ||
+            d.SourceEventId == "aman-9303-20261003T0517-ld-" + d.FlightKey + "-2");
+        other.Desks.Should().NotBeEmpty().And.OnlyContain(d => d.SourceEventId == "imm-9303-20261003T0517-dk-" + d.DeskCode + "-1110", "another system's ids are its own");
+        AmanFeed.IdTag("aman", 9303, anchor).Should().Be("aman-9303-20261003T0517");
+        AmanFeed.CountTag("aman", 9303, anchor).Should().Be("aman-9303-20261003", "the counts hash the date alone");
+    }
+
+    [Fact]
+    public void SourceEventIds_Should_DifferWhileTheFiguresStay_When_TheSameMinutesAreLaidOnAnotherAnchorOfTheDate()
+    {
+        // A second run on the same UTC date, or a demo restarted or jumped, lays the day on another minute (FeedTime).
+        var midnight = new DateTime(2026, 10, 3, 0, 0, 0, DateTimeKind.Utc);
+        var later = new DateTime(2026, 10, 3, 9, 41, 0, DateTimeKind.Utc);
+        List<AmanMinute> Play(DateTime dayStart) =>
+            [.. Enumerable.Range(1080, 61).Select(m => AmanFeed.Build(Day, m, x => dayStart.AddMinutes(x), "DMO", BorderSides.Both, firstOfRun: m == 1080))];
+
+        var first = Play(midnight);
+        var again = Play(midnight);
+        var other = Play(later);
+
+        var ids = first.SelectMany(Ids).ToList();
+        ids.Should().HaveCountGreaterThan(1000).And.OnlyHaveUniqueItems();
+        again.SelectMany(Ids).Should().Equal(ids, "one anchor, one set of ids");
+        other.SelectMany(Ids).Should().NotIntersectWith(ids, "the same minutes on another anchor of the date get other ids")
+            .And.OnlyContain(id => id.StartsWith("aman-9303-20261003T0941-", StringComparison.Ordinal));
+        other.SelectMany(Figures).Should().Equal(first.SelectMany(Figures), "the counts hash the date alone, so they are the same on every anchor of it");
+        other.Select(m => m.Count).Should().Equal(first.Select(m => m.Count));
+    }
+
+    [Fact]
+    public void SourceEventIds_Should_PassArivasRule_When_TheLongestSeedCodesAndMinutesAreUsed()
+    {
+        // Every id of the whole day as the emulator builds it (every desk, e-gate and flight it publishes, minutes 0000 to 1439).
+        var anchor = new DateTime(2026, 12, 31, 23, 59, 0, DateTimeKind.Utc);
+        var prefix = AmanFeed.IdTag("aman", ScenarioModel.DefaultSeed, anchor) + "-";
+        var ids = Enumerable.Range(0, ScenarioModel.Day).SelectMany(m => Ids(AmanFeed.Build(Day, m, x => anchor.AddMinutes(x), "DMO", BorderSides.Both, m == 0))).ToList();
+        ids.Should().NotBeEmpty().And.OnlyContain(id => id.StartsWith(prefix, StringComparison.Ordinal) && ImmigrationRules.IsSourceEventId(id));
+
+        // The longest an id can be: the largest seed (ten digits), the longest system name ("aman"; the other emulator is "imm"),
+        // the longest AMAN code (EGOUT1 to EGOUT4) at the last minute of the day in each kind, and the longest lane demand id.
+        var tag = AmanFeed.IdTag("aman", uint.MaxValue, anchor);
+        var code = AmanCodes.All().Select(p => p.Aman).MaxBy(c => c.Length);
+        var flight = ids.Where(id => id.Contains("-ld-", StringComparison.Ordinal)).Select(id => id[prefix.Length..]).MaxBy(rest => rest.Length);
+        string[] longest =
+        [
+            .. new[] { "ds", "dk", "eg" }.Select(kind => string.Create(CultureInfo.InvariantCulture, $"{tag}-{kind}-{code}-{ScenarioModel.Day - 1:D4}")),
+            tag + "-" + flight
+        ];
+        code.Should().HaveLength(6);
+        flight.Should().StartWith("ld-");
+        longest.Should().OnlyContain(id => id.Length <= 64 && ImmigrationRules.IsSourceEventId(id),
+            "Ariva keeps a source event id of 1 to 64 letters, digits or . _ : - (CWE-501)");
+    }
+
+    [Fact]
+    public void BatchKey_Should_NameTheAnchorAndPassArivasKeyRule_When_TheLongestSeedMinuteAndContractAreUsed()
+    {
+        var midnight = new DateTime(2026, 10, 3, 0, 0, 0, DateTimeKind.Utc);
+        ImmigrationFeedEmulator.BatchKey(9303, midnight, 1110, AmanContracts.DeskIntervalStats, 0).Should().Be("sim-9303-20261003T0000-1110-desk-interval-stats");
+        ImmigrationFeedEmulator.BatchKey(9303, midnight, 1110, AmanContracts.DeskIntervalStats, 1).Should().Be("sim-9303-20261003T0000-1110-desk-interval-stats-1");
+        ImmigrationFeedEmulator.BatchKey(9303, midnight.AddMinutes(77), 1110, AmanContracts.DeskIntervalStats, 0).Should()
+            .Be("sim-9303-20261003T0117-1110-desk-interval-stats", "another anchor of the date gives another key");
+
+        // The largest seed, the last minute, every contract (egate-interval-stats is the longest) and a second part.
+        var latest = new DateTime(2026, 12, 31, 23, 59, 0, DateTimeKind.Utc);
+        var keys = AmanContracts.All.SelectMany(kind => new[] { 0, 1 }.Select(part => ImmigrationFeedEmulator.BatchKey(uint.MaxValue, latest, ScenarioModel.Day - 1, kind, part)))
+            .ToList();
+        keys.Should().Contain("sim-4294967295-20261231T2359-1439-egate-interval-stats-1");
+        keys.Should().OnlyContain(k => k.Length <= 64 && IntegrationBatches.IsKey(k), "Ariva takes an Idempotency-Key of 8 to 64 letters, digits or . _ : - (CWE-501)");
+    }
+
+    #endregion
 
     [Fact]
     public void Aidx_Should_BeReadAndMappedByAriva_When_TheScheduleIsPushed()

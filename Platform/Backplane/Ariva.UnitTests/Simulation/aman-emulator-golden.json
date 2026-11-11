@@ -1,7 +1,7 @@
 {
-    "_comment": "ARV-149a (from the ARV-151 security review): SHA-256 fingerprints of everything the AMAN emulator publishes over the whole reference day (AmanFeed.Build for every minute 00:00 to 23:59, both border sides: desk sessions, desk interval statistics, e-gate intervals and inbound lane demand, serialised as JSON), on seed 9303 and on seed 2026 (AmanEmulatorGoldenTests). Written 2026-10-10 on the tree with ARV-151, and the same values computed on commit 0668d02, before ARV-151 (which changed the scenario's desk truth and not these figures: the emulator reads only which desks work); a change here is reviewed and the value updated with the human's approval.",
+    "_comment": "ARV-149a (from the ARV-151 security review): SHA-256 fingerprints of everything the AMAN emulator publishes over the whole reference day (AmanFeed.Build for every minute 00:00 to 23:59, both border sides: desk sessions, desk interval statistics, e-gate intervals and inbound lane demand, serialised as JSON), on seed 9303 and on seed 2026 (AmanEmulatorGoldenTests). Written 2026-10-10 on the tree with ARV-151, and the same values computed on commit 0668d02, before ARV-151 (which changed the scenario's desk truth and not these figures: the emulator reads only which desks work); a change here is reviewed and the value updated with the human's approval. 2026-11-11 (ARV-279c, approved by the owner): both values changed for the ids alone, whose tag now carries the anchor minute the day is laid on (aman-<seed>-20261003T0000 here), while the figures (sessions, desk intervals, e-gate counts and lane demand) are unchanged, which AmanEmulatorIdsOnlyTests proves against the values of 2026-10-10.",
     "cases": [
-        { "seed": 9303, "sha256": "328e5473fcf4ae26f175aead2942db212ca849ef30d8457d8f36f4006c226b2e" },
-        { "seed": 2026, "sha256": "b5db7a2a6b63d5fce71a743a51df0d1f3cdf8d11543d678e49f79ff6020c9adc" }
+        { "seed": 9303, "sha256": "5d0985b211ff2b606b5f2d2ba7d4ff78a7ef34d42a521b804bffa77dfd7fc867" },
+        { "seed": 2026, "sha256": "e1f96148ef3872dec1a639fe66844bae203c04260ecb9bf2678fccacd0f7d379" }
     ]
 }
