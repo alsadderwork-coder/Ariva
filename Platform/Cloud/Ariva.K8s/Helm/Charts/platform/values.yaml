@@ -774,6 +774,17 @@ imageCredentials:
 # client_body_in_file_only or a *_by_lua directive (validate.yaml; names read as nginx reads them, ARV-284), nor (ARV-288) a
 # js_, perl, *_pass or mirror directive, enable-rewrite-log or a mirror- annotation, or a modsecurity-snippet with
 # SecRuleScript, an exec: action, @inspectFile, SecUploadKeepFiles or SecTmpSaveUploadedFiles.
+# No annotation sets an ingress-nginx authentication key the chart refuses (ARV-288a, any environment): every
+# nginx.ingress.kubernetes.io/auth- key, in any case (auth-url, auth-signin, auth-signin-redirect-param, auth-method,
+# auth-proxy-set-headers, auth-request-redirect, auth-response-headers, auth-always-set-cookie, auth-snippet, auth-keepalive
+# and its siblings, auth-cache-key, auth-cache-duration and any other), but, as whole names, the five client certificate keys
+# for devices that pin a certificate on api-ingest (auth-tls-secret, auth-tls-verify-client, auth-tls-verify-depth,
+# auth-tls-pass-certificate-to-upstream, auth-tls-match-cn; every other auth-tls key, auth-tls-error-page among them, is a
+# redirect or a setting Ariva does not document) and basic authentication (auth-type, auth-secret, auth-secret-type,
+# auth-realm): with auth-url ingress-nginx sends every request's headers (bearer tokens, the refresh cookie) to that URL first.
+# Nor does an annotation value write an auth_request directive, and no annotation sets custom-http-errors or default-backend
+# (an error answer proxied again to a default backend with the request's headers and URI) or satisfy other than all, nor
+# writes a satisfy directive (satisfy any with basic authentication would let a client outside sourceRanges in with a password).
 # Every Ingress answers 404 to /health, /healthz and anything under them, at its host's server level, before any location
 # (ARV-085): the probes stay private, on the pods' own ports, and no Ingress routes them (validate.yaml refuses such a path).
 # The 404 is judged on the request's own path, so no Ingress rewrites one: validate.yaml refuses the annotations rewrite-target

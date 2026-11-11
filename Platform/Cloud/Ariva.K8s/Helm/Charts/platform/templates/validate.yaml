@@ -105,10 +105,10 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   and proxy_cache_valid pass; proxy_cache off is refused too), so no site snippet can write one however nginx's tokenizer reads
   it (a quoted name followed by ")" included); and no annotation sets auth-cache-key or auth-cache-duration, which make
   ingress-nginx cache the external authentication answers itself (proxy_cache auth_cache; Ariva uses no external
-  authentication). So no site annotation makes the controller keep a copy of an answer (a credentialed one, L3 border data,
-  an L4 credential handed to its holder) outside Ariva, where no retention, sign-out or revocation reaches it. The controller
-  values Ariva ships keep none either (tests/checks.mjs controllerValuesFindings); the chart's snippets are not values and write
-  none.
+  authentication; since ARV-288a refused with every other external authentication key, below). So no site annotation makes
+  the controller keep a copy of an answer (a credentialed one, L3 border data, an L4 credential handed to its holder) outside
+  Ariva, where no retention, sign-out or revocation reaches it. The controller values Ariva ships keep none either
+  (tests/checks.mjs controllerValuesFindings); the chart's snippets are not values and write none.
 - No include, kept body or Lua block from a site's snippets (ARV-284, CWE-94, CWE-532, CWE-501): no annotation value, in any environment,
   writes an include directive (read as nginx's tokenizer reads a statement: it would read a file on the controller's disk into
   the configuration and get around every guard here), client_body_in_file_only anywhere in its text (it keeps every request
@@ -136,6 +136,41 @@ Release guards. Renders nothing; fails the render when a rule is broken.
   covered, the trust model the controller values state (whoever may write a snippet writes nginx configuration): a deny-list
   cannot stop a deliberate snippet author, for example a server-snippet whose if reads a variable it sets only later, which
   makes nginx warn of an uninitialized variable with the request line (the live hub's access token on /hubs) on every request.
+- No external authentication, error backend or satisfy any at the ingress (ARV-288a, CWE-918, CWE-522, CWE-501, CWE-601,
+  CWE-863), in every environment:
+  - no annotation sets an ingress-nginx authentication key the chart refuses, that is every nginx.ingress.kubernetes.io/auth-
+    key (the prefix and the name matched in any case, more than the controller reads) but, as whole names, the five client
+    certificate keys Ariva documents for devices that pin a certificate on api-ingest (auth-tls-secret, auth-tls-verify-client,
+    auth-tls-verify-depth, auth-tls-pass-certificate-to-upstream, auth-tls-match-cn: nginx checks the client's certificate
+    against the Secret's CA itself; wiki 04 section 5) and basic authentication (auth-type, auth-secret, auth-secret-type,
+    auth-realm: checked against a Secret on the controller). So auth-url (an auth_request subrequest for every request to a URL
+    the chart does not name, with the request's headers: bearer tokens, the refresh cookie), auth-signin and
+    auth-signin-redirect-param (a redirect to that service's sign-in), auth-method, auth-proxy-set-headers,
+    auth-request-redirect, auth-response-headers (headers from its answer added to the request the hosts get),
+    auth-always-set-cookie (its cookies set on Ariva's host), auth-snippet, auth-keepalive and its siblings, auth-cache-key and
+    auth-cache-duration, every other auth-tls key (auth-tls-error-page writes error_page 495 496 = <its URL>, a redirect of a
+    client whose certificate fails to a host the chart does not name) and any auth- key a later controller adds are refused.
+    The message names the key and the Ingress, never the value. enable-global-auth stays allowed: "false" only turns the
+    controller's own global authentication off for the Ingress;
+  - no annotation value writes an auth_request directive (the subrequest itself, read as nginx's tokenizer reads a statement;
+    auth_request_set is another name and passes);
+  - no annotation sets custom-http-errors or default-backend (in any case): with custom-http-errors ingress-nginx proxies every
+    request answered with one of its codes again to a default backend, with the request's headers and its original URI (the
+    live hub's access token);
+  - the satisfy annotation is all or unset, and no annotation value writes a satisfy directive (read as nginx's tokenizer reads
+    a statement; since review round 2): satisfy any lets a request in when either the source ranges or an authentication
+    passes, so a basic authentication password would open an Ingress that sourceRanges limits (ARV-085, the Cronz dashboard in
+    k8s-prd).
+  The controller values Ariva ships set no global-auth- key, no enable-global-auth true, no custom-http-errors and no default
+  backend (defaultBackend.enabled, default-backend-service), write no *_pass, mirror, auth_request or satisfy directive in their
+  snippets, and keep the default annotations prefix and the controller's annotation validation (the --enable-annotation-validation
+  flag: controller.enableAnnotationValidations and extraArgs), pass no controller argument but annotations-prefix,
+  enable-annotation-validation and default-ssl-certificate, and set no configMapNamespace, customTemplate or
+  allow-cross-namespace-resources true, the file read as Helm reads it (YAML 1.1, no tag, directive, anchor or second document,
+  every value but true, false and a whole number quoted) and each value as the ingress-nginx chart
+  renders it (no "{{" in a ConfigMap value, plain ConfigMap keys, no line break in any other setting of the file); the rendered
+  Ingresses carry none of the refused authentication or error backend keys (tests/checks.mjs controllerValuesFindings,
+  ingressPrivacyFindings).
 - Log shipping and the log pseudonym key (ARV-091a, ASVS 5.0 V16.4.2, V16.4.3, CWE-532; values logging):
   - logging is a map of collector, pseudonymKeySecret (name and key), lokiCredentialsSecret (name, usernameKey and passwordKey)
     and required, nothing else, so neither the key nor Loki's credentials can ever be a value; collector is otlp, loki or empty;
@@ -430,6 +465,16 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if and (hasKey $chart $key) (not (has $key $chartSnippets)) }}
 {{- fail (printf "ingresses %s: %s is set by the chart (ARV-084); remove it from the ingress's annotations (plain HTTP is the entry's plainHttp)" $name $key) }}
 {{- end }}
+{{- /* ARV-288a: the key alone is refused, whatever its value, and the message never repeats the value; the allowed keys are whole names. */}}
+{{- if and (regexMatch "(?i)^nginx\\.ingress\\.kubernetes\\.io/auth-" $key) (not (regexMatch "(?i)^nginx\\.ingress\\.kubernetes\\.io/auth-(tls-(secret|verify-client|verify-depth|pass-certificate-to-upstream|match-cn)|type|secret|secret-type|realm)$" $key)) }}
+{{- fail (printf "ingresses %s: %s is an ingress-nginx authentication annotation the chart refuses: external authentication (auth-url and the keys of its subrequest, sign-in redirect, headers, cookies and cache) sends the headers of every request (bearer tokens, the refresh cookie) to a URL the chart does not name, adds headers and cookies from that service's answers and can cache them on the controller's disk, and auth-tls-error-page redirects a client whose certificate fails to a page the chart does not name; Ariva authenticates every request itself, so in any environment the only auth- keys set are auth-tls-secret, auth-tls-verify-client, auth-tls-verify-depth, auth-tls-pass-certificate-to-upstream and auth-tls-match-cn (device client certificates) and basic authentication (auth-type, auth-secret, auth-secret-type, auth-realm) (ARV-206, ARV-288a)" $name $key) }}
+{{- end }}
+{{- if regexMatch "(?i)^nginx\\.ingress\\.kubernetes\\.io/(custom-http-errors|default-backend)$" $key }}
+{{- fail (printf "ingresses %s: %s is refused: with custom-http-errors ingress-nginx proxies every request answered with one of its codes again to a default backend (the default-backend annotation's service, or the controller's), with the request's headers (bearer tokens, the refresh cookie) and its original URI (the live hub's access token); Ariva's hosts write their own error answers, so neither is set in any environment (ARV-288a)" $name $key) }}
+{{- end }}
+{{- if and (eq (lower $key) "nginx.ingress.kubernetes.io/satisfy") (ne (lower (toString $value)) "all") }}
+{{- fail (printf "ingresses %s: %s is refused unless it is all: satisfy any lets a request in when either the source ranges or an authentication passes, so a password (basic authentication) would open an Ingress that sourceRanges limits, the Cronz dashboard's in k8s-prd among them (ARV-085, ARV-288a)" $name $key) }}
+{{- end }}
 {{- if eq $key "nginx.ingress.kubernetes.io/enable-cors" }}
 {{- fail (printf "ingresses %s: enable-cors makes ingress-nginx answer an OPTIONS request itself (204) before the chart's refusal of plain HTTP, and Ariva needs no cross-origin calls (the web app and the API share the web host, ADR-0026); remove it (ARV-199)" $name) }}
 {{- end }}
@@ -493,8 +538,11 @@ Release guards. Renders nothing; fails the render when a rule is broken.
 {{- if mustRegexMatch (include "ariva-platform.directive" "mirror") (toString $value) }}
 {{- fail (printf "ingresses %s: %s writes a mirror directive: it copies every request, its body included (sign-in passwords, TOTP codes, uploads), to another location, which can send it anywhere, so none is written in any environment (ARV-288)" $name $key) }}
 {{- end }}
-{{- if has $key (list "nginx.ingress.kubernetes.io/auth-cache-key" "nginx.ingress.kubernetes.io/auth-cache-duration") }}
-{{- fail (printf "ingresses %s: %s makes ingress-nginx cache the external authentication answers (proxy_cache auth_cache) on the controller's disk; Ariva uses no external authentication and the ingress keeps no copy of an answer (ARV-206)" $name $key) }}
+{{- if mustRegexMatch (include "ariva-platform.directive" "auth_request") (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes an auth_request directive: it sends every request first, as a subrequest with its headers (bearer tokens, the refresh cookie), to another location, the external authentication the chart refuses, so none is written in any environment (ARV-288a)" $name $key) }}
+{{- end }}
+{{- if mustRegexMatch (include "ariva-platform.directive" "satisfy") (toString $value) }}
+{{- fail (printf "ingresses %s: %s writes a satisfy directive: satisfy any lets a request in when either the source ranges or an authentication passes, so a password (basic authentication) would open an Ingress that sourceRanges limits, the Cronz dashboard's in k8s-prd among them; the satisfy annotation is the only setting, and only all (ARV-085, ARV-288a)" $name $key) }}
 {{- end }}
 {{- if eq $key "nginx.ingress.kubernetes.io/server-snippet" }}{{ $siteServerSnippet = toString $value }}{{ end }}
 {{- end }}

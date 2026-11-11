@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isAlias, isMap, isScalar, isSeq, parseAllDocuments } from 'yaml';
 
 /** ARV-125b: what the SigNoz rules and dashboards may read (shared with MonitoringRulesTests in Ariva.UnitTests). */
 export const MONITORING = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'monitoring.json'), 'utf8'));
@@ -1858,10 +1859,80 @@ export function ingressHardeningFindings(docs, { environment }) {
 
 /**
  * ARV-091, ARV-206, ARV-284, ARV-288: the controller's own snippets (its ConfigMap keys), which every snippet rule of
- * controllerValuesFindings reads: the main, http, server and location snippets, the global auth location's and, since
- * ARV-288, the stream block's (stream-snippet: an include or a preread_by_lua_block there was not read before).
+ * controllerValuesFindings reads: the main, http, server and location snippets and, since ARV-288, the stream block's
+ * (stream-snippet: an include or a preread_by_lua_block there was not read before). The global auth location's snippet
+ * (global-auth-snippet) was read here from ARV-206 to ARV-288; since ARV-288a it is refused whole, with every other global-auth-
+ * key (INGRESS_EXTERNAL_AUTH.controller), so no snippet rule needs to read it.
  */
-export const CONTROLLER_SNIPPETS = ['main-snippet', 'http-snippet', 'server-snippet', 'location-snippet', 'global-auth-snippet', 'stream-snippet'];
+export const CONTROLLER_SNIPPETS = ['main-snippet', 'http-snippet', 'server-snippet', 'location-snippet', 'stream-snippet'];
+
+/**
+ * ARV-288a (CWE-918, CWE-522, CWE-501, CWE-601): ingress-nginx's authentication annotations. With auth-url an Ingress's every
+ * request first goes, as an auth_request subrequest, to a URL the chart does not name, with the request's headers (bearer tokens,
+ * the refresh cookie); the other auth- keys shape that subrequest (auth-method, auth-proxy-set-headers, auth-keepalive and its
+ * siblings, auth-snippet), redirect to that service's sign-in (auth-signin, auth-signin-redirect-param, auth-request-redirect),
+ * add headers or cookies from its answers (auth-response-headers, auth-always-set-cookie) or cache them (auth-cache-key,
+ * auth-cache-duration; ARV-206). annotations: every nginx.ingress.kubernetes.io/auth- key (refused in any case: more than the
+ * controller, which reads the lowercase key, takes) but those that allowed matches, as a whole name: the five client certificate
+ * keys Ariva documents for devices that pin a certificate on api-ingest (auth-tls-secret, auth-tls-verify-client,
+ * auth-tls-verify-depth, auth-tls-pass-certificate-to-upstream, auth-tls-match-cn: nginx checks the client's certificate against
+ * the Secret's CA itself; wiki 04 section 5) and basic authentication against a Secret on the controller (auth-type,
+ * auth-secret, auth-secret-type, auth-realm). Every other auth-tls key is refused too, auth-tls-error-page among them (since the
+ * ARV-288a review round 1: it writes error_page 495 496 = <its URL>, a redirect of a client whose certificate fails to a host the
+ * chart does not name, CWE-601). validate.yaml holds the same two patterns for the site annotations; ingressPrivacyFindings reads
+ * the rendered Ingresses with them. controller: the ConfigMap keys of the controller's global external authentication
+ * (global-auth-url and its siblings: global-auth-signin, global-auth-signin-redirect-param, global-auth-method,
+ * global-auth-response-headers, global-auth-request-redirect, global-auth-snippet, global-auth-cache-key,
+ * global-auth-cache-duration, global-auth-always-set-cookie and any later one), refused with any value but empty; enableKey is
+ * refused when true (ingress-nginx documents enable-global-auth as an Ingress annotation, whose "false" turns the global
+ * authentication off for one Ingress; the controller values never state it on).
+ */
+export const INGRESS_EXTERNAL_AUTH = {
+	annotations: /^nginx\.ingress\.kubernetes\.io\/auth-/i,
+	allowed: /^nginx\.ingress\.kubernetes\.io\/auth-(tls-(secret|verify-client|verify-depth|pass-certificate-to-upstream|match-cn)|type|secret|secret-type|realm)$/i,
+	controller: /^global-auth-/i,
+	enableKey: /^enable-global-auth$/i
+};
+
+/** ARV-288a: whether an Ingress annotation key is one of ingress-nginx's authentication keys that no Ariva Ingress sets. */
+export const externalAuthAnnotation = (key) => INGRESS_EXTERNAL_AUTH.annotations.test(String(key)) && !INGRESS_EXTERNAL_AUTH.allowed.test(String(key));
+
+/**
+ * ARV-288a (security review round 1, CWE-918, CWE-522, ASVS 5.0 V14.2.3): ingress-nginx's custom error pages. With
+ * custom-http-errors (an Ingress annotation, or the ConfigMap key for every Ingress) every request answered with one of its codes is
+ * proxied again to a default backend (the Ingress's default-backend annotation, or the controller's: the ingress-nginx chart's
+ * top-level defaultBackend.enabled, which writes --default-backend-service, or that argument under controller.extraArgs), with
+ * the request's headers (bearer tokens, the refresh cookie) and its original URI (the live hub's access token). No Ariva Ingress
+ * sets either annotation, in any case, and the controller values set no custom-http-errors, no default backend and no
+ * default-backend-service. The keys are matched as whole names: nginx.ingress.kubernetes.io/default-backend-x, a key
+ * ingress-nginx does not read, is not this rule's (review round 2: ERROR_BACKEND_KEYS in tests/chart-security.mjs pins both sides).
+ */
+export const INGRESS_ERROR_BACKEND = {
+	annotations: /^nginx\.ingress\.kubernetes\.io\/(custom-http-errors|default-backend)$/i,
+	controller: /^custom-http-errors$/i
+};
+
+/**
+ * ARV-288a (security review rounds 1 and 2): the controller arguments the chart's guards rely on. validate.yaml and the checks here
+ * read the annotations under ingress-nginx's default prefix only, so the controller keeps it (the --annotations-prefix flag:
+ * extraArgs annotations-prefix unset or nginx.ingress.kubernetes.io; under another prefix site.example/server-snippet or
+ * site.example/auth-url would reach nginx past every guard); and it keeps checking annotation values itself (the
+ * --enable-annotation-validation flag of controller 1.15, pkg/flags/flags.go, default true: the ingress-nginx chart 4.15.1 writes
+ * it false when controller.enableAnnotationValidations is false, templates/_params.tpl, and a site could pass it under
+ * controller.extraArgs, where a boolean false or "false" is written as =false and an empty value as the bare flag). It is no
+ * ConfigMap key in 1.15, so controller.config is not read for it. Since review round 3 controller.extraArgs is an allowlist
+ * (allowed): annotations-prefix (the default only), enable-annotation-validation (true only, the bare flag included) and
+ * default-ssl-certificate (the certificate for hosts no Ingress names; it reads nothing of a request). Ariva's values document no
+ * other argument, and another flag (configmap, default-backend-service, watch-namespace and the others) can change what the
+ * controller reads past this check. Each key is read as the controller reads it (controllerArgument), so "annotations-prefix=x": ""
+ * is the flag annotations-prefix with the value x.
+ */
+export const CONTROLLER_ARGUMENTS = {
+	annotationsPrefix: 'nginx.ingress.kubernetes.io',
+	validationFlag: 'enable-annotation-validation',
+	/** Review round 3: the only controller.extraArgs the values may pass (by flag name, read as controllerArgument does). */
+	allowed: ['annotations-prefix', 'enable-annotation-validation', 'default-ssl-certificate']
+};
 
 /**
  * ARV-091 (ASVS 5.0 V16.2.5, CWE-532): the controller's access log format. controllerDefault is ingress-nginx 1.15's
@@ -1927,7 +1998,14 @@ export const SNIPPET_REFUSED_DIRECTIVES = [
  * (a shared object of the controller's disk loaded into nginx, a module or an OpenSSL engine), lua_package_path and
  * lua_package_cpath (the controller's Lua loads modules from other paths), and every js_ and perl directive (njs and nginx's
  * perl module load scripts from the controller's disk and run them on the requests, if its nginx carries them: js_import,
- * js_content, js_set, perl, perl_require, perl_modules and the others).
+ * js_content, js_set, perl, perl_require, perl_modules and the others). ARV-288a (security review round 1, CWE-918, CWE-522): every
+ * *_pass directive (proxy_pass and the grpc_, fastcgi_, uwsgi_, scgi_ and memcached_ ones: a location of the controller's
+ * snippets that sends requests to a host Ariva does not name), mirror (a copy of every request, sign-in bodies included) and
+ * auth_request (the external authentication subrequest itself, with the request's headers, which global-auth-url writes), so
+ * no controller snippet builds the global external authentication or a copy that the ConfigMap keys refuse; names that only
+ * begin like them (proxy_pass_header, mirror_request_body, auth_request_set) are other directives and pass. Review round 2
+ * (CWE-863, CWE-306): satisfy, whose any lets a request in when either the source ranges or an authentication passes, so a
+ * password would open what a source range limits (the site annotation is refused unless all, and no snippet writes the directive).
  */
 export const CONTROLLER_REFUSED_DIRECTIVES = [
 	...SNIPPET_REFUSED_DIRECTIVES,
@@ -1935,7 +2013,11 @@ export const CONTROLLER_REFUSED_DIRECTIVES = [
 	[undefined, nginxDirective('load_module|ssl_engine'), 'it loads a shared object of the controller\'s disk into nginx (a module or an OpenSSL engine), code no guard here reads', 'ARV-288'],
 	[undefined, nginxDirective('lua_package_path|lua_package_cpath'), 'it makes the controller\'s Lua load its modules (Lua or C) from other paths of its disk, code no guard here reads', 'ARV-288'],
 	[undefined, nginxDirective('js_[a-z0-9_]+'), 'njs loads JavaScript from the controller\'s disk and runs it on the requests (bodies and headers included), code no guard here reads', 'ARV-288'],
-	[undefined, nginxDirective('perl(_[a-z_]+)?'), 'nginx\'s perl module loads Perl from the controller\'s disk and runs it on the requests (bodies and headers included), code no guard here reads', 'ARV-288']
+	[undefined, nginxDirective('perl(_[a-z_]+)?'), 'nginx\'s perl module loads Perl from the controller\'s disk and runs it on the requests (bodies and headers included), code no guard here reads', 'ARV-288'],
+	[undefined, nginxDirective('(proxy|grpc|fastcgi|uwsgi|scgi|memcached)_pass'), 'it sends requests to an upstream Ariva does not name (an auth_request or mirror location to another host among them), with their headers (bearer tokens, the refresh cookie)', 'ARV-288a'],
+	['mirror', nginxDirective('mirror'), 'it copies every request, its body included (sign-in passwords, TOTP codes, uploads), to another location, which can send it anywhere', 'ARV-288a'],
+	['auth_request', nginxDirective('auth_request'), 'it sends every request first, as a subrequest with its headers (bearer tokens, the refresh cookie), to another location: the global external authentication the ConfigMap keys refuse', 'ARV-288a'],
+	['satisfy', nginxDirective('satisfy'), 'satisfy any lets a request in when either the source ranges or an authentication passes, so a password would open what a source range limits', 'ARV-288a']
 ];
 
 /**
@@ -1962,6 +2044,154 @@ export function refusedDirectives(table, text) {
 const configTrue = (value) => /^(1|t|true)$/i.test(String(value ?? ''));
 
 /**
+ * ARV-288a (review round 3): a value as a Go template truth test reads it (if .Values...), as the ingress-nginx chart tests its
+ * switches: false only for unset, null, false, zero, the empty string and an empty list or map, so "false", "no" and 2 are true.
+ */
+export const helmTrue = (value) => !(value === undefined || value === null || value === false || value === 0 || value === '' ||
+	(Array.isArray(value) && value.length === 0) || (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0));
+
+/**
+ * ARV-288a (review round 3): a controller.extraArgs entry as the controller reads it. The ingress-nginx chart 4.15.1 writes it as
+ * --<key>=<value>, or the bare --<key> when the value is empty (its quoted form two characters long), and the controller's flag
+ * parser (pflag) splits a long flag at its first "=": so the name is the key before its first "=" and the value the rest of the
+ * written argument after it, or undefined for a bare flag (a boolean flag then reads true). "a=b": "" is --a=b, and "a": "b" too. A
+ * null value is written --<key>= (Sprig's quote gives nothing for it, and Helm writes an unset value as nothing).
+ */
+/**
+ * ARV-288a (review round 4): how the ingress-nginx chart 4.15.1 writes the controller's settings. configKey: a ConfigMap key the
+ * chart writes unquoted (controller-configmap.yaml) stays one key only as a plain name. secretName: a namespace/name of a Secret,
+ * as default-ssl-certificate takes it, written unquoted into the arguments.
+ */
+export const CONTROLLER_RENDERING = { configKey: /^[a-z0-9][a-z0-9-]*$/, secretName: /^[a-z0-9-]+\/[a-z0-9.-]+$/ };
+
+/**
+ * ARV-288a (review rounds 4 and 5): a line break as YAML and the manifests the chart writes may read one: a carriage return, a line
+ * feed, and (round 5) the next line, line separator and paragraph separator characters, U+0085, U+2028 and U+2029 (written as
+ * escapes here, never as the characters).
+ */
+export const LINE_BREAK = /[\r\n\u0085\u2028\u2029]/;
+
+/** ARV-288a (review round 6): what a parsed value is, for a message: its type, or the class the yaml package gave it. */
+export const valueKind = (value) => (value === null ? 'null' : ArrayBuffer.isView(value) ? 'binary value' : typeof value === 'object' ? (value.constructor?.name ?? 'object') : typeof value);
+
+/** ARV-288a (review round 6): a value as Helm's reader gives one: text, a number, a boolean, null, a plain list or a plain map. */
+export const plainValue = (value) => value === null || value === undefined || ['string', 'number', 'boolean'].includes(typeof value) || Array.isArray(value) ||
+	(typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value)));
+
+/**
+ * ARV-288a (review rounds 4 to 6): where a key or a string under node holds a line break (LINE_BREAK, kind 'line break') or a value
+ * is not one Helm's reader gives (plainValue, kind its valueKind: a binary value from !!binary, a Set from !!set, a Map from !!omap,
+ * a Date from a timestamp; go-yaml v2 makes text or a map of them, which the chart writes as that text), as { where, kind }: the
+ * path from base (the document root when base is empty: fullnameOverride, controller.electionID, or "controller.extraArgs key ..."
+ * for a key), leaving out the subtrees in skip (controller.config and controller.extraArgs, which have their own rules).
+ */
+export function lineBreaks(node, base, skip = []) {
+	const found = [];
+	const join = (where, key) => (where ? `${where}.${key}` : key);
+	const walk = (value, where) => {
+		if (skip.includes(where)) return;
+		if (!plainValue(value)) {
+			found.push({ where: where || 'the values', kind: valueKind(value) });
+		} else if (typeof value === 'string') {
+			if (LINE_BREAK.test(value)) found.push({ where, kind: 'line break' });
+		} else if (Array.isArray(value)) {
+			value.forEach((item, index) => walk(item, `${where}[${index}]`));
+		} else if (value && typeof value === 'object') {
+			for (const [key, item] of Object.entries(value)) {
+				if (LINE_BREAK.test(key)) found.push({ where: `${where || 'the values'} key ${JSON.stringify(key)}`, kind: 'line break' });
+				else walk(item, join(where, key));
+			}
+		}
+	};
+	walk(node, base);
+	return found;
+}
+
+/** ARV-288a (review rounds 4 to 6): the finding for a lineBreaks entry, or for an extraArgs entry the loop judges itself. */
+export function unreadValueFinding({ where, kind }) {
+	return kind === 'line break'
+		? `${where} holds a line break: the ingress-nginx chart writes the controller's settings and arguments unquoted, so it would add an argument or a field this check never reads (ARV-288a)`
+		: `${where} is a ${kind}, not text, a number, a boolean, a list or a map: Helm's YAML reader would make it text (a !!binary value, a !!set or !!omap map, a timestamp) ` +
+			'that the chart writes and this check never reads (ARV-288a)';
+}
+
+/**
+ * ARV-288a (review round 6): a values file read as Helm reads it, YAML 1.1 (sigs.k8s.io/yaml over go-yaml v2), held to what reads
+ * the same in Helm and in this check's yaml package, so no setting reaches the chart in a form the checks did not read. Refused,
+ * each naming its path and never its value: a byte order mark; a directive (%YAML, %TAG); more than one document (Helm reads the
+ * first); a text that does not parse (a duplicate key, which go-yaml lets the last win); an explicit tag on any node (!!binary,
+ * !!set, !!omap, !!str or a site's own such as !site: Ariva's values need none); an anchor or an alias (and so a merge key's
+ * source); a merge key (<<); a key that is not text (on, yes and numbers are not, in YAML 1.1); a folded block (>), whose folding
+ * readers part on; and a plain (unquoted) scalar but true, false and a whole number in decimal (YAML 1.1 readers part on the
+ * others: on, yes and y, 0o and 0x numbers, 1:20 base 60, timestamps, ~ and empty values), so every other value is quoted. Read
+ * alike, and so allowed: a literal block (|), a quoted value with escapes (an escaped line break, \L or \n, is the walk's to
+ * refuse: lineBreaks), comments, and one leading document marker. label names the file in the findings.
+ */
+export function valuesTextFindings(text, label = 'the values file') {
+	const findings = [];
+	const source = String(text ?? '');
+	if (source.includes('\uFEFF')) findings.push(`${label} holds a byte order mark (U+FEFF): Helm's reader and this check may not read it alike; save the file without one (ARV-288a)`);
+	if (/^%/m.test(source)) findings.push(`${label} holds a YAML directive (a line starting with %, such as %YAML or %TAG): it changes how the file is read, so none is used (ARV-288a)`);
+	let documents;
+	try {
+		documents = parseAllDocuments(source, { version: '1.1', logLevel: 'error' });
+	} catch (error) {
+		return [...findings, `${label} does not parse as YAML 1.1: ${String(error.message).split('\n')[0]} (ARV-288a)`];
+	}
+	const list = Array.isArray(documents) ? documents : [];
+	if (list.length > 1) findings.push(`${label} holds ${list.length} YAML documents: Helm reads the first only, so the file holds one (ARV-288a)`);
+	const node = (item, where) => {
+		const at = where || 'the root';
+		if (isAlias(item)) {
+			findings.push(`${label} ${at} is an alias (*${item.source}): the values use no anchor or alias, and so no merge key (ARV-288a)`);
+			return;
+		}
+		if (!item) return;
+		if (item.tag) {
+			// Read no further into a tagged node: its tag is refused already, and a !!set's members are not values.
+			findings.push(`${label} ${at} carries the YAML tag ${item.tag}: Helm's reader and this check do not read tagged values alike (!!binary, !!set, !!omap), so the values carry none (ARV-288a)`);
+			return;
+		}
+		if (item.anchor) findings.push(`${label} ${at} carries an anchor (&${item.anchor}): the values use no anchor or alias, and so no merge key (ARV-288a)`);
+		if (isScalar(item)) {
+			if (item.type === 'BLOCK_FOLDED') {
+				findings.push(`${label} ${at} is a folded block (>): YAML readers do not all fold its lines alike, so a value over several lines is a literal block (|) (ARV-288a)`);
+			} else if (item.type === 'PLAIN' && !/^(true|false|0|-?[1-9][0-9]*)$/.test(String(item.source ?? ''))) {
+				findings.push(`${label} ${at} is written unquoted: YAML 1.1 readers do not all read an unquoted value alike (on, yes and y, 0o and 0x numbers, base 60, timestamps, ~), ` +
+					'so every value but true, false and a whole number is quoted (ARV-288a)');
+			}
+		} else if (isMap(item)) {
+			for (const pair of item.items) {
+				const key = pair.key;
+				const name = isScalar(key) ? String(key.source ?? key.value) : valueKind(key);
+				if (isScalar(key) && String(key.source ?? key.value) === '<<') {
+					findings.push(`${label} ${at} has a merge key (<<): the values merge nothing, so each setting stands where it is read (ARV-288a)`);
+					continue;
+				}
+				if (!isScalar(key) || typeof key.value !== 'string' || key.tag || key.anchor) {
+					findings.push(`${label} ${at} has a key that is not plain text (${JSON.stringify(name)}): in YAML 1.1 on, yes and numbers are not text, and a tag or an anchor on a key is refused too (ARV-288a)`);
+					continue;
+				}
+				node(pair.value, where ? `${where}.${key.value}` : key.value);
+			}
+		} else if (isSeq(item)) {
+			item.items.forEach((entry, index) => node(entry, `${where}[${index}]`));
+		}
+	};
+	for (const document of list) {
+		for (const error of document.errors) findings.push(`${label} does not parse as YAML 1.1: ${String(error.message).split('\n')[0]} (ARV-288a)`);
+		if (!document.errors.length) node(document.contents, '');
+	}
+	return findings;
+}
+
+export function controllerArgument(key, value) {
+	const written = value === null || value === undefined ? `${key}=` : value === '' ? String(key) : `${key}=${value}`;
+	const cut = written.indexOf('=');
+	return cut === -1 ? { name: written, given: undefined } : { name: written.slice(0, cut), given: written.slice(cut + 1) };
+}
+
+/**
  * ARV-084: findings for the ingress-nginx controller values the site applies (Helm/ingress-nginx-values.yaml, parsed): snippet
  * annotations allowed from the chart value only, at the Critical risk level; TLS 1.2 and 1.3; Mozilla's intermediate TLS 1.2
  * suites exactly; no session tickets; HSTS of a year with includeSubDomains and no preload; X-Forwarded-* not trusted; every
@@ -1972,17 +2202,60 @@ const configTrue = (value) => /^(1|t|true)$/i.test(String(value ?? ''));
  * OpenTelemetry off (its spans carry the query string), and no access_log, log_format, error_log or modsecurity directive in
  * the controller's main, http, server or location snippet. ARV-206: nor the name of a directive that keeps a copy of an answer
  * (INGRESS_CACHE_DIRECTIVE: proxy_cache_path in the http-snippet, proxy_cache, proxy_store, and the FastCGI, uwsgi and SCGI ones)
- * in those snippets or the global auth snippet, and no global-auth-cache-key (ingress-nginx would cache the global external
- * authentication answers in its auth_cache zone). ARV-284: the log and ModSecurity names are read as nginx's tokenizer reads a
+ * in those snippets (CONTROLLER_SNIPPETS; the global auth snippet too until ARV-288a, which refuses it whole), and no
+ * global-auth-cache-key (ingress-nginx would cache the global external authentication answers in its auth_cache zone). ARV-284: the log and ModSecurity names are read as nginx's tokenizer reads a
  * statement (nginxDirective), and no snippet writes an include, client_body_in_file_only, a *_by_lua directive or a rewrite
  * (CONTROLLER_REFUSED_DIRECTIVES). ARV-288: every snippet rule reads the stream-snippet too (CONTROLLER_SNIPPETS); no snippet
  * writes load_module, ssl_engine, lua_package_path, lua_package_cpath or a js_ or perl directive (CONTROLLER_REFUSED_DIRECTIVES);
- * and no plugins key (Lua plugins from the controller's disk) but empty.
+ * and no plugins key (Lua plugins from the controller's disk) but empty. ARV-288a: no global external authentication
+ * (INGRESS_EXTERNAL_AUTH.controller): no global-auth- key, in any case, with any value but empty (the cache key's rule of
+ * ARV-206 and the global auth snippet's of ARV-284 among them, so the snippet rules no longer read global-auth-snippet), and no
+ * enable-global-auth true. ARV-288a, security review round 1: no snippet writes a *_pass, mirror or auth_request directive
+ * (CONTROLLER_REFUSED_DIRECTIVES: a location of the controller's own that proxies, copies or authenticates elsewhere); no
+ * custom-http-errors, defaultBackend.enabled true or extraArgs default-backend-service (INGRESS_ERROR_BACKEND: an error answer
+ * proxied again, headers and URI included, to a default backend); and the controller keeps the default annotations prefix and
+ * its own annotation validation (CONTROLLER_ARGUMENTS: controller.enableAnnotationValidations and extraArgs
+ * enable-annotation-validation). Review round 2: no satisfy directive in any snippet; the default backend read where the
+ * ingress-nginx chart 4.15.1 has it (the top-level defaultBackend.enabled); annotation validation read as the controller flag it is.
+ * Review round 3: the default backend refused at any value the chart's template reads as true (helmTrue); controller.extraArgs an
+ * allowlist (CONTROLLER_ARGUMENTS.allowed), each key read as the controller reads it (controllerArgument); no
+ * controller.configMapNamespace or controller.customTemplate (configuration or a template this check never sees); and no
+ * allow-cross-namespace-resources true (an Ingress's auth-secret or auth-tls-secret naming another namespace's Secret, CWE-863).
+ * Review round 4: the values read as the ingress-nginx chart renders them (CONTROLLER_RENDERING): every controller.config key a
+ * plain name, no controller.config value holding "{{" (tpl), no line break in any key or string under controller but the ConfigMap
+ * values (lineBreaks: the arguments and settings are written unquoted), and default-ssl-certificate a namespace/name. Review
+ * round 5: the walk starts at the document root (the top-level names are written unquoted too) and counts U+0085, U+2028 and
+ * U+2029 as line breaks (LINE_BREAK); the caller parses the values as Helm does, YAML 1.1 (chart-security.mjs parseValues).
+ * Review round 6: a value the reader gives as anything but text, a number, a boolean, a list or a map (a binary value, a Set, a
+ * Map, a Date) is refused where it stands (lineBreaks, and the argument loop for controller.extraArgs); the text itself is held
+ * to what Helm's reader and this check read alike by valuesTextFindings, which chart-security.mjs runs on the same file.
  */
 export function controllerValuesFindings(values) {
 	const findings = [];
 	const controller = values?.controller ?? {};
 	const config = controller.config ?? {};
+	// ARV-288a, review round 4: controller.config read as the ingress-nginx chart 4.15.1 renders it (controller-configmap.yaml):
+	// each key written unquoted, so only a plain name stays one key (CONTROLLER_RENDERING.configKey; a line break or ": " in a key
+	// writes more entries), and each value through tpl, so a template renders text no rule here reads. Every other config rule
+	// reads plain keys only (plainKey): the key rule takes every other one.
+	const plainKey = (key) => CONTROLLER_RENDERING.configKey.test(key);
+	for (const [key, value] of Object.entries(config)) {
+		if (!plainKey(key)) {
+			findings.push(`controller.config ${JSON.stringify(key)} is not a ConfigMap key of lowercase letters, digits and hyphens: the ingress-nginx chart writes each key unquoted, ` +
+				'so any other key can write further entries (a global-auth-url among them) that this check never reads (ARV-288a)');
+		} else if (String(value ?? '').includes('{{')) {
+			findings.push(`controller.config ${key} holds "{{": the ingress-nginx chart renders every ConfigMap value as a template (tpl), so it would write text this check never reads ` +
+				'(a directive or a true assembled from parts); give the value as it is to be written (ARV-288a)');
+		}
+	}
+	// ARV-288a, review rounds 4 and 5: the chart writes the controller's other settings into its arguments and manifests unquoted
+	// (--election-id, --ingress-class, --health-check-path, --watch-namespace, each extraArgs entry, and at the top level
+	// fullnameOverride, nameOverride, namespaceOverride, portNamePrefix and global.*), so a line break in any key or string of the
+	// values, read from the document root, adds an argument or a field this check never reads. controller.config is left to the
+	// rules above: its keys to the key rule, and its values are quoted by the chart (a snippet may span lines).
+	// Review round 6: and no value of a kind Helm's reader would make text (lineBreaks: a !!binary, !!set or !!omap value, a timestamp).
+	// controller.extraArgs is the argument loop's below, which judges each entry itself.
+	for (const entry of lineBreaks(values ?? {}, '', ['controller.config', 'controller.extraArgs'])) findings.push(unreadValueFinding(entry));
 	if (controller.allowSnippetAnnotations !== true) findings.push('controller.allowSnippetAnnotations must be true: the chart\'s Ingresses carry snippet annotations');
 	if (Object.hasOwn(config, 'allow-snippet-annotations')) findings.push('controller.config must not set allow-snippet-annotations: the ingress-nginx chart writes it from controller.allowSnippetAnnotations, so the key would appear twice');
 	if (config['annotations-risk-level'] !== 'Critical') findings.push(`controller.config annotations-risk-level is ${config['annotations-risk-level'] ?? 'unset (High)'}, not Critical: the controller would refuse the chart's snippets`);
@@ -2038,10 +2311,87 @@ export function controllerValuesFindings(values) {
 		findings.push('controller.config plugins is set: ingress-nginx loads the Lua plugins it names from the controller\'s disk (/etc/nginx/lua/plugins) and runs them on every request of every Ingress, ' +
 			'code no guard here reads (ARV-288)');
 	}
-	// Any value but empty, spaces included: ingress-nginx tests the string as it is, so " " would cache with one key per location.
-	if (String(config['global-auth-cache-key'] ?? '') !== '') {
-		findings.push('controller.config global-auth-cache-key is set: ingress-nginx would cache the global external authentication answers (proxy_cache auth_cache) on the controller\'s disk; ' +
-			'Ariva uses no external authentication and the controller keeps no copy of an answer (ARV-206)');
+	// ARV-206, ARV-288a: any value but empty, spaces included: ingress-nginx tests the string as it is, so a global-auth-cache-key
+	// of " " would cache with one key per location. The rule reads every key, so a key in another case is refused too.
+	for (const [key, value] of Object.entries(config)) {
+		if (!plainKey(key)) continue;
+		if (INGRESS_EXTERNAL_AUTH.controller.test(key) && String(value ?? '') !== '') {
+			findings.push(`controller.config ${key} is set: it configures ingress-nginx's global external authentication (global-auth-url and its siblings), which sends the headers of every request to every Ingress ` +
+				'(bearer tokens, the refresh cookie) to a URL outside Ariva, adds headers and cookies from its answers and can cache them on the controller\'s disk (global-auth-cache-key); ' +
+				'Ariva authenticates every request itself and the controller keeps no copy of an answer (ARV-206, ARV-288a)');
+		}
+		if (INGRESS_EXTERNAL_AUTH.enableKey.test(key) && configTrue(value)) {
+			findings.push(`controller.config ${key} is ${value}: the controller values turn no global external authentication on (ARV-288a)`);
+		}
+		// ARV-288a, review round 1: any value but empty, spaces included, as for the global auth keys.
+		if (INGRESS_ERROR_BACKEND.controller.test(key) && String(value ?? '') !== '') {
+			findings.push(`controller.config ${key} is set: every request to every Ingress answered with one of its codes would be proxied again to the default backend, with its headers ` +
+				'(bearer tokens, the refresh cookie) and its original URI (the live hub\'s access token); Ariva\'s hosts write their own error answers (ARV-288a)');
+		}
+	}
+	// ARV-288a, review rounds 1 to 3: the default backend and the controller's arguments. The ingress-nginx chart 4.15.1 turns its
+	// default backend on with the top-level defaultBackend.enabled, by a Go template truth test (so "false", "yes" and 2 turn it on;
+	// helmTrue), writes --enable-annotation-validation=false when controller.enableAnnotationValidations is false (unset takes the
+	// chart's true), and writes each controller.extraArgs key as --<key>=<value>, or the bare --<key> when the value is empty
+	// (templates/_params.tpl), which the controller's flag parser splits at the first "=" (controllerArgument).
+	if (helmTrue(values?.defaultBackend?.enabled)) {
+		findings.push(`defaultBackend.enabled is ${JSON.stringify(values.defaultBackend.enabled)}, which the ingress-nginx chart reads as true: a default backend takes every request no Ingress serves and, with custom-http-errors, ` +
+			'the error answers of every Ingress, with their headers (bearer tokens, the refresh cookie) and original URI (ARV-288a)');
+	}
+	if (controller.enableAnnotationValidations !== undefined && !configTrue(controller.enableAnnotationValidations)) {
+		findings.push(`controller.enableAnnotationValidations is ${JSON.stringify(controller.enableAnnotationValidations)}: the ingress-nginx chart would write --enable-annotation-validation=false, and the controller would stop ` +
+			'checking annotation values against its own rules, a check the chart\'s guards stand behind; leave it unset or true (ARV-288a)');
+	}
+	// ARV-288a, review round 3: settings that make the controller read what this check never sees, or reach another namespace.
+	if (String(controller.configMapNamespace ?? '') !== '') {
+		findings.push('controller.configMapNamespace is set: the controller would read its ConfigMap from another namespace, settings this check never sees; leave it empty (ARV-288a)');
+	}
+	if (String(controller.customTemplate?.configMapName ?? '') !== '' || String(controller.customTemplate?.configMapKey ?? '') !== '') {
+		findings.push('controller.customTemplate names a ConfigMap (configMapName or configMapKey): the controller would write nginx.conf from a template this check never sees; leave both empty (ARV-288a)');
+	}
+	if (controller.extraArgs !== undefined && controller.extraArgs !== null && (typeof controller.extraArgs !== 'object' || Array.isArray(controller.extraArgs))) {
+		findings.push('controller.extraArgs must be a map of argument names to values, as the ingress-nginx chart reads it (ARV-288a)');
+	}
+	const extraArgs = controller.extraArgs && typeof controller.extraArgs === 'object' && !Array.isArray(controller.extraArgs) ? controller.extraArgs : {};
+	for (const [key, value] of Object.entries(extraArgs)) {
+		// Review rounds 4 and 6: an entry with a line break in its key or value, or a value that is not text, a number or a boolean
+		// (a !!binary value, a set, a map), is refused here and read no further: it would write more arguments, or text no rule reads.
+		if (LINE_BREAK.test(key)) {
+			findings.push(unreadValueFinding({ where: `controller.extraArgs key ${JSON.stringify(key)}`, kind: 'line break' }));
+			continue;
+		}
+		if (value !== null && value !== undefined && !['string', 'number', 'boolean'].includes(typeof value)) {
+			findings.push(unreadValueFinding({ where: `controller.extraArgs.${key}`, kind: valueKind(value) }));
+			continue;
+		}
+		if (LINE_BREAK.test(String(value ?? ''))) {
+			findings.push(unreadValueFinding({ where: `controller.extraArgs.${key}`, kind: 'line break' }));
+			continue;
+		}
+		const { name, given } = controllerArgument(key, value);
+		const shown = `controller.extraArgs ${key}${name !== key ? ` (--${name})` : ''}`;
+		if (name.toLowerCase() === 'default-backend-service') {
+			findings.push(`${shown} is set: it names a default backend that takes every request no Ingress serves and, with custom-http-errors, the error answers of every Ingress, ` +
+				'with their headers (bearer tokens, the refresh cookie) and original URI (ARV-288a)');
+		} else if (!CONTROLLER_ARGUMENTS.allowed.includes(name.toLowerCase())) {
+			findings.push(`${shown} is not an argument the controller values may pass (${CONTROLLER_ARGUMENTS.allowed.join(', ')}): another flag can change what the controller reads ` +
+				'(its ConfigMap, its annotations, its default backend) past this check (ARV-288a)');
+		} else if (name.toLowerCase() === CONTROLLER_ARGUMENTS.validationFlag && !configTrue(given ?? 'true')) {
+			findings.push(`${shown} is ${given === '' ? 'empty' : given}, not true: false turns off the controller's own checks of annotation values, a check the chart's guards ` +
+				'stand behind, so the values give it true or leave it out (ARV-288a)');
+		} else if (name.toLowerCase() === 'annotations-prefix' && given !== CONTROLLER_ARGUMENTS.annotationsPrefix) {
+			findings.push(`${shown} is not ${CONTROLLER_ARGUMENTS.annotationsPrefix}: the controller would read its annotations under another prefix, which neither the chart's own ` +
+				'annotations (TLS, headers, ModSecurity) nor its guards use, so a site annotation such as <prefix>/server-snippet or <prefix>/auth-url would reach nginx past every guard (ARV-288a)');
+		} else if (name.toLowerCase() === 'default-ssl-certificate' && !CONTROLLER_RENDERING.secretName.test(given ?? '')) {
+			findings.push(`${shown} is not a namespace/name of a Secret (lowercase letters, digits, hyphens and, in the name, dots): the chart writes it unquoted into the controller's ` +
+				'arguments (ARV-288a)');
+		}
+	}
+	for (const [key, value] of Object.entries(config)) {
+		if (plainKey(key) && /^allow-cross-namespace-resources$/i.test(key) && configTrue(value)) {
+			findings.push(`controller.config ${key} is ${value}: an Ingress's auth-secret or auth-tls-secret, which the chart allows, could then name a Secret of another namespace, ` +
+				'which the controller would read for it (CWE-863; ARV-288a)');
+		}
 	}
 	for (const [key, value] of Object.entries(config)) if (typeof value !== 'string') findings.push(`controller.config ${key} must be a string (a ConfigMap value), not ${typeof value} ${value}`);
 	return findings;
@@ -2358,6 +2708,9 @@ export const HEALTH_PROBES = {
  *   request's own path, so a rewrite could take another path to /health on the pod;
  * - ARV-288: no annotation value writes an include, client_body_in_file_only, a *_by_lua directive or rewrite_log
  *   (INGRESS_REFUSED_DIRECTIVES), a second line behind validate.yaml that also proves the chart's own snippets write none;
+ * - ARV-288a: no Ingress sets an authentication annotation the chart refuses (externalAuthAnnotation: auth-url and the other auth-
+ *   keys but the five documented auth-tls keys and basic authentication) or custom-http-errors or default-backend
+ *   (INGRESS_ERROR_BACKEND), likewise;
  * - allowlist-source-range, when set, is a list of CIDRs (network addresses), in k8s-prd none wider than /8 (IPv4) or /16
  *   (IPv6); no Ingress sets whitelist-source-range (the alias ingress-nginx reads only without allowlist-source-range);
  * - in k8s-prd every Ingress to api-cronz-service (the TickerQ dashboard) has allowlist-source-range.
@@ -2391,6 +2744,13 @@ export function ingressPrivacyFindings(docs, { environment }) {
 		for (const [key, value] of Object.entries(annotations)) {
 			if (nginxDirective('rewrite').test(String(value))) findings.push(`${id}: ${key} writes a rewrite directive, which changes the path after the probes' check`);
 			for (const [name, why, story] of refusedDirectives(INGRESS_REFUSED_DIRECTIVES, value)) findings.push(`${id}: ${key} writes ${name}: ${why} (${story})`);
+			// ARV-288a: a second line behind validate.yaml, and the proof that the chart's own Ingresses set no external authentication.
+			if (externalAuthAnnotation(key)) {
+				findings.push(`${id}: sets ${key}, an ingress-nginx authentication annotation the chart refuses: external authentication sends the headers of every request (bearer tokens, the refresh cookie) to a URL the chart does not name, auth-tls-error-page redirects to one (ARV-288a)`);
+			}
+			if (INGRESS_ERROR_BACKEND.annotations.test(key)) {
+				findings.push(`${id}: sets ${key}: with custom-http-errors an error answer is proxied again to a default backend, with the request's headers (bearer tokens, the refresh cookie) and original URI (ARV-288a)`);
+			}
 		}
 		if (annotations[`${NGINX}whitelist-source-range`] !== undefined) findings.push(`${id}: sets whitelist-source-range, the alias; the chart writes allowlist-source-range, the name ingress-nginx reads first`);
 		const allow = annotations[`${NGINX}allowlist-source-range`];

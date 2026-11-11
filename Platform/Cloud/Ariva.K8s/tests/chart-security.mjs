@@ -49,6 +49,26 @@
 // begin like a refused one pins the shared directive pattern's boundaries; the controller values check reads the stream-snippet
 // and refuses load_module, ssl_engine, the Lua module paths, js_ and perl directives and the plugins key; and the rendered
 // Ingresses carry no include, client_body_in_file_only, *_by_lua or rewrite_log (ingressPrivacyFindings).
+// ARV-288a (CWE-918, CWE-522, CWE-501, CWE-601, CWE-863): the release guards refuse, in every environment, every ingress-nginx
+// authentication annotation the chart refuses (an nginx.ingress.kubernetes.io/auth- key but the five documented auth-tls keys and
+// basic authentication, as whole names and in any case: auth-url, auth-signin, auth-proxy-set-headers, auth-tls-error-page and the
+// others, one case each, and keys that only begin like an allowed one), naming the key and the Ingress and never the value; an
+// auth_request or satisfy directive; custom-http-errors and default-backend; and the satisfy annotation with any value but all. An
+// accepted render with the documented auth-tls keys, enable-global-auth, auth_request_set, satisfy in a header's text, basic
+// authentication with satisfy all and a site's own annotations pins the rules' boundaries, and two tables of keys hold
+// externalAuthAnnotation and INGRESS_ERROR_BACKEND to them. The controller values check refuses every global-auth- key with a value
+// (global-auth-snippet whole), enable-global-auth true, a *_pass, mirror, auth_request or satisfy directive in any snippet,
+// custom-http-errors, the default backend (the top-level defaultBackend.enabled, extraArgs default-backend-service), another
+// annotations prefix and annotation validation off (controller.enableAnnotationValidations, extraArgs enable-annotation-validation),
+// any other controller argument (extraArgs is an allowlist, each key read as the controller reads it, the flag before its first
+// "="), the default backend at any value the chart's template reads as true, configMapNamespace, customTemplate and
+// allow-cross-namespace-resources true, reading the file as Helm reads it (YAML 1.1, parseValues: an unquoted on, yes or Y is
+// true; cases written as YAML text) and every value as the chart renders it (a "{{" in a ConfigMap value, a ConfigMap key that is
+// not a plain name, a line break anywhere in the file but the ConfigMap values, U+2028 and the other Unicode breaks included), with
+// the text held to what Helm's reader and this check read alike (valuesTextFindings: no tag, directive, anchor, alias, second
+// document or byte order mark, keys text, every value but true, false and a whole number quoted) and a value of any other kind
+// (binary, a set, a map, a date) refused where it stands; and the rendered Ingresses set no refused authentication or error backend annotation
+// (ingressPrivacyFindings).
 // ARV-091a (ASVS 5.0 V16.4.2, V16.4.3, CWE-532): with logging.pseudonymKeySecret (prd, required there by the chart and by both
 // Helmfiles through the state value logShipping) the five API hosts, and only they, get Logging__PseudonymKey from that Secret
 // (secretKeyRef, not optional, never a literal or a ConfigMap), and from logging.lokiCredentialsSecret Loki__Username and
@@ -85,7 +105,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse as parseYaml, parseAllDocuments, stringify } from 'yaml';
 import { BACKUP, BACKUP_RULES, backupFindings, checkManifests, COLLECTOR_CAS, collectorCaFindings, HOST_LOGIN_SECTIONS, hostCredentialFindings, hostLoginFindings, INSTANCE_ID, instanceIdFindings, controllerValuesFindings, DATABASE_TLS12_CIPHERS, databaseTlsFindings, forwardedHeadersFindings, HUB_PATHS, hubRefusalFindings, ingressHardeningFindings, INGRESS_HARDENING,
-	INGRESS_LOG_FORMAT, ingressPrivacyFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients,
+	INGRESS_LOG_FORMAT, ingressPrivacyFindings, externalAuthAnnotation, INGRESS_ERROR_BACKEND, valuesTextFindings, logShippingFindings, API_HOSTS, missingMonitoringRules, networkPolicyFindings, networkValues, POD_TLS, podTlsFindings, podTlsSecrets, serverCaSecrets, trustsMappedClients,
 	clamavDirectives, releaseCredentialFindings, UPLOAD_SCAN, uploadScanFindings, WEB_CERTIFICATE, webCertificateFindings } from './checks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -98,6 +118,12 @@ const helmfileState = path.resolve(here, '..', 'Helm', 'helmfile-k8s.yaml.gotmpl
 const parse = (text) => parseAllDocuments(text).map((doc) => doc.toJS()).filter(Boolean);
 // As Kubernetes reads a manifest (YAML 1.1: a file mode such as 0440 is octal), for the checks that read file modes.
 const parseAsKubernetes = (text) => parseAllDocuments(text, { version: '1.1' }).map((doc) => doc.toJS()).filter(Boolean);
+/**
+ * ARV-288a (review round 5): a Helm values file as Helm reads it, YAML 1.1 (sigs.k8s.io/yaml over go-yaml v2), so an unquoted on,
+ * yes or y is true there, as the chart then writes it ("true"), where YAML 1.2 would read the text "on". Every values file the
+ * tests read (the controller values, the charts' values and the site fixtures) reads the same under both today.
+ */
+const parseValues = (text) => parseYaml(text, { version: '1.1', logLevel: 'error' });
 const fixture = (name) => fs.readFileSync(path.join(here, 'fixtures', name), 'utf8');
 /**
  * A production site's own values: its signature source (ARV-092c: its mirror with its CA, and the mirror's peers) and its
@@ -107,9 +133,9 @@ const fixture = (name) => fs.readFileSync(path.join(here, 'fixtures', name), 'ut
  */
 const PRD_SITE = path.join(here, 'fixtures', 'prd-site.yaml');
 /** ARV-092c: the chart's ClamAV pin (values.yaml uploadScan.image): repository, tag and digest. */
-const CHART_SCANNER = parseYaml(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8')).uploadScan.image;
+const CHART_SCANNER = parseValues(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8')).uploadScan.image;
 /** ARV-182: the TimescaleDB chart's pin (repository, tag, digest), which the scheduled backup runs. */
-const CHART_DATABASE = parseYaml(fs.readFileSync(path.join(databaseChart, 'values.yaml'), 'utf8')).image;
+const CHART_DATABASE = parseValues(fs.readFileSync(path.join(databaseChart, 'values.yaml'), 'utf8')).image;
 /** ARV-092c: the repository's clamd.conf (ARV-092b), whose limits the chart's clamd.conf must keep. */
 const REPOSITORY_CLAMD = clamavDirectives(fs.readFileSync(path.resolve(here, '..', '..', 'clamav', 'clamd.conf'), 'utf8'));
 /**
@@ -399,7 +425,9 @@ const CONTROLLER_CASES = [
 	// global auth location's snippet and its cache key (ingress-nginx's own auth_cache zone).
 	['an http-snippet with a quoted cache zone name before a parenthesis', (v) => { v.controller.config['http-snippet'] = '"proxy_cache_path")c keys_zone=)z:10m;'; }, 'http-snippet writes proxy_cache_path:'],
 	['a location-snippet with an SCGI store', (v) => { v.controller.config['location-snippet'] = 'scgi_store on;'; }, 'location-snippet writes scgi_store:'],
-	['a global auth snippet that caches', (v) => { v.controller.config['global-auth-snippet'] = 'proxy_cache auth_cache;'; }, 'global-auth-snippet writes proxy_cache:'],
+	// Since ARV-288a the global auth snippet is refused whole (global external authentication), so this case and the two global
+	// auth snippet cases below trip that rule alone.
+	['a global auth snippet that caches', (v) => { v.controller.config['global-auth-snippet'] = 'proxy_cache auth_cache;'; }, 'global-auth-snippet is set:'],
 	// ARV-284: each log or ModSecurity directive and a rewrite read as nginx's tokenizer reads them (a quoted name followed by
 	// ")" is the name and the start of the next argument), and no include, client_body_in_file_only or Lua in any snippet.
 	['a server-snippet with a quoted access_log before a parenthesis', (v) => { v.controller.config['server-snippet'] = '"access_log")off;'; }, 'server-snippet writes access_log:'],
@@ -412,11 +440,11 @@ const CONTROLLER_CASES = [
 	['a location-snippet with a quoted include before a parenthesis', (v) => { v.controller.config['location-snippet'] = "'include')/tmp/site.conf;"; }, 'location-snippet writes include:'],
 	['a server-snippet that keeps every request body', (v) => { v.controller.config['server-snippet'] = 'client_body_in_file_only clean;'; }, 'server-snippet writes client_body_in_file_only:'],
 	['a location-snippet with a Lua block', (v) => { v.controller.config['location-snippet'] = 'access_by_lua_block { ngx.req.read_body() }'; }, 'location-snippet writes a *_by_lua directive:'],
-	['a global auth snippet with a Lua file', (v) => { v.controller.config['global-auth-snippet'] = 'content_by_lua_file /tmp/site.lua;'; }, 'global-auth-snippet writes a *_by_lua directive:'],
+	['a global auth snippet with a Lua file', (v) => { v.controller.config['global-auth-snippet'] = 'content_by_lua_file /tmp/site.lua;'; }, 'global-auth-snippet is set:'],
 	// ARV-284, review round 1: rewrite_log would write the chart's server-level checks with the request line at notice; the
 	// global auth snippet is held to the log directives too.
 	['a server-snippet that logs its rewrites', (v) => { v.controller.config['server-snippet'] = 'rewrite_log on;'; }, 'server-snippet writes rewrite_log:'],
-	['a global auth snippet with an access log', (v) => { v.controller.config['global-auth-snippet'] = 'access_log /dev/stdout combined;'; }, 'global-auth-snippet writes access_log:'],
+	['a global auth snippet with an access log', (v) => { v.controller.config['global-auth-snippet'] = 'access_log /dev/stdout combined;'; }, 'global-auth-snippet is set:'],
 	// ARV-288: the stream-snippet is read like the others; no module or OpenSSL engine, no Lua module path or plugin, and no njs or
 	// perl directive in any snippet, each read as nginx's tokenizer reads a statement (quoted names before ")" included).
 	['a stream-snippet that includes files', (v) => { v.controller.config['stream-snippet'] = 'include /etc/nginx/extra/stream.conf;'; }, 'stream-snippet writes include:'],
@@ -435,7 +463,88 @@ const CONTROLLER_CASES = [
 	['an http-snippet that loads a perl module', (v) => { v.controller.config['http-snippet'] = 'perl_require /tmp/site.pm;'; }, 'http-snippet writes perl_require:'],
 	['an http-snippet with a single-quoted perl module path', (v) => { v.controller.config['http-snippet'] = "'perl_modules' /tmp/site;"; }, 'http-snippet writes perl_modules:'],
 	['a global auth cache key', (v) => { v.controller.config['global-auth-cache-key'] = '$remote_user$http_authorization'; }, 'global-auth-cache-key is set'],
-	['a global auth cache key of one space', (v) => { v.controller.config['global-auth-cache-key'] = ' '; }, 'global-auth-cache-key is set']
+	['a global auth cache key of one space', (v) => { v.controller.config['global-auth-cache-key'] = ' '; }, 'global-auth-cache-key is set'],
+	// ARV-288a: no global external authentication: each global-auth- key with any value but empty (in any case), and no
+	// enable-global-auth true; the cache key's cases above are this rule's since ARV-288a.
+	['a global auth URL', (v) => { v.controller.config['global-auth-url'] = 'https://auth.site.example/verify'; }, 'controller.config global-auth-url is set:'],
+	// Since review round 4 a key in capitals is not a plain ConfigMap key, so the key rule takes it (a global auth URL above is its
+	// lowercase partner).
+	['a global auth URL in capitals', (v) => { v.controller.config['Global-Auth-URL'] = 'https://auth.site.example/verify'; }, 'controller.config "Global-Auth-URL" is not a ConfigMap key of lowercase letters'],
+	['a global auth sign-in', (v) => { v.controller.config['global-auth-signin'] = 'https://auth.site.example/start'; }, 'controller.config global-auth-signin is set:'],
+	['a global auth sign-in redirect parameter', (v) => { v.controller.config['global-auth-signin-redirect-param'] = 'rd'; }, 'controller.config global-auth-signin-redirect-param is set:'],
+	['a global auth method', (v) => { v.controller.config['global-auth-method'] = 'GET'; }, 'controller.config global-auth-method is set:'],
+	['global auth response headers', (v) => { v.controller.config['global-auth-response-headers'] = 'X-Auth-User, Authorization'; }, 'controller.config global-auth-response-headers is set:'],
+	['a global auth request redirect', (v) => { v.controller.config['global-auth-request-redirect'] = 'https://web.site.example'; }, 'controller.config global-auth-request-redirect is set:'],
+	['a global auth snippet', (v) => { v.controller.config['global-auth-snippet'] = 'proxy_set_header X-Site 1;'; }, 'controller.config global-auth-snippet is set:'],
+	['a global auth cache duration', (v) => { v.controller.config['global-auth-cache-duration'] = '200 202 401 5m'; }, 'controller.config global-auth-cache-duration is set:'],
+	['global auth cookies always set', (v) => { v.controller.config['global-auth-always-set-cookie'] = 'true'; }, 'controller.config global-auth-always-set-cookie is set:'],
+	['global auth turned on', (v) => { v.controller.config['enable-global-auth'] = 'true'; }, 'controller.config enable-global-auth is true:'],
+	['global auth turned on as a ParseBool value', (v) => { v.controller.config['enable-global-auth'] = 'T'; }, 'controller.config enable-global-auth is T:'],
+	// ARV-288a, security review round 1: no controller snippet builds what the ConfigMap keys refuse (a location that proxies to
+	// another host, a mirror, an auth_request subrequest), each read as nginx's tokenizer reads a statement; no custom error pages
+	// or default backend (an error answer proxied again with its headers and URI); the default annotations prefix and the
+	// controller's annotation validation kept.
+	['a server-snippet location that proxies to another host', (v) => { v.controller.config['server-snippet'] = 'location = /ariva-copy { internal; proxy_pass https://copy.site.example$request_uri; }'; },
+		'server-snippet writes proxy_pass:'],
+	['an http-snippet with a quoted grpc_pass before a parenthesis', (v) => { v.controller.config['http-snippet'] = 'server { listen 8181; location / { "grpc_pass")grpc://copy.site.example; } }'; }, 'http-snippet writes grpc_pass:'],
+	['a location-snippet that mirrors every request', (v) => { v.controller.config['location-snippet'] = 'mirror /ariva-copy;'; }, 'location-snippet writes mirror:'],
+	['a location-snippet with an authentication subrequest', (v) => { v.controller.config['location-snippet'] = 'auth_request /ariva-auth;'; }, 'location-snippet writes auth_request:'],
+	['a server-snippet with a single-quoted auth_request before a parenthesis', (v) => { v.controller.config['server-snippet'] = "'auth_request')/ariva-auth;"; }, 'server-snippet writes auth_request:'],
+	['custom error pages for every Ingress', (v) => { v.controller.config['custom-http-errors'] = '401,403,404'; }, 'controller.config custom-http-errors is set:'],
+	['custom error pages in capitals (the key rule takes it since review round 4)', (v) => { v.controller.config['Custom-HTTP-Errors'] = '404'; }, 'controller.config "Custom-HTTP-Errors" is not a ConfigMap key of lowercase letters'],
+	// Review round 2: the ingress-nginx chart 4.15.1's default backend switch is the top-level defaultBackend.enabled.
+	['the default backend turned on', (v) => { v.defaultBackend = { enabled: true }; }, 'defaultBackend.enabled is true, which the ingress-nginx chart reads as true:'],
+	// Review round 3: the chart tests the switch as a Go template does, so a string "false" and a 2 turn it on too.
+	['the default backend turned on by the string "false"', (v) => { v.defaultBackend = { enabled: 'false' }; }, 'defaultBackend.enabled is "false", which the ingress-nginx chart reads as true:'],
+	['the default backend turned on by a 2', (v) => { v.defaultBackend = { enabled: 2 }; }, 'defaultBackend.enabled is 2, which the ingress-nginx chart reads as true:'],
+	['a default backend service argument', (v) => { v.controller.extraArgs = { 'default-backend-service': 'other/copy' }; }, 'controller.extraArgs default-backend-service is set:'],
+	['another annotations prefix', (v) => { v.controller.extraArgs = { 'annotations-prefix': 'site.example' }; }, 'controller.extraArgs annotations-prefix is not nginx.ingress.kubernetes.io:'],
+	['an empty annotations prefix', (v) => { v.controller.extraArgs = { 'annotations-prefix': '' }; }, 'controller.extraArgs annotations-prefix is not nginx.ingress.kubernetes.io:'],
+	// Review round 2: annotation validation is the controller flag --enable-annotation-validation (no ConfigMap key in 1.15), which
+	// the ingress-nginx chart writes false from controller.enableAnnotationValidations, or a site passes under controller.extraArgs;
+	// and no satisfy directive in any snippet, plain or quoted before ")".
+	['annotation validation off in the chart value', (v) => { v.controller.enableAnnotationValidations = false; }, 'controller.enableAnnotationValidations is false:'],
+	['annotation validation off as a controller argument', (v) => { v.controller.extraArgs = { 'enable-annotation-validation': 'false' }; }, 'controller.extraArgs enable-annotation-validation is false, not true:'],
+	['annotation validation off as a boolean argument in capitals', (v) => { v.controller.extraArgs = { 'Enable-Annotation-Validation': false }; }, 'controller.extraArgs Enable-Annotation-Validation is false, not true:'],
+	// Review round 3: an argument key read as the controller reads it (the flag name before its first "=", the rest its value when the
+	// chart's value is empty), the arguments an allowlist, and the settings that make the controller read what this check never sees.
+	['"=" in an argument key that turns annotation validation off', (v) => { v.controller.extraArgs = { 'enable-annotation-validation=false': '' }; },
+		'controller.extraArgs enable-annotation-validation=false (--enable-annotation-validation) is false, not true:'],
+	['"=" in an argument key that names another annotations prefix', (v) => { v.controller.extraArgs = { 'annotations-prefix=site.example': '' }; },
+		'controller.extraArgs annotations-prefix=site.example (--annotations-prefix) is not nginx.ingress.kubernetes.io:'],
+	['"=" in an argument key that names a default backend', (v) => { v.controller.extraArgs = { 'default-backend-service=ns/copy': '' }; },
+		'controller.extraArgs default-backend-service=ns/copy (--default-backend-service) is set:'],
+	['an annotation validation argument with no value (null, which the chart writes as --enable-annotation-validation=)', (v) => { v.controller.extraArgs = { 'enable-annotation-validation': null }; },
+		'controller.extraArgs enable-annotation-validation is empty, not true:'],
+	['an argument the values do not document', (v) => { v.controller.extraArgs = { configmap: 'other/site-config' }; }, 'controller.extraArgs configmap is not an argument the controller values may pass'],
+	['arguments that are not a map', (v) => { v.controller.extraArgs = ['--enable-annotation-validation=false']; }, 'controller.extraArgs must be a map'],
+	['the controller ConfigMap read from another namespace', (v) => { v.controller.configMapNamespace = 'site-shared'; }, 'controller.configMapNamespace is set:'],
+	['a custom nginx template', (v) => { v.controller.customTemplate = { configMapName: 'site-nginx-template', configMapKey: 'nginx.tmpl' }; }, 'controller.customTemplate names a ConfigMap'],
+	['a custom nginx template key alone', (v) => { v.controller.customTemplate = { configMapName: '', configMapKey: 'nginx.tmpl' }; }, 'controller.customTemplate names a ConfigMap'],
+	['Secrets read across namespaces', (v) => { v.controller.config['allow-cross-namespace-resources'] = 'true'; }, 'controller.config allow-cross-namespace-resources is true:'],
+	['Secrets read across namespaces with the key in capitals (the key rule takes it since review round 4)', (v) => { v.controller.config['Allow-Cross-Namespace-Resources'] = 'T'; },
+		'controller.config "Allow-Cross-Namespace-Resources" is not a ConfigMap key of lowercase letters'],
+	// Review round 4: the values read as the ingress-nginx chart renders them: a template in a ConfigMap value (tpl), a key that is
+	// not a plain name (written unquoted), a line break in an argument or any other setting under controller (written unquoted),
+	// and a default certificate that is not a namespace/name.
+	['a template in a controller setting that renders a mirror', (v) => { v.controller.config['location-snippet'] = '{{ printf "%s%s" "mir" "ror" }} /ariva-copy;'; },
+		'controller.config location-snippet holds "{{"'],
+	['a template in a controller setting that renders true', (v) => { v.controller.config['allow-cross-namespace-resources'] = '{{ "true" }}'; }, 'controller.config allow-cross-namespace-resources holds "{{"'],
+	['a ConfigMap key that writes a second key', (v) => { v.controller.config['x-ariva: "1"\nglobal-auth-url'] = 'https://auth.site.example/verify'; },
+		'controller.config "x-ariva: \\"1\\"\\nglobal-auth-url" is not a ConfigMap key of lowercase letters'],
+	['a line break in an argument value that adds arguments', (v) => { v.controller.extraArgs = { 'default-ssl-certificate': 'ns/x\n- --enable-annotation-validation=false\n- --configmap=other/site-config' }; },
+		'controller.extraArgs.default-ssl-certificate holds a line break'],
+	['a line break in an argument key', (v) => { v.controller.extraArgs = { 'annotations-prefix\n- --configmap=other/site-config': 'nginx.ingress.kubernetes.io' }; },
+		'controller.extraArgs key "annotations-prefix\\n- --configmap=other/site-config" holds a line break'],
+	['a line break in the election id', (v) => { v.controller.electionID = 'ingress-nginx-leader\n- --configmap=other/site-config'; }, 'controller.electionID holds a line break'],
+	// Review round 5: the walk starts at the document root (the chart writes fullnameOverride and the other top-level names
+	// unquoted too), and a Unicode line separator counts (written as the escape \u2028 here, never as the character).
+	['a line break in a top-level setting', (v) => { v.fullnameOverride = 'ingress-nginx\n- --configmap=other/site-config'; }, 'fullnameOverride holds a line break'],
+	['a Unicode line separator in the election id', (v) => { v.controller.electionID = 'ingress-nginx-leader\u2028- --configmap=other/site-config'; }, 'controller.electionID holds a line break'],
+	['a default certificate that is not a namespace and name', (v) => { v.controller.extraArgs = { 'default-ssl-certificate': 'site-default-tls' }; },
+		'controller.extraArgs default-ssl-certificate is not a namespace/name of a Secret'],
+	['a location-snippet that lets either check pass', (v) => { v.controller.config['location-snippet'] = 'satisfy any;'; }, 'location-snippet writes satisfy:'],
+	['a server-snippet with a single-quoted satisfy before a parenthesis', (v) => { v.controller.config['server-snippet'] = "'satisfy')any;"; }, 'server-snippet writes satisfy:']
 ];
 
 /** ARV-091: controller values the rules accept (each alone): the error levels from notice up, the switches off, harmless snippets. */
@@ -453,30 +562,146 @@ const CONTROLLER_ACCEPTED = [
 	// after a semicolon that only begin like a refused one, and an njs name glued to the closing quote (not a statement).
 	(v) => { v.controller.config.plugins = ''; },
 	(v) => { v.controller.config['main-snippet'] = 'worker_rlimit_nofile 65536;'; v.controller.config['stream-snippet'] = 'proxy_timeout 10m;'; },
-	(v) => { v.controller.config['http-snippet'] = 'more_set_headers "X-Note: max-age=1;includeSubDomains;perlish;load_modules;ssl_engines;lua_package_paths;js_note";'; }
+	(v) => { v.controller.config['http-snippet'] = 'more_set_headers "X-Note: max-age=1;includeSubDomains;perlish;load_modules;ssl_engines;lua_package_paths;js_note";'; },
+	// ARV-288a: global auth keys left empty, enable-global-auth false, and keys that only hold auth (no-auth-locations, the
+	// controller's default list of locations without external authentication).
+	(v) => { v.controller.config['global-auth-url'] = ''; v.controller.config['global-auth-snippet'] = ''; },
+	(v) => { v.controller.config['enable-global-auth'] = 'false'; },
+	(v) => { v.controller.config['no-auth-locations'] = '/.well-known/acme-challenge'; },
+	// ARV-288a, review round 1: directives that only begin like a refused one; custom-http-errors empty; the default backend off;
+	// the default annotations prefix given explicitly, beside an argument that only begins like a refused one; validation on.
+	(v) => { v.controller.config['location-snippet'] = 'proxy_pass_header X-Request-Id;\nmirror_request_body off;\nauth_request_set $site_user $upstream_http_x_user;'; },
+	(v) => { v.controller.config['custom-http-errors'] = ''; },
+	(v) => { v.defaultBackend = { enabled: false }; },
+	(v) => { v.controller.extraArgs = { 'annotations-prefix': 'nginx.ingress.kubernetes.io', 'default-ssl-certificate': 'ingress-nginx/site-default-tls' }; },
+	// Review round 2: validation on in the chart value and as an argument; the word satisfy inside a header's text.
+	(v) => { v.controller.enableAnnotationValidations = true; v.controller.extraArgs = { 'enable-annotation-validation': 'true' }; },
+	(v) => { v.controller.config['location-snippet'] = 'more_set_headers "X-Note: satisfy any";'; },
+	// Review round 3: allowed arguments in both spellings, the bare validation flag (a boolean flag reads true), the default backend
+	// at a value the chart reads as false, the namespace and template left empty, Secrets of the Ingress's own namespace only.
+	(v) => { v.controller.extraArgs = { 'default-ssl-certificate=ingress-nginx/site-default-tls': '', 'annotations-prefix=nginx.ingress.kubernetes.io': '' }; },
+	(v) => { v.controller.extraArgs = { 'enable-annotation-validation': '' }; },
+	(v) => { v.defaultBackend = { enabled: 0 }; },
+	(v) => { v.controller.configMapNamespace = ''; v.controller.customTemplate = { configMapName: '', configMapKey: '' }; },
+	(v) => { v.controller.config['allow-cross-namespace-resources'] = 'false'; },
+	// Review round 4: a snippet over several lines (the chart quotes ConfigMap values) and a single brace in a value (no template).
+	(v) => { v.controller.config['http-snippet'] = 'client_body_buffer_size 16k;\nclient_header_timeout 30s;'; v.controller.config['location-snippet'] = 'more_set_headers "X-Note: {site}";'; }
+];
+
+/**
+ * ARV-288a (review round 5): changes made to the controller values as YAML text, so that the parse is what is tested: Helm reads a
+ * values file as YAML 1.1, so an unquoted on, yes or Y is true (and the chart writes "true"), which the rule for its key and the
+ * rule that every ConfigMap value be a string each refuse: [label, the line added under controller.config, the two rules].
+ */
+const CONTROLLER_TEXT_CASES = [
+	['Secrets read across namespaces by an unquoted on', 'allow-cross-namespace-resources: on', ['controller.config allow-cross-namespace-resources is true:', 'allow-cross-namespace-resources must be a string']],
+	['the controller\'s OpenTelemetry on by an unquoted yes', 'enable-opentelemetry: yes', ['enable-opentelemetry is true:', 'enable-opentelemetry must be a string']],
+	["nginx's log escaping off by an unquoted Y", 'log-format-escape-none: Y', ['log-format-escape-none is true:', 'log-format-escape-none must be a string']]
+];
+
+/**
+ * ARV-288a (review round 6): the controller values judged as text and as values: valuesTextFindings on the text (YAML 1.1 with no
+ * tag, directive, anchor, second document, byte order mark, key that is not text or unquoted value but true, false and a whole
+ * number), then, when it parses as one document, controllerValuesFindings on the values as Helm reads them (parseValues).
+ */
+function controllerTextFindings(text) {
+	const found = valuesTextFindings(text);
+	let values;
+	try {
+		values = parseValues(text);
+	} catch {
+		return found;
+	}
+	return [...found, ...controllerValuesFindings(values)];
+}
+
+const base64 = (text) => Buffer.from(text).toString('base64');
+const inController = (line) => (text) => text.replace('\ncontroller:\n', `\ncontroller:\n  ${line}\n`);
+const inConfig = (line) => (text) => text.replace('\n  config:\n', `\n  config:\n    ${line}\n`);
+const atRoot = (line) => (text) => `${line}\n${text}`;
+
+/**
+ * ARV-288a (review round 6): changes made to the controller values as YAML text, judged by controllerTextFindings, each giving
+ * exactly its findings: [label, the change to the text, the findings]. A tagged value (!!binary, !!set, !!omap) is refused as text
+ * (its tag) and as a value (binary, a Set or a Map the walk or the argument loop does not read into), a site's own tag by the
+ * tag rule alone; and each other way a YAML 1.1 reader can part from this check's (a directive, a second document, a byte order
+ * mark, a key that is not text, an anchor and an alias, a duplicate key, an unquoted value) is refused, a leading document marker
+ * and the text !!binary inside a quoted value accepted.
+ */
+const CONTROLLER_TEXT_FORM_CASES = [
+	['!!binary in the default certificate argument', inController(`extraArgs: {default-ssl-certificate: !!binary ${base64('ns/x\n- --enable-annotation-validation=false\n- --configmap=other/site-config')}}`),
+		['controller.extraArgs.default-ssl-certificate carries the YAML tag tag:yaml.org,2002:binary', 'controller.extraArgs.default-ssl-certificate is a binary value']],
+	['!!binary in the election id', inController(`electionID: !!binary ${base64('x\n- --configmap=other/site-config')}`),
+		['controller.electionID carries the YAML tag tag:yaml.org,2002:binary', 'controller.electionID is a binary value']],
+	['!!set in the election id', inController('electionID: !!set {"x\\n- --enable-annotation-validation=false"}'),
+		['controller.electionID carries the YAML tag tag:yaml.org,2002:set', 'controller.electionID is a Set']],
+	['!!omap at the root', atRoot('fullnameOverride: !!omap [{a: "x"}]'), ['fullnameOverride carries the YAML tag tag:yaml.org,2002:omap', 'fullnameOverride is a Map']],
+	["a tag of the site's own", inController('electionID: !site "ingress-nginx-leader"'), ['controller.electionID carries the YAML tag !site']],
+	['a %YAML directive', (text) => `%YAML 1.1\n---\n${text}`, ['holds a YAML directive']],
+	['a %TAG directive', (text) => `%TAG !e! tag:example.com,2000:\n---\n${text}`, ['holds a YAML directive']],
+	['a second document', (text) => `${text}\n---\ncontroller:\n  config:\n    global-auth-url: "https://auth.site.example/verify"\n`, ['holds 2 YAML documents']],
+	['a byte order mark', (text) => `\uFEFF${text}`, ['holds a byte order mark']],
+	['on as a key', atRoot('on: "x"'), ['the root has a key that is not plain text ("on")']],
+	['an anchor and an alias', atRoot('nameOverride: &name "ingress-nginx"\nfullnameOverride: *name'), ['nameOverride carries an anchor (&name)', 'fullnameOverride is an alias (*name)']],
+	['a duplicate key', inConfig('ssl-session-tickets: "true"'), ['does not parse as YAML 1.1']],
+	['an octal number written with 0o', (text) => text.replace('hsts-max-age: "31536000"', 'hsts-max-age: 0o170250600'), ['controller.config.hsts-max-age is written unquoted']],
+	['a timestamp in the election id', inController('electionID: 2001-12-14t21:59:43.10-05:00'), ['controller.electionID is written unquoted', 'controller.electionID is a Date']],
+	['an empty value', inConfig('global-auth-url:'), ['controller.config.global-auth-url is written unquoted', 'controller.config global-auth-url must be a string']],
+	['a merge key that brings in global authentication', inConfig('<<: {global-auth-url: "https://auth.site.example/verify"}'),
+		['controller.config has a merge key (<<)', 'controller.config global-auth-url is set:']],
+	['a folded block', inConfig('location-snippet: >\n      more_set_headers "X-Note: 1";'), ['controller.config.location-snippet is a folded block (>)']],
+	['an escaped line separator in a quoted election id', inController('electionID: "ingress-nginx-leader\\L- --configmap=other/site-config"'), ['controller.electionID holds a line break']]
+];
+
+/** ARV-288a (review round 6): changes to the text that read the same in Helm and here, so nothing is found. */
+const CONTROLLER_TEXT_FORM_ACCEPTED = [
+	['a leading document marker', (text) => `---\n${text}`],
+	['the text !!binary inside a quoted value', inController('electionID: "ingress-nginx-leader !!binary"')],
+	['a literal block over several lines', inConfig('location-snippet: |\n      more_set_headers "X-Note: 1";\n      client_body_buffer_size 16k;')]
 ];
 
 function controllerValuesSelfTest() {
 	const failures = [];
 	const text = fs.readFileSync(CONTROLLER_VALUES, 'utf8');
-	const shipped = controllerValuesFindings(parseYaml(text));
+	const shipped = [...valuesTextFindings(text), ...controllerValuesFindings(parseValues(text))];
 	if (shipped.length) failures.push(`Helm/ingress-nginx-values.yaml:\n   ${shipped.join('\n   ')}`);
 	// ARV-091: the shipped format is ingress-nginx 1.15's default with the request line written without its query string, and nothing else changed.
 	const expectedFormat = INGRESS_LOG_FORMAT.controllerDefault.replace('"$request"', `"${INGRESS_LOG_FORMAT.requestLine}"`);
-	if (parseYaml(text).controller?.config?.['log-format-upstream'] !== expectedFormat) failures.push(`Helm/ingress-nginx-values.yaml: log-format-upstream is not ingress-nginx 1.15's default with "${INGRESS_LOG_FORMAT.requestLine}" for "$request" (${expectedFormat})`);
+	if (parseValues(text).controller?.config?.['log-format-upstream'] !== expectedFormat) failures.push(`Helm/ingress-nginx-values.yaml: log-format-upstream is not ingress-nginx 1.15's default with "${INGRESS_LOG_FORMAT.requestLine}" for "$request" (${expectedFormat})`);
 	for (const [label, change, rule] of CONTROLLER_CASES) {
-		const values = parseYaml(text);
+		const values = parseValues(text);
 		change(values);
 		const found = controllerValuesFindings(values);
 		if (found.length !== 1 || !found[0].includes(rule)) failures.push(`controller values with ${label} must trip "${rule}" alone, tripped ${found.length ? found.join(' | ') : 'nothing'}`);
 	}
+	for (const [label, line, rules] of CONTROLLER_TEXT_CASES) {
+		if (text.split('\n  config:\n').length !== 2) {
+			failures.push('Helm/ingress-nginx-values.yaml: the controller text cases need one "  config:" line under controller');
+			break;
+		}
+		const found = controllerValuesFindings(parseValues(text.replace('\n  config:\n', `\n  config:\n    ${line}\n`)));
+		if (!exactly(found, rules)) failures.push(`controller values written with ${label} must trip "${rules.join('" and "')}" and nothing else, tripped ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	for (const [label, change, rules] of CONTROLLER_TEXT_FORM_CASES) {
+		const changed = change(text);
+		if (changed === text) {
+			failures.push(`controller values written with ${label}: the change did not apply to Helm/ingress-nginx-values.yaml`);
+			continue;
+		}
+		const found = controllerTextFindings(changed);
+		if (!exactly(found, rules)) failures.push(`controller values written with ${label} must trip "${rules.join('" and "')}" and nothing else, tripped ${found.length ? found.join(' | ') : 'nothing'}`);
+	}
+	for (const [label, change] of CONTROLLER_TEXT_FORM_ACCEPTED) {
+		const found = controllerTextFindings(change(text));
+		if (found.length) failures.push(`accepted controller values written with ${label} produced findings: ${found.join(' | ')}`);
+	}
 	CONTROLLER_ACCEPTED.forEach((change, index) => {
-		const values = parseYaml(text);
+		const values = parseValues(text);
 		change(values);
 		const found = controllerValuesFindings(values);
 		if (found.length) failures.push(`accepted controller values ${index} produced findings: ${found.join(' | ')}`);
 	});
-	return { failures, count: CONTROLLER_CASES.length, accepted: CONTROLLER_ACCEPTED.length };
+	return { failures, count: CONTROLLER_CASES.length + CONTROLLER_TEXT_CASES.length + CONTROLLER_TEXT_FORM_CASES.length, accepted: CONTROLLER_ACCEPTED.length + CONTROLLER_TEXT_FORM_ACCEPTED.length };
 }
 
 /** Each expected substring matches its own finding, and nothing else was found. */
@@ -548,7 +773,7 @@ const NETWORK_POLICY_CASES = [
 function networkPolicySelfTest() {
 	const failures = [];
 	const read = () => parseAsKubernetes(fixture('network-policy-good.yaml'));
-	const values = parseYaml(fixture('network-policy-expected.yaml'));
+	const values = parseValues(fixture('network-policy-expected.yaml'));
 	const options = { enabled: true, environment: 'k8s-prd', values };
 	const clean = networkPolicyFindings(read(), options);
 	if (clean.length) failures.push(`the good network policy fixture produced findings:\n   ${clean.join('\n   ')}`);
@@ -583,7 +808,12 @@ const INGRESS_PRIVACY_CASES = [
 	// ARV-288: the rendered Ingresses are held to what validate.yaml refuses in every environment (INGRESS_REFUSED_DIRECTIVES).
 	['snippet-include', 'configuration-snippet writes include:'], ['snippet-quoted-include', 'configuration-snippet writes include:'],
 	['snippet-body-in-file', 'configuration-snippet writes client_body_in_file_only:'], ['snippet-lua', 'configuration-snippet writes a *_by_lua directive:'],
-	['snippet-rewrite-log', 'server-snippet writes rewrite_log:']
+	['snippet-rewrite-log', 'server-snippet writes rewrite_log:'],
+	// ARV-288a: no rendered Ingress sets an external authentication annotation, the key read in any case.
+	['external-auth-url', 'sets nginx.ingress.kubernetes.io/auth-url, an ingress-nginx authentication annotation the chart refuses'],
+	['external-auth-capitals', 'sets NGINX.Ingress.Kubernetes.IO/Auth-Signin, an ingress-nginx authentication annotation the chart refuses'],
+	// ARV-288a, review round 1: no rendered Ingress sets custom-http-errors or default-backend.
+	['error-backend', 'sets nginx.ingress.kubernetes.io/custom-http-errors: with custom-http-errors an error answer is proxied again']
 	];
 const PRODUCTION_ONLY_PRIVACY = ['allowlist-everyone', 'allowlist-ipv6-everyone', 'cronz-open'];
 
@@ -604,6 +834,42 @@ function ingressPrivacySelfTest() {
 		if (stray.length) failures.push(`ingress privacy findings outside the cases:\n   ${stray.join('\n   ')}`);
 	}
 	return { failures, count: INGRESS_PRIVACY_CASES.length };
+}
+
+/**
+ * ARV-288a (security review round 1): the authentication annotation rule (externalAuthAnnotation, the same patterns as
+ * validate.yaml's) on keys either side of its boundary, so a dropped "$" (auth-secret-url, auth-tls-secret-url) or a relaxed list of
+ * client certificate keys (auth-tls, auth-tls-, auth-tls-error-page) fails here: [key, refused].
+ */
+const EXTERNAL_AUTH_KEYS = [
+	['nginx.ingress.kubernetes.io/auth-url', true], ['NGINX.Ingress.Kubernetes.IO/Auth-URL', true], ['nginx.ingress.kubernetes.io/auth-snippet', true],
+	['nginx.ingress.kubernetes.io/auth-secret-url', true], ['nginx.ingress.kubernetes.io/auth-type-url', true], ['nginx.ingress.kubernetes.io/auth-realm-x', true],
+	['nginx.ingress.kubernetes.io/auth-tls', true], ['nginx.ingress.kubernetes.io/auth-tls-', true], ['nginx.ingress.kubernetes.io/auth-tls-error-page', true],
+	['nginx.ingress.kubernetes.io/auth-tls-secret-url', true], ['nginx.ingress.kubernetes.io/auth-tlsx', true],
+	['nginx.ingress.kubernetes.io/auth-tls-secret', false], ['nginx.ingress.kubernetes.io/auth-tls-verify-client', false], ['nginx.ingress.kubernetes.io/auth-tls-verify-depth', false],
+	['nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream', false], ['nginx.ingress.kubernetes.io/auth-tls-match-cn', false],
+	['NGINX.INGRESS.KUBERNETES.IO/AUTH-TLS-SECRET', false], ['nginx.ingress.kubernetes.io/auth-type', false], ['nginx.ingress.kubernetes.io/auth-secret', false],
+	['nginx.ingress.kubernetes.io/auth-secret-type', false], ['nginx.ingress.kubernetes.io/auth-realm', false], ['nginx.ingress.kubernetes.io/enable-global-auth', false],
+	['site.example/auth-url', false], ['nginx.ingress.kubernetes.io/x-auth-note', false]
+];
+
+/**
+ * ARV-288a (security review round 2, advisory): INGRESS_ERROR_BACKEND.annotations matches the two keys as whole names under the
+ * ingress-nginx prefix, in any case: a longer key that only begins like one (default-backend-x, custom-http-errors-x), one under
+ * another prefix or one with text before the prefix is not this rule's, so a dropped "$" or "^" fails here: [key, refused].
+ */
+const ERROR_BACKEND_KEYS = [
+	['nginx.ingress.kubernetes.io/custom-http-errors', true], ['nginx.ingress.kubernetes.io/default-backend', true], ['NGINX.Ingress.Kubernetes.IO/Default-Backend', true],
+	['nginx.ingress.kubernetes.io/default-backend-x', false], ['nginx.ingress.kubernetes.io/custom-http-errors-x', false],
+	['site.example/custom-http-errors', false], ['x.nginx.ingress.kubernetes.io/default-backend', false], ['nginx.ingress.kubernetes.io/disable-proxy-intercept-errors', false]
+];
+
+function externalAuthKeysSelfTest() {
+	const failures = [
+		...EXTERNAL_AUTH_KEYS.filter(([key, refused]) => externalAuthAnnotation(key) !== refused).map(([key, refused]) => `externalAuthAnnotation(${key}) must be ${refused}`),
+		...ERROR_BACKEND_KEYS.filter(([key, refused]) => INGRESS_ERROR_BACKEND.annotations.test(key) !== refused).map(([key, refused]) => `INGRESS_ERROR_BACKEND.annotations on ${key} must be ${refused}`)
+	];
+	return { failures, count: EXTERNAL_AUTH_KEYS.length + ERROR_BACKEND_KEYS.length };
 }
 
 /**
@@ -1675,6 +1941,7 @@ function selfTest() {
 	const controller = controllerValuesSelfTest();
 	const network = networkPolicySelfTest();
 	const privacy = ingressPrivacySelfTest();
+	const authKeys = externalAuthKeysSelfTest();
 	const proxies = forwardedHeadersSelfTest();
 	const hubs = hubRefusalSelfTest();
 	const logs = logShippingSelfTest();
@@ -1686,7 +1953,7 @@ function selfTest() {
 	const credentials = releaseCredentialSelfTest();
 	const webCertificate = webCertificateSelfTest();
 	const backups = backupSelfTest();
-	const others = [...credentials.failures, ...webCertificate.failures, ...backups.failures, ...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
+	const others = [...credentials.failures, ...webCertificate.failures, ...backups.failures, ...tls.failures, ...podTls.failures, ...webImage, ...webRoot.failures, ...hardening.failures, ...controller.failures, ...network.failures, ...privacy.failures, ...authKeys.failures, ...proxies.failures, ...hubs.failures, ...logs.failures,
 		...collectorCas.failures, ...scanning.failures, ...instances.failures, ...logins.failures, ...credentials83b.failures];
 	if (good.length || missing.length || others.length) {
 		console.error('chart-security self-test FAILED');
@@ -1697,6 +1964,7 @@ function selfTest() {
 	}
 	console.log(`chart-security self-test: ${expected.length} rules fire on the bad fixture, ${tls.count} TimescaleDB TLS rules on the TLS fixtures, ${podTls.count} pod TLS rules ` +
 		`on the pod TLS fixtures, ${hardening.count} ingress hardening rules and ${privacy.count} private probe and source range rules on theirs (each bad case trips exactly its rule), ` +
+		`${authKeys.count} annotation keys judged as the external authentication and error backend rules must (ARV-288a), ` +
 		`${hubs.count} live hub refusal cases on the chart's server-snippet (each tripping exactly its rule), ` +
 		`${network.count} network policy cases, ${proxies.count} trusted proxy cases, ${logs.count} log shipping cases, ${collectorCas.count} collector CA cases, ${scanning.count} malware scanner cases ${instances.count} instance id cases, ${logins.count} host database login cases, ${credentials83b.count} host Kafka, Redis and migration credential cases, ${credentials.count} release credential cases, ${webCertificate.count} web certificate cases and ${backups.count} scheduled backup cases each giving exactly their findings (the chart's ariva-db.sh the repository's); the good fixtures are clean; the web image takes ` +
 		`its listener from ${POD_TLS.webListen} and keeps no nginx configuration in its web root (${webRoot.count} cases); the shipped controller values (Helm/ingress-nginx-values.yaml) hold every rule, their access log format is ingress-nginx 1.15's ` +
@@ -1733,7 +2001,7 @@ function monitoringEnvironment(docs, environment) {
 
 /** ARV-111a: the retention periods the values give (values.yaml under the environment's file), by key. */
 function retentionValues(valuesFile) {
-	const read = (file) => parseAllDocuments(fs.readFileSync(path.join(chart, file), 'utf8'))[0].toJS()?.migration?.retention ?? {};
+	const read = (file) => parseAllDocuments(fs.readFileSync(path.join(chart, file), 'utf8'), { version: '1.1' })[0].toJS()?.migration?.retention ?? {};
 	return { ...read('values.yaml'), ...read(valuesFile) };
 }
 
@@ -1755,7 +2023,7 @@ function mergedValues(files, { prdSite = true } = {}) {
 		}
 		return out;
 	};
-	const read = (file) => (typeof file === 'object' ? file : parseYaml(fs.readFileSync(path.isAbsolute(file) ? file : path.join(chart, file), 'utf8')) ?? {});
+	const read = (file) => (typeof file === 'object' ? file : parseValues(fs.readFileSync(path.isAbsolute(file) ? file : path.join(chart, file), 'utf8')) ?? {});
 	// ARV-092c: a render of values-k8s-prd.yaml carries the site's signature source (PRD_SITE), unless the caller gives its own.
 	const listed = files.flatMap((file) => (prdSite && file === 'values-k8s-prd.yaml' ? [file, PRD_SITE] : [file]));
 	return ['values.yaml', ...listed].map(read).reduce((a, b) => merge(a, b), {});
@@ -2065,8 +2333,8 @@ for (const [label, sets, expected] of [
 
 // ARV-232: the two charts' defaults name the same server limit (the platform chart counts against what the database chart sets).
 {
-	const platformLimit = parseYaml(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8')).databaseConnections?.serverMaxConnections;
-	const databaseLimit = parseYaml(fs.readFileSync(path.join(databaseChart, 'values.yaml'), 'utf8')).maxConnections;
+	const platformLimit = parseValues(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8')).databaseConnections?.serverMaxConnections;
+	const databaseLimit = parseValues(fs.readFileSync(path.join(databaseChart, 'values.yaml'), 'utf8')).maxConnections;
 	if (platformLimit !== databaseLimit || !Number.isInteger(platformLimit)) {
 		failed = true;
 		console.error(`FAIL database connection defaults: the platform chart's databaseConnections.serverMaxConnections (${platformLimit}) is not the timescaledb chart's maxConnections (${databaseLimit})`);
@@ -2110,7 +2378,7 @@ for (const [label, sets, accepted] of [
 	else {
 		const docs = parse(result.stdout);
 		const expected = { 'api-main': '17', 'api-ingest': undefined, 'api-stream': '9', 'api-cronz': undefined, 'api-integration': undefined };
-		const values = parseAllDocuments(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8'))[0].toJS().databaseConnections.poolSize;
+		const values = parseAllDocuments(fs.readFileSync(path.join(chart, 'values.yaml'), 'utf8'), { version: '1.1' })[0].toJS().databaseConnections.poolSize;
 		for (const [deployment, pool] of Object.entries(expected)) {
 			const container = docs.find((doc) => doc.kind === 'Deployment' && doc.metadata?.name === `${deployment}-deployment`)?.spec?.template?.spec?.containers?.find((c) => c.name === `${deployment}-container`);
 			const value = container?.env?.find((variable) => variable.name === 'Database__MaxPoolSize')?.value;
@@ -2487,19 +2755,20 @@ for (const [label, file, sets, message, annotation] of [
 	['a configuration-snippet with a uwsgi cache', 'values-k8s-dev.yaml', [], 'configuration-snippet names proxy_cache, proxy_cache_path or proxy_store (or the fastcgi_, uwsgi_ or scgi_ one)',
 		'configuration-snippet: "uwsgi_cache site;"'],
 	// ARV-206, review round 1: a quoted name followed by ")" (nginx reads ")" as the next argument's start, so this stores every
-	// answer as a file), double quoted in production; a FastCGI cache in another annotation; the cache turned off (the name alone
-	// is refused); ingress-nginx's own auth cache, which its auth-cache-key and auth-cache-duration annotations turn on.
+	// answer as a file), double quoted in production; a FastCGI cache in another annotation (an auth-snippet until ARV-288a, which
+	// refuses that key itself); the cache turned off (the name alone is refused); ingress-nginx's own auth cache, which its
+	// auth-cache-key and auth-cache-duration annotations turn on (since ARV-288a refused with the other external authentication keys).
 	['a configuration-snippet that stores answers through a quoted name before a parenthesis', 'values-k8s-dev.yaml', [], 'configuration-snippet names proxy_cache, proxy_cache_path or proxy_store',
 		"configuration-snippet: \"'proxy_store')$uri;\""],
 	['a server-snippet with a double-quoted proxy_cache before a parenthesis in production', 'values-k8s-prd.yaml', [PRD], 'server-snippet names proxy_cache, proxy_cache_path or proxy_store',
 		'server-snippet: "\\"proxy_cache\\")z;"'],
-	['an auth-snippet with a FastCGI cache', 'values-k8s-dev.yaml', [], 'auth-snippet names proxy_cache, proxy_cache_path or proxy_store (or the fastcgi_, uwsgi_ or scgi_ one)',
-		'auth-snippet: "fastcgi_cache site;"'],
+	['a stream-snippet annotation with a FastCGI cache', 'values-k8s-dev.yaml', [], 'stream-snippet names proxy_cache, proxy_cache_path or proxy_store (or the fastcgi_, uwsgi_ or scgi_ one)',
+		'stream-snippet: "fastcgi_cache site;"'],
 	['a configuration-snippet that turns the cache off', 'values-k8s-dev.yaml', [], 'configuration-snippet names proxy_cache, proxy_cache_path or proxy_store',
 		'configuration-snippet: "proxy_cache off;"'],
-	['an auth cache key', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-cache-key makes ingress-nginx cache the external authentication answers',
+	['an auth cache key', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-cache-key is an ingress-nginx authentication annotation the chart refuses',
 		'auth-cache-key: "$remote_user$http_authorization"'],
-	['an auth cache duration in production', 'values-k8s-prd.yaml', [PRD], 'nginx.ingress.kubernetes.io/auth-cache-duration makes ingress-nginx cache the external authentication answers',
+	['an auth cache duration in production', 'values-k8s-prd.yaml', [PRD], 'nginx.ingress.kubernetes.io/auth-cache-duration is an ingress-nginx authentication annotation the chart refuses',
 		'auth-cache-duration: "200 202 401 5m"'],
 	// ARV-284: the log, ModSecurity and rewrite guards read a name as nginx's tokenizer does (a quoted name followed by ")" is
 	// the name and the start of the next argument), log_format is refused with access_log and error_log, and no annotation
@@ -2544,13 +2813,68 @@ for (const [label, file, sets, message, annotation] of [
 		'configuration-snippet: "proxy_pass http://api-main-service:8080/health/readiness;"'],
 	['a server-snippet with a single-quoted proxy_pass before a parenthesis in the demo', 'values-k8s-demo.yaml', [], 'server-snippet writes a *_pass directive',
 		"server-snippet: \"location /copy { 'proxy_pass')http://site-copy.example; }\""],
-	['an auth-snippet that passes to FastCGI', 'values-k8s-dev.yaml', [], 'auth-snippet writes a *_pass directive', 'auth-snippet: "fastcgi_pass 127.0.0.1:9000;"'],
+	['a stream-snippet annotation that passes to FastCGI', 'values-k8s-dev.yaml', [], 'stream-snippet writes a *_pass directive', 'stream-snippet: "fastcgi_pass 127.0.0.1:9000;"'],
 	['a configuration-snippet that mirrors every request', 'values-k8s-dev.yaml', [], 'configuration-snippet writes a mirror directive', 'configuration-snippet: "mirror /copy;\\nmirror_request_body on;"'],
 	['a server-snippet with a quoted mirror in production', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes a mirror directive', "server-snippet: \"client_header_timeout 30s; 'mirror' /copy;\""],
 	['a mirror target annotation', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/mirror-target is refused: ingress-nginx\'s mirror annotations copy every request',
 		'mirror-target: "https://site-copy.example$request_uri"'],
 	['the rewrite log annotation', 'values-k8s-dev.yaml', [], 'enable-rewrite-log writes rewrite_log on in the Ingress\'s locations', 'enable-rewrite-log: "true"'],
 	['the rewrite log annotation in production', 'values-k8s-prd.yaml', [PRD], 'enable-rewrite-log writes rewrite_log on in the Ingress\'s locations', 'enable-rewrite-log: "true"'],
+	// ARV-288a: no ingress-nginx external authentication annotation, in any environment: every auth- key but the five documented
+	// auth-tls keys and basic authentication, refused by the key alone (each value below trips no other rule), the prefix and the
+	// name in any case; one case per key (the cache key and duration above are this rule's too).
+	['an external authentication URL', 'values-k8s-dev.yaml', [], 'ingresses api-main: nginx.ingress.kubernetes.io/auth-url is an ingress-nginx authentication annotation the chart refuses',
+		'auth-url: "https://auth.site.example/verify"'],
+	['an external authentication URL in capitals in production', 'values-k8s-prd.yaml', [PRD], 'ingresses api-main: NGINX.Ingress.Kubernetes.IO/Auth-URL is an ingress-nginx authentication annotation the chart refuses',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'NGINX.Ingress.Kubernetes.IO/Auth-URL': 'https://auth.site.example/verify' } })] }],
+	['an external sign-in in the demo', 'values-k8s-demo.yaml', [], 'nginx.ingress.kubernetes.io/auth-signin is an ingress-nginx authentication annotation the chart refuses',
+		'auth-signin: "https://auth.site.example/start?rd=$escaped_request_uri"'],
+	['an external sign-in redirect parameter', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-signin-redirect-param is an ingress-nginx authentication annotation the chart refuses', 'auth-signin-redirect-param: "rd"'],
+	['an external authentication method', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-method is an ingress-nginx authentication annotation the chart refuses', 'auth-method: "GET"'],
+	['headers sent to the external authentication in production', 'values-k8s-prd.yaml', [PRD], 'nginx.ingress.kubernetes.io/auth-proxy-set-headers is an ingress-nginx authentication annotation the chart refuses',
+		'auth-proxy-set-headers: "default/site-auth-headers"'],
+	['an external authentication request redirect', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-request-redirect is an ingress-nginx authentication annotation the chart refuses',
+		'auth-request-redirect: "https://web-test.site.example"'],
+	['headers taken from the external authentication answer in the demo', 'values-k8s-demo.yaml', [], 'nginx.ingress.kubernetes.io/auth-response-headers is an ingress-nginx authentication annotation the chart refuses',
+		'auth-response-headers: "X-Auth-User, X-Forwarded-For"'],
+	['an external authentication snippet', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-snippet is an ingress-nginx authentication annotation the chart refuses', 'auth-snippet: "proxy_set_header X-Site 1;"'],
+	['cookies always set from the external authentication', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-always-set-cookie is an ingress-nginx authentication annotation the chart refuses', 'auth-always-set-cookie: "true"'],
+	['keepalive to the external authentication', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-keepalive is an ingress-nginx authentication annotation the chart refuses', 'auth-keepalive: "10"'],
+	['keepalive variables shared with the external authentication in the demo', 'values-k8s-demo.yaml', [], 'nginx.ingress.kubernetes.io/auth-keepalive-share-vars is an ingress-nginx authentication annotation the chart refuses',
+		'auth-keepalive-share-vars: "true"'],
+	['keepalive requests to the external authentication', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-keepalive-requests is an ingress-nginx authentication annotation the chart refuses', 'auth-keepalive-requests: "1000"'],
+	['a keepalive timeout to the external authentication in production', 'values-k8s-prd.yaml', [PRD], 'nginx.ingress.kubernetes.io/auth-keepalive-timeout is an ingress-nginx authentication annotation the chart refuses',
+		'auth-keepalive-timeout: "60"'],
+	// ARV-288a, security review round 1: the allowed keys are whole names (a key that only begins like one is refused: a dropped
+	// "$" fails these), only the five documented client certificate keys are allowed (auth-tls-error-page, a redirect to a host the
+	// chart does not name, and a bare auth-tls or auth-tls- are refused: a relaxed list fails these), each beside allowed keys
+	// where it has them; no auth_request directive in an annotation value; no custom error pages or default backend; satisfy all only.
+	['an annotation that only begins like basic authentication', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-secret-url is an ingress-nginx authentication annotation the chart refuses',
+		'auth-secret-url: "https://auth.site.example"'],
+	['an annotation that only begins like a client certificate key', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-tls-secret-url is an ingress-nginx authentication annotation the chart refuses',
+		'auth-tls-secret-url: "https://auth.site.example"'],
+	['a bare auth-tls annotation', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-tls is an ingress-nginx authentication annotation the chart refuses', 'auth-tls: "x"'],
+	['an auth-tls- annotation without a name', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/auth-tls- is an ingress-nginx authentication annotation the chart refuses', 'auth-tls-: "x"'],
+	['a client certificate error page on another host in production', 'values-k8s-prd.yaml', [PRD], 'nginx.ingress.kubernetes.io/auth-tls-error-page is an ingress-nginx authentication annotation the chart refuses',
+		{ ingresses: [ingressEntry('api-ingest', 'api-ingest-service', 'api-ingest-test', { annotations: { 'nginx.ingress.kubernetes.io/auth-tls-secret': 'default/site-device-ca',
+			'nginx.ingress.kubernetes.io/auth-tls-verify-client': 'on', 'nginx.ingress.kubernetes.io/auth-tls-error-page': 'https://elsewhere.site.example/x' } })] }],
+	['a configuration-snippet with an authentication subrequest', 'values-k8s-dev.yaml', [], 'configuration-snippet writes an auth_request directive', 'configuration-snippet: "auth_request /ariva-auth;"'],
+	['a server-snippet with a single-quoted auth_request in production', 'values-k8s-prd.yaml', [PRD], 'server-snippet writes an auth_request directive',
+		"server-snippet: \"client_header_timeout 30s; 'auth_request' /ariva-auth;\""],
+	['custom error pages', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/custom-http-errors is refused: with custom-http-errors ingress-nginx proxies every request answered with one of its codes again',
+		'custom-http-errors: "401,403,404"'],
+	['custom error pages in capitals in the demo', 'values-k8s-demo.yaml', [], 'NGINX.Ingress.Kubernetes.IO/Custom-HTTP-Errors is refused: with custom-http-errors',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'NGINX.Ingress.Kubernetes.IO/Custom-HTTP-Errors': '404' } })] }],
+	['a default backend in production', 'values-k8s-prd.yaml', [PRD], 'nginx.ingress.kubernetes.io/default-backend is refused: with custom-http-errors', 'default-backend: "api-integration-service"'],
+	['satisfy any in production', 'values-k8s-prd.yaml', [PRD], 'nginx.ingress.kubernetes.io/satisfy is refused unless it is all', 'satisfy: "any"'],
+	['satisfy any with the key in capitals', 'values-k8s-dev.yaml', [], 'NGINX.Ingress.Kubernetes.IO/Satisfy is refused unless it is all',
+		{ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'NGINX.Ingress.Kubernetes.IO/Satisfy': 'Any' } })] }],
+	// Review round 2: nor a satisfy directive in a snippet, plain on the Cronz dashboard with basic authentication and its source
+	// range in production (the case that would open it with a password), and quoted in dev.
+	['a configuration-snippet that lets a password past the Cronz source range in production', 'values-k8s-prd.yaml', [PRD], 'configuration-snippet writes a satisfy directive',
+		{ ingresses: [ingressEntry('api-cronz', 'api-cronz-service', 'api-cronz-test', { plainHttp: 'redirect', sourceRanges: ['10.10.0.0/24'], annotations: {
+			'nginx.ingress.kubernetes.io/auth-type': 'basic', 'nginx.ingress.kubernetes.io/auth-secret': 'default/site-dashboard-users', 'nginx.ingress.kubernetes.io/configuration-snippet': 'satisfy any;' } })] }],
+	['a configuration-snippet with a single-quoted satisfy', 'values-k8s-dev.yaml', [], 'configuration-snippet writes a satisfy directive', "configuration-snippet: \"'satisfy' any;\""],
 	['a site annotation that turns OpenTelemetry on for the live hub', 'values-k8s-dev.yaml', [], 'nginx.ingress.kubernetes.io/enable-opentelemetry is set by the chart',
 		{ ingresses: [ingressEntry('web-hubs', 'api-main-service', 'web-test', { tokenInQuery: true, paths: ['/hubs'], annotations: { 'nginx.ingress.kubernetes.io/enable-opentelemetry': 'true' } })] }],
 	['the Ingresses of one host with different server-snippets', 'values-k8s-dev.yaml', [], 'the Ingresses of host api-integration-test carry different server-snippet annotations',
@@ -2848,6 +3172,85 @@ for (const [label, file, sets, message, annotation] of [
 		console.error(`FAIL near-miss site snippets:\n  ${findings.join('\n  ')}`);
 	} else {
 		console.log('PASS near-miss site snippets: error_page, log_subrequest, mirror_request_body, proxy_pass_header, SecUploadFileLimit, an argument named execution and names in a header\'s text after a semicolon render in dev and production and the rendered checks find nothing');
+	}
+}
+
+// ARV-288a: the external authentication refusal names the annotation and the Ingress and never repeats the value (a site's auth
+// URL can carry a credential of its own), in dev and in production.
+{
+	const findings = [];
+	const value = 'https://auth.site.example/verify?client_secret=planted-288a';
+	for (const [file, sets, environment] of [['values-k8s-dev.yaml', [], 'k8s-dev'], ['values-k8s-prd.yaml', [PRD], 'k8s-prd']]) {
+		const result = render(file, sets, '', [valuesFile({ ingresses: [ingressEntry('api-main', 'api-main-service', 'api-main-test', { annotations: { 'nginx.ingress.kubernetes.io/auth-url': value } })] })]);
+		if (result.status === 0) findings.push(`${environment}: an auth-url rendered`);
+		else {
+			if (!result.stderr.includes('ingresses api-main: nginx.ingress.kubernetes.io/auth-url is an ingress-nginx authentication annotation the chart refuses')) findings.push(`${environment}: the refusal does not name the annotation and the Ingress:\n${result.stderr}`);
+			if (result.stderr.includes('planted-288a') || result.stderr.includes('auth.site.example')) findings.push(`${environment}: the refusal repeats the annotation's value`);
+		}
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL external authentication refusal message:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log('PASS external authentication refusal message: it names the annotation and the Ingress and never the value, in dev and production');
+	}
+}
+
+// ARV-288a: an accepted site render whose annotation names only hold auth. On api-ingest the five client certificate keys a site
+// that pins device certificates sets (auth-tls-secret, auth-tls-verify-client, auth-tls-verify-depth,
+// auth-tls-pass-certificate-to-upstream, auth-tls-match-cn; wiki 04 section 5), enable-global-auth "false" (auth inside the name, not
+// at its start; it only turns the controller's global authentication off for the Ingress), a site's own annotations under its own
+// prefix (site.example/auth-owner, site.example/default-backend) and, since the review round 1, an auth_request_set in its
+// configuration-snippet (a name that only begins like auth_request) and, since round 2, the word satisfy inside a header's text
+// there (not a statement); on the Cronz dashboard basic authentication against a Secret
+// (auth-type, auth-secret, auth-secret-type, auth-realm) with satisfy all, a boundary pin and not a recommendation. It pins the
+// boundaries of the authentication, error backend and satisfy rules (validate.yaml, externalAuthAnnotation and INGRESS_ERROR_BACKEND
+// in tests/checks.mjs): the ingress-nginx prefix, auth- at the start of the name, the allowed keys, and all. It renders in dev and in
+// production, the annotations reach the Ingresses as given (a snippet after the chart's own), and the rendered checks find nothing.
+{
+	const findings = [];
+	const ingest = {
+		'nginx.ingress.kubernetes.io/auth-tls-secret': 'default/site-device-ca',
+		'nginx.ingress.kubernetes.io/auth-tls-verify-client': 'optional_no_ca',
+		'nginx.ingress.kubernetes.io/auth-tls-verify-depth': '2',
+		'nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream': 'true',
+		'nginx.ingress.kubernetes.io/auth-tls-match-cn': 'CN=sensor-[a-z0-9]+',
+		'nginx.ingress.kubernetes.io/enable-global-auth': 'false',
+		'nginx.ingress.kubernetes.io/configuration-snippet': 'auth_request_set $site_device $ssl_client_s_dn;\nmore_set_headers "X-Note: satisfy any";\n',
+		'site.example/auth-owner': 'platform team',
+		'site.example/default-backend': 'none'
+	};
+	const cronz = {
+		'nginx.ingress.kubernetes.io/auth-type': 'basic',
+		'nginx.ingress.kubernetes.io/auth-secret': 'default/site-dashboard-users',
+		'nginx.ingress.kubernetes.io/auth-secret-type': 'auth-file',
+		'nginx.ingress.kubernetes.io/auth-realm': 'Ariva jobs',
+		'nginx.ingress.kubernetes.io/satisfy': 'all'
+	};
+	const snippets = ['nginx.ingress.kubernetes.io/server-snippet', 'nginx.ingress.kubernetes.io/configuration-snippet', 'nginx.ingress.kubernetes.io/modsecurity-snippet'];
+	const ingresses = [ingressEntry('api-ingest', 'api-ingest-service', 'api-ingest-test', { annotations: ingest }),
+		ingressEntry('api-cronz', 'api-cronz-service', 'api-cronz-test', { plainHttp: 'redirect', sourceRanges: ['10.10.0.0/24'], annotations: cronz })];
+	for (const [file, sets, environment] of [['values-k8s-dev.yaml', [], 'k8s-dev'], ['values-k8s-prd.yaml', [PRD], 'k8s-prd']]) {
+		const result = render(file, sets, '', [valuesFile({ ingresses })]);
+		if (result.status !== 0) {
+			findings.push(`${environment}: template failed\n${result.stderr}`);
+			continue;
+		}
+		const docs = parseAsKubernetes(result.stdout);
+		findings.push(...checkManifests(parse(result.stdout), { environment }), ...ingressHardeningFindings(docs, { environment }), ...hubRefusalFindings(docs), ...ingressPrivacyFindings(docs, { environment }));
+		for (const [name, annotations] of [['api-ingest-ingress', ingest], ['api-cronz-ingress', cronz]]) {
+			const rendered = docs.find((doc) => doc?.kind === 'Ingress' && doc.metadata?.name === name)?.metadata?.annotations ?? {};
+			for (const [key, text] of Object.entries(annotations)) {
+				const carried = snippets.includes(key) ? String(rendered[key] ?? '').endsWith(text) : rendered[key] === text;
+				if (!carried) findings.push(`${environment}: Ingress/${name} does not carry ${key} as the site gave it`);
+			}
+		}
+	}
+	if (findings.length) {
+		failed = true;
+		console.error(`FAIL near-miss external authentication names:\n  ${findings.join('\n  ')}`);
+	} else {
+		console.log('PASS near-miss external authentication names: the five documented auth-tls keys, enable-global-auth, an auth_request_set, satisfy in a header\'s text, basic authentication with satisfy all and a site\'s own auth- and default-backend annotations render in dev and production and the rendered checks find nothing');
 	}
 }
 

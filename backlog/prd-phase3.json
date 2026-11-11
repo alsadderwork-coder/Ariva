@@ -2469,10 +2469,27 @@
     },
     {
       "id": "ARV-288a",
-      "title": "[E17] The external auth annotations refused, and the ingress image's libmodsecurity confirmed",
+      "title": "[E17] The external auth annotations refused",
       "description": "Filed 2026-11-10 by the ARV-288 security review (advisories 1 and 2). ingress-nginx renders nginx.ingress.kubernetes.io/auth-url (and the controller's global-auth-url) into an auth_request subrequest proxied to any URL, forwarding the original Authorization and Cookie headers by default: a one-annotation copy of credentials to another host that no directive guard sees, since its value is a URL (CWE-918, CWE-522). auth-signin and auth-proxy-set-headers belong with it. Ariva uses none of them. Separately, ARV-288 refuses ModSecurity's SecRuleScript, exec:, @inspectFile and the upload keeps by their text, not by SecLang's tokenizer, and records libmodsecurity v3.0.14's behaviour in the 1.15 image as To confirm: whether a backslash and newline inside a keyword is joined again after nginx hands the rules over, and whether the build carries Lua. CWEs to review: CWE-918, CWE-78, CWE-94.",
       "acceptanceCriteria": [
         "validate.yaml refuses the auth-url, auth-signin, auth-proxy-set-headers and related external auth annotations in every environment, and controllerValuesFindings refuses global-auth-url and its siblings in the controller values, each with a case (or records why one stays allowed)",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 305,
+      "passes": false,
+      "notes": "Filed 2026-11-10 from the ARV-288 security review. Chart and chart tests only; the image check needs the controller image, which this environment cannot pull. 2026-11-11: split; the libmodsecurity check moved to ARV-288b (needs the controller image), and the review's further controller and redirect findings to ARV-288c. Built: every external authentication annotation and the controller's global authentication refused, with the error backend, satisfy, the controller's snippets, arguments and rendering.",
+      "dependsOn": [
+        "ARV-288"
+      ]
+    },
+    {
+      "id": "ARV-288b",
+      "title": "[E17] The ingress image's libmodsecurity confirmed, and the ModSecurity refusals held to it",
+      "description": "Split from ARV-288a on 2026-11-11 (the ARV-288 security review, advisory 2). ARV-288 refuses ModSecurity's SecRuleScript, exec:, @inspectFile and the upload keeps by their text, not by SecLang's tokenizer, and records libmodsecurity v3.0.14's behaviour in the ingress-nginx 1.15 image as To confirm: whether a backslash and newline inside a keyword is joined again after nginx hands the rules over, and whether the build carries Lua. CWEs to review: CWE-78, CWE-94.",
+      "acceptanceCriteria": [
         "The ingress-nginx 1.15 image's libmodsecurity is checked (its version, Lua support, and whether a backslash and newline inside a SecLang keyword is joined) and the ModSecurity refusals are made to hold against what it does, with cases; the CWE-78 row records the result",
         "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
         "node scripts/security/scan.mjs passes with 0 errors",
@@ -2481,9 +2498,33 @@
       ],
       "priority": 305,
       "passes": false,
-      "notes": "Filed 2026-11-10 from the ARV-288 security review. Chart and chart tests only; the image check needs the controller image, which this environment cannot pull.",
+      "notes": "Split from ARV-288a on 2026-11-11. Needs a machine that can pull the ingress-nginx controller image (the 1.15 controller, by digest); the environment that built ARV-288a cannot. Chart and chart tests only; no sign-in code.",
       "dependsOn": [
-        "ARV-288"
+        "ARV-288a"
+      ]
+    },
+    {
+      "id": "ARV-288c",
+      "title": "[E17] The controller's remote syslog decided, redirects to other hosts refused, the forwarded client certificate header tied to its ingress setting, and the controller's other exposures checked",
+      "description": "Filed 2026-11-11 from the ARV-288a security review rounds 1 to 6. (1) ingress-nginx's enable-syslog and syslog-host make the controller send its access and error logs to a remote syslog server, over UDP and without TLS; controllerValuesFindings does not read them, so the controller values could ship every log line (the error log writes the request line, the live hub's access token on /hubs included) to a host Ariva does not name. Refuse them, or allow them only with a stated format and destination: an owner decision, since a site may ship its access logs by syslog. (2) Security:ClientCertificates:ForwardedHeader (Ingest, ARV-022) makes api-ingest trust the ssl-client-cert header on connections from the controller's network; ingress-nginx sets that header only on an Ingress with auth-tls-pass-certificate-to-upstream \"true\" (with auth-tls-secret and auth-tls-verify-client) and otherwise passes a client's own ssl-client-cert through, so a device could present a certificate it does not hold. The setting lives in the hosts' appsettings, not in the chart: tie the two (for example the chart clears a client's ssl-client-cert on every Ingress to api-ingest-service that does not pass the verified certificate, or a chart value that sets the host setting and requires the annotations). With it, controller.proxySetHeaders and the ConfigMap key proxy-set-headers set a fixed header on every request (for example a pinned ssl-client-cert), CWE-501, CWE-287. (3) The permanent-redirect and temporal-redirect annotations send a client to any host (an open redirect, CWE-601), with ingress-nginx's annotation validation on, since its URLIsValidRegex allows no $ but any host. (4) A site snippet or a controller snippet can redirect to another host with variables in the URL (error_page 404 = https://copy.site.example$request_uri;, return 302 https://...$request_uri), sending the query string, the live hub's access token included, to that host (CWE-598). (5) A non-empty top-level tcp or udp in the controller values opens a Service's raw TCP or UDP port at the controller (CWE-668), and controller.tcp.configMapNamespace and controller.udp.configMapNamespace read those maps from another namespace. (6) controller.extraVolumeMounts, extraVolumes, extraInitContainers and controller.image can put files or a build of the site's choosing over the controller's own (its template, its Lua, its modules): refuse them in the controller values, or record them as part of a site's own controller release. (7) Advisory: the rendered Ingress check (INGRESS_REFUSED_DIRECTIVES) holds no auth_request, *_pass, mirror or satisfy, so it is no second line behind validate.yaml for them. (8) From the ARV-288a round 6 step-back: hold the platform chart's values files and the Helmfile environment values to valuesTextFindings as the controller values are (they are rendered through helm for every guard and read the same under YAML 1.1 and 1.2 today, but the yaml-package reads in chart-security.mjs compare renders with them and read pins from them), and parse the rendered manifests checkManifests reads as YAML 1.1, as Kubernetes reads them. CWEs to review: CWE-532, CWE-319, CWE-287, CWE-290, CWE-501, CWE-601, CWE-598, CWE-668.",
+      "acceptanceCriteria": [
+        "controllerValuesFindings refuses enable-syslog true and a syslog-host (or allows them only as the owner decides, with a stated format and destination), with a case each and accepted near misses",
+        "A client-sent ssl-client-cert header never reaches an api-ingest that trusts Security:ClientCertificates:ForwardedHeader: the chart ties the header to auth-tls-pass-certificate-to-upstream on every Ingress to api-ingest-service, with release guard cases and a rendered check; controllerValuesFindings refuses controller.proxySetHeaders and the proxy-set-headers ConfigMap key (or records why one stays allowed), with cases",
+        "validate.yaml refuses permanent-redirect and temporal-redirect (or records why one stays allowed) in every environment, with cases",
+        "validate.yaml and controllerValuesFindings refuse an error_page or return in a snippet whose URL names another host or carries a variable (or a stated narrower rule), with cases and accepted near misses (an error_page to a local page, a return of a status alone)",
+        "controllerValuesFindings refuses a non-empty top-level tcp or udp and their configMapNamespace, and controller.extraVolumeMounts, extraVolumes, extraInitContainers and controller.image (or records each as a site's own controller release), with cases and accepted near misses",
+        "INGRESS_REFUSED_DIRECTIVES holds auth_request, *_pass, mirror and satisfy, with rendered fixture cases, and the chart's own renders stay clean",
+        "The platform chart's values files and the Helmfile environment values pass valuesTextFindings, and checkManifests reads the renders as YAML 1.1, with a case each",
+        "node scripts/verify.mjs backend passes (build with security analyzers, unit and security tests, security gate)",
+        "node scripts/security/scan.mjs passes with 0 errors",
+        "security-reviewer verdict PASS recorded in backlog/progress.md for the CWEs listed in this story",
+        "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
+      ],
+      "priority": 306,
+      "passes": false,
+      "notes": "Filed 2026-11-11 from the ARV-288a security review rounds 1 to 6. Chart and chart tests first; the syslog choice is the owner's. If the header tie needs a host change in device authentication, check it against the sign-in and authentication freeze and split it. Read every controller value as Helm reads the file and the ingress-nginx chart renders it, as ARV-288a does. Two Low advisories from ARV-288a's round 7, no rule affected today: a plain key that looks numeric to go-yaml but not to the check (0o17 is the number 15 to Helm, so the ConfigMap key renders as \"15\"; refuse a plain key starting with a digit), and plain whole numbers of 2^63 or more (a float to go-yaml; Helm prints a million or more in scientific notation; cap plain whole numbers at 15 digits or state the bound in valuesTextFindings' summary).",
+      "dependsOn": [
+        "ARV-288a"
       ]
     },
     {
