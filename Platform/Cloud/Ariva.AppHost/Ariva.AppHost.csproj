@@ -1,4 +1,4 @@
-<Project Sdk="Aspire.AppHost.Sdk/13.6.0">
+<Project Sdk="Aspire.AppHost.Sdk/13.6.5">
 
     <!-- Ariva.AppHost (ARV-066): one F5 starts TimescaleDB, Kafka, Redis, smtp4dev, ClamAV, the five API hosts, the simulator and
          the web dev server, with the Aspire dashboard for resources, logs, traces and metrics. Local development and test

@@ -4,20 +4,20 @@
     "net10.0": {
       "Aspire.Hosting.Testing": {
         "type": "Direct",
-        "requested": "[13.6.0, )",
-        "resolved": "13.6.0",
-        "contentHash": "dGErLzQzdkN6rfE8yU1yA187tlCXm3w4I0jBCMFt91G0dXZmvGfGE60OK1SvfVmVOspTpXZPhfIOL65KJvjewA==",
+        "requested": "[13.6.5, )",
+        "resolved": "13.6.5",
+        "contentHash": "b73ZNXUClMOLpwSHsesPy93mu58jD2Ca1lwyNOII8+sImH3jMkI5TtsPdY19kpNgawxnaqq3O1MO1Fw0LqDJUw==",
         "dependencies": {
           "AspNetCore.HealthChecks.Uris": "9.0.0",
-          "Aspire.Hosting": "13.6.0",
-          "Aspire.Hosting.AppHost": "13.6.0",
+          "Aspire.Hosting": "13.6.5",
+          "Aspire.Hosting.AppHost": "13.6.5",
           "Google.Protobuf": "3.36.1",
           "Grpc.AspNetCore": "2.83.0",
           "Grpc.Net.ClientFactory": "2.83.0",
           "Grpc.Tools": "2.83.0",
           "Hex1b": "0.168.0",
           "KubernetesClient": "19.0.2",
-          "MessagePack": "2.5.302",
+          "MessagePack": "2.5.307",
           "Microsoft.Extensions.DependencyInjection.AutoActivation": "10.10.0",
           "Microsoft.Extensions.Http.Resilience": "10.10.0",
           "ModelContextProtocol": "1.4.1",
@@ -28,7 +28,7 @@
           "Polly.Extensions": "8.7.0",
           "Semver": "3.0.0",
           "StreamJsonRpc": "2.25.29",
-          "System.IO.Hashing": "10.0.12",
+          "System.IO.Hashing": "10.0.14",
           "YamlDotNet": "18.1.0"
         }
       },
@@ -165,13 +165,13 @@
       },
       "Aspire.Dashboard.Sdk.linux-x64": {
         "type": "Transitive",
-        "resolved": "13.6.0",
-        "contentHash": "SL9fKg19kbyl0S+vy5mULQNbBW0mhzH9PRE6neNTX0CvH/+b93XOGgXKiKjhOJpXy4bCAMNz+gLd0W9GeR7AAw=="
+        "resolved": "13.6.5",
+        "contentHash": "5AbO2pEYAqkC757VKj/89ie16jF3K8tpQHBYlNJKZBVLQTUQVd951/Q3VnU1x3UkXVyxb7zR7el/iRtQMyJXEw=="
       },
       "Aspire.Hosting": {
         "type": "Transitive",
-        "resolved": "13.6.0",
-        "contentHash": "o6N282WsIcyT3+CH5WGwG/4oTVrE2ZfPS6FkjAPFqPWoidymd0Oak5dWfImvPbpfaZfhmGoBdAOfSJBu5YIvdQ==",
+        "resolved": "13.6.5",
+        "contentHash": "bhK3KRbXiKLLzwK+ikz4o5ZMahWQYZbV1d2jUh7pzilFlVIQ66bxJnVKsqb3Y1MPcjPOk9QTIf+F8gS6zjngNA==",
         "dependencies": {
           "AspNetCore.HealthChecks.Uris": "9.0.0",
           "Google.Protobuf": "3.36.1",
@@ -180,7 +180,7 @@
           "Grpc.Tools": "2.83.0",
           "Hex1b": "0.168.0",
           "KubernetesClient": "19.0.2",
-          "MessagePack": "2.5.302",
+          "MessagePack": "2.5.307",
           "ModelContextProtocol": "1.4.1",
           "Newtonsoft.Json": "13.0.4",
           "OpenTelemetry.Exporter.OpenTelemetryProtocol": "1.17.0",
@@ -188,24 +188,24 @@
           "Polly.Core": "8.7.0",
           "Semver": "3.0.0",
           "StreamJsonRpc": "2.25.29",
-          "System.IO.Hashing": "10.0.12",
+          "System.IO.Hashing": "10.0.14",
           "YamlDotNet": "18.1.0"
         }
       },
       "Aspire.Hosting.AppHost": {
         "type": "Transitive",
-        "resolved": "13.6.0",
-        "contentHash": "teoQZnz1BDg2zBbxxRKk6/xcTFGRUqltK6ceEeq3De25ZM1GbVbob098HAewlNI3zyHfbLPCxvFnQ/ozc48LFA==",
+        "resolved": "13.6.5",
+        "contentHash": "GP32tRjPx2VCincmWXrLYvwN9RQJD6KG44YY/5oaAO9wLj09bP9W4gwIkHQeR//7QOJAezMAlZNlmNuAP1JVDA==",
         "dependencies": {
           "AspNetCore.HealthChecks.Uris": "9.0.0",
-          "Aspire.Hosting": "13.6.0",
+          "Aspire.Hosting": "13.6.5",
           "Google.Protobuf": "3.36.1",
           "Grpc.AspNetCore": "2.83.0",
           "Grpc.Net.ClientFactory": "2.83.0",
           "Grpc.Tools": "2.83.0",
           "Hex1b": "0.168.0",
           "KubernetesClient": "19.0.2",
-          "MessagePack": "2.5.302",
+          "MessagePack": "2.5.307",
           "ModelContextProtocol": "1.4.1",
           "Newtonsoft.Json": "13.0.4",
           "OpenTelemetry.Exporter.OpenTelemetryProtocol": "1.17.0",
@@ -213,14 +213,14 @@
           "Polly.Core": "8.7.0",
           "Semver": "3.0.0",
           "StreamJsonRpc": "2.25.29",
-          "System.IO.Hashing": "10.0.12",
+          "System.IO.Hashing": "10.0.14",
           "YamlDotNet": "18.1.0"
         }
       },
       "Aspire.Hosting.Orchestration.linux-x64": {
         "type": "Transitive",
-        "resolved": "13.6.0",
-        "contentHash": "ON+wG4VERVoQs58nlzhwDatzSraf5KZQDqnO/doZqMzSW+zae9kJImEdOhrIudeBs7x3dSa81l09nL5vRO3QuA=="
+        "resolved": "13.6.5",
+        "contentHash": "sAQXnHRMarxvm05YfpdNhRuWm+CZTJvnrU+vOobgQaUCGNCpsfYtNPSrjhIuoo9sJ3P5tAqE9cEtfSUVKvhAIw=="
       },
       "AspNetCore.HealthChecks.Kafka": {
         "type": "Transitive",
@@ -787,8 +787,8 @@
       },
       "System.IO.Hashing": {
         "type": "Transitive",
-        "resolved": "10.0.12",
-        "contentHash": "jDix4bBMYnpZdSPcnY+KDV6ik3SRMzpMKby/bZl/XUwIiflwRNAFZ0oOl61R/pSaveIJ8t1gs2BUlrGsPs/bcg=="
+        "resolved": "10.0.14",
+        "contentHash": "lVqovhCt3HlZe7ONG5ydaj6BYwYI004gldVfMMkJl/lR5ueeCtWNpW4nejOX75sPmzm8vXCxB69GqwHaYCnyUQ=="
       },
       "System.Security.Cryptography.ProtectedData": {
         "type": "Transitive",
@@ -909,7 +909,7 @@
         "dependencies": {
           "Ariva.Api.Common": "[1.0.0, )",
           "Microsoft.AspNetCore.SignalR.Protocols.MessagePack": "[10.0.13, )",
-          "Microsoft.AspNetCore.SignalR.StackExchangeRedis": "[10.0.12, )",
+          "Microsoft.AspNetCore.SignalR.StackExchangeRedis": "[10.0.15, )",
           "SkiaSharp": "[4.153.1, )",
           "SkiaSharp.NativeAssets.Linux.NoDependencies": "[4.153.1, )"
         }
@@ -923,13 +923,13 @@
       "ariva.apphost": {
         "type": "Project",
         "dependencies": {
-          "Aspire.Dashboard.Sdk.linux-x64": "[13.6.0, )",
-          "Aspire.Hosting.AppHost": "[13.6.0, )",
-          "Aspire.Hosting.JavaScript": "[13.6.0, )",
-          "Aspire.Hosting.Kafka": "[13.6.0, )",
-          "Aspire.Hosting.Orchestration.linux-x64": "[13.6.0, )",
-          "Aspire.Hosting.PostgreSQL": "[13.6.0, )",
-          "Aspire.Hosting.Redis": "[13.6.0, )",
+          "Aspire.Dashboard.Sdk.linux-x64": "[13.6.5, )",
+          "Aspire.Hosting.AppHost": "[13.6.5, )",
+          "Aspire.Hosting.JavaScript": "[13.6.5, )",
+          "Aspire.Hosting.Kafka": "[13.6.5, )",
+          "Aspire.Hosting.Orchestration.linux-x64": "[13.6.5, )",
+          "Aspire.Hosting.PostgreSQL": "[13.6.5, )",
+          "Aspire.Hosting.Redis": "[13.6.5, )",
           "MessagePack": "[2.5.307, )"
         }
       },
@@ -1001,19 +1001,19 @@
       },
       "Aspire.Hosting.JavaScript": {
         "type": "CentralTransitive",
-        "requested": "[13.6.0, )",
-        "resolved": "13.6.0",
-        "contentHash": "PQE+DIu22kc9fdwIf9IaIk8+lttA4eO6oKqizH/PNjtbpAALFaRjlMExsbklelkwv+2cQ8SbhK9PV3wm+E3tXg==",
+        "requested": "[13.6.5, )",
+        "resolved": "13.6.5",
+        "contentHash": "a0S08zQvuCQYK34dtifp0YLVdg/H5oO8LbG3535DTcEbzNC99Ec52tQ4GY2v4VjSUKszk2Tp+2diE46WHmpdGQ==",
         "dependencies": {
           "AspNetCore.HealthChecks.Uris": "9.0.0",
-          "Aspire.Hosting": "13.6.0",
+          "Aspire.Hosting": "13.6.5",
           "Google.Protobuf": "3.36.1",
           "Grpc.AspNetCore": "2.83.0",
           "Grpc.Net.ClientFactory": "2.83.0",
           "Grpc.Tools": "2.83.0",
           "Hex1b": "0.168.0",
           "KubernetesClient": "19.0.2",
-          "MessagePack": "2.5.302",
+          "MessagePack": "2.5.307",
           "ModelContextProtocol": "1.4.1",
           "Newtonsoft.Json": "13.0.4",
           "OpenTelemetry.Exporter.OpenTelemetryProtocol": "1.17.0",
@@ -1021,19 +1021,19 @@
           "Polly.Core": "8.7.0",
           "Semver": "3.0.0",
           "StreamJsonRpc": "2.25.29",
-          "System.IO.Hashing": "10.0.12",
+          "System.IO.Hashing": "10.0.14",
           "YamlDotNet": "18.1.0"
         }
       },
       "Aspire.Hosting.Kafka": {
         "type": "CentralTransitive",
-        "requested": "[13.6.0, )",
-        "resolved": "13.6.0",
-        "contentHash": "GYywIYTLvg33TG0pcSvYeTzUGMC1jHnP+JjO1yNQYgeOoL+yt0GxSdpZlkLTcsGIH/eDaC5Xb8qMAMS+j6zEtA==",
+        "requested": "[13.6.5, )",
+        "resolved": "13.6.5",
+        "contentHash": "QGgZ4EVR4htL6vLlQUiJkpzMSw84CyNy6VVs+8EfWLUJZ6DhUVRfnMI+X92eVAYdDgVWXDZ45kFXFKqslWpEZg==",
         "dependencies": {
           "AspNetCore.HealthChecks.Kafka": "9.0.0",
           "AspNetCore.HealthChecks.Uris": "9.0.0",
-          "Aspire.Hosting": "13.6.0",
+          "Aspire.Hosting": "13.6.5",
           "Confluent.Kafka": "2.15.0",
           "Google.Protobuf": "3.36.1",
           "Grpc.AspNetCore": "2.83.0",
@@ -1041,7 +1041,7 @@
           "Grpc.Tools": "2.83.0",
           "Hex1b": "0.168.0",
           "KubernetesClient": "19.0.2",
-          "MessagePack": "2.5.302",
+          "MessagePack": "2.5.307",
           "ModelContextProtocol": "1.4.1",
           "Newtonsoft.Json": "13.0.4",
           "OpenTelemetry.Exporter.OpenTelemetryProtocol": "1.17.0",
@@ -1049,26 +1049,26 @@
           "Polly.Core": "8.7.0",
           "Semver": "3.0.0",
           "StreamJsonRpc": "2.25.29",
-          "System.IO.Hashing": "10.0.12",
+          "System.IO.Hashing": "10.0.14",
           "YamlDotNet": "18.1.0"
         }
       },
       "Aspire.Hosting.PostgreSQL": {
         "type": "CentralTransitive",
-        "requested": "[13.6.0, )",
-        "resolved": "13.6.0",
-        "contentHash": "7t9e1k3nJAR6EibdcoxcNvYpxQYK6Ts8Okl7GHdVyL3/vBApE/G+9j9xqXXTOGCIstrqdnzvkZXzdSjQjL/j9A==",
+        "requested": "[13.6.5, )",
+        "resolved": "13.6.5",
+        "contentHash": "QZff/93X9GVC6nFW/qqLbiiqpXyi2VDY4WkUhZbK9ctfZ4mzq0rkl0ANJbnzXBOzCs17eH57pE4dFY2f6CyfAw==",
         "dependencies": {
           "AspNetCore.HealthChecks.NpgSql": "9.0.0",
           "AspNetCore.HealthChecks.Uris": "9.0.0",
-          "Aspire.Hosting": "13.6.0",
+          "Aspire.Hosting": "13.6.5",
           "Google.Protobuf": "3.36.1",
           "Grpc.AspNetCore": "2.83.0",
           "Grpc.Net.ClientFactory": "2.83.0",
           "Grpc.Tools": "2.83.0",
           "Hex1b": "0.168.0",
           "KubernetesClient": "19.0.2",
-          "MessagePack": "2.5.302",
+          "MessagePack": "2.5.307",
           "ModelContextProtocol": "1.4.1",
           "Newtonsoft.Json": "13.0.4",
           "OpenTelemetry.Exporter.OpenTelemetryProtocol": "1.17.0",
@@ -1076,26 +1076,26 @@
           "Polly.Core": "8.7.0",
           "Semver": "3.0.0",
           "StreamJsonRpc": "2.25.29",
-          "System.IO.Hashing": "10.0.12",
+          "System.IO.Hashing": "10.0.14",
           "YamlDotNet": "18.1.0"
         }
       },
       "Aspire.Hosting.Redis": {
         "type": "CentralTransitive",
-        "requested": "[13.6.0, )",
-        "resolved": "13.6.0",
-        "contentHash": "GcJ11NOtx9qpDtb9jsEsOEGznFU+ESPN9uP7ILzKpZmnd1VVYJYzziGzYfr+cI5aHMyiGW0LuYJdI170qN6Hxg==",
+        "requested": "[13.6.5, )",
+        "resolved": "13.6.5",
+        "contentHash": "uNaqKacIEelK+234wpurgIy2bL7xYZTeluGjFW41hURFfE0O49+Mq6HV+r4+ywc9JRN0Q3WeARJkgiXivhkdIw==",
         "dependencies": {
           "AspNetCore.HealthChecks.Redis": "9.0.0",
           "AspNetCore.HealthChecks.Uris": "9.0.0",
-          "Aspire.Hosting": "13.6.0",
+          "Aspire.Hosting": "13.6.5",
           "Google.Protobuf": "3.36.1",
           "Grpc.AspNetCore": "2.83.0",
           "Grpc.Net.ClientFactory": "2.83.0",
           "Grpc.Tools": "2.83.0",
           "Hex1b": "0.168.0",
           "KubernetesClient": "19.0.2",
-          "MessagePack": "2.5.302",
+          "MessagePack": "2.5.307",
           "ModelContextProtocol": "1.4.1",
           "Newtonsoft.Json": "13.0.4",
           "OpenTelemetry.Exporter.OpenTelemetryProtocol": "1.17.0",
@@ -1104,7 +1104,7 @@
           "Semver": "3.0.0",
           "StackExchange.Redis": "2.13.17",
           "StreamJsonRpc": "2.25.29",
-          "System.IO.Hashing": "10.0.12",
+          "System.IO.Hashing": "10.0.14",
           "YamlDotNet": "18.1.0"
         }
       },
@@ -1186,11 +1186,11 @@
       },
       "Microsoft.AspNetCore.SignalR.StackExchangeRedis": {
         "type": "CentralTransitive",
-        "requested": "[10.0.12, )",
-        "resolved": "10.0.12",
-        "contentHash": "GtsZEM5JP9epJ5cw3h4UaQg9eWrNQFWMSBA3E0FJrd5QK+gJpEC4rgZ9hucL2oEHvVfRDvMsKlaKHZIz0Vz2jw==",
+        "requested": "[10.0.15, )",
+        "resolved": "10.0.15",
+        "contentHash": "84yj3vuRGqOzjN+E0ZJXa2oR8cVRYNNnraJDV+ISWajYS6SFmqsSgln2v0ixIZi391ESYnqBbh0NK6nxHLR9YQ==",
         "dependencies": {
-          "MessagePack": "2.5.302",
+          "MessagePack": "2.5.303",
           "StackExchange.Redis": "2.7.27"
         }
       },

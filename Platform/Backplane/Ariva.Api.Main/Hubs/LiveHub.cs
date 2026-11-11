@@ -64,7 +64,12 @@ public sealed class LiveHub(
         options.TransportMaxBufferSize = 64 * 1024;
     }
 
-    /// <summary>Joins a zone's group and returns its latest snapshot (null when none yet).</summary>
+    /// <summary>
+    /// Joins a zone's group and returns its latest snapshot (null when none yet). A connection never holds two zone keys that
+    /// differ only in letter case (a zone renamed in case alone and published again): the earlier key's group is left first,
+    /// by its exact name, so no later leave can send the Redis backplane a removal in another letter case than the group it
+    /// joined (GHSA-wr8v-9x5q-ggcm, ARV-297).
+    /// </summary>
     public async Task<LiveZoneSnapshot> JoinZone(string zoneKey)
     {
         if (!LiveZones.IsZoneKey(zoneKey))
@@ -72,13 +77,19 @@ public sealed class LiveHub(
         CountJoin();
         await AuthoriseAsync(zoneKey);
         var joined = Joined();
+        List<string> variants;
         lock (joined)
         {
+            variants = joined.Where(k => !string.Equals(k, zoneKey, StringComparison.Ordinal) && string.Equals(k, zoneKey, StringComparison.OrdinalIgnoreCase)).ToList();
+            foreach (var variant in variants)
+                joined.Remove(variant);
             if (!joined.Contains(zoneKey) && joined.Count >= MaxGroups)
                 throw new HubException("too_many_zones");
             joined.Add(zoneKey);
         }
 
+        foreach (var variant in variants)
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, Group(variant), Context.ConnectionAborted);
         await Groups.AddToGroupAsync(Context.ConnectionId, Group(zoneKey), Context.ConnectionAborted);
         return await snapshots.GetAsync(zoneKey, Context.ConnectionAborted);
     }
@@ -138,14 +149,22 @@ public sealed class LiveHub(
         throw new HubException("forbidden");
     }
 
+    /// <summary>
+    /// Leaves a zone's group. Only a group this connection joined, by its exact key (the joined set is ordinal), reaches the
+    /// group manager: a zone key's name part takes any letter case, and SignalR's Redis backplane up to 10.0.14 mishandled a
+    /// removal whose group name differs in letter case from the joined one (GHSA-wr8v-9x5q-ggcm, ARV-297), as LeaveAlerts
+    /// already passes on only the groups it joined.
+    /// </summary>
     public async Task LeaveZone(string zoneKey)
     {
         if (!LiveZones.IsZoneKey(zoneKey))
             throw new HubException("invalid_zone");
         var joined = Joined();
+        bool was;
         lock (joined)
-            joined.Remove(zoneKey);
-        await Groups.RemoveFromGroupAsync(Context.ConnectionId, Group(zoneKey), Context.ConnectionAborted);
+            was = joined.Remove(zoneKey);
+        if (was)
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, Group(zoneKey), Context.ConnectionAborted);
     }
 
     // A fixed one-minute window per connection; the hub runs one invocation per client at a time.

@@ -46,14 +46,23 @@ public sealed class LiveHubTests
     {
         public List<string> Joined { get; } = [];
 
+        // Every removal the hub passes on to the group manager (the Redis backplane in a cluster), in order.
+        public List<string> Removed { get; } = [];
+
+        // Every add ("+group") and removal ("-group") in the order the hub made them.
+        public List<string> Log { get; } = [];
+
         public Task AddToGroupAsync(string connectionId, string groupName, CancellationToken cancellationToken = default)
         {
+            Log.Add("+" + groupName);
             Joined.Add(groupName);
             return Task.CompletedTask;
         }
 
         public Task RemoveFromGroupAsync(string connectionId, string groupName, CancellationToken cancellationToken = default)
         {
+            Log.Add("-" + groupName);
+            Removed.Add(groupName);
             Joined.Remove(groupName);
             return Task.CompletedTask;
         }
@@ -225,6 +234,67 @@ public sealed class LiveHubTests
         groups.Joined.Should().Equal("zone:DMO/A-VIS");
         await hub.LeaveZone("DMO/A-VIS");
         groups.Joined.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task LeaveZone_Should_RemoveOnlyAGroupTheConnectionJoined_When_TheKeyDiffersInLetterCaseOrWasNeverJoined()
+    {
+        // ARV-297 (GHSA-wr8v-9x5q-ggcm): SignalR's Redis backplane up to 10.0.14 mishandled a group removal whose name differs
+        // in letter case from the joined group's, leaving subscriptions that grow; a zone key's name part takes any letter
+        // case, so the hub passes on only the removal of a group this connection joined, by its exact key.
+        var (hub, groups) = Hub(Live, Dmo);
+        await hub.JoinZone("DMO/A-VIS");
+
+        await hub.LeaveZone("DMO/a-vis");
+        await hub.LeaveZone("DMO/A-Vis");
+        await hub.LeaveZone("DMO/B-VIS");
+
+        groups.Removed.Should().BeEmpty("a key the connection did not join, in any letter case, never reaches the group manager");
+        groups.Joined.Should().Equal("zone:DMO/A-VIS");
+        await hub.LeaveZone("DMO/A-VIS");
+        groups.Removed.Should().Equal("zone:DMO/A-VIS");
+        groups.Joined.Should().BeEmpty();
+        await hub.LeaveZone("DMO/A-VIS");
+        groups.Removed.Should().Equal(["zone:DMO/A-VIS"], "a zone left once is not removed again");
+        await hub.JoinZone("DMO/A-VIS");
+        await hub.LeaveZone("DMO/A-VIS");
+        groups.Removed.Should().Equal(["zone:DMO/A-VIS", "zone:DMO/A-VIS"], "a zone joined again is left again");
+    }
+
+    [Fact]
+    public async Task JoinZone_Should_LeaveTheEarlierKeyFirst_When_TheZoneWasRenamedInLetterCaseOnly()
+    {
+        // ARV-297: a zone renamed in letter case alone and published again; the connection joined the old key. Holding both
+        // keys would let a later leave name one group while the backplane matched it to the other without regard to case.
+        var (hub, groups) = Hub(Live, Dmo);
+        await hub.JoinZone("DMO/A-VIS");
+
+        await hub.JoinZone("DMO/a-vis");
+
+        groups.Removed.Should().Equal(["zone:DMO/A-VIS"], "the earlier key's group is left by its exact name");
+        groups.Log.Should().Equal(["+zone:DMO/A-VIS", "-zone:DMO/A-VIS", "+zone:DMO/a-vis"],
+            "the earlier group is left before the new one is joined: a backplane that matches groups without regard to case would take the add as a repeat and the later removal as the end of both");
+        groups.Joined.Should().Equal("zone:DMO/a-vis");
+        await hub.LeaveZone("DMO/A-VIS");
+        groups.Removed.Should().Equal(["zone:DMO/A-VIS"], "the earlier key is no longer the connection's");
+        await hub.LeaveZone("DMO/a-vis");
+        groups.Removed.Should().Equal(["zone:DMO/A-VIS", "zone:DMO/a-vis"]);
+        groups.Joined.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task JoinZone_Should_CountTheRenamedZoneOnce_When_TheConnectionHoldsItsMostZones()
+    {
+        // ARV-297: the earlier key's place is the renamed key's, so a connection at the limit can follow the rename.
+        var (hub, groups) = Hub(Live, Dmo);
+        for (var k = 0; k < LiveHub.MaxGroups; k++)
+            await hub.JoinZone($"DMO/Z{k}");
+
+        await hub.JoinZone("DMO/z0");
+
+        groups.Joined.Should().HaveCount(LiveHub.MaxGroups).And.Contain("zone:DMO/z0").And.NotContain("zone:DMO/Z0");
+        Func<Task> more = () => hub.JoinZone("DMO/Z64");
+        (await more.Should().ThrowAsync<HubException>()).Which.Message.Should().Be("too_many_zones");
     }
 
     [Fact]

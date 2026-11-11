@@ -15,28 +15,38 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * The advisories behind the floors (NuGet vulnerability data and nuget.org, 2026-10-15): each affects [10.0.0, 10.0.12] and is
- * fixed in 10.0.13 (published 2026-10-13). Pkcs and SignalR.Common also ship inside the ASP.NET Core runtime pack, so the
- * runtime packs must be 10.0.13 or later as well as the NuGet packages.
+ * The advisories behind the floors. The first four (NuGet vulnerability data and nuget.org, 2026-10-15) each affect
+ * [10.0.0, 10.0.12] and are fixed in 10.0.13 (published 2026-10-13); Pkcs and SignalR.Common also ship inside the ASP.NET Core
+ * runtime pack. GHSA-wr8v-9x5q-ggcm (CVE-2026-114147, ARV-297: nuget.org registration data and the advisory, 2026-11-11), a
+ * denial of service in SignalR's Redis scale-out, affects [10.0.0, 10.0.14] of the Microsoft.AspNetCore.SignalR.StackExchangeRedis
+ * package and of the ASP.NET Core runtime packs alike and is fixed in 10.0.15 (published 2026-11-10). So the runtime packs must
+ * be 10.0.15 or later as well as the NuGet packages; its second entry ties it to Microsoft.AspNetCore.SignalR.Core, which every
+ * host's runtime pack ships, so a file in the output proves the runtime half as well as deps.json does.
  */
 export const ADVISORIES = [
 	{ id: 'GHSA-846f-f764-76mx', severity: 'High', assembly: 'System.Security.Cryptography.Pkcs', fixed: '10.0.13' },
 	{ id: 'GHSA-2fmv-rv2c-59x7', severity: 'Moderate', assembly: 'System.Security.Cryptography.Pkcs', fixed: '10.0.13' },
 	{ id: 'GHSA-334f-vvp4-7g6p', severity: 'High', assembly: 'Microsoft.AspNetCore.SignalR.Common', fixed: '10.0.13' },
-	{ id: 'GHSA-86xp-94pg-8r6r', severity: 'Moderate', assembly: 'Microsoft.AspNetCore.SignalR.Protocols.MessagePack', fixed: '10.0.13' }
+	{ id: 'GHSA-86xp-94pg-8r6r', severity: 'Moderate', assembly: 'Microsoft.AspNetCore.SignalR.Protocols.MessagePack', fixed: '10.0.13' },
+	{ id: 'GHSA-wr8v-9x5q-ggcm', severity: 'High', assembly: 'Microsoft.AspNetCore.SignalR.StackExchangeRedis', fixed: '10.0.15' },
+	{ id: 'GHSA-wr8v-9x5q-ggcm', severity: 'High', assembly: 'Microsoft.AspNetCore.SignalR.Core', fixed: '10.0.15' }
 ];
 
-/** The lowest runtime pack version a host may ship. */
-export const FIXED_RUNTIME = '10.0.13';
+/** The lowest runtime pack version a host may ship: the newest fixed version among the advisories. */
+export const FIXED_RUNTIME = '10.0.15';
 
 /**
- * File versions of the 10.0.13 release (read from the NuGet packages and the linux-x64 runtime pack: every assembly of the
- * release carries 10.0.1326.50504). Required assemblies must be in every publish output; the others only where they ship.
+ * File versions of the release that fixed each floor's advisories, read from the NuGet packages and the linux-x64 runtime pack:
+ * every assembly of 10.0.13 carries 10.0.1326.50504, every assembly of 10.0.15 10.0.1526.53008 (Microsoft.AspNetCore.SignalR.
+ * StackExchangeRedis.dll and Microsoft.Extensions.Options.dll of the 10.0.15 packages, read 2026-11-11). Required assemblies must
+ * be in every publish output; the others only where they ship (the Redis backplane and the MessagePack protocol in api-main).
  */
 export const FLOORS = [
-	{ file: 'System.Security.Cryptography.Pkcs.dll', fileVersion: '10.0.1326.50504', required: true },
-	{ file: 'Microsoft.AspNetCore.SignalR.Common.dll', fileVersion: '10.0.1326.50504', required: true },
-	{ file: 'Microsoft.AspNetCore.SignalR.Protocols.MessagePack.dll', fileVersion: '10.0.1326.50504', required: false }
+	{ file: 'System.Security.Cryptography.Pkcs.dll', fileVersion: '10.0.1326.50504', release: '10.0.13', required: true },
+	{ file: 'Microsoft.AspNetCore.SignalR.Common.dll', fileVersion: '10.0.1326.50504', release: '10.0.13', required: true },
+	{ file: 'Microsoft.AspNetCore.SignalR.Protocols.MessagePack.dll', fileVersion: '10.0.1326.50504', release: '10.0.13', required: false },
+	{ file: 'Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll', fileVersion: '10.0.1526.53008', release: '10.0.15', required: false },
+	{ file: 'Microsoft.AspNetCore.SignalR.Core.dll', fileVersion: '10.0.1526.53008', release: '10.0.15', required: true }
 ];
 
 const RUNTIME_PACKS = ['Microsoft.NETCore.App.Runtime', 'Microsoft.AspNetCore.App.Runtime'];
@@ -132,7 +142,7 @@ export function runtimePacks(depsJson) {
 export function publishProblems(files, runtime) {
 	const problems = [];
 	if (!VERSION.test(runtime ?? '')) return [`--runtime must be a version like ${FIXED_RUNTIME}`];
-	if (compareVersions(runtime, FIXED_RUNTIME) < 0) problems.push(`runtime ${runtime} is below ${FIXED_RUNTIME}, the fixed version of ${ADVISORIES.map((a) => a.id).join(', ')}`);
+	if (compareVersions(runtime, FIXED_RUNTIME) < 0) problems.push(`runtime ${runtime} is below ${FIXED_RUNTIME}, the fixed version of ${[...new Set(ADVISORIES.map((a) => a.id))].join(', ')}`);
 	const deps = Object.keys(files).filter((name) => name.endsWith('.deps.json'));
 	if (deps.length !== 1) problems.push(`expected one app deps.json in the publish folder, found ${deps.length}`);
 	else {
@@ -165,7 +175,7 @@ export function publishProblems(files, runtime) {
 		}
 		const advisories = ADVISORIES.filter((a) => `${a.assembly}.dll` === floor.file).map((a) => `${a.id} ${a.severity}`).join(', ');
 		if (compareVersions(version.fileVersion, floor.fileVersion) < 0) {
-			problems.push(`${floor.file} file version ${version.fileVersion} (product ${version.productVersion}) is below ${floor.fileVersion}, the 10.0.13 release that fixes ${advisories}`);
+			problems.push(`${floor.file} file version ${version.fileVersion} (product ${version.productVersion}) is below ${floor.fileVersion}, the ${floor.release} release that fixes ${advisories}`);
 		}
 	}
 	return problems;
@@ -188,7 +198,7 @@ function checkFolder(folder, runtime) {
 	const problems = publishProblems(files, runtime);
 	if (problems.length) return { code: 1, text: `published runtime: ${problems.length} problem(s) in ${folder}\n  ${problems.join('\n  ')}` };
 	const shipped = FLOORS.filter((f) => files[f.file]).map((f) => `${f.file} ${peVersion(files[f.file]).fileVersion}`);
-	return { code: 0, text: `published runtime: runtime packs ${runtime}; ${shipped.join('; ')}; at or above the 10.0.13 fixes.` };
+	return { code: 0, text: `published runtime: runtime packs ${runtime}; ${shipped.join('; ')}; at or above the fixes (runtime ${FIXED_RUNTIME}).` };
 }
 
 function check(folder, runtime) {
@@ -252,42 +262,62 @@ function selfTest() {
 		...(netcore ? [`Microsoft.NETCore.App.Runtime.linux-x64/${netcore}`] : []),
 		...(aspnet ? [`Microsoft.AspNetCore.App.Runtime.linux-x64/${aspnet}`] : [])
 	]);
-	const fixedFile = '10.0.1326.50504';
+	// The 10.0.15 release (SDK 10.0.404, ARV-297): every assembly carries 10.0.1526.53008; 10.0.13's carry 10.0.1326.50504.
+	const fixedFile = '10.0.1526.53008';
 	const noVersionResource = samplePe(fixedFile);
 	noVersionResource.writeUInt32LE(3, 0x200 + 16); // the root's only entry becomes RT_ICON
 	const good = {
-		'Ariva.Api.Main.deps.json': deps('10.0.13', '10.0.13'),
-		'System.Security.Cryptography.Pkcs.dll': samplePe(fixedFile, '10.0.13.0'),
-		'Microsoft.AspNetCore.SignalR.Common.dll': samplePe(fixedFile, '10.0.13.0'),
-		'Microsoft.AspNetCore.SignalR.Protocols.MessagePack.dll': samplePe(fixedFile, '10.0.13.0')
+		'Ariva.Api.Main.deps.json': deps('10.0.15', '10.0.15'),
+		'System.Security.Cryptography.Pkcs.dll': samplePe(fixedFile, '10.0.15.0'),
+		'Microsoft.AspNetCore.SignalR.Common.dll': samplePe(fixedFile, '10.0.15.0'),
+		'Microsoft.AspNetCore.SignalR.Protocols.MessagePack.dll': samplePe(fixedFile, '10.0.15.0'),
+		'Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll': samplePe(fixedFile, '10.0.15.0'),
+		'Microsoft.AspNetCore.SignalR.Core.dll': samplePe(fixedFile, '10.0.15.0')
 	};
+	// The good output without the files whose names hold any of the fragments.
+	const without = (...fragments) => Object.fromEntries(Object.entries(good).filter(([k]) => !fragments.some((f) => k.includes(f))));
 	const cases = [
-		['good publish output', good, '10.0.13', []],
-		['a later release', { ...good, 'Ariva.Api.Main.deps.json': deps('10.0.14', '10.0.14'), 'System.Security.Cryptography.Pkcs.dll': samplePe('10.0.1427.1001') }, '10.0.14', []],
-		['MessagePack absent (not api-main)', Object.fromEntries(Object.entries(good).filter(([k]) => !k.includes('MessagePack'))), '10.0.13', []],
+		['good publish output', good, '10.0.15', []],
+		['a later release', { ...good, 'Ariva.Api.Main.deps.json': deps('10.0.16', '10.0.16'), 'System.Security.Cryptography.Pkcs.dll': samplePe('10.0.1627.1001') }, '10.0.16', []],
+		['MessagePack and the Redis backplane absent (not api-main)', without('MessagePack', 'StackExchangeRedis'), '10.0.15', []],
+		['SignalR.Common missing', without('SignalR.Common'), '10.0.15', ['Microsoft.AspNetCore.SignalR.Common.dll is missing']],
+		['SignalR.Core missing (every host ships it)', without('SignalR.Core'), '10.0.15', ['Microsoft.AspNetCore.SignalR.Core.dll is missing']],
+		// deps.json names the fixed packs while the file that shipped is of 10.0.14: the file decides.
+		['a 10.0.14 SignalR.Core beside 10.0.15 packs', { ...good, 'Microsoft.AspNetCore.SignalR.Core.dll': samplePe('10.0.1426.1001', '10.0.14.0') }, '10.0.15', ['Microsoft.AspNetCore.SignalR.Core.dll file version 10.0.1426.1001', 'GHSA-wr8v-9x5q-ggcm High']],
+		// The 10.0.13 release's own assemblies stay above their floors; only the runtime and the Redis backplane moved (ARV-297).
+		['10.0.13 Pkcs and SignalR.Common at the fixed runtime', { ...good, 'System.Security.Cryptography.Pkcs.dll': samplePe('10.0.1326.50504', '10.0.13.0'), 'Microsoft.AspNetCore.SignalR.Common.dll': samplePe('10.0.1326.50504', '10.0.13.0') }, '10.0.15', []],
 		// The images before ARV-184: SDK 10.0.103 bundled runtime packs 10.0.3 (Pkcs file version 10.0.326.7603) onto runtime-deps 10.0.12.
 		['the SDK 10.0.103 images', { ...good, 'Ariva.Api.Main.deps.json': deps('10.0.3', '10.0.3'), 'System.Security.Cryptography.Pkcs.dll': samplePe('10.0.326.7603', '10.0.3.0'), 'Microsoft.AspNetCore.SignalR.Common.dll': samplePe('10.0.326.7603', '10.0.3.0') }, '10.0.12',
-			['runtime 10.0.12 is below 10.0.13', 'Microsoft.NETCore.App.Runtime 10.0.3 ships', 'Microsoft.AspNetCore.App.Runtime 10.0.3 ships', 'System.Security.Cryptography.Pkcs.dll file version 10.0.326.7603', 'GHSA-846f-f764-76mx High, GHSA-2fmv-rv2c-59x7 Moderate', 'Microsoft.AspNetCore.SignalR.Common.dll file version 10.0.326.7603']],
-		['runtime 10.0.12 packs', { ...good, 'Ariva.Api.Main.deps.json': deps('10.0.12', '10.0.12'), 'System.Security.Cryptography.Pkcs.dll': samplePe('10.0.1226.42308') }, '10.0.13',
-			['Microsoft.NETCore.App.Runtime 10.0.12 ships, the runtime-deps base is 10.0.13', 'Pkcs.dll file version 10.0.1226.42308']],
-		['one pack behind the other', { ...good, 'Ariva.Api.Main.deps.json': deps('10.0.13', '10.0.12') }, '10.0.13', ['Microsoft.AspNetCore.App.Runtime 10.0.12 ships']],
-		['framework-dependent publish', { ...good, 'Ariva.Api.Main.deps.json': deps(undefined, undefined) }, '10.0.13', ['no Microsoft.NETCore.App.Runtime runtime pack', 'no Microsoft.AspNetCore.App.Runtime runtime pack']],
-		['the vulnerable MessagePack package', { ...good, 'Microsoft.AspNetCore.SignalR.Protocols.MessagePack.dll': samplePe('10.0.1226.42308') }, '10.0.13', ['MessagePack.dll file version 10.0.1226.42308', 'GHSA-86xp-94pg-8r6r Moderate']],
-		['Pkcs missing', Object.fromEntries(Object.entries(good).filter(([k]) => !k.includes('Pkcs'))), '10.0.13', ['System.Security.Cryptography.Pkcs.dll is missing']],
-		['Pkcs not a PE file', { ...good, 'System.Security.Cryptography.Pkcs.dll': Buffer.from('not a dll') }, '10.0.13', ['Pkcs.dll: no version resource']],
-		['no deps.json', Object.fromEntries(Object.entries(good).filter(([k]) => !k.endsWith('.deps.json'))), '10.0.13', ['expected one app deps.json']],
-		['two deps.json', { ...good, 'Other.deps.json': deps('10.0.13', '10.0.13') }, '10.0.13', ['found 2']],
-		['malformed deps.json', { ...good, 'Ariva.Api.Main.deps.json': Buffer.from('{') }, '10.0.13', ['Ariva.Api.Main.deps.json:']],
+			['runtime 10.0.12 is below 10.0.15', 'Microsoft.NETCore.App.Runtime 10.0.3 ships', 'Microsoft.AspNetCore.App.Runtime 10.0.3 ships', 'System.Security.Cryptography.Pkcs.dll file version 10.0.326.7603', 'the 10.0.13 release that fixes GHSA-846f-f764-76mx High, GHSA-2fmv-rv2c-59x7 Moderate', 'Microsoft.AspNetCore.SignalR.Common.dll file version 10.0.326.7603']],
+		// The images before ARV-297: SDK 10.0.402 bundled runtime packs 10.0.13 onto runtime-deps 10.0.13, with the 10.0.12 Redis
+		// backplane package (file version 10.0.1226.42308, read from nuget.org).
+		['the SDK 10.0.402 images', { ...good, 'Ariva.Api.Main.deps.json': deps('10.0.13', '10.0.13'), 'System.Security.Cryptography.Pkcs.dll': samplePe('10.0.1326.50504', '10.0.13.0'), 'Microsoft.AspNetCore.SignalR.Common.dll': samplePe('10.0.1326.50504', '10.0.13.0'), 'Microsoft.AspNetCore.SignalR.Protocols.MessagePack.dll': samplePe('10.0.1326.50504', '10.0.13.0'), 'Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll': samplePe('10.0.1226.42308', '10.0.12.0'), 'Microsoft.AspNetCore.SignalR.Core.dll': samplePe('10.0.1326.50504', '10.0.13.0') }, '10.0.13',
+			['runtime 10.0.13 is below 10.0.15, the fixed version of', 'GHSA-wr8v-9x5q-ggcm', 'Microsoft.AspNetCore.SignalR.Core.dll file version 10.0.1326.50504 (product 10.0.13.0) is below 10.0.1526.53008, the 10.0.15 release that fixes GHSA-wr8v-9x5q-ggcm High', 'Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll file version 10.0.1226.42308 (product 10.0.12.0) is below 10.0.1526.53008, the 10.0.15 release that fixes GHSA-wr8v-9x5q-ggcm High']],
+		['runtime 10.0.14, one release short', { ...good, 'Ariva.Api.Main.deps.json': deps('10.0.14', '10.0.14') }, '10.0.14', ['runtime 10.0.14 is below 10.0.15']],
+		['the vulnerable Redis backplane package at the fixed runtime', { ...good, 'Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll': samplePe('10.0.1426.1001', '10.0.14.0') }, '10.0.15', ['StackExchangeRedis.dll file version 10.0.1426.1001', 'GHSA-wr8v-9x5q-ggcm High']],
+		['the Redis backplane one revision below its floor', { ...good, 'Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll': samplePe('10.0.1526.53007', '10.0.15.0') }, '10.0.15', ['StackExchangeRedis.dll file version 10.0.1526.53007']],
+		['the Redis backplane not a PE file', { ...good, 'Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll': Buffer.from('not a dll') }, '10.0.15', ['Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll: no version resource']],
+		['runtime 10.0.12 packs', { ...good, 'Ariva.Api.Main.deps.json': deps('10.0.12', '10.0.12'), 'System.Security.Cryptography.Pkcs.dll': samplePe('10.0.1226.42308') }, '10.0.15',
+			['Microsoft.NETCore.App.Runtime 10.0.12 ships, the runtime-deps base is 10.0.15', 'Pkcs.dll file version 10.0.1226.42308']],
+		['one pack behind the other', { ...good, 'Ariva.Api.Main.deps.json': deps('10.0.15', '10.0.14') }, '10.0.15', ['Microsoft.AspNetCore.App.Runtime 10.0.14 ships']],
+		['framework-dependent publish', { ...good, 'Ariva.Api.Main.deps.json': deps(undefined, undefined) }, '10.0.15', ['no Microsoft.NETCore.App.Runtime runtime pack', 'no Microsoft.AspNetCore.App.Runtime runtime pack']],
+		['the vulnerable MessagePack package', { ...good, 'Microsoft.AspNetCore.SignalR.Protocols.MessagePack.dll': samplePe('10.0.1226.42308') }, '10.0.15', ['MessagePack.dll file version 10.0.1226.42308', 'the 10.0.13 release that fixes GHSA-86xp-94pg-8r6r Moderate']],
+		['Pkcs missing', without('Pkcs'), '10.0.15', ['System.Security.Cryptography.Pkcs.dll is missing']],
+		['Pkcs not a PE file', { ...good, 'System.Security.Cryptography.Pkcs.dll': Buffer.from('not a dll') }, '10.0.15', ['Pkcs.dll: no version resource']],
+		['no deps.json', without('.deps.json'), '10.0.15', ['expected one app deps.json']],
+		['two deps.json', { ...good, 'Other.deps.json': deps('10.0.15', '10.0.15') }, '10.0.15', ['found 2']],
+		['malformed deps.json', { ...good, 'Ariva.Api.Main.deps.json': Buffer.from('{') }, '10.0.15', ['Ariva.Api.Main.deps.json:']],
 		['bad runtime argument', good, '10.0', ['--runtime must be a version']],
 		['no runtime argument', good, undefined, ['--runtime must be a version']],
-		['PE32 assemblies (IL-only NuGet copies)', { ...good, 'System.Security.Cryptography.Pkcs.dll': samplePe(fixedFile, '10.0.13.0', { pe32: true }) }, '10.0.13', []],
-		['a vulnerable PE32 assembly', { ...good, 'Microsoft.AspNetCore.SignalR.Protocols.MessagePack.dll': samplePe('10.0.1226.42308', '10.0.12.0', { pe32: true }) }, '10.0.13', ['MessagePack.dll file version 10.0.1226.42308']],
-		['Pkcs cut inside its optional header', { ...good, 'System.Security.Cryptography.Pkcs.dll': samplePe(fixedFile).subarray(0, 0x100) }, '10.0.13', ['System.Security.Cryptography.Pkcs.dll:']],
-		['SignalR.Common cut inside its version data', { ...good, 'Microsoft.AspNetCore.SignalR.Common.dll': samplePe(fixedFile).subarray(0, 0x298) }, '10.0.13', ['Microsoft.AspNetCore.SignalR.Common.dll:']],
-		['Pkcs without RT_VERSION', { ...good, 'System.Security.Cryptography.Pkcs.dll': noVersionResource }, '10.0.13', ['Pkcs.dll: no version resource: no RT_VERSION entry']],
-		['a Mono runtime pack instead', { ...good, 'Ariva.Api.Main.deps.json': depsOf(['Microsoft.NETCore.App.Runtime.Mono.linux-x64/10.0.13', 'Microsoft.AspNetCore.App.Runtime.linux-x64/10.0.13']) }, '10.0.13', ['no Microsoft.NETCore.App.Runtime runtime pack for linux-x64']],
-		['another runtime identifier', { ...good, 'Ariva.Api.Main.deps.json': depsOf(['Microsoft.NETCore.App.Runtime.linux-arm64/10.0.13', 'Microsoft.AspNetCore.App.Runtime.linux-arm64/10.0.13']) }, '10.0.13', ['no Microsoft.NETCore.App.Runtime runtime pack for linux-x64', 'no Microsoft.AspNetCore.App.Runtime runtime pack for linux-x64']],
-		['a pack listed twice', { ...good, 'Ariva.Api.Main.deps.json': depsOf(['Microsoft.NETCore.App.Runtime.linux-x64/10.0.12', 'Microsoft.NETCore.App.Runtime.linux-x64/10.0.13', 'Microsoft.AspNetCore.App.Runtime.linux-x64/10.0.13']) }, '10.0.13', ['Microsoft.NETCore.App.Runtime listed 2 times (10.0.12, 10.0.13)']]
+		['PE32 assemblies (IL-only NuGet copies)', { ...good, 'System.Security.Cryptography.Pkcs.dll': samplePe(fixedFile, '10.0.15.0', { pe32: true }), 'Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll': samplePe(fixedFile, '10.0.15.0', { pe32: true }) }, '10.0.15', []],
+		['a vulnerable PE32 assembly', { ...good, 'Microsoft.AspNetCore.SignalR.Protocols.MessagePack.dll': samplePe('10.0.1226.42308', '10.0.12.0', { pe32: true }) }, '10.0.15', ['MessagePack.dll file version 10.0.1226.42308']],
+		['a vulnerable PE32 Redis backplane', { ...good, 'Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll': samplePe('10.0.1226.42308', '10.0.12.0', { pe32: true }) }, '10.0.15', ['StackExchangeRedis.dll file version 10.0.1226.42308']],
+		['Pkcs cut inside its optional header', { ...good, 'System.Security.Cryptography.Pkcs.dll': samplePe(fixedFile).subarray(0, 0x100) }, '10.0.15', ['System.Security.Cryptography.Pkcs.dll:']],
+		['SignalR.Common cut inside its version data', { ...good, 'Microsoft.AspNetCore.SignalR.Common.dll': samplePe(fixedFile).subarray(0, 0x298) }, '10.0.15', ['Microsoft.AspNetCore.SignalR.Common.dll:']],
+		['Pkcs without RT_VERSION', { ...good, 'System.Security.Cryptography.Pkcs.dll': noVersionResource }, '10.0.15', ['Pkcs.dll: no version resource: no RT_VERSION entry']],
+		['a Mono runtime pack instead', { ...good, 'Ariva.Api.Main.deps.json': depsOf(['Microsoft.NETCore.App.Runtime.Mono.linux-x64/10.0.15', 'Microsoft.AspNetCore.App.Runtime.linux-x64/10.0.15']) }, '10.0.15', ['no Microsoft.NETCore.App.Runtime runtime pack for linux-x64']],
+		['another runtime identifier', { ...good, 'Ariva.Api.Main.deps.json': depsOf(['Microsoft.NETCore.App.Runtime.linux-arm64/10.0.15', 'Microsoft.AspNetCore.App.Runtime.linux-arm64/10.0.15']) }, '10.0.15', ['no Microsoft.NETCore.App.Runtime runtime pack for linux-x64', 'no Microsoft.AspNetCore.App.Runtime runtime pack for linux-x64']],
+		['a pack listed twice', { ...good, 'Ariva.Api.Main.deps.json': depsOf(['Microsoft.NETCore.App.Runtime.linux-x64/10.0.13', 'Microsoft.NETCore.App.Runtime.linux-x64/10.0.15', 'Microsoft.AspNetCore.App.Runtime.linux-x64/10.0.15']) }, '10.0.15', ['Microsoft.NETCore.App.Runtime listed 2 times (10.0.13, 10.0.15)']]
 	];
 	const failures = [];
 	for (const [name, files, runtime, expected] of cases) {
@@ -297,8 +327,26 @@ function selfTest() {
 		for (const fragment of expected) if (!text.includes(fragment)) failures.push(`${name}: did not report "${fragment}" (got: ${text || 'nothing'})`);
 	}
 	for (const pe32 of [false, true]) {
-		const read = peVersion(samplePe('10.0.1326.50504', '10.0.13.0', { pe32 }));
-		if (read.fileVersion !== '10.0.1326.50504' || read.productVersion !== '10.0.13.0') failures.push(`peVersion (${pe32 ? 'PE32' : 'PE32+'}) read ${JSON.stringify(read)}`);
+		const read = peVersion(samplePe(fixedFile, '10.0.15.0', { pe32 }));
+		if (read.fileVersion !== fixedFile || read.productVersion !== '10.0.15.0') failures.push(`peVersion (${pe32 ? 'PE32' : 'PE32+'}) read ${JSON.stringify(read)}`);
+	}
+	// An advisory with two assemblies is named once in the runtime message.
+	const short = publishProblems({ ...good, 'Ariva.Api.Main.deps.json': deps('10.0.14', '10.0.14') }, '10.0.14')[0] ?? '';
+	if ((short.match(/GHSA-wr8v-9x5q-ggcm/g) ?? []).length !== 1) failures.push(`the runtime message names GHSA-wr8v-9x5q-ggcm other than once: ${short}`);
+	// Every advisory names a floor's assembly; each floor's release is the newest fixed version of its advisories, and
+	// FIXED_RUNTIME the newest of them all.
+	const newest = (versions) => versions.reduce((a, b) => (compareVersions(a, b) >= 0 ? a : b));
+	for (const advisory of ADVISORIES) {
+		if (!FLOORS.some((f) => f.file === `${advisory.assembly}.dll`)) failures.push(`${advisory.id}: no floor for ${advisory.assembly}.dll`);
+	}
+	for (const floor of FLOORS) {
+		const fixes = ADVISORIES.filter((a) => `${a.assembly}.dll` === floor.file).map((a) => a.fixed);
+		if (!fixes.length) failures.push(`${floor.file}: a floor with no advisory`);
+		else if (floor.release !== newest(fixes)) failures.push(`${floor.file}: the floor's release ${floor.release} is not ${newest(fixes)}, the newest fix of its advisories`);
+	}
+	if (FIXED_RUNTIME !== newest(ADVISORIES.map((a) => a.fixed))) failures.push(`FIXED_RUNTIME ${FIXED_RUNTIME} is not ${newest(ADVISORIES.map((a) => a.fixed))}, the newest fix`);
+	for (const floor of FLOORS) {
+		if (floor.fileVersion.split('.').slice(0, 2).join('.') !== floor.release.split('.').slice(0, 2).join('.') || Number(floor.fileVersion.split('.')[2].slice(0, -2)) !== Number(floor.release.split('.')[2])) failures.push(`${floor.file}: file version ${floor.fileVersion} is not of the ${floor.release} release`);
 	}
 	// The command line path on a real folder: exit 2 without the folder, 1 without --runtime, 1 when a required assembly is a
 	// symbolic link (only regular files count), 0 on the good output.
@@ -306,9 +354,11 @@ function selfTest() {
 	try {
 		for (const [name, content] of Object.entries(good)) fs.writeFileSync(path.join(folder, name), content);
 		const cli = [
-			['missing folder', path.join(folder, 'absent'), '10.0.13', 2, 'is not a folder'],
+			['missing folder', path.join(folder, 'absent'), '10.0.15', 2, 'is not a folder'],
 			['missing --runtime', folder, undefined, 1, '--runtime must be a version'],
-			['good folder', folder, '10.0.13', 0, 'runtime packs 10.0.13; System.Security.Cryptography.Pkcs.dll 10.0.1326.50504']
+			['the 10.0.13 runtime of the SDK 10.0.402 images', folder, '10.0.13', 1, 'runtime 10.0.13 is below 10.0.15'],
+			['good folder', folder, '10.0.15', 0, `runtime packs 10.0.15; System.Security.Cryptography.Pkcs.dll ${fixedFile}`],
+			['good folder names the Redis backplane', folder, '10.0.15', 0, `Microsoft.AspNetCore.SignalR.StackExchangeRedis.dll ${fixedFile}; Microsoft.AspNetCore.SignalR.Core.dll ${fixedFile}; at or above the fixes (runtime 10.0.15).`]
 		];
 		for (const [name, dir, runtime, code, fragment] of cli) {
 			const result = checkFolder(dir, runtime);
@@ -323,7 +373,7 @@ function selfTest() {
 			linked = false; // no symbolic links on this machine (Windows without the privilege): nothing to prove
 		}
 		if (linked) {
-			const result = checkFolder(folder, '10.0.13');
+			const result = checkFolder(folder, '10.0.15');
 			if (result.code !== 1 || !result.text.includes('System.Security.Cryptography.Pkcs.dll is missing')) failures.push(`command line, symbolic link: exit ${result.code}, ${result.text}`);
 		}
 	} finally {

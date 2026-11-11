@@ -21,7 +21,11 @@
     <!-- 10.0.13 (nuget.org, 13 October 2026) fixes GHSA-86xp-94pg-8r6r (Moderate, affected 10.0.0 to 10.0.12) and brings
          Microsoft.AspNetCore.SignalR.Common 10.0.13, which fixes GHSA-334f-vvp4-7g6p (High, same range) (ARV-184) -->
     <PackageVersion Include="Microsoft.AspNetCore.SignalR.Protocols.MessagePack" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="10.0.12" />
+    <!-- 10.0.15 (nuget.org, 10 November 2026) fixes GHSA-wr8v-9x5q-ggcm (CVE-2026-114147, High, a denial of service through
+         case-mismatched group removal in SignalR's Redis scale-out; affected 10.0.0 to 10.0.14, the ASP.NET Core runtime packs
+         alike, so the images publish with SDK 10.0.404, which bundles 10.0.15) (ARV-297). Its Microsoft.Extensions.Options
+         10.0.15 dependency is pruned (the shared framework provides it, at the runtime packs' version). -->
+    <PackageVersion Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="10.0.15" />
     <PackageVersion Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
     <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.1.0" />
@@ -55,6 +59,7 @@
     <PackageVersion Include="Mapster" Version="7.4.0" />
     <!-- MessagePack 2.5.302 (GHSA-qhrr-8q5h-9q3h, Moderate) came in transitively through Aspire.Hosting 13.6.0 and StreamJsonRpc,
          in Ariva.AppHost and Ariva.UnitTests (through Aspire.Hosting.Testing): development and test only, no image ships it.
+         Aspire.Hosting 13.6.5 asks for 2.5.307 itself (ARV-297).
          2.5.307 is the newest patch of the 2.5 line StreamJsonRpc is built against; nuget.org lists no advisory for it (the
          first clean 2.5 release is 2.5.303, registration data read 19 October 2026). Both projects reference it directly
          (ARV-096). Ariva.Api.Main resolves 2.5.303 or later through the SignalR MessagePack protocol. This entry replaces
@@ -133,11 +138,14 @@
     <PackageVersion Include="CsCheck" Version="4.9.1" />
     <!-- Local orchestration (ARV-066, approved by Ahmad Al-Sadder 2026-10-04): .NET Aspire 13.6.0, the latest stable on
          nuget.org (flat container index, 4 October 2026). Development and test only: Ariva.AppHost and the unit tests
-         reference these; no deployed host does. The AppHost SDK (Ariva.AppHost.csproj, same version) brings Aspire.Hosting.AppHost itself. -->
-    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.6.0" />
-    <PackageVersion Include="Aspire.Hosting.Kafka" Version="13.6.0" />
-    <PackageVersion Include="Aspire.Hosting.Redis" Version="13.6.0" />
-    <PackageVersion Include="Aspire.Hosting.JavaScript" Version="13.6.0" />
-    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.0" />
+         reference these; no deployed host does. The AppHost SDK (Ariva.AppHost.csproj, same version) brings Aspire.Hosting.AppHost itself.
+         13.6.5 (nuget.org, 10 November 2026) fixes GHSA-f7vh-h5g3-7jrh (CVE-2026-120006, High: the dashboard's authentication
+         cookie disclosed to a linked container through an HTTPS YARP gateway, macOS only; Aspire.Hosting and
+         Aspire.Hosting.AppHost up to 13.6.4) (ARV-297); the SDK, these packages and aspire.cli move together. -->
+    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.6.5" />
+    <PackageVersion Include="Aspire.Hosting.Kafka" Version="13.6.5" />
+    <PackageVersion Include="Aspire.Hosting.Redis" Version="13.6.5" />
+    <PackageVersion Include="Aspire.Hosting.JavaScript" Version="13.6.5" />
+    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.5" />
   </ItemGroup>
 </Project>
