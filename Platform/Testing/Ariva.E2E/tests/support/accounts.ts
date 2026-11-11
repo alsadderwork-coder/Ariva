@@ -180,8 +180,13 @@ export function accounts() {
 		dmoTerminal: account('e2e.dmoterminal', ['TerminalDutyManager'], false, false, ['DMO']),
 		dmoHandler: account('e2e.dmohandler', ['HandlerStationManager'], false, false, ['DMO']),
 		siteUser: account('e2e.siteuser', ['BorderShiftSupervisor'], false, false, ['E2E1']),
-		// ARV-040: creates the email rule and sets the DMO people's addresses (neither is a critical action).
+		// ARV-040: creates the email rules and sets the addresses of alert-emails.spec.ts's people (neither is a critical action).
 		emailAdmin: account('e2e.emailadmin', ['SystemAdministrator'], false, false, ['*']),
+		// ARV-279b: alert-emails.spec.ts's people at a site of the run's own, the only holders of the owner and escalation roles there
+		// with an address (the seed's every-site holders of those roles have none, which the spec checks). The supervisor drafts and
+		// publishes the site's zone profile (publishing needs a second factor); the duty manager signs in with a password only.
+		mailBorder: account('e2e.mailborder', ['BorderShiftSupervisor'], false, true, [runSite('AE')]),
+		mailTerminal: account('e2e.mailterminal', ['TerminalDutyManager'], false, false, [runSite('AE')]),
 		// ARV-042: registering and changing integration clients are critical actions, so this suite signs in with a second factor.
 		integrationAdmin: account('e2e.intadmin', ['SystemAdministrator'], false, true, ['*']),
 		// ARV-043: its own account, so its sign-in code never collides with integration-auth.spec.ts's in the same TOTP step (replay guard).

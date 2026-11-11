@@ -2219,8 +2219,8 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md"
       ],
       "priority": 47,
-      "passes": false,
-      "notes": "Size S to M. Phase 3. Filed 2026-10-31 from ARV-196's second E2E pass (log kept in the session scratchpad only). No sign-in code. Split 2026-10-31 into ARV-279a (topology, zone-profiles and the functional zones spec), ARV-279c (aman-feed and aman-pull: the simulator's record ids, which the locked AMAN emulator fingerprint covers, so the owner approves) and ARV-279b (alert-emails, which needs a site of its own with zones and its own role holders, and the whole suite twice); passes when all three do.",
+      "passes": true,
+      "notes": "Size S to M. Phase 3. Filed 2026-10-31 from ARV-196's second E2E pass (log kept in the session scratchpad only). No sign-in code. Split 2026-10-31 into ARV-279a (topology, zone-profiles and the functional zones spec), ARV-279c (aman-feed and aman-pull: the simulator's record ids, which the locked AMAN emulator fingerprint covers, so the owner approves) and ARV-279b (alert-emails, which needs a site of its own with zones and its own role holders, and the whole suite twice); passes when all three do. 2026-11-11: ARV-279a, ARV-279b and ARV-279c pass, and the whole E2E suite passed twice in a row on the same services.",
       "dependsOn": [
         "ARV-196"
       ]
@@ -2255,8 +2255,8 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md"
       ],
       "priority": 47,
-      "passes": false,
-      "notes": "Size S to M. Phase 3. No sign-in code: new seeded accounts only, signed in as the others are. Noted by the ARV-279a review: DevelopmentUserSeed's comment says roles are reset, while it only adds missing ones (a comment in a sign-in file, left for the owner).",
+      "passes": true,
+      "notes": "Size S to M. Phase 3. No sign-in code: new seeded accounts only, signed in as the others are. Noted by the ARV-279a review: DevelopmentUserSeed's comment says roles are reset, while it only adds missing ones (a comment in a sign-in file, left for the owner). 2026-11-11: built (a site and two accounts of the spec's own); the whole suite passed twice on the same services.",
       "dependsOn": [
         "ARV-279a",
         "ARV-279c"
