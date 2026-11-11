@@ -23,34 +23,38 @@ public sealed class SharedSettingsTests : IDisposable
 
     #region Cases
 
+    // The rows carry a placeholder, replaced in each test: xUnit writes a theory's arguments into the test results, which must hold
+    // no credential-shaped value (ARV-252: a bearer value in a row read as a secret in unit-tests.trx).
+    private const string SecretPlaceholder = "<secret>";
+
     public static TheoryData<string, string> Credentials => new()
     {
-        { "Database:Password", Secret },
-        { "Database:Migration:Password", Secret },
-        { "Database:HostLogins:Main:Password", Secret },
-        { "Database:Availability:Password", Secret },
-        { "Database:ValidationReader:Password", Secret },
-        { "Kafka:SaslPassword", Secret },
-        { "Redis:Password", Secret },
-        { "Email:Smtp:Password", Secret },
-        { "Integration:Outbound:ClientSecret", Secret },
-        { "Redis:ConnectionString", "redis:6379,ssl=true,password=" + Secret },
+        { "Database:Password", SecretPlaceholder },
+        { "Database:Migration:Password", SecretPlaceholder },
+        { "Database:HostLogins:Main:Password", SecretPlaceholder },
+        { "Database:Availability:Password", SecretPlaceholder },
+        { "Database:ValidationReader:Password", SecretPlaceholder },
+        { "Kafka:SaslPassword", SecretPlaceholder },
+        { "Redis:Password", SecretPlaceholder },
+        { "Email:Smtp:Password", SecretPlaceholder },
+        { "Integration:Outbound:ClientSecret", SecretPlaceholder },
+        { "Redis:ConnectionString", "redis:6379,ssl=true,password=" + SecretPlaceholder },
         { "Redis:ConnectionString", "redis:6379,ssl=true,user=ariva" },
         // The ARV-083b review: every name the logs omit, and the other credential names, not only Password and Secret.
-        { "Logging:PseudonymKey", Secret },
-        { "Otlp:Headers", "Authorization=Basic%20" + Secret },
-        { "Integration:Partner:ApiKey", Secret },
-        { "Integration:Partner:AccessToken", Secret },
-        { "Integration:Partner:Token", Secret },
-        { "Security:Signing:HmacKey", Secret },
-        { "Auth:Seed:TotpSeed", Secret },
-        { "Database:Pwd", Secret },
-        { "Integration:Outbound:CertificatePfxBase64", Secret },
-        { "Email:Smtp:Credential", Secret },
-        { "Integration:Partner:KeyPassphrase", Secret },
+        { "Logging:PseudonymKey", SecretPlaceholder },
+        { "Otlp:Headers", "Authorization=Basic%20" + SecretPlaceholder },
+        { "Integration:Partner:ApiKey", SecretPlaceholder },
+        { "Integration:Partner:AccessToken", SecretPlaceholder },
+        { "Integration:Partner:Token", SecretPlaceholder },
+        { "Security:Signing:HmacKey", SecretPlaceholder },
+        { "Auth:Seed:TotpSeed", SecretPlaceholder },
+        { "Database:Pwd", SecretPlaceholder },
+        { "Integration:Outbound:CertificatePfxBase64", SecretPlaceholder },
+        { "Email:Smtp:Credential", SecretPlaceholder },
+        { "Integration:Partner:KeyPassphrase", SecretPlaceholder },
         // A credential by its shape inside any other value: a connection string's Password pair, a bearer token.
-        { "Reports:Store:ConnectionString", "Host=db;Port=5432;Username=reports;Password=" + Secret },
-        { "Integration:Partner:Header", "Bearer " + Secret }
+        { "Reports:Store:ConnectionString", "Host=db;Port=5432;Username=reports;Password=" + SecretPlaceholder },
+        { "Integration:Partner:Header", "Bearer " + SecretPlaceholder }
     };
 
     #endregion
@@ -61,6 +65,7 @@ public sealed class SharedSettingsTests : IDisposable
     [MemberData(nameof(Credentials))]
     public void EnsureNoCredentials_Should_Refuse_When_AClustersBaseFileCarriesACredential(string key, string value)
     {
+        value = value.Replace(SecretPlaceholder, Secret, StringComparison.Ordinal);
         foreach (var environment in new[] { ArivaEnvironment.K8sDev, ArivaEnvironment.K8sDemo, ArivaEnvironment.K8sPrd })
         {
             var configuration = Configuration($"appsettings.base.{environment}.json", key, value);
@@ -80,6 +85,7 @@ public sealed class SharedSettingsTests : IDisposable
     [MemberData(nameof(Credentials))]
     public void EnsureNoCredentials_Should_Accept_When_TheCredentialComesFromTheHostsOwnSource(string key, string value)
     {
+        value = value.Replace(SecretPlaceholder, Secret, StringComparison.Ordinal);
         var fromEnvironment = new ConfigurationBuilder()
             .AddJsonFile(Write("appsettings.base.k8s-prd.json", "Application:Environment", "k8s-prd"))
             .AddInMemoryCollection([new KeyValuePair<string, string>(key, value)])
