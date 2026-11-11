@@ -74,7 +74,20 @@
 #                                   the runtime role or a login of it anything and none of them using pg_toast, no grant on
 #                                   a system catalog function beyond initdb's (pg_init_privs), and pg_maintain among the
 #                                   roles no login may hold; since ARV-263b pg_read_all_stats, pg_read_all_settings and
-#                                   pg_monitor too (initdb's own memberships among those roles are the server's). It
+#                                   pg_monitor too (initdb's own memberships among those roles are the server's). Since
+#                                   ARV-083d the host roles (ARIVA_HOST_ROLES) are held as deeply as the runtime role: the
+#                                   internal privileges judge each of them as they judge ariva_runtime (and a host role may use
+#                                   no sequence at all), the system and extension table, toast, parameter and system function
+#                                   grants, the CREATE checks and "owns nothing" cover them and their logins, "runtime caps"
+#                                   judges every login of a host role (the availability ledger's included) beside
+#                                   --runtime-login, and each host role has at most one login, holding ariva_runtime and that
+#                                   role only (without admin option) and never named ariva_app (ARIVA_COMMITTED_LOGIN, which
+#                                   check and restore refuse as --runtime-login too); its review: no login of Ariva's roles, nor
+#                                   any role that holds one, has a member of its own or CREATEDB, and none owns anything or holds
+#                                   a privilege but CONNECT on a database, in any database of the server ("role objects", the
+#                                   migration job's pg_shdepend refusal; since its round 2 with every database's own privileges
+#                                   and the --reader-login), nor do ariva_runtime and the host roles own anything; every line is
+#                                   printed with its control characters replaced. It
 #                                   finds what a careless forged dump leaves; it cannot prove a careful one absent (the
 #                                   superuser that ran it can change what check reads): the signed manifest is the gate
 #   schema [--full]                 what check compares: one <object>=<hash> line per object of Ariva's in public and per
@@ -226,7 +239,16 @@ user=SELECT(all_sites created_by created_by_id created_on display_name email fai
 user_role=SELECT;\
 user_session=SELECT;\
 user_site=SELECT"
+# ARV-083d: the host roles, the one list of them every check reads (the internal privileges, the grantees of the system,
+# extension and toast checks, the caps, the members, the held roles; only restore's CREATE ROLE statements name them, as their
+# scripts do). OpsScriptTests holds it equal to HostDatabaseAccess.HostRoles and refuses another list of them in check's SQL.
 readonly ARIVA_HOST_ROLES="ariva_main,ariva_ingest,ariva_stream,ariva_cronz,ariva_integration,ariva_availability"
+# ARV-083d: the committed development login (DatabaseLoginSettings.CommittedRuntimeName; OpsScriptTests holds it equal), whose
+# password is in the committed settings: a cluster's migration job refuses it as a host login, and check reports it as one.
+readonly ARIVA_COMMITTED_LOGIN="ariva_app"
+# ARV-083d review: so it is never let pass as --runtime-login either (check and restore refuse the name before they connect):
+# the shared login a deployment upgraded from stays reported until the operator withdraws it (wiki 04 section 6.2).
+readonly COMMITTED_LOGIN_REFUSED="--runtime-login must not be $ARIVA_COMMITTED_LOGIN, the committed development login whose password the committed settings carry: name api-main's own login (a cluster gives each host a login of its own), and withdraw $ARIVA_COMMITTED_LOGIN if it is still there (wiki 04 section 6.2)"
 readonly ARIVA_HOST_PRIVILEGES="ariva_main.advertising_media=SELECT,INSERT,UPDATE;\
 ariva_main.advertising_play=SELECT,INSERT;\
 ariva_main.advertising_playlist=SELECT,INSERT,UPDATE;\
@@ -681,12 +703,13 @@ SQL
 }
 
 # Members of Ariva's group roles other than the migration login and the named runtime and reader logins (since ARV-083a the
-# host roles' too, so a server whose host roles already have members is refused as one whose runtime role has).
+# host roles' too, so a server whose host roles already have members is refused as one whose runtime role has; ARV-083d: the
+# host roles from ARIVA_HOST_ROLES).
 extra_members() {
-  as_migration_catalog --tuples-only --no-align --set=runtime="$1" --set=reader="$2" <<'SQL'
+  as_migration_catalog --tuples-only --no-align --set=runtime="$1" --set=reader="$2" --set=host_roles="$ARIVA_HOST_ROLES" <<'SQL'
 SELECT coalesce(string_agg(g.rolname || ' has member ' || r.rolname, ', ' ORDER BY g.rolname, r.rolname), '')
   FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles r ON r.oid = m.member
- WHERE g.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability') AND r.rolname <> current_user
+ WHERE g.rolname = ANY (ARRAY['ariva_migration', 'ariva_runtime', 'ariva_validation_reader'] || string_to_array(:'host_roles', ',')) AND r.rolname <> current_user
    AND NOT (g.rolname = 'ariva_runtime' AND r.rolname = :'runtime')
    AND NOT (g.rolname = 'ariva_validation_reader' AND r.rolname = :'reader');
 SQL
@@ -1156,6 +1179,7 @@ cmd_restore() {
   [[ -n "$input" ]] || usage
   valid_file "$input" || die "--input must be - or a plain absolute path"
   [[ -z "$runtime" ]] || valid_identifier "$runtime" || die "--runtime-login must be a plain lower-case identifier"
+  [[ "$runtime" != "$ARIVA_COMMITTED_LOGIN" ]] || die "$COMMITTED_LOGIN_REFUSED"
   [[ -z "$reader" ]] || valid_identifier "$reader" || die "--reader-login must be a plain lower-case identifier"
   check_settings
   if [[ "$input" == "-" ]]; then
@@ -1205,7 +1229,7 @@ SQL
 
   say "creating Ariva's group roles as $LOGIN"
   local privileged
-  privileged="$(as_migration_catalog --tuples-only --no-align <<'SQL'
+  privileged="$(as_migration_catalog --tuples-only --no-align --set=host_roles="$ARIVA_HOST_ROLES" <<'SQL'
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ariva_migration') THEN
@@ -1240,8 +1264,7 @@ END
 $$;
 GRANT ariva_migration TO CURRENT_USER;
 SELECT string_agg(rolname, ', ') FROM pg_roles
- WHERE rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz',
-                   'ariva_integration', 'ariva_availability')
+ WHERE rolname = ANY (ARRAY['ariva_migration', 'ariva_runtime', 'ariva_validation_reader'] || string_to_array(:'host_roles', ','))
    AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolcanlogin OR rolreplication OR rolbypassrls);
 SQL
 )"
@@ -1372,6 +1395,7 @@ cmd_check() {
   done
   check_settings
   [[ -z "$runtime" ]] || valid_identifier "$runtime" || die "--runtime-login must be a plain lower-case identifier"
+  [[ "$runtime" != "$ARIVA_COMMITTED_LOGIN" ]] || die "$COMMITTED_LOGIN_REFUSED"
   [[ -z "$reader" ]] || valid_identifier "$reader" || die "--reader-login must be a plain lower-case identifier"
   # ARV-263 review: --allow-login is for a DBA's own login; Ariva's roles and logins are never let pass by it, nor (ARV-263b
   # review) one of PostgreSQL's predefined roles (pg_ names are reserved for them), which would hide a grant made to the role.
@@ -1388,7 +1412,7 @@ cmd_check() {
   report="$(as_migration_catalog --tuples-only --no-align --set=runtime="$runtime" --set=reader="$reader" --set=allowed_extensions="$extensions" \
     --set=allowed_logins="$logins_allowed" --set=allowed_settings="$settings_allowed" --set=ariva_functions="$ARIVA_FUNCTIONS" \
     --set=runtime_privileges="$ARIVA_RUNTIME_PRIVILEGES" --set=runtime_privileges_at="$ARIVA_RUNTIME_PRIVILEGES_AT" \
-    --set=host_roles="$ARIVA_HOST_ROLES" --set=host_privileges="$ARIVA_HOST_PRIVILEGES" \
+    --set=host_roles="$ARIVA_HOST_ROLES" --set=host_privileges="$ARIVA_HOST_PRIVILEGES" --set=committed_login="$ARIVA_COMMITTED_LOGIN" \
     --set=ariva_views="$ARIVA_VIEWS" --set=after_restore="$check_after_restore" \
     --set=timeout_min="$RUNTIME_TIMEOUT_MIN_SECONDS" --set=timeout_max="$RUNTIME_TIMEOUT_MAX_SECONDS" \
     --set=temp_min="$RUNTIME_TEMP_FILE_MIN_MEGABYTES" --set=temp_max="$RUNTIME_TEMP_FILE_MAX_MEGABYTES" \
@@ -1396,6 +1420,12 @@ cmd_check() {
     --set=keepalive_idle="$RUNTIME_KEEPALIVE_IDLE_SECONDS" --set=keepalive_interval="$RUNTIME_KEEPALIVE_INTERVAL_SECONDS" \
     --set=keepalive_count="$RUNTIME_KEEPALIVE_COUNT" <<'SQL'
 WITH RECURSIVE me AS (SELECT oid FROM pg_roles WHERE rolname = current_user),
+-- ARV-083d: Ariva's group roles (the migration, runtime and validation reader roles and the host roles of ARIVA_HOST_ROLES) and
+-- the host roles the server has, which every line below takes from here.
+group_role_names(name) AS (
+    SELECT unnest(ARRAY['ariva_migration', 'ariva_runtime', 'ariva_validation_reader'] || string_to_array(:'host_roles', ','))),
+host_roles(oid, name) AS (
+    SELECT r.oid, r.rolname::text FROM pg_roles r WHERE r.rolname = ANY (string_to_array(:'host_roles', ','))),
 foreign_owned AS (
     SELECT n.nspname || '.' || c.relname AS name
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -1407,8 +1437,6 @@ foreign_owned AS (
       FROM pg_proc p
      WHERE p.pronamespace = 'public'::regnamespace AND p.proowner <> (SELECT oid FROM me)
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')),
-runtime_owned AS (
-    SELECT count(*) AS n FROM pg_class WHERE relowner IN (SELECT oid FROM pg_roles WHERE rolname = 'ariva_runtime' OR (:'runtime' <> '' AND rolname = :'runtime'))),
 -- ARV-189: the script the database is at and whether it is behind the lists (compared byte by byte: the names are ASCII and
 -- the order is the scripts' own, whatever the database's collation).
 pinned_at AS (
@@ -1507,16 +1535,34 @@ view_drift AS (
 -- extension did (pg_init_privs), table-wide or on a column; and no table of the server's own grants the role or a login of it
 -- anything, or PUBLIC more than initdb did (pg_init_privs records pg_catalog's; information_schema's views, which it does not
 -- record, may give PUBLIC SELECT and nothing else, but its _pg_ views, which initdb leaves to their owner: _pg_user_mappings
--- shows every user mapping's options, passwords included).
+-- shows every user mapping's options, passwords included). ARV-083d: every host role is judged so too, each by what it holds
+-- itself (a grant to one of its logins is the runtime grants' line), and a host role uses no sequence at all (script 0074 grants
+-- none, and ariva_runtime keeps script 0001's SELECT and USAGE on a database behind it); a host role's finding names it.
+-- runtime_members and runtime_grantees hold the host roles, their logins and any role that holds one of them as well, so the
+-- system, extension and toast table checks, the CREATE checks, the parameter and system function grants and the logins line
+-- judge them as they judge ariva_runtime.
 runtime_members(oid) AS (
-    SELECT m.member FROM pg_auth_members m WHERE m.roleid = 'ariva_runtime'::regrole AND m.member <> (SELECT oid FROM me)
+    SELECT m.member FROM pg_auth_members m
+     WHERE (m.roleid = 'ariva_runtime'::regrole OR m.roleid IN (SELECT h.oid FROM host_roles h)) AND m.member <> (SELECT oid FROM me)
     UNION
     SELECT m.member FROM pg_auth_members m JOIN runtime_members r ON m.roleid = r.oid WHERE m.member <> (SELECT oid FROM me)),
 runtime_grantees(oid) AS (
     SELECT 'ariva_runtime'::regrole::oid
     UNION
+    SELECT h.oid FROM host_roles h
+    UNION
     SELECT r.oid FROM runtime_members r),
--- ARV-189 review: the runtime role and the logins that hold it create nothing, in any schema or in the database.
+-- The runtime role and its logins own no relation, in any schema (ARV-083d: nor do the host roles and theirs).
+runtime_owned AS (
+    SELECT count(*) AS n FROM pg_class
+     WHERE relowner IN (SELECT g.oid FROM runtime_grantees g UNION SELECT oid FROM pg_roles WHERE :'runtime' <> '' AND rolname = :'runtime')),
+-- The roles the internal privileges judge: ariva_runtime, then each host role, whose findings end with its name.
+judged(oid, suffix, host) AS (
+    SELECT 'ariva_runtime'::regrole::oid, '', false
+    UNION ALL
+    SELECT h.oid, ' for ' || h.name, true FROM host_roles h),
+-- ARV-189 review: the runtime role and the logins that hold it create nothing, in any schema or in the database (ARV-083d: nor
+-- do the host roles and their logins).
 runtime_create AS (
     SELECT pg_get_userbyid(r.oid) || ' in schema ' || n.nspname AS name
       FROM runtime_grantees r CROSS JOIN pg_namespace n WHERE has_schema_privilege(r.oid, n.oid, 'CREATE')
@@ -1555,49 +1601,59 @@ view_reads AS (
       JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> v.oid
       JOIN pg_class t ON t.oid = d.refobjid AND t.relkind IN ('r', 'p', 'v', 'm', 'f', 't', 'S')
      WHERE v.relkind IN ('v', 'm') AND v.oid >= 16384 AND NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.relation = v.oid)),
+-- Each rule's column branch looks only at columns with grants of their own (attacl): on any other column a column privilege is
+-- the table's, which the rule's table branch already judges, so no finding is lost and the cost per role stays small.
 internal_drift AS (
-    SELECT x.relation::regclass::text || ' (wider than ' || x.parent::regclass::text || ')' AS name
-      FROM (SELECT p.relation, p.parent FROM inherit_pairs p UNION ALL SELECT k.relation, k.parent FROM compressed k) x
-     WHERE EXISTS (SELECT 1 FROM table_privileges t WHERE has_table_privilege('ariva_runtime', x.relation, t.p) AND NOT has_table_privilege('ariva_runtime', x.parent, t.p))
+    SELECT x.relation::regclass::text || ' (wider than ' || x.parent::regclass::text || ')' || j.suffix AS name
+      FROM (SELECT p.relation, p.parent FROM inherit_pairs p UNION ALL SELECT k.relation, k.parent FROM compressed k) x CROSS JOIN judged j
+     WHERE EXISTS (SELECT 1 FROM table_privileges t WHERE has_table_privilege(j.oid, x.relation, t.p) AND NOT has_table_privilege(j.oid, x.parent, t.p))
         OR EXISTS (SELECT 1 FROM column_privileges t
-                     JOIN pg_attribute a ON a.attrelid = x.relation AND a.attnum > 0 AND NOT a.attisdropped
-                    WHERE has_column_privilege('ariva_runtime', x.relation, a.attnum, t.p) AND NOT has_table_privilege('ariva_runtime', x.parent, t.p)
+                     JOIN pg_attribute a ON a.attrelid = x.relation AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL
+                    WHERE has_column_privilege(j.oid, x.relation, a.attnum, t.p) AND NOT has_table_privilege(j.oid, x.parent, t.p)
                       AND NOT EXISTS (SELECT 1 FROM pg_attribute h WHERE h.attrelid = x.parent AND h.attname = a.attname AND NOT h.attisdropped
-                                                                      AND has_column_privilege('ariva_runtime', x.parent, h.attnum, t.p)))
+                                                                      AND has_column_privilege(j.oid, x.parent, h.attnum, t.p)))
     UNION ALL
     SELECT p.relation::regclass::text || ' (inherits ' || p.parent::regclass::text || ')'
       FROM inherit_pairs p WHERE NOT EXISTS (SELECT 1 FROM chunks k WHERE k.relation = p.relation)
     UNION ALL
-    SELECT r.relation::regclass::text || ' (more than SELECT)' FROM read_only r
-     WHERE EXISTS (SELECT 1 FROM table_privileges t WHERE t.p <> 'SELECT' AND has_table_privilege('ariva_runtime', r.relation, t.p))
-        OR EXISTS (SELECT 1 FROM column_privileges t JOIN pg_attribute a ON a.attrelid = r.relation AND a.attnum > 0 AND NOT a.attisdropped
-                    WHERE t.p <> 'SELECT' AND has_column_privilege('ariva_runtime', r.relation, a.attnum, t.p))
+    SELECT r.relation::regclass::text || ' (more than SELECT)' || j.suffix FROM read_only r CROSS JOIN judged j
+     WHERE EXISTS (SELECT 1 FROM table_privileges t WHERE t.p <> 'SELECT' AND has_table_privilege(j.oid, r.relation, t.p))
+        OR EXISTS (SELECT 1 FROM column_privileges t JOIN pg_attribute a ON a.attrelid = r.relation AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL
+                    WHERE t.p <> 'SELECT' AND has_column_privilege(j.oid, r.relation, a.attnum, t.p))
     UNION ALL
-    SELECT DISTINCT v.view::regclass::text || ' (reads ' || v.reads::regclass::text || ')'
-      FROM view_reads v CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) t(p)
-     WHERE (has_table_privilege('ariva_runtime', v.view, t.p)
+    SELECT DISTINCT v.view::regclass::text || ' (reads ' || v.reads::regclass::text || ')' || j.suffix
+      FROM view_reads v CROSS JOIN judged j CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) t(p)
+     WHERE (has_table_privilege(j.oid, v.view, t.p)
             OR CASE WHEN t.p = 'DELETE' THEN false
-                    ELSE EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = v.view AND a.attnum > 0 AND NOT a.attisdropped
-                                                               AND has_column_privilege('ariva_runtime', v.view, a.attnum, t.p)) END)
-       AND NOT has_table_privilege('ariva_runtime', v.reads, t.p)
+                    ELSE EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = v.view AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL
+                                                               AND has_column_privilege(j.oid, v.view, a.attnum, t.p)) END)
+       AND NOT has_table_privilege(j.oid, v.reads, t.p)
     UNION ALL
-    SELECT c.oid::regclass::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    SELECT c.oid::regclass::text || j.suffix FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace CROSS JOIN judged j
      WHERE c.oid >= 16384 AND n.nspname <> 'public' AND n.nspname NOT LIKE 'pg\_toast%' AND n.nspname NOT LIKE 'pg\_temp%'
        AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
        AND NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.relation = c.oid)
        AND NOT EXISTS (SELECT 1 FROM chunks k WHERE k.relation = c.oid)
        AND NOT EXISTS (SELECT 1 FROM compressed k WHERE k.relation = c.oid)
        AND NOT EXISTS (SELECT 1 FROM read_only r WHERE r.relation = c.oid)
-       AND (EXISTS (SELECT 1 FROM table_privileges t WHERE has_table_privilege('ariva_runtime', c.oid, t.p))
-            OR EXISTS (SELECT 1 FROM column_privileges t JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-                        WHERE has_column_privilege('ariva_runtime', c.oid, a.attnum, t.p)))
+       AND (EXISTS (SELECT 1 FROM table_privileges t WHERE has_table_privilege(j.oid, c.oid, t.p))
+            OR EXISTS (SELECT 1 FROM column_privileges t JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL
+                        WHERE has_column_privilege(j.oid, c.oid, a.attnum, t.p)))
     UNION ALL
-    SELECT c.oid::regclass::text || ' (sets values)' FROM pg_class c
+    -- The runtime role may set no sequence; a host role may set, read or use none of Ariva's (TimescaleDB's own are the
+    -- extension's, which the next rule holds to what it was created with).
+    SELECT c.oid::regclass::text || CASE WHEN has_sequence_privilege(j.oid, c.oid, 'UPDATE') THEN ' (sets values)' ELSE ' (reads or uses it)' END || j.suffix
+      FROM pg_class c CROSS JOIN judged j
      WHERE c.relkind = 'S' AND c.oid >= 16384
-       AND CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('ariva_runtime', c.oid, 'UPDATE') ELSE false END
+       AND CASE WHEN c.relkind = 'S'
+                THEN has_sequence_privilege(j.oid, c.oid, 'UPDATE')
+                     OR (j.host AND NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.relation = c.oid) AND has_sequence_privilege(j.oid, c.oid, 'SELECT, USAGE'))
+                ELSE false END
     UNION ALL
+    -- A grant to a host role or a login names its grantee (one to ariva_runtime or PUBLIC reads as before).
     SELECT DISTINCT c.oid::regclass::text || CASE WHEN g.attname IS NULL THEN '' ELSE ' (' || g.attname || ')' END
            || CASE WHEN c.oid < 16384 THEN ' (system table)' ELSE ' (extension table)' END
+           || CASE WHEN g.grantee IN (0, 'ariva_runtime'::regrole::oid) THEN '' ELSE ' to ' || pg_get_userbyid(g.grantee) END
       FROM pg_class c
       CROSS JOIN LATERAL (SELECT 0 AS objsubid, NULL::name AS attname, x.grantee, x.privilege_type FROM aclexplode(c.relacl) x
                           UNION ALL
@@ -1616,7 +1672,9 @@ internal_drift AS (
 -- and a grant option would let a host widen what other logins read. Nor does a relation of Ariva's (outside the extensions,
 -- created after initdb) grant PUBLIC anything: a migrated database has no such grant, and every login of the server holds
 -- PUBLIC. The migration login, which holds ariva_runtime as the role's creator (PostgreSQL 16 and later) and owns every
--- relation, is not one of the role's members here.
+-- relation, is not one of the role's members here. ARV-083d: the same for each host role, whose grants go to the role itself,
+-- never to its login (a grant to a host login, or to a role that holds a host role, is one of runtime_members') or with grant
+-- option.
 stray_grants AS (
     SELECT DISTINCT c.oid::regclass::text || CASE WHEN g.attname IS NULL THEN '' ELSE ' (' || g.attname || ')' END
            || CASE WHEN g.grantee = 0 THEN ' to PUBLIC' ELSE ' to ' || pg_get_userbyid(g.grantee) END
@@ -1627,7 +1685,7 @@ stray_grants AS (
                           SELECT t.attname, x.grantee, x.is_grantable FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) x
                            WHERE t.attrelid = c.oid AND t.attnum > 0 AND t.attacl IS NOT NULL) g
      WHERE g.grantee IN (SELECT r.oid FROM runtime_members r)
-        OR (g.grantee = 'ariva_runtime'::regrole AND g.is_grantable)
+        OR (g.is_grantable AND (g.grantee = 'ariva_runtime'::regrole OR g.grantee IN (SELECT h.oid FROM host_roles h)))
         OR (g.grantee = 0 AND c.oid >= 16384 AND NOT EXISTS (SELECT 1 FROM extension_members e WHERE e.relation = c.oid))),
 -- ARV-189 review (its third round): the default privileges are the scripts' and nothing else. Since ARV-083a (script 0074)
 -- there are none: a table or sequence a later script creates gives no role anything until its script grants it. A database
@@ -1722,12 +1780,18 @@ held (member, roleid) AS (
     SELECT h.member, m.roleid FROM held h JOIN pg_auth_members m ON m.member = h.roleid),
 -- A role with one of the four attributes but the bootstrap superuser (oid 10) and the migration login (CREATEROLE, to create
 -- the runtime and reader logins; require_migration_login checks the rest), login or not, and any role that holds a
--- powerful one, the migration login included; a DBA's own login named with --allow-login passes.
+-- powerful one, the migration login included; a DBA's own login named with --allow-login passes. ARV-083d review: and CREATEDB
+-- for the runtime role, a host role or any login or role that holds one (ariva_ensure_host_login refuses it on a host login,
+-- and the runtime login's own line on the --runtime-login), and (round 2) the --reader-login: with it a host login could create
+-- a database of its own.
 privileged_roles AS (
     SELECT r.rolname || ' (' || concat_ws(', ', CASE WHEN r.rolsuper THEN 'superuser' END, CASE WHEN r.rolcreaterole THEN 'createrole' END,
+                                         CASE WHEN r.rolcreatedb AND (r.oid IN (SELECT g.oid FROM runtime_grantees g) OR r.rolname = :'reader') THEN 'createdb' END,
                                          CASE WHEN r.rolreplication THEN 'replication' END, CASE WHEN r.rolbypassrls THEN 'bypassrls' END) || ')' AS name
       FROM pg_roles r
-     WHERE (r.rolsuper OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls) AND r.oid <> 10 AND r.rolname <> current_user
+     WHERE (r.rolsuper OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls
+            OR (r.rolcreatedb AND (r.oid IN (SELECT g.oid FROM runtime_grantees g) OR r.rolname = :'reader')))
+       AND r.oid <> 10 AND r.rolname <> current_user
        AND (r.oid IN (SELECT g.oid FROM runtime_grantees g) OR NOT r.rolname = ANY (string_to_array(:'allowed_logins', ',')))
     UNION
     SELECT r.rolname || ' (holds ' || p.rolname || ')'
@@ -1746,7 +1810,7 @@ privileged_roles AS (
 held_by_ariva AS (
     SELECT r.rolname || ' holds ' || g.rolname AS name
       FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member JOIN pg_roles g ON g.oid = m.roleid
-     WHERE r.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability')
+     WHERE r.rolname IN (SELECT name FROM group_role_names)
         OR (:'reader' <> '' AND r.rolname = :'reader' AND g.rolname <> 'ariva_validation_reader')),
 -- ARV-183 review: settings made for a role's sessions (ALTER ROLE ... SET), in this database or in every one, but the
 -- runtime login's statement timeout (script 0063), temporary file cap (script 0069, ARV-290), idle transaction limit and TCP
@@ -1792,37 +1856,53 @@ system_function_grants AS (
 -- on a column, PUBLIC's grants included (a migrated database's toast tables have no grant: their owner's privileges only),
 -- and none of them may use pg_toast, or a temporary toast schema: a grant on the toast table behind a table it may not read
 -- hands it that table's long values. Only a toast table with grants of its own is looked at, so a server with many chunks
--- costs little.
+-- costs little. ARV-083d review (round 2): the names are kept as they are here and their control characters replaced on the
+-- line, so two grantees whose names differ only there stay two entries.
 toast_grants AS (
-    SELECT DISTINCT regexp_replace(c.oid::regclass::text || ' to ' || pg_get_userbyid(r.oid), '[[:cntrl:]]', '?', 'g') AS name
+    SELECT DISTINCT c.oid::regclass::text || ' to ' || pg_get_userbyid(r.oid) AS name
       FROM pg_class c CROSS JOIN runtime_grantees r
      WHERE c.relkind = 't'
        AND (c.relacl IS NOT NULL OR EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND a.attacl IS NOT NULL))
        AND (EXISTS (SELECT 1 FROM table_privileges t WHERE has_table_privilege(r.oid, c.oid, t.p))
             OR EXISTS (SELECT 1 FROM column_privileges t WHERE has_any_column_privilege(r.oid, c.oid, t.p)))
     UNION ALL
-    SELECT regexp_replace('USAGE on schema ' || n.nspname || ' to ' || pg_get_userbyid(r.oid), '[[:cntrl:]]', '?', 'g')
+    SELECT 'USAGE on schema ' || n.nspname || ' to ' || pg_get_userbyid(r.oid)
       FROM pg_namespace n CROSS JOIN runtime_grantees r
      WHERE n.nspname ~ '^pg_toast(_temp_[0-9]+)?$' AND has_schema_privilege(r.oid, n.oid, 'USAGE')),
 -- ARV-290 review (L3): the runtime login's own settings in this database, which role_settings allows by name: the migration job
 -- sets both on every release, and the migration login may change them in between (it may set temp_file_limit, to -1 or to
 -- terabytes too). Each is judged by its value, in the form the job writes and within the bounds the job holds it to; at most
--- seven digits are read, so no text makes the cast fail.
+-- seven digits are read, so no text makes the cast fail. ARV-083d: of every login the migration job sets them on: each login of a
+-- host role (the availability ledger's among them; ApplyLimitsAsync, the same values for each) and the --runtime-login named; its
+-- review: and any other login that holds the runtime role or a host role, directly or through another role (runtime_members),
+-- which "group members" reports too, so a login that reaches a host's grants through another is never without the caps unseen.
+cap_logins(oid, name) AS (
+    SELECT r.oid, r.rolname::text FROM pg_roles r
+     WHERE r.rolcanlogin AND r.oid IN (SELECT o.oid FROM runtime_members o)
+    UNION
+    SELECT r.oid, r.rolname::text FROM pg_roles r WHERE :'runtime' <> '' AND r.rolname = :'runtime'),
 runtime_caps AS (
-    SELECT statement_timeout, temp_file_limit, idle_limit, keepalives,
+    SELECT l.name, statement_timeout, temp_file_limit, idle_limit, keepalives,
            coalesce(substring(statement_timeout FROM '^([1-9][0-9]{0,6})s$')::int BETWEEN :'timeout_min'::int AND :'timeout_max'::int, false) AS timeout_ok,
            coalesce(substring(temp_file_limit FROM '^([1-9][0-9]{0,6})MB$')::int BETWEEN :'temp_min'::int AND :'temp_max'::int, false) AS temp_ok,
            coalesce(substring(idle_limit FROM '^([1-9][0-9]{0,6})s$')::int BETWEEN :'idle_min'::int AND :'idle_max'::int, false) AS idle_ok,
            keepalives IS NOT DISTINCT FROM (:'keepalive_idle' || '/' || :'keepalive_interval' || '/' || :'keepalive_count') AS keepalives_ok
-      FROM (SELECT max(substr(c, length('statement_timeout=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'statement_timeout') AS statement_timeout,
+      FROM cap_logins l
+      CROSS JOIN LATERAL (SELECT max(substr(c, length('statement_timeout=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'statement_timeout') AS statement_timeout,
                    max(substr(c, length('temp_file_limit=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'temp_file_limit') AS temp_file_limit,
                    max(substr(c, length('idle_in_transaction_session_timeout=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'idle_in_transaction_session_timeout') AS idle_limit,
                    concat_ws('/', max(substr(c, length('tcp_keepalives_idle=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'tcp_keepalives_idle'),
                                   max(substr(c, length('tcp_keepalives_interval=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'tcp_keepalives_interval'),
                                   max(substr(c, length('tcp_keepalives_count=') + 1)) FILTER (WHERE split_part(c, '=', 1) = 'tcp_keepalives_count')) AS keepalives
               FROM pg_db_role_setting s CROSS JOIN LATERAL unnest(s.setconfig) c
-             WHERE s.setrole = (SELECT oid FROM pg_roles WHERE rolname = :'runtime')
+             WHERE s.setrole = l.oid
                AND s.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database())) raw),
+-- What the caps line shows when every login passes: the logins with the same values together.
+caps_shown AS (
+    SELECT string_agg(logins || ' in this database: statement_timeout ' || statement_timeout || ', temp_file_limit ' || temp_file_limit
+                      || ', idle_in_transaction_session_timeout ' || idle_limit || ', tcp_keepalives ' || keepalives, '; ' ORDER BY logins COLLATE "C") AS shown
+      FROM (SELECT string_agg(name, ', ' ORDER BY name COLLATE "C") AS logins, statement_timeout, temp_file_limit, idle_limit, keepalives
+              FROM runtime_caps GROUP BY statement_timeout, temp_file_limit, idle_limit, keepalives) same),
 -- ARV-183: a rule created after the server's own (pg_settings has two) that is not a view's (_RETURN), outside the extensions:
 -- it rewrites what its table's statements do.
 rules AS (
@@ -1849,25 +1929,79 @@ event_triggers AS (
      WHERE NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_event_trigger'::regclass AND d.objid = e.oid AND d.deptype = 'e')),
 -- ARV-083a: a host login (it signs in and holds ariva_runtime and exactly one host role, nothing else; the migration job's
 -- ariva_ensure_host_login) is one of the deployment's logins; any other member of Ariva's roles but the named ones is reported.
+-- ARV-083d: one login per host role (the migration job ensures one for each), so a host role with two host-shaped logins
+-- reports both, and never the committed development login (ARIVA_COMMITTED_LOGIN, whose password the committed settings
+-- carry; a cluster's migration job refuses it), named with --runtime-login or not. Such a login's membership of ariva_runtime
+-- is reported with its host role's, by the reason.
+host_logins AS (
+    SELECT r.oid, r.rolname::text AS name, h.oid AS role, h.name AS role_name
+      FROM pg_roles r JOIN pg_auth_members m ON m.member = r.oid AND NOT m.admin_option JOIN host_roles h ON h.oid = m.roleid
+     WHERE r.rolcanlogin AND r.oid <> (SELECT oid FROM me)
+       AND (SELECT count(*) FROM pg_auth_members x WHERE x.member = r.oid) = 2
+       AND EXISTS (SELECT 1 FROM pg_auth_members x WHERE x.member = r.oid AND x.roleid = 'ariva_runtime'::regrole AND NOT x.admin_option)),
+-- Its review: a membership with admin option (its holder may grant the role on) is never one of them, the named logins' included.
+-- And a login of Ariva's roles, or any role that holds one (runtime_members), the --runtime-login and the --reader-login, has no
+-- member of its own but the migration login (PostgreSQL 16 and later make a role's creator its administrator): a member would
+-- hold that login's grants through it, without its caps, past every line that judges the logins themselves.
 extra_members AS (
-    SELECT g.rolname || ' has member ' || r.rolname AS name
+    SELECT g.rolname || ' has member ' || r.rolname
+           || CASE WHEN m.admin_option THEN ' (with admin option, so it may grant ' || g.rolname || ' on)'
+                   WHEN l.oid IS NULL THEN ''
+                   WHEN l.name = :'committed_login' THEN ' (' || :'committed_login' || ', the committed development login, is never a host login)'
+                   ELSE ' (one of ' || (SELECT count(*) FROM host_logins o WHERE o.role = l.role) || ' logins of ' || l.role_name || '; a host role has one)' END AS name
       FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles r ON r.oid = m.member
-     WHERE g.rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability') AND r.rolname <> current_user
-       AND NOT (g.rolname = 'ariva_runtime' AND r.rolname = :'runtime')
-       AND NOT (g.rolname = 'ariva_validation_reader' AND r.rolname = :'reader')
-       AND NOT (r.rolcanlogin AND g.rolname IN ('ariva_runtime', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability')
-                AND (SELECT count(*) FROM pg_auth_members x WHERE x.member = r.oid) = 2
-                AND EXISTS (SELECT 1 FROM pg_auth_members x JOIN pg_roles h ON h.oid = x.roleid WHERE x.member = r.oid AND h.rolname = 'ariva_runtime')
-                AND EXISTS (SELECT 1 FROM pg_auth_members x JOIN pg_roles h ON h.oid = x.roleid WHERE x.member = r.oid
-                                                                                                AND h.rolname IN ('ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability'))))
+      LEFT JOIN host_logins l ON l.oid = r.oid
+     WHERE g.rolname IN (SELECT name FROM group_role_names) AND r.rolname <> current_user
+       AND NOT (g.rolname = 'ariva_runtime' AND r.rolname = :'runtime' AND NOT m.admin_option)
+       AND NOT (g.rolname = 'ariva_validation_reader' AND r.rolname = :'reader' AND NOT m.admin_option)
+       AND NOT (l.oid IS NOT NULL AND g.rolname = 'ariva_runtime')
+       AND NOT (l.oid IS NOT NULL AND l.name <> :'committed_login' AND (SELECT count(*) FROM host_logins o WHERE o.role = l.role) = 1)
+    UNION ALL
+    SELECT g.rolname || ' has member ' || r.rolname || ' (a login of Ariva''s roles, or a role that holds one, has no member)'
+      FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles r ON r.oid = m.member
+     WHERE m.member <> (SELECT oid FROM me)
+       AND (m.roleid IN (SELECT o.oid FROM runtime_members o)
+            OR m.roleid IN (SELECT oid FROM pg_roles WHERE rolname IN (:'runtime', :'reader')))),
+-- Its review: what ariva_ensure_host_login refuses a host login for, in every database of the server (pg_shdepend is shared):
+-- no login of Ariva's roles (runtime_members and the --runtime-login) owns anything or holds a privilege but CONNECT on a
+-- database, and the runtime role and the host roles own nothing (their grants are the lines above), whatever the object: a
+-- large object, a type, a schema, a foreign server, a database. An object of another database is named by that database only.
+-- Its review (round 2): the --reader-login is one of these logins too; an object pg_describe_object cannot name (a catalog row a
+-- forged dump left) is named by its catalog and oid, and so is one of another database, with that database; and the databases'
+-- own privileges, which pg_shdepend records as one entry per grantee and database (left out above), are read from the shared
+-- pg_database: on any database of the server these logins, the runtime role and the host roles hold CONNECT without grant
+-- option and nothing else (TEMP and CREATE included), as ariva_ensure_host_login requires of a host login.
+role_logins(oid) AS (
+    SELECT o.oid FROM runtime_members o
+    UNION
+    SELECT oid FROM pg_roles WHERE rolname IN (:'runtime', :'reader')),
+role_objects AS (
+    SELECT pg_get_userbyid(d.refobjid)
+           || CASE d.deptype WHEN 'o' THEN ' owns ' WHEN 'a' THEN ' holds a privilege on ' WHEN 'r' THEN ' is named in a policy on '
+                             WHEN 'i' THEN ' holds an initial privilege on ' ELSE ' depends on ' END
+           || CASE WHEN d.dbid IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
+                   THEN coalesce(pg_describe_object(d.classid, d.objid, d.objsubid), d.classid::regclass::text || ' ' || d.objid)
+                   ELSE d.classid::regclass::text || ' ' || d.objid || CASE WHEN d.objsubid <> 0 THEN ' column ' || d.objsubid ELSE '' END
+                        || ' of database ' || coalesce((SELECT datname::text FROM pg_database WHERE oid = d.dbid), d.dbid::text) END AS name
+      FROM pg_shdepend d
+     WHERE d.refclassid = 'pg_authid'::regclass
+       AND ((d.refobjid IN (SELECT l.oid FROM role_logins l) AND NOT (d.classid = 'pg_database'::regclass AND d.deptype = 'a'))
+            OR (d.deptype = 'o' AND d.refobjid IN (SELECT g.oid FROM runtime_grantees g)))
+    UNION ALL
+    SELECT pg_get_userbyid(a.grantee) || ' holds ' || a.privilege_type || CASE WHEN a.is_grantable THEN ' with grant option' ELSE '' END
+           || ' on database ' || db.datname
+      FROM pg_database db CROSS JOIN LATERAL aclexplode(db.datacl) a
+     WHERE (a.grantee IN (SELECT l.oid FROM role_logins l) OR a.grantee IN (SELECT g.oid FROM runtime_grantees g))
+       AND (a.privilege_type <> 'CONNECT' OR a.is_grantable))
 SELECT 'schema_version|' || (SELECT count(*) FROM public.schema_version) || ' scripts, latest ' || coalesce((SELECT max(script_name) FROM public.schema_version), 'none')
 UNION ALL SELECT 'hypertables|' || (SELECT count(*) FROM timescaledb_information.hypertables) || ' hypertables, '
     || (SELECT count(*) FROM timescaledb_information.jobs WHERE application_name NOT LIKE 'Telemetry%') || ' TimescaleDB jobs'
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'owners|every object belongs to ' || current_user
                       ELSE 'FAIL owners|' || count(*) || ' objects belong to another role, for example ' || min(name) END FROM foreign_owned
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'runtime role|ariva_runtime and the logins that hold it have no CREATE on public, on any other schema or on the database'
-                      ELSE 'FAIL runtime role|may create objects: ' || string_agg(name, ', ' ORDER BY name) END FROM runtime_create
-UNION ALL SELECT CASE WHEN (SELECT n FROM runtime_owned) = 0 THEN 'runtime role|owns nothing' ELSE 'FAIL runtime role|owns ' || (SELECT n FROM runtime_owned) || ' relations' END
+UNION ALL SELECT regexp_replace(CASE WHEN count(*) = 0 THEN 'runtime role|ariva_runtime, the host roles and the logins that hold them have no CREATE on public, on any other schema or on the database'
+                      ELSE 'FAIL runtime role|may create objects: ' || string_agg(name, ', ' ORDER BY name) END, '[[:cntrl:]]', '?', 'g') FROM runtime_create
+UNION ALL SELECT CASE WHEN (SELECT n FROM runtime_owned) = 0 THEN 'runtime role|owns nothing, nor do the host roles or their logins'
+                      ELSE 'FAIL runtime role|ariva_runtime, a host role or one of their logins owns ' || (SELECT n FROM runtime_owned) || ' relations' END
 UNION ALL SELECT CASE
         WHEN (SELECT behind FROM pinned_at) AND :'after_restore' = '1'
             THEN 'runtime privileges|not compared: the database is at ' || (SELECT latest FROM pinned_at) || ' and the list at ' || :'runtime_privileges_at'
@@ -1895,30 +2029,37 @@ UNION ALL SELECT CASE
         ELSE 'FAIL views|' || count(*) || ' views differ from the scripts: '
              || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM view_drift ORDER BY name LIMIT 10) first_ten)
              || CASE WHEN count(*) > 10 THEN ', and ' || (count(*) - 10) || ' more' ELSE '' END END FROM view_drift
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'internal privileges|ariva_runtime: each inheritance child no wider than its parent and only TimescaleDB''s chunks inheriting, each compressed chunk no wider than its hypertable, each continuous aggregate''s table and views at most SELECT, no view wider than what it reads, nothing on any other relation created after initdb outside public and the extensions, no sequence it may set, no extension or system table granting more than it was created with'
-                      ELSE 'FAIL internal privileges|' || count(*) || ' relations grant ariva_runtime more than these rules allow: '
+UNION ALL SELECT regexp_replace(CASE WHEN count(*) = 0 THEN 'internal privileges|ariva_runtime and the host roles (' || replace(:'host_roles', ',', ', ') || '): each inheritance child no wider than its parent and only TimescaleDB''s chunks inheriting, each compressed chunk no wider than its hypertable, each continuous aggregate''s table and views at most SELECT, no view wider than what it reads, nothing on any other relation created after initdb outside public and the extensions, no sequence the runtime role may set and none of Ariva''s a host role may use, no extension or system table granting more than it was created with'
+                      ELSE 'FAIL internal privileges|' || count(*) || ' relations grant ariva_runtime or a host role (named after the relation) more than these rules allow: '
                            || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM internal_drift ORDER BY name LIMIT 50) first_ones)
-                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END FROM internal_drift
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'runtime grants|every grant of a relation or column to the runtime role goes to ariva_runtime without grant option, none to a role that holds it, and none of Ariva''s relations grants PUBLIC anything'
-                      ELSE 'FAIL runtime grants|' || count(*) || ' grants to a role that holds ariva_runtime, with grant option or to PUBLIC: '
+                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END, '[[:cntrl:]]', '?', 'g') FROM internal_drift
+UNION ALL SELECT regexp_replace(CASE WHEN count(*) = 0 THEN 'runtime grants|every grant of a relation or column to the runtime role or a host role goes to that role without grant option, none to a login or role that holds one, and none of Ariva''s relations grants PUBLIC anything'
+                      ELSE 'FAIL runtime grants|' || count(*) || ' grants to a login or role that holds ariva_runtime or a host role, with grant option or to PUBLIC: '
                            || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM stray_grants ORDER BY name LIMIT 50) first_ones)
-                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END FROM stray_grants
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'toast|no toast table grants ariva_runtime or a login that holds it anything, and none of them may use pg_toast'
+                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END, '[[:cntrl:]]', '?', 'g') FROM stray_grants
+UNION ALL SELECT regexp_replace(CASE WHEN count(*) = 0 THEN 'toast|no toast table grants ariva_runtime, a host role or a login that holds one anything, and none of them may use pg_toast'
                       ELSE 'FAIL toast|' || count(*) || ' grants on toast tables or their schemas: '
                            || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM toast_grants ORDER BY name LIMIT 50) first_ones)
-                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END FROM toast_grants
+                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END END,
+                      '[[:cntrl:]]', '?', 'g') FROM toast_grants
 UNION ALL SELECT CASE WHEN count(*) = 0 AND NOT (SELECT behind FROM pinned_at) THEN 'default privileges|none: a table or sequence a later script creates gives no role anything until its script grants it (script 0074)'
                       WHEN count(*) = 0 THEN 'default privileges|script 0001''s only: the migration login''s tables in public give ariva_runtime SELECT, INSERT, UPDATE and DELETE, its sequences there SELECT and USAGE'
                       ELSE 'FAIL default privileges|' || count(*) || ' entries differ from the scripts'': ' || string_agg(name, '; ' ORDER BY name) END FROM default_drift
-UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('ariva_migration', 'ariva_runtime', 'ariva_validation_reader', 'ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability')
+UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN (SELECT name FROM group_role_names)
                                      AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolcanlogin OR rolreplication OR rolbypassrls))
                       THEN 'FAIL group roles|an Ariva group role is privileged or can sign in' ELSE 'group roles|NOLOGIN, unprivileged' END
 UNION ALL SELECT 'migration login|' || current_user || ' owns the database; not superuser, replication or bypassrls'
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'group members|only the migration login and the named logins'
-                      ELSE 'FAIL group members|' || string_agg(name, ', ' ORDER BY name) || ' (name this deployment''s logins with --runtime-login and --reader-login)' END
-                 FROM extra_members
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'held roles|Ariva''s group roles hold no role' || CASE WHEN :'reader' = '' THEN '' ELSE ', ' || :'reader' || ' only ariva_validation_reader' END
-                      ELSE 'FAIL held roles|' || string_agg(name, ', ' ORDER BY name) END FROM held_by_ariva
+UNION ALL SELECT regexp_replace(CASE WHEN count(*) = 0 THEN 'group members|only the migration login and the named logins, and at most one login of each host role holding ariva_runtime and that role only, without admin option, none of them ' || :'committed_login'
+                                                || ', and no member of any of these logins'
+                      ELSE 'FAIL group members|' || string_agg(name, ', ' ORDER BY name) || ' (name this deployment''s logins with --runtime-login and --reader-login)' END, '[[:cntrl:]]', '?', 'g') FROM extra_members
+UNION ALL SELECT regexp_replace(CASE WHEN count(*) = 0 THEN 'role objects|no login of Ariva''s roles owns anything or holds a privilege but CONNECT on a database (the host logins, any role that holds one, the --runtime-login and the --reader-login named), and ariva_runtime and the host roles own nothing and hold no privilege on a database but CONNECT, in any database of the server'
+                      ELSE 'FAIL role objects|' || count(*) || ' objects of Ariva''s logins or roles, in any database of the server: '
+                           || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM role_objects ORDER BY name LIMIT 50) first_ones)
+                           || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END
+                           || ' (what the migration job refuses a host login for: find out who made it, then take it away, wiki 10 section 4.13)' END,
+                      '[[:cntrl:]]', '?', 'g') FROM role_objects
+UNION ALL SELECT regexp_replace(CASE WHEN count(*) = 0 THEN 'held roles|Ariva''s group roles hold no role' || CASE WHEN :'reader' = '' THEN '' ELSE ', ' || :'reader' || ' only ariva_validation_reader' END
+                      ELSE 'FAIL held roles|' || string_agg(name, ', ' ORDER BY name) END, '[[:cntrl:]]', '?', 'g') FROM held_by_ariva
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'functions|no C, untrusted-language or SECURITY DEFINER function outside the extensions, but the retention purges as scripts 0054 and 0072 ship them'
                       ELSE 'FAIL functions|' || count(*) || ' outside the extensions: ' || string_agg(name, ', ' ORDER BY name) END FROM risky_functions
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'languages|plpgsql only'
@@ -1928,36 +2069,40 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'extensions|plpgsql, timescaledb an
                       ELSE 'FAIL extensions|' || string_agg(name, ', ' ORDER BY name) || ' (a DBA-provided server''s own: name it with --allow-extension)' END FROM other_extensions
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'plpgsql|its three handler functions and its language only'
                       ELSE 'FAIL plpgsql|also holds ' || string_agg(name, ', ' ORDER BY name) || ' (added to the extension, where the function checks do not look)' END FROM plpgsql_members
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'logins|no role but the bootstrap superuser and the migration login is a superuser or has createrole, replication or bypassrls, and none holds such a role or one of the server, data, signal, maintenance or statistics roles'
+UNION ALL SELECT regexp_replace(CASE WHEN count(*) = 0 THEN 'logins|no role but the bootstrap superuser and the migration login is a superuser or has createrole, replication or bypassrls, no login or role of Ariva''s (the runtime role, the host roles, any login or role that holds one, the --runtime-login and the --reader-login named) has createdb, and none holds such a role or one of the server, data, signal, maintenance or statistics roles'
                                                 || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', but allowed: ' || replace(:'allowed_logins', ',', ', ') END
-                      ELSE 'FAIL logins|' || string_agg(name, ', ' ORDER BY name) || ' (a DBA''s own login: name it with --allow-login)' END FROM privileged_roles
+                      ELSE 'FAIL logins|' || string_agg(name, ', ' ORDER BY name) || ' (a DBA''s own login: name it with --allow-login)' END, '[[:cntrl:]]', '?', 'g') FROM privileged_roles
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'role settings|none but the runtime login''s statement timeout, temporary file cap, idle transaction limit and keepalives'
                                                 || CASE WHEN :'allowed_settings' = '' THEN '' ELSE ', and allowed: ' || replace(:'allowed_settings', ',', ', ') END
                       ELSE 'FAIL role settings|' || string_agg(name, ', ' ORDER BY name) || ' (ALTER ROLE ... SET; a DBA''s own: name it with --allow-setting)' END FROM role_settings
 UNION ALL SELECT CASE WHEN has_parameter_privilege('temp_file_limit', 'SET') THEN 'temp file cap|the migration login may set temp_file_limit on the runtime login (ARV-290)'
                       ELSE 'FAIL temp file cap|the migration login may not set temp_file_limit, so the migration job stops (ARV-290): run grant-settings' END
-UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'parameter privileges|SET on temp_file_limit to the migration login or ariva_migration only'
+UNION ALL SELECT regexp_replace(CASE WHEN count(*) = 0 THEN 'parameter privileges|SET on temp_file_limit to the migration login or ariva_migration only'
                                                 || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', and the allowed logins'' own' END
                       ELSE 'FAIL parameter privileges|' || string_agg(name, ', ' ORDER BY name)
-                           || ' (GRANT ... ON PARAMETER, the cluster''s: find out who granted it, wiki 10 section 4.19)' END FROM parameter_grants
+                           || ' (GRANT ... ON PARAMETER, the cluster''s: find out who granted it, wiki 10 section 4.19)' END,
+                      '[[:cntrl:]]', '?', 'g') FROM parameter_grants
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'system function grants|the system catalog''s functions grant what initdb gave and nothing more'
                                                 || CASE WHEN :'allowed_logins' = '' THEN '' ELSE ', but the allowed logins'' own' END
                       ELSE 'FAIL system function grants|' || count(*) || ' beyond initdb''s: '
                            || (SELECT string_agg(name, ', ' ORDER BY name) FROM (SELECT name FROM system_function_grants ORDER BY name LIMIT 50) first_ones)
                            || CASE WHEN count(*) > 50 THEN ', and ' || (count(*) - 50) || ' more' ELSE '' END
                            || ' (GRANT on a function of pg_catalog, a superuser''s: find out who granted it, then REVOKE it)' END FROM system_function_grants
-UNION ALL SELECT CASE WHEN timeout_ok AND temp_ok AND idle_ok AND keepalives_ok
-                      THEN 'runtime caps|' || :'runtime' || ' in this database: statement_timeout ' || statement_timeout || ', temp_file_limit ' || temp_file_limit
-                           || ', idle_in_transaction_session_timeout ' || idle_limit || ', tcp_keepalives ' || keepalives
-                      ELSE 'FAIL runtime caps|' || :'runtime' || ' in this database: '
-                           || concat_ws(', ', CASE WHEN timeout_ok THEN NULL ELSE 'statement_timeout ' || coalesce(statement_timeout, 'not set') END,
-                                              CASE WHEN temp_ok THEN NULL ELSE 'temp_file_limit ' || coalesce(temp_file_limit, 'not set') END,
-                                              CASE WHEN idle_ok THEN NULL ELSE 'idle_in_transaction_session_timeout ' || coalesce(idle_limit, 'not set') END,
-                                              CASE WHEN keepalives_ok THEN NULL ELSE 'tcp_keepalives ' || coalesce(nullif(keepalives, ''), 'not set') END)
+-- ARV-083d: one line for every login the caps are judged on (none when there is no host login and no --runtime-login): each
+-- failing login with what fails, separated by semicolons.
+UNION ALL SELECT regexp_replace(CASE WHEN bool_and(timeout_ok AND temp_ok AND idle_ok AND keepalives_ok)
+                      THEN 'runtime caps|' || (SELECT shown FROM caps_shown)
+                      ELSE 'FAIL runtime caps|'
+                           || string_agg(CASE WHEN NOT (timeout_ok AND temp_ok AND idle_ok AND keepalives_ok) THEN name || ' in this database: '
+                                 || concat_ws(', ', CASE WHEN timeout_ok THEN NULL ELSE 'statement_timeout ' || coalesce(statement_timeout, 'not set') END,
+                                                    CASE WHEN temp_ok THEN NULL ELSE 'temp_file_limit ' || coalesce(temp_file_limit, 'not set') END,
+                                                    CASE WHEN idle_ok THEN NULL ELSE 'idle_in_transaction_session_timeout ' || coalesce(idle_limit, 'not set') END,
+                                                    CASE WHEN keepalives_ok THEN NULL ELSE 'tcp_keepalives ' || coalesce(nullif(keepalives, ''), 'not set') END) END,
+                                         '; ' ORDER BY name COLLATE "C")
                            || ' (the migration job sets ' || :'timeout_min' || 's to ' || :'timeout_max' || 's, ' || :'temp_min' || 'MB to '
                            || :'temp_max' || 'MB, ' || :'idle_min' || 's to ' || :'idle_max' || 's and keepalives ' || :'keepalive_idle' || '/'
-                           || :'keepalive_interval' || '/' || :'keepalive_count' || '; ARV-096d, ARV-290, ARV-292): run the migration job' END
-                 FROM runtime_caps WHERE :'runtime' <> '' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'runtime')
+                           || :'keepalive_interval' || '/' || :'keepalive_count' || '; ARV-096d, ARV-290, ARV-292): run the migration job' END,
+                      '[[:cntrl:]]', '?', 'g') FROM runtime_caps HAVING count(*) > 0
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'rules|none but the views'' own'
                       ELSE 'FAIL rules|' || string_agg(name, ', ' ORDER BY name) END FROM rules
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'other functions|none outside the extensions but Ariva''s own, each with a body its scripts ship'
@@ -1976,7 +2121,7 @@ UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'extension versions|TimescaleDB''s 
                           AND a.installed_version <> a.default_version) behind
 UNION ALL SELECT CASE WHEN count(*) = 0 THEN 'event triggers|none outside the extensions'
                       ELSE 'FAIL event triggers|' || string_agg(name, ', ' ORDER BY name) END FROM event_triggers
-UNION ALL SELECT CASE
+UNION ALL SELECT regexp_replace(CASE
         WHEN :'runtime' = '' THEN 'runtime login|not checked (give --runtime-login after the migration job)'
         WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'runtime') THEN 'FAIL runtime login|' || :'runtime' || ' does not exist: run the migration job'
         WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'runtime' AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls OR NOT rolcanlogin))
@@ -1986,13 +2131,17 @@ UNION ALL SELECT CASE
                           WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime') AND g.rolname = 'ariva_runtime')
           OR EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
                       WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime') AND g.rolname <> 'ariva_runtime'
-                        AND g.rolname NOT IN ('ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability'))
+                        AND g.rolname NOT IN (SELECT h.name FROM host_roles h))
           OR (SELECT count(*) FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
-               WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime') AND g.rolname IN ('ariva_main', 'ariva_ingest', 'ariva_stream', 'ariva_cronz', 'ariva_integration', 'ariva_availability')) > 1
+               WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime') AND g.rolname IN (SELECT h.name FROM host_roles h)) > 1
             THEN 'FAIL runtime login|' || :'runtime' || ' holds roles other than ariva_runtime and one host role'
+        -- ARV-083d review: and holds neither with admin option (it could grant the role on).
+        WHEN EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime') AND m.admin_option)
+            THEN 'FAIL runtime login|' || :'runtime' || ' holds a role with admin option'
         WHEN has_schema_privilege(:'runtime', 'public', 'CREATE') THEN 'FAIL runtime login|' || :'runtime' || ' may create objects in public'
         ELSE 'runtime login|' || :'runtime' || ' holds ' || (SELECT string_agg(g.rolname::text, ' and ' ORDER BY g.rolname) FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
-                                                              WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime')) || ' (DML only)' END;
+                                                              WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = :'runtime')) || ' (DML only)' END,
+                      '[[:cntrl:]]', '?', 'g');
 SQL
 )"
   # ARV-183 review: the system's own functions against template1's (a function replaced in place keeps its oid).
@@ -2040,6 +2189,9 @@ SQL
   local line failed=0
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
+    # ARV-083d review (round 2): every line, whatever made it (the report's SQL, which replaces them in the names it prints, or
+    # the lines added below it), is printed with its control characters replaced, so a name cannot move the terminal or the log.
+    line="${line//[[:cntrl:]]/?}"
     # ARV-244 review: before a restore's update, only the failures are printed, and the two lines the update makes pass are
     # not counted (cmd_restore).
     if ((check_before_update == 1)); then

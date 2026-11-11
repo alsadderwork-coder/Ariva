@@ -250,6 +250,59 @@ public sealed partial class OpsScriptTests
             .And.Contain("ariva_availability.availability_minute=SELECT,INSERT", "the ledger's own role");
     }
 
+    /// <summary>
+    /// ARV-083d (CWE-269): check holds the host roles as deeply as the runtime role, so every line that judges them (the internal
+    /// privileges, the grantees of the system, extension and toast checks, the CREATE checks, the caps, the members, the held
+    /// roles), extra_members before a restore and restore's own role check read them from one list, ARIVA_HOST_ROLES, which is
+    /// HostDatabaseAccess.HostRoles; a host role added to the manifest and to that list is judged everywhere, and no line keeps a
+    /// list of its own that the new role would be missing from. Only restore's CREATE ROLE statements name the roles, each as the
+    /// script that first created it, and the purges' grants name ariva_cronz (the role HostDatabaseAccess.Functions gives them).
+    /// The committed development login check refuses as a host login is DatabaseLoginSettings' own.
+    /// </summary>
+    [Fact]
+    public void Check_Should_TakeTheHostRolesAndTheCommittedLoginFromOneList_When_ItsSqlJudgesThem()
+    {
+        var text = Script.Value;
+        HostRolesList().Match(text).Groups["roles"].Value.Split(',').Should().Equal(HostDatabaseAccess.HostRoles);
+        var committed = CommittedLoginLine().Match(text);
+        committed.Success.Should().BeTrue("the script names the committed development login in ARIVA_COMMITTED_LOGIN");
+        committed.Groups["name"].Value.Should().Be(DatabaseLoginSettings.CommittedRuntimeName);
+        // Its review: check and restore refuse that name as --runtime-login before they connect, so its membership of ariva_runtime
+        // is never let pass by naming it.
+        Regex.Matches(text, Regex.Escape("[[ \"$runtime\" != \"$ARIVA_COMMITTED_LOGIN\" ]] || die \"$COMMITTED_LOGIN_REFUSED\""), RegexOptions.None, TimeSpan.FromSeconds(5))
+            .Should().HaveCount(2, "cmd_check and cmd_restore");
+
+        // Restore creates every host role, in the scripts' order, beside the three roles of scripts 0001 and 0049.
+        var restore = RestoreRoleBlock().Match(text);
+        restore.Success.Should().BeTrue("restore creates Ariva's group roles in one DO block");
+        RestoreRoleName().Matches(restore.Value).Select(m => m.Groups["role"].Value)
+            .Except(["ariva_migration", "ariva_runtime", "ariva_validation_reader"], StringComparer.Ordinal).Should().Equal(HostDatabaseAccess.HostRoles);
+
+        // Outside that block no SQL text names a host role but the purges' grants.
+        var outside = text.Remove(restore.Index, restore.Length);
+        var named = new List<string>();
+        foreach (var role in HostDatabaseAccess.HostRoles)
+        {
+            for (var at = outside.IndexOf($"'{role}'", StringComparison.Ordinal); at >= 0; at = outside.IndexOf($"'{role}'", at + 1, StringComparison.Ordinal))
+                named.Add(outside[Math.Max(0, at - "to_regrole(".Length)..(at + role.Length + 3)]);
+        }
+
+        named.Should().Equal(["to_regrole('ariva_cronz')", "to_regrole('ariva_cronz')"], "the purges' pinned grants; every other line reads :'host_roles'");
+
+        // Each SQL text that reads a list is given it, and each list has its readers: extra_members, restore's role check and check.
+        var calls = PsqlCall().Matches(text).ToList();
+        calls.Should().HaveCountGreaterThan(10);
+        var hostRoleReaders = calls.Where(call => call.Groups["sql"].Value.Contains(":'host_roles'", StringComparison.Ordinal)).ToList();
+        hostRoleReaders.Should().HaveCount(3)
+            .And.OnlyContain(call => call.Groups["call"].Value.Contains("--set=host_roles=\"$ARIVA_HOST_ROLES\"", StringComparison.Ordinal));
+        calls.Where(call => call.Groups["sql"].Value.Contains(":'committed_login'", StringComparison.Ordinal)).Should().ContainSingle()
+            .Which.Groups["call"].Value.Should().Contain("--set=committed_login=\"$ARIVA_COMMITTED_LOGIN\"");
+        hostRoleReaders.Select(call => call.Groups["sql"].Value).Should().Contain(sql => sql.Contains("judged(oid, suffix, host) AS (", StringComparison.Ordinal)
+            && sql.Contains("cap_logins(oid, name) AS (", StringComparison.Ordinal) && sql.Contains("host_logins AS (", StringComparison.Ordinal)
+            && sql.Contains("role_objects AS (", StringComparison.Ordinal),
+            "check's report judges the host roles' internal privileges, their logins' caps, their members and what they own or hold");
+    }
+
     [Fact]
     public void Check_Should_TakeTheRuntimePrivilegesAtTheLastScriptThatChangesThem_When_ALaterScriptIsAdded()
     {
@@ -624,6 +677,20 @@ public sealed partial class OpsScriptTests
 
     [GeneratedRegex(@"^readonly ARIVA_HOST_PRIVILEGES=""(?<entries>[a-z0-9_=,;(). A-Z\\\n]+)""$", RegexOptions.Multiline)]
     private static partial Regex HostPrivilegesList();
+
+    [GeneratedRegex(@"^readonly ARIVA_COMMITTED_LOGIN=""(?<name>[a-z_][a-z0-9_]*)""$", RegexOptions.Multiline)]
+    private static partial Regex CommittedLoginLine();
+
+    // ARV-083d: restore's DO block that creates Ariva's group roles, up to the grant that follows it.
+    [GeneratedRegex(@"DO \$\$\nBEGIN\n    IF NOT EXISTS \(SELECT FROM pg_roles WHERE rolname = 'ariva_migration'\) THEN\n.*?\nEND\n\$\$;\nGRANT ariva_migration TO CURRENT_USER;", RegexOptions.Singleline)]
+    private static partial Regex RestoreRoleBlock();
+
+    [GeneratedRegex(@"IF NOT EXISTS \(SELECT FROM pg_roles WHERE rolname = '(?<role>[a-z_]+)'\) THEN\n\s+CREATE ROLE \k<role> NOLOGIN ")]
+    private static partial Regex RestoreRoleName();
+
+    // A psql call through as_migration, as_migration_catalog or as_superuser, its options (continued lines included) and its SQL.
+    [GeneratedRegex(@"(?<call>\bas_(?:migration|migration_catalog|superuser)\b(?:[^\n]*\\\n)*[^\n]*?)<<'SQL'[^\n]*\n(?<sql>.*?)\nSQL\n", RegexOptions.Singleline)]
+    private static partial Regex PsqlCall();
 
     [GeneratedRegex(@"\bDROP\s+FUNCTION\s+(?:IF\s+EXISTS\s+)?(?:public\.)?(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(", RegexOptions.IgnoreCase)]
     private static partial Regex FunctionRemoved();

@@ -43,12 +43,15 @@ namespace Ariva.IntegrationTests.Operations;
 /// secret reads back. The key ring check names the certificate the keys need, and after a Kafka loss the newest event of
 /// every compacted key is due again and the stream positions are cleared. Last, the check after a restore fails on what a
 /// forged dump could leave (a C or SECURITY DEFINER function, an event trigger, an extra member of the runtime role, a
-/// migration login given replication). The operator wrapper's signed path (the manifest's signature, the private copy and
-/// every refusal before kubectl) is proven by <c>node scripts/ops/ariva-ops.mjs --self-test</c>.
+/// migration login given replication). ARV-083d: on the source, the check holds the host roles and their logins as deeply as
+/// the runtime role (one finding of each kind planted for them, each a FAIL naming it). Ariva.Api.Main's login is a name of its
+/// own (<see cref="ChartDatabase.MainLogin"/>), never the committed ariva_app. The operator wrapper's signed path (the
+/// manifest's signature, the private copy and every refusal before kubectl) is proven by
+/// <c>node scripts/ops/ariva-ops.mjs --self-test</c>.
 /// </summary>
 public sealed partial class BackupRestoreTests : IAsyncLifetime
 {
-    private const string RuntimeLogin = "ariva_app";
+    private const string RuntimeLogin = ChartDatabase.MainLogin;
     private const string AdminUserName = "it.restore.admin";
     private const string DumpPath = ChartDatabase.BackupDirectory + "/ariva.dump";
     private const string EndpointCode = "restore-partner";
@@ -153,7 +156,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         restore.ExitCode.Should().Be(0, restore.Stderr + restore.Stdout);
         restore.Stderr.Should().Contain("TimescaleDB's jobs checked before its scheduler starts", "ARV-263 review: the jobs are judged while no job can run");
         restore.Stdout.Should().Contain("every object belongs to ariva")
-            .And.Contain("ariva_runtime and the logins that hold it have no CREATE on public, on any other schema or on the database");
+            .And.Contain("ariva_runtime, the host roles and the logins that hold them have no CREATE on public, on any other schema or on the database");
         // ARV-183 and its review: the wider checks pass on a clean restore (every Ariva function body is one its scripts ship, and
         // the system functions are template1's).
         foreach (var line in new[] { "logins", "held roles", "role settings", "settings", "rules", "other functions", "plpgsql", "system functions", "replication", "planted",
@@ -204,6 +207,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         await AssertRecoveryAfterKafkaLossAsync();
         await AssertHostsVerifySchemaVersionAsync();
         await AssertCheckFindsWhatAForgedDumpWouldLeaveAsync();
+        await AssertCheckHoldsTheHostRolesAsDeeplyAsync();
     }
 
     #region Source deployment
@@ -368,20 +372,22 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
     {
         var check = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         check.ExitCode.Should().Be(0, check.Stdout + check.Stderr);
-        check.Stdout.Should().Contain("ariva_app holds ariva_main and ariva_runtime (DML only)", "ARV-083a: Ariva.Api.Main's own login");
+        check.Stdout.Should().Contain($"{RuntimeLogin} holds ariva_main and ariva_runtime (DML only)", "ARV-083a: Ariva.Api.Main's own login");
         // ARV-290 review: the runtime login's own caps as the migration job set them, and no parameter privilege but the one the
         // chart's init script gave the migration login.
-        check.Stdout.Should().Contain("ok    runtime caps|ariva_app in this database: statement_timeout ").And.Contain(", temp_file_limit 1024MB")
+        // ARV-083d: of every host's login and the availability ledger's, with the same values, so one entry names them all.
+        check.Stdout.Should().Contain($"ok    runtime caps|{string.Join(", ", _target.LoginNames(RuntimeLogin))} in this database: statement_timeout ")
+            .And.Contain(", temp_file_limit 1024MB")
             .And.Contain("ok    parameter privileges|SET on temp_file_limit to the migration login or ariva_migration only");
         // ARV-189: the runtime role's privileges as ARIVA_RUNTIME_PRIVILEGES lists them, compared since the database is at the
         // list's script (a script that changes them without the list fails here; the line above it names each difference).
         check.Stdout.Should().Contain("ok    runtime privileges|ariva_runtime's grants on public as the scripts leave them")
             .And.Contain("ok    views|the views of public are the scripts' 3, each reading what its script reads")
-            .And.Contain("ok    internal privileges|ariva_runtime: each inheritance child no wider than its parent")
-            .And.Contain("ok    runtime grants|every grant of a relation or column to the runtime role goes to ariva_runtime without grant option")
+            .And.Contain($"ok    internal privileges|ariva_runtime and the host roles ({string.Join(", ", HostDatabaseAccess.HostRoles)}): each inheritance child no wider than its parent")
+            .And.Contain("ok    runtime grants|every grant of a relation or column to the runtime role or a host role goes to that role without grant option")
             .And.Contain("ok    default privileges|none: a table or sequence a later script creates gives no role anything until its script grants it")
             .And.Contain("ok    host privileges|each host role's grants on public as the scripts leave them")
-            .And.Contain("ok    toast|no toast table grants ariva_runtime or a login that holds it anything, and none of them may use pg_toast")
+            .And.Contain("ok    toast|no toast table grants ariva_runtime, a host role or a login that holds one anything, and none of them may use pg_toast")
             .And.Contain("ok    system function grants|the system catalog's functions grant what initdb gave and nothing more");
         // ARV-262: the restored database, migrated again by the release's job, holds Ariva's objects as a database the scripts
         // migrated (the pinned list AssertSchemaPinsAsync took from the source), TimescaleDB's members as the image ships them,
@@ -586,7 +592,7 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             .And.Contain("ariva in public on sequences gives ariva_runtime=UPDATE with grant option");
         Line(check, "FAIL  runtime grants|").Should().Contain($"public.integration_call to {RuntimeLogin}")
             .And.Contain("public.audit_entry to ariva_runtime with grant option").And.Contain("public.site to PUBLIC");
-        Line(check, "FAIL  runtime role|may create objects: ").Should().Contain("ariva_runtime in the database").And.Contain("ariva_app in schema it_side");
+        Line(check, "FAIL  runtime role|may create objects: ").Should().Contain("ariva_runtime in the database").And.Contain($"{RuntimeLogin} in schema it_side");
         await ExecuteAsync(_target.ConnectionString(ChartDatabase.MigrationLogin, _target.MigrationPassword), Query.RememberForgottenScripts);
         var compared = await _target.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         compared.Stdout.Should().Contain("FAIL  runtime privileges|", compared.Stdout);
@@ -721,6 +727,113 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         replication.Stderr.Should().Contain("neither superuser, replication nor bypassrls");
     }
 
+    /// <summary>
+    /// ARV-083d (CWE-269; ASVS 5.0 V13.2.2): check holds the host roles as deeply as the runtime role. On the source, a database
+    /// the release's migration job migrated with every host's login and the availability ledger's (its part in the test is over
+    /// once the backup is restored), check passes, judging every host role's internal privileges and every login's caps; then one
+    /// finding of each kind is planted for a host role or one of its logins, and check fails naming each: a grant on a chunk wider
+    /// than its hypertable (ariva_main may UPDATE a chunk of the queue minutes it only reads), on a compressed chunk, on a
+    /// continuous aggregate's materialization table beyond SELECT, on a relation outside public and CREATE on its schema, a
+    /// sequence a host role may use, a system table granted to a host role and an extension table to a host login (with the
+    /// runtime grants' line for a grant to a login), a toast table, a system function and a parameter, a relation a host role
+    /// owns, a host login without its statement timeout and the ledger's with an idle transaction limit the job never writes, a
+    /// second login of one host role (both reported, and its missing caps), and the committed ariva_app as a host login. Its
+    /// review: a login holding a host login and a NOLOGIN role holding one with a login under it (members of a login of Ariva's
+    /// roles, and that login without its caps), a host role held with admin option by the --runtime-login, CREATEDB on a host
+    /// login, a large object a host login owns and a type a host role owns (the migration job's pg_shdepend refusal), a login
+    /// that holds a host role named with --allow-login (its grants still reported), and ariva_app refused as --runtime-login by
+    /// check and restore. Every planted name is this method's own.
+    /// </summary>
+    private async Task AssertCheckHoldsTheHostRolesAsDeeplyAsync()
+    {
+        // The plants name the source's logins by their prefix (SQL texts are literals).
+        _source.HostLogin("Cronz").Username.Should().Be(ChartDatabase.HostLoginPrefix + "cronz");
+        var clean = await _source.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
+        clean.ExitCode.Should().Be(0, "a database the release's migration job migrated passes: " + clean.Stdout + clean.Stderr);
+        clean.Stdout.Should().Contain($"ok    internal privileges|ariva_runtime and the host roles ({string.Join(", ", HostDatabaseAccess.HostRoles)}): ")
+            .And.Contain($"ok    runtime caps|{string.Join(", ", _source.LoginNames(RuntimeLogin))} in this database: statement_timeout ")
+            .And.Contain("ok    group members|only the migration login and the named logins, and at most one login of each host role holding ariva_runtime and that role only, without admin option, none of them ariva_app, and no member of any of these logins")
+            .And.Contain("ok    role objects|no login of Ariva's roles owns anything or holds a privilege but CONNECT on a database")
+            .And.Contain("ok    runtime role|ariva_runtime, the host roles and the logins that hold them have no CREATE")
+            .And.Contain("ok    runtime role|owns nothing, nor do the host roles or their logins");
+
+        await ExecuteAsync(_source.ConnectionString(ChartDatabase.MigrationLogin, _source.MigrationPassword), Query.PlantForHostRolesAsMigrationLogin);
+        await ExecuteAsync(_source.ConnectionString("postgres", _source.SuperuserPassword), Query.PlantForHostRolesAsSuperuser);
+        // Round 2 of the review: a validation reader login of the test's own, named, which the lines judge as Ariva's logins too.
+        var check = await _source.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--reader-login", "it_reader");
+        check.ExitCode.Should().NotBe(0, check.Stdout);
+        var integration = _source.HostLogin("Integration").Username;
+        Line(check, "FAIL  internal privileges|").Should().MatchRegex(@"_timescaledb_internal\._hyper_\d+_\d+_chunk \(wider than public\.queue_minute\) for ariva_main",
+                "a chunk wider than its hypertable for a host role")
+            .And.MatchRegex(@"_timescaledb_internal\._hyper_\d+_\d+_chunk_compressed \(wider than public\.sensing_event\) for ariva_ingest", "a compressed chunk")
+            .And.MatchRegex(@"_timescaledb_internal\._materialized_hypertable_\d+ \(more than SELECT\) for ariva_cronz", "a continuous aggregate's table")
+            .And.Contain("it_hosts.it_host_table for ariva_integration", "a relation outside public")
+            .And.Contain("public.outbox_message_seq_seq (reads or uses it) for ariva_stream", "a host role uses no sequence")
+            .And.Contain("pg_statistic (system table) to ariva_main", "a system table")
+            .And.Contain($"_timescaledb_catalog.bgw_job (extension table) to {integration}", "an extension table, granted to a host login");
+        Line(check, "FAIL  runtime grants|").Should().Contain($"_timescaledb_catalog.bgw_job to {integration}", "a grant goes to the host role, never its login");
+        Line(check, "FAIL  runtime role|may create objects: ").Should().Contain("ariva_integration in schema it_hosts").And.Contain($"{integration} in schema it_hosts");
+        check.Stdout.Should().Contain("FAIL  runtime role|ariva_runtime, a host role or one of their logins owns 1 relations", "a relation a host role owns");
+        Line(check, "FAIL  toast|").Should().Contain($"{await ScalarAsync<string>(_source.ConnectionString(ChartDatabase.MigrationLogin, _source.MigrationPassword), Query.OutboundEndpointToast)} to ariva_ingest")
+            .And.Contain($"to {_source.HostLogin("Ingest").Username}", "and so to its login");
+        // Round 2: two grantees whose names differ only by a control character stay two entries, each printed with it replaced.
+        Regex.Count(Line(check, "FAIL  toast|"), @" to it_toast\?(,|$)").Should().Be(2, Line(check, "FAIL  toast|"));
+        check.Stdout.Should().NotContainAny(["\u0001", "\u0002"], "no line carries a control character");
+        Line(check, "FAIL  system function grants|").Should().Contain("pg_read_file(text) EXECUTE to ariva_cronz");
+        Line(check, "FAIL  parameter privileges|").Should().Contain("work_mem SET to ariva_stream");
+        Line(check, "FAIL  runtime caps|").Should().Contain($"{_source.HostLogin("Cronz").Username} in this database: statement_timeout not set;")
+            .And.Contain($"{ChartDatabase.HostLoginPrefix}availability in this database: idle_in_transaction_session_timeout 0;", "the availability ledger's login too")
+            .And.Contain("it_second_stream in this database: statement_timeout not set, temp_file_limit not set")
+            .And.NotContain($"{RuntimeLogin} in this database", "only the logins that fail are named");
+        Line(check, "FAIL  group members|").Should().Contain("ariva_stream has member it_second_stream (one of 2 logins of ariva_stream; a host role has one)")
+            .And.Contain($"ariva_stream has member {_source.HostLogin("Stream").Username} (one of 2 logins of ariva_stream; a host role has one)", "neither of the two passes")
+            .And.Contain("ariva_ingest has member ariva_app (ariva_app, the committed development login, is never a host login)")
+            .And.NotContain("ariva_runtime has member", "a host-shaped login's membership of ariva_runtime is judged with its host role's")
+            // The ARV-083d review: a login or role that holds a host login (directly, or through a NOLOGIN role), and a membership
+            // with admin option, the --runtime-login's included.
+            .And.Contain($"{_source.HostLogin("Stream").Username} has member it_chain (a login of Ariva's roles, or a role that holds one, has no member)")
+            .And.Contain($"{_source.HostLogin("Ingest").Username} has member it_ingest_holder (a login of Ariva's roles, or a role that holds one, has no member)")
+            .And.Contain("it_ingest_holder has member it_under_holder (a login of Ariva's roles, or a role that holds one, has no member)")
+            .And.Contain($"ariva_main has member {RuntimeLogin} (with admin option, so it may grant ariva_main on)")
+            .And.Contain("ariva_cronz has member it_allowed_cronz");
+        check.Stdout.Should().Contain($"FAIL  runtime login|{RuntimeLogin} holds a role with admin option");
+        Line(check, "FAIL  runtime caps|").Should().Contain("it_chain in this database: statement_timeout not set").And.Contain("it_under_holder in this database: statement_timeout not set",
+            "a login that reaches a host's grants through another role is judged for the caps too");
+        // Its review: CREATEDB on a host login, and what the migration job refuses a host login for (pg_shdepend, every database):
+        // a large object a host login owns, a type a host role owns, a function and a parameter granted to a login of a host role.
+        Line(check, "FAIL  logins|").Should().Contain($"{integration} (createdb)").And.Contain("it_reader (createdb)", "round 2: the --reader-login too");
+        Line(check, "FAIL  role objects|").Should().MatchRegex($@"{_source.HostLogin("Ingest").Username} owns large object \d+")
+            .And.Contain("ariva_stream owns type it_hosts.it_kind").And.Contain("ariva_main owns table it_hosts.it_owned")
+            .And.Contain("it_allowed_cronz holds a privilege on function pg_ls_dir(text)")
+            .And.Contain("it_allowed_cronz holds a privilege on parameter maintenance_work_mem")
+            .And.Contain($"{integration} holds a privilege on table _timescaledb_catalog.bgw_job")
+            // Round 2: a database's own privileges beyond CONNECT (and CONNECT with grant option), on another database of the server,
+            // for a host login and a host role; an object of the reader login; and objects pg_describe_object cannot name, here and
+            // in another database, named by their catalog and oid.
+            .And.Contain($"{_source.HostLogin("Cronz").Username} holds CREATE on database postgres")
+            .And.Contain($"{_source.HostLogin("Cronz").Username} holds TEMPORARY on database postgres")
+            .And.Contain($"{_source.HostLogin("Cronz").Username} holds CONNECT with grant option on database postgres")
+            .And.Contain("ariva_stream holds TEMPORARY on database postgres")
+            .And.MatchRegex(@"it_reader owns large object \d+")
+            .And.Contain($"{_source.HostLogin("Cronz").Username} owns pg_class 4294967000")
+            .And.Contain($"{_source.HostLogin("Cronz").Username} owns pg_type 4294967001 of database template1");
+
+        // Its review: a login that holds a host role, named with --allow-login, keeps its grants reported: --allow-login lets a DBA's
+        // own login pass, never one of Ariva's roles (before ARV-083d only a holder of ariva_runtime was kept from it).
+        var allowed = await _source.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin, "--allow-login", "it_allowed_cronz");
+        Line(allowed, "FAIL  system function grants|").Should().Contain("pg_ls_dir(text) EXECUTE to it_allowed_cronz");
+        Line(allowed, "FAIL  parameter privileges|").Should().Contain("maintenance_work_mem SET to it_allowed_cronz");
+
+        // Its review: the committed development login is never let pass as --runtime-login, by check or by restore, before either
+        // connects.
+        foreach (var arguments in new[] { new[] { "check", "--runtime-login", "ariva_app" }, new[] { "restore", "--input", DumpPath, "--runtime-login", "ariva_app" } })
+        {
+            var refused = await _source.OpsAsync(Ct, arguments);
+            refused.ExitCode.Should().NotBe(0, arguments[0]);
+            refused.Stderr.Should().Contain("--runtime-login must not be ariva_app, the committed development login", arguments[0]);
+        }
+    }
+
     #endregion
 
     #region Helpers
@@ -818,7 +931,9 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         TimescaleConfigTables,
         OutboundEndpointToast,
         AuditEntryToast,
-        SiteToast
+        SiteToast,
+        PlantForHostRolesAsMigrationLogin,
+        PlantForHostRolesAsSuperuser
     }
 
     // A switch over string literals keeps every command text constant (CA2100).
@@ -897,18 +1012,18 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             GRANT MAINTAIN ON public.sensing_event TO ariva_stream;
             CREATE VIEW public.it_deliveries AS SELECT * FROM public.report_delivery;
             CREATE SCHEMA it_side;
-            GRANT CREATE ON SCHEMA it_side TO ariva_app;
+            GRANT CREATE ON SCHEMA it_side TO ariva_app_main;
             CREATE VIEW it_side.it_view AS SELECT 1 AS one;
             GRANT SELECT ON it_side.it_view TO ariva_runtime;
             CREATE TABLE it_side.it_child () INHERITS (public.alert_rule);
             CREATE TRIGGER it_extra BEFORE UPDATE ON it_side.it_child FOR EACH ROW EXECUTE FUNCTION public.validation_row_immutable();
             ALTER TABLE it_side.it_child ENABLE ROW LEVEL SECURITY;
             GRANT UPDATE ON SEQUENCE public.outbox_message_seq_seq TO ariva_runtime;
-            GRANT SELECT ON public.integration_call TO ariva_app;
+            GRANT SELECT ON public.integration_call TO ariva_app_main;
             GRANT SELECT ON public.audit_entry TO ariva_runtime WITH GRANT OPTION;
             GRANT SELECT ON public.site TO PUBLIC;
             GRANT CREATE ON DATABASE ariva TO ariva_runtime;
-            ALTER ROLE ariva_app IN DATABASE ariva SET temp_file_limit = '-1';
+            ALTER ROLE ariva_app_main IN DATABASE ariva SET temp_file_limit = '-1';
             ALTER DEFAULT PRIVILEGES GRANT TRIGGER ON TABLES TO ariva_runtime;
             ALTER DEFAULT PRIVILEGES IN SCHEMA _timescaledb_internal GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ariva_runtime;
             ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT TRUNCATE ON TABLES TO ariva_runtime;
@@ -984,16 +1099,16 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
             DO $$ BEGIN
                 EXECUTE (SELECT format('GRANT SELECT ON %s TO ariva_runtime', reltoastrelid::regclass) FROM pg_class WHERE oid = 'public.outbound_endpoint'::regclass);
             END $$;
-            GRANT USAGE ON SCHEMA pg_toast TO ariva_app;
+            GRANT USAGE ON SCHEMA pg_toast TO ariva_app_main;
             GRANT EXECUTE ON FUNCTION pg_catalog.lo_export(oid, text) TO ariva_runtime;
-            GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO ariva_app;
+            GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO ariva_app_main;
             GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text) TO it_back WITH GRANT OPTION;
             GRANT EXECUTE ON FUNCTION pg_catalog.lo_import(text) TO PUBLIC;
             UPDATE pg_catalog.pg_proc SET proacl = NULL WHERE oid = 'pg_catalog.pg_read_file(text)'::regprocedure;
             GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text, boolean, boolean) TO it_extra_member;
             DO $$ BEGIN
                 EXECUTE (SELECT format('GRANT SELECT ON %s TO PUBLIC', reltoastrelid::regclass) FROM pg_class WHERE oid = 'public.audit_entry'::regclass);
-                EXECUTE (SELECT format('GRANT SELECT (chunk_data) ON %s TO ariva_app', reltoastrelid::regclass) FROM pg_class WHERE oid = 'public.site'::regclass);
+                EXECUTE (SELECT format('GRANT SELECT (chunk_data) ON %s TO ariva_app_main', reltoastrelid::regclass) FROM pg_class WHERE oid = 'public.site'::regclass);
             END $$;
             INSERT INTO _timescaledb_catalog.bgw_job (application_name, schedule_interval, max_runtime, max_retries, retry_period, proc_schema, proc_name, owner,
                                                       scheduled, fixed_schedule, initial_start, hypertable_id, config, check_schema, check_name, timezone)
@@ -1073,6 +1188,84 @@ public sealed partial class BackupRestoreTests : IAsyncLifetime
         Query.OutboundEndpointToast => "SELECT reltoastrelid::regclass::text FROM pg_class WHERE oid = 'public.outbound_endpoint'::regclass",
         Query.AuditEntryToast => "SELECT reltoastrelid::regclass::text FROM pg_class WHERE oid = 'public.audit_entry'::regclass",
         Query.SiteToast => "SELECT reltoastrelid::regclass::text FROM pg_class WHERE oid = 'public.site'::regclass",
+        // ARV-083d: one finding of each kind for a host role or one of its logins on the source (ChartDatabase.HostLoginPrefix names
+        // them), as the migration login: a chunk, a compressed chunk and a continuous aggregate's table, a relation outside public
+        // with CREATE on its schema, a sequence, a login's caps reset or out of bounds, a second login of a host role, and the
+        // committed ariva_app as a host login; the review's: a login holding the Stream login, a NOLOGIN role holding the Ingest login
+        // with a login under it, Main's login given its host role with admin option, and a login that holds a host role alone.
+        Query.PlantForHostRolesAsMigrationLogin => """
+            DO $$ BEGIN
+                EXECUTE (SELECT format('GRANT UPDATE ON %I.%I TO ariva_main', chunk_schema, chunk_name)
+                           FROM timescaledb_information.chunks WHERE hypertable_name = 'queue_minute' ORDER BY chunk_name LIMIT 1);
+                EXECUTE (SELECT format('GRANT SELECT ON %I.%I TO ariva_ingest', chunk_schema, chunk_name || '_compressed')
+                           FROM timescaledb_information.chunks WHERE hypertable_name = 'sensing_event' AND is_compressed ORDER BY chunk_name LIMIT 1);
+                EXECUTE (SELECT format('GRANT UPDATE ON %I.%I TO ariva_cronz', materialization_hypertable_schema, materialization_hypertable_name)
+                           FROM timescaledb_information.continuous_aggregates WHERE view_name = 'queue_minute_15m');
+            END $$;
+            CREATE SCHEMA it_hosts;
+            CREATE TABLE it_hosts.it_host_table (id integer);
+            GRANT USAGE, CREATE ON SCHEMA it_hosts TO ariva_integration;
+            GRANT SELECT ON it_hosts.it_host_table TO ariva_integration;
+            GRANT USAGE ON SEQUENCE public.outbox_message_seq_seq TO ariva_stream;
+            ALTER ROLE it_chart_cronz IN DATABASE ariva RESET statement_timeout;
+            ALTER ROLE it_chart_availability IN DATABASE ariva SET idle_in_transaction_session_timeout = '0';
+            CREATE ROLE it_second_stream LOGIN;
+            GRANT ariva_runtime TO it_second_stream;
+            GRANT ariva_stream TO it_second_stream;
+            CREATE ROLE ariva_app LOGIN;
+            GRANT ariva_runtime TO ariva_app;
+            GRANT ariva_ingest TO ariva_app;
+            CREATE ROLE it_chain LOGIN;
+            GRANT it_chart_stream TO it_chain;
+            CREATE ROLE it_ingest_holder NOLOGIN;
+            GRANT it_chart_ingest TO it_ingest_holder;
+            CREATE ROLE it_under_holder LOGIN;
+            GRANT it_ingest_holder TO it_under_holder;
+            GRANT ariva_main TO ariva_app_main WITH ADMIN OPTION;
+            CREATE ROLE it_allowed_cronz LOGIN;
+            GRANT ariva_cronz TO it_allowed_cronz;
+            CREATE ROLE it_reader LOGIN;
+            GRANT ariva_validation_reader TO it_reader;
+            DO $$ BEGIN
+                EXECUTE format('CREATE ROLE %I NOLOGIN IN ROLE ariva_ingest', E'it_toast\x01');
+                EXECUTE format('CREATE ROLE %I NOLOGIN IN ROLE ariva_ingest', E'it_toast\x02');
+            END $$;
+            """,
+        // And as the superuser: a system table to a host role, an extension table to a host login, a toast table, a system function
+        // and a parameter to host roles, and a relation a host role owns; the review's: CREATEDB on a host login, a large object a
+        // host login owns, a type a host role owns, and a function and a parameter granted to the login that holds a host role.
+        Query.PlantForHostRolesAsSuperuser => """
+            GRANT SELECT ON pg_catalog.pg_statistic TO ariva_main;
+            GRANT UPDATE ON _timescaledb_catalog.bgw_job TO it_chart_integration;
+            DO $$ BEGIN
+                EXECUTE (SELECT format('GRANT SELECT ON %s TO ariva_ingest', reltoastrelid::regclass) FROM pg_class WHERE oid = 'public.outbound_endpoint'::regclass);
+            END $$;
+            GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_file(text) TO ariva_cronz;
+            GRANT SET ON PARAMETER work_mem TO ariva_stream;
+            CREATE TABLE it_hosts.it_owned (id integer);
+            ALTER TABLE it_hosts.it_owned OWNER TO ariva_main;
+            ALTER ROLE it_chart_integration CREATEDB;
+            DO $$ BEGIN
+                EXECUTE format('ALTER LARGE OBJECT %s OWNER TO it_chart_ingest', lo_create(0));
+            END $$;
+            CREATE TYPE it_hosts.it_kind AS ENUM ('one');
+            ALTER TYPE it_hosts.it_kind OWNER TO ariva_stream;
+            GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_dir(text) TO it_allowed_cronz;
+            GRANT SET ON PARAMETER maintenance_work_mem TO it_allowed_cronz;
+            GRANT CREATE, TEMP ON DATABASE postgres TO it_chart_cronz;
+            GRANT CONNECT ON DATABASE postgres TO it_chart_cronz WITH GRANT OPTION;
+            GRANT TEMP ON DATABASE postgres TO ariva_stream;
+            ALTER ROLE it_reader CREATEDB;
+            DO $$ BEGIN
+                EXECUTE format('ALTER LARGE OBJECT %s OWNER TO it_reader', lo_create(0));
+            END $$;
+            INSERT INTO pg_catalog.pg_shdepend (dbid, classid, objid, objsubid, refclassid, refobjid, deptype)
+            SELECT d.oid, 'pg_catalog.pg_class'::regclass, 4294967000, 0, 'pg_catalog.pg_authid'::regclass, r.oid, 'o'
+              FROM pg_catalog.pg_database d, pg_catalog.pg_roles r WHERE d.datname = current_database() AND r.rolname = 'it_chart_cronz';
+            INSERT INTO pg_catalog.pg_shdepend (dbid, classid, objid, objsubid, refclassid, refobjid, deptype)
+            SELECT d.oid, 'pg_catalog.pg_type'::regclass, 4294967001, 0, 'pg_catalog.pg_authid'::regclass, r.oid, 'o'
+              FROM pg_catalog.pg_database d, pg_catalog.pg_roles r WHERE d.datname = 'template1' AND r.rolname = 'it_chart_cronz';
+            """,
         _ => throw new ArgumentOutOfRangeException(nameof(query))
     };
 

@@ -798,12 +798,12 @@ async function selfTest() {
     refuses(() => prepare(parse(['backup']), { out: temp, recipients: path.join(temp, 'identity.txt'), signingKey: path.join(temp, 'k'), steps: [] }),
       'an identity given as recipients');
     const restorePlan = plan(parse(['restore', '--namespace', 'ariva', '--in', 'x.dump.age', '--identity', 'id', '--manifest', 'm.json', '--allowed-signers', 'allowed',
-      '--runtime-login', 'ariva_app']));
+      '--runtime-login', 'ariva_app_main']));
     assert.deepEqual(restorePlan.steps.map(s => s.kind), ['secure', 'run', 'decrypt', 'decrypt']); checks++;
     ok(restorePlan.steps[0].signature === path.resolve('m.json.sig'), 'the signature is read beside the manifest');
     ok(restorePlan.steps.filter(s => s.kind === 'decrypt').every(s => s.file === VERIFIED_COPY), 'both passes decrypt the verified copy only');
     assert.deepEqual(restorePlan.steps[3].into[1].slice(-9), [POD_SCRIPT, 'restore', '--input', '-', '--dump-checked', '--timescaledb-version', DUMP_VERSION,
-      '--runtime-login', 'ariva_app']); checks++;
+      '--runtime-login', 'ariva_app_main']); checks++;
     // ARV-244: from a signed manifest the check pass is given its TimescaleDB version to compare, and reports the dump's.
     assert.deepEqual(restorePlan.steps[2].into[1].slice(-6), [POD_SCRIPT, 'check-dump', '--input', '-', '--timescaledb-version', DUMP_VERSION]); checks++;
     ok(restorePlan.steps[2].reportsVersion === true && restorePlan.steps[3].reportsVersion === undefined, 'the check pass reports the version, the restore pass gets it');

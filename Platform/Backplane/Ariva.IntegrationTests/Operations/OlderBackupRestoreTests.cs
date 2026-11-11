@@ -21,7 +21,7 @@ namespace Ariva.IntegrationTests.Operations;
 /// </summary>
 public sealed partial class OlderBackupRestoreTests : IAsyncLifetime
 {
-    private const string RuntimeLogin = "ariva_app";
+    private const string RuntimeLogin = ChartDatabase.MainLogin;
     private const string DumpPath = ChartDatabase.BackupDirectory + "/ariva-older.dump";
     private const string PastTheList = "9999_it_past_the_list.sql";
 

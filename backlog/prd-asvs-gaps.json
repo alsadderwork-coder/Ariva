@@ -145,8 +145,8 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 105,
-      "passes": false,
-      "notes": "Split from ARV-083a on 2026-11-10 (its security review, round 1 finding 3 and round 3 advisory).",
+      "passes": true,
+      "notes": "Split from ARV-083a on 2026-11-10 (its security review, round 1 finding 3 and round 3 advisory). 2026-11-11: built (ariva-db.sh check and restore hold the six host roles and their logins as deeply as the runtime role; no new grant was needed).",
       "dependsOn": [
         "ARV-083a"
       ]

@@ -23,12 +23,21 @@ internal sealed class ChartDatabase : IAsyncDisposable
     public const string ScriptPath = "/opt/ariva-ops/ariva-db.sh";
     public const string BackupDirectory = "/backup";
 
+    /// <summary>
+    /// Ariva.Api.Main's login as a cluster names it (wiki 04): never the committed <c>ariva_app</c>, which a cluster's migration job
+    /// refuses and <c>ariva-db.sh check</c> reports as a host login (ARV-083d).
+    /// </summary>
+    public const string MainLogin = "ariva_app_main";
+
+    /// <summary>The prefix of the other hosts' logins and the availability ledger's on every server (<see cref="HostLogin"/>).</summary>
+    public const string HostLoginPrefix = "it_chart_";
+
     private readonly IContainer _container;
     private readonly string _initScript;
 
     // ARV-083a: the other hosts' logins and the availability ledger's, as the chart gives the migration job every host's secret;
     // one set per server, so each migration of it keeps them.
-    private readonly Dictionary<string, string> _hostLogins = Ariva.IntegrationTests.Setup.HostLogins.ClusterSettings("it_chart_");
+    private readonly Dictionary<string, string> _hostLogins = Ariva.IntegrationTests.Setup.HostLogins.ClusterSettings(HostLoginPrefix);
 
     private ChartDatabase(IContainer container, string initScript, string superuserPassword, string migrationPassword)
     {
@@ -139,6 +148,14 @@ internal sealed class ChartDatabase : IAsyncDisposable
     /// <summary>The login and password of a host other than Ariva.Api.Main (Ingest, Stream, Cronz, Integration) on this server.</summary>
     public (string Username, string Password) HostLogin(string host) =>
         (_hostLogins[$"Database:HostLogins:{host}:Username"], _hostLogins[$"Database:HostLogins:{host}:Password"]);
+
+    /// <summary>
+    /// ARV-083d: every login a migration with <paramref name="mainLogin"/> as Ariva.Api.Main's creates on this server (each host's
+    /// and the availability ledger's), in byte order, as <c>ariva-db.sh check</c> lists them.
+    /// </summary>
+    public IReadOnlyList<string> LoginNames(string mainLogin) =>
+        [.. new[] { "Ingest", "Stream", "Cronz", "Integration" }.Select(host => HostLogin(host).Username)
+            .Append(_hostLogins["Database:Availability:Username"]).Append(mainLogin).Order(StringComparer.Ordinal)];
 
     public async ValueTask DisposeAsync()
     {

@@ -19,7 +19,7 @@ namespace Ariva.IntegrationTests.Operations;
 /// </summary>
 public sealed class ExtensionUpdateTests : IAsyncLifetime
 {
-    private const string RuntimeLogin = "ariva_app";
+    private const string RuntimeLogin = ChartDatabase.MainLogin;
     private const string Superuser = "postgres";
 
     private static readonly string RuntimePassword = "rt-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));

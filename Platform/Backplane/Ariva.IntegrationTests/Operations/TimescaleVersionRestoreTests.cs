@@ -41,7 +41,7 @@ namespace Ariva.IntegrationTests.Operations;
 /// </summary>
 public sealed partial class TimescaleVersionRestoreTests : IAsyncLifetime
 {
-    private const string RuntimeLogin = "ariva_app";
+    private const string RuntimeLogin = ChartDatabase.MainLogin;
     private const string Superuser = "postgres";
     private const string DumpPath = ChartDatabase.BackupDirectory + "/ariva-older-timescale.dump";
     private const string NewerDumpPath = ChartDatabase.BackupDirectory + "/ariva-newer-timescale.dump";

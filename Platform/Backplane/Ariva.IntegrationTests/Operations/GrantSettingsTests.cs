@@ -17,7 +17,7 @@ namespace Ariva.IntegrationTests.Operations;
 /// </summary>
 public sealed class GrantSettingsTests : IAsyncLifetime
 {
-    private const string RuntimeLogin = "ariva_app";
+    private const string RuntimeLogin = ChartDatabase.MainLogin;
     private const string Superuser = "postgres";
 
     private static readonly string RuntimePassword = "rt-" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12));
@@ -53,11 +53,12 @@ public sealed class GrantSettingsTests : IAsyncLifetime
         granted.Stdout.Should().Contain("temp file cap|the migration login may set temp_file_limit on the runtime login (ARV-290)")
             .And.Contain("role settings|none but the runtime login's statement timeout, temporary file cap, idle transaction limit and keepalives")
             .And.Contain("ok    parameter privileges|SET on temp_file_limit to the migration login or ariva_migration only")
-            .And.Contain($"ok    runtime caps|{RuntimeLogin} in this database: statement_timeout ").And.Contain(", temp_file_limit 1024MB").And.NotContain("FAIL", granted.Stdout);
+            // ARV-083d: every host's login and the availability ledger's, with the same values.
+            .And.Contain($"ok    runtime caps|{AllLogins} in this database: statement_timeout ").And.Contain(", temp_file_limit 1024MB").And.NotContain("FAIL", granted.Stdout);
 
         // A server first started before ARV-290: neither the login nor ariva_migration holds SET on it, and no cap is set.
         await SuperuserAsync("REVOKE SET ON PARAMETER temp_file_limit FROM ariva");
-        await SuperuserAsync("ALTER ROLE ariva_app IN DATABASE ariva RESET temp_file_limit");
+        await SuperuserAsync("ALTER ROLE ariva_app_main IN DATABASE ariva RESET temp_file_limit");
         (await SuperuserScalarAsync("SELECT has_parameter_privilege('ariva', 'temp_file_limit', 'SET')")).Should().Be("f");
         NpgsqlConnection.ClearAllPools();
 
@@ -76,24 +77,24 @@ public sealed class GrantSettingsTests : IAsyncLifetime
         grant.Stderr.Should().Contain("granting ariva_migration, and so ariva, SET on temp_file_limit (superuser over the local socket)")
             .And.Contain("done: run the migration job again");
         (await SuperuserScalarAsync("SELECT has_parameter_privilege('ariva_migration', 'temp_file_limit', 'SET')")).Should().Be("t");
-        (await SuperuserScalarAsync("SELECT has_parameter_privilege('ariva_app', 'temp_file_limit', 'SET')")).Should().Be("f", "never the runtime login");
+        (await SuperuserScalarAsync("SELECT has_parameter_privilege('ariva_app_main', 'temp_file_limit', 'SET')")).Should().Be("f", "never the runtime login");
 
         var after = await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin);
         after.Stdout.Should().Contain("temp file cap|the migration login may set temp_file_limit").And.NotContain("FAIL  temp file cap")
             .And.Contain("ok    parameter privileges|SET on temp_file_limit to the migration login or ariva_migration only", "grant-settings' own grant passes");
         (await MigrateAsync()).Should().Be(0);
         (await RuntimeScalarAsync("SHOW temp_file_limit")).Should().Be("1GB");
-        (await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Stdout.Should().Contain($"ok    runtime caps|{RuntimeLogin} in this database: ")
+        (await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Stdout.Should().Contain($"ok    runtime caps|{AllLogins} in this database: ")
             .And.NotContain("FAIL", "the job capped the runtime login again");
 
         // Its review: the migration login, which may set the cap, raises both past what the job writes (well formed, out of the
         // settings' bounds): the check names each, and the next migration sets them back.
-        await MigrationLoginAsync("ALTER ROLE ariva_app IN DATABASE ariva SET temp_file_limit = '102401MB'");
-        await MigrationLoginAsync("ALTER ROLE ariva_app IN DATABASE ariva SET statement_timeout = '3601s'");
+        await MigrationLoginAsync("ALTER ROLE ariva_app_main IN DATABASE ariva SET temp_file_limit = '102401MB'");
+        await MigrationLoginAsync("ALTER ROLE ariva_app_main IN DATABASE ariva SET statement_timeout = '3601s'");
         (await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Stdout.Should()
             .Contain($"FAIL  runtime caps|{RuntimeLogin} in this database: statement_timeout 3601s, temp_file_limit 102401MB (the migration job sets ");
         (await MigrateAsync()).Should().Be(0);
-        (await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Stdout.Should().Contain($"ok    runtime caps|{RuntimeLogin} in this database: ");
+        (await _server.OpsAsync(Ct, "check", "--runtime-login", RuntimeLogin)).Stdout.Should().Contain($"ok    runtime caps|{AllLogins} in this database: ");
         (await _server.OpsAsync(Ct, "grant-settings")).ExitCode.Should().Be(0, "a second grant changes nothing");
     }
 
@@ -105,7 +106,7 @@ public sealed class GrantSettingsTests : IAsyncLifetime
         await SuperuserAsync("REVOKE SET ON PARAMETER temp_file_limit FROM ariva");
         (await MigrateAsync()).Should().Be(1, "the job stops when its login may not set the cap");
         (await SuperuserScalarAsync("SELECT to_regclass('public.schema_version') IS NULL")).Should().Be("t", "no script ran");
-        (await SuperuserScalarAsync("SELECT count(*) FROM pg_roles WHERE rolname IN ('ariva_app', 'ariva_migration', 'ariva_runtime')")).Should().Be("0",
+        (await SuperuserScalarAsync("SELECT count(*) FROM pg_roles WHERE rolname IN ('ariva_app_main', 'ariva_migration', 'ariva_runtime')")).Should().Be("0",
             "no login or group role was created");
 
         // grant-settings grants ariva_migration, which no migration has created yet: it says what to do instead and grants nothing.
@@ -120,6 +121,9 @@ public sealed class GrantSettingsTests : IAsyncLifetime
         (await MigrateAsync()).Should().Be(0);
         (await RuntimeScalarAsync("SHOW temp_file_limit")).Should().Be("1GB");
     }
+
+    /// <summary>ARV-083d: the logins check judges the caps of on this server (Main's and the others'), as its caps line lists them.</summary>
+    private string AllLogins => string.Join(", ", _server.LoginNames(RuntimeLogin));
 
     private Task<int> MigrateAsync()
     {
