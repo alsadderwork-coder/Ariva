@@ -82,7 +82,7 @@ jobs:
           echo "HELM_PLUGINS=$RUNNER_TEMP/helm-plugins" >> "$GITHUB_ENV"
           [[ "$BUILD" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || { echo "::error::build must be an image tag such as main-41"; exit 1; }
           [[ "$NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || { echo "::error::ARIVA_DEV_NAMESPACE is not a namespace name"; exit 1; }
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: v3.19.0 # the Helm of ci.yml and the Azure DevOps release
       - name: kubectl, Helmfile and helm-diff (checksum verified)
@@ -101,7 +101,7 @@ jobs:
           mkdir -p "$HELM_PLUGINS" "$DOCKER_CONFIG"
           tar -xzf "$RUNNER_TEMP/helm-diff.tgz" -C "$HELM_PLUGINS"
           helm plugin list | grep -q '^diff'
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           cosign-release: 'v3.0.6'
       # ARV-073: only images this repository's images workflow signed, on a version tag or main, are deployed.
@@ -230,7 +230,7 @@ jobs:
       # ARV-084: read only. Lists the Ingresses the release left (each names its plain HTTP mode) and checks their hosts from
       # outside: TLS handshakes, GET /, a POST that announces a body over every limit and sends none (the ingress answers 413
       # before any pod sees it) and a plain HTTP GET /.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       - name: TLS check of the released hosts (ARV-084)
