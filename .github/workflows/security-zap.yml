@@ -109,7 +109,7 @@ jobs:
       # repository's clamd.conf); it loads while the dependencies install.
       - name: Start clamd (malware scan of uploads)
         run: docker run -d --name ariva-zap-clamd -p 127.0.0.1:3310:3310 -e CLAMAV_NO_FRESHCLAMD=true -v "$GITHUB_WORKSPACE/Platform/Cloud/clamav/clamd.conf:/etc/clamav/clamd.conf:ro" clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         id: sdk
         with:
           dotnet-version: '10.0.4xx'
@@ -124,7 +124,7 @@ jobs:
           printf '{ "sdk": { "version": "%s", "rollForward": "disable" } }\n' "$SDK" > "$GITHUB_WORKSPACE/global.json"
           cd "$GITHUB_WORKSPACE"
           test "$(dotnet --version)" = "$SDK" || { echo "::error::dotnet runs $(dotnet --version) at the repository root, not $SDK"; exit 1; }
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Install web and test dependencies
@@ -164,7 +164,7 @@ jobs:
         run: node scripts/artifact-secrets.mjs --require-seed zap-reports zap.log playwright-report test-results
       - name: ZAP reports
         if: always() && steps.artifacts.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: zap-reports
           path: Platform/Testing/Ariva.E2E/zap-reports
@@ -183,7 +183,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
       # Passive only: the spider and the passive rules, no attack on a shared environment.
@@ -197,7 +197,7 @@ jobs:
         run: node Platform/Testing/Ariva.E2E/scripts/zap-findings.mjs zap-dev/summary.md dev=zap-dev/dev.json
       - name: ZAP report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: zap-dev-report
           path: zap-dev
