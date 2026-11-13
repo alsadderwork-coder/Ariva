@@ -2479,7 +2479,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 305,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-11-10 from the ARV-288 security review. Chart and chart tests only; the image check needs the controller image, which this environment cannot pull. 2026-11-11: split; the libmodsecurity check moved to ARV-288b (needs the controller image), and the review's further controller and redirect findings to ARV-288c. Built: every external authentication annotation and the controller's global authentication refused, with the error backend, satisfy, the controller's snippets, arguments and rendering.",
       "dependsOn": [
         "ARV-288"
@@ -2740,7 +2740,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 328,
-      "passes": false,
+      "passes": true,
       "notes": "Built 2026-11-11 on story/batchj-landing ahead of ARV-288a, so that batch J lands on a clean audit. The six image builds are ARV-297a: the building session has no pipeline (ARV-295) and too little disk to pull the SDK image. The other ASP.NET Core packages stay on 10.0.12 and 10.0.13 (no advisory on 2026-11-11).",
       "dependsOn": []
     },
