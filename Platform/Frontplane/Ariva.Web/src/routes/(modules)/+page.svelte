@@ -361,9 +361,11 @@
 			>
 				<div class="flex flex-wrap items-center justify-between gap-2">
 					<h2 id="plan-title" class="text-base font-semibold">{$_('liveOperations.plan')}</h2>
-					<label class="flex items-center gap-2 text-xs font-medium">
-						{$_('zones.level')}
+					<!-- The label names the select by id: wrapped, its name would carry every option (ARV-299a). -->
+					<div class="flex items-center gap-2">
+						<label for="live-level" class="text-xs font-medium">{$_('zones.level')}</label>
 						<select
+							id="live-level"
 							bind:value={levelId}
 							onchange={loadPlan}
 							class="h-9 rounded-md border border-input bg-card px-2 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
@@ -372,7 +374,7 @@
 								<option value={item.id}>{item.code}, {item.name}</option>
 							{/each}
 						</select>
-					</label>
+					</div>
 				</div>
 				{#if level}
 					<NowcastPlan

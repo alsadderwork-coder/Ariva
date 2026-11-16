@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Cpu, FileUp, Plus } from '@lucide/svelte';
+	import EmptyState from '$lib/components/shared/EmptyState.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
@@ -341,7 +342,7 @@
 			{$_('devices.list')}
 		</h2>
 		{#if list.length === 0}
-			<p class="p-5 text-sm text-muted-foreground">{$_('devices.none')}</p>
+			<EmptyState icon={Cpu} title={$_('devices.none')} hint={$_('devices.emptyHint')} />
 		{:else}
 			<div class="overflow-x-auto">
 				<table class="w-full text-sm" data-testid="devices-table">

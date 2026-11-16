@@ -5,13 +5,15 @@
 </script>
 
 <script lang="ts">
-	import { Crosshair, Hand, Maximize, Minimize, Minus, Plus, Scan } from '@lucide/svelte';
 	import { _ } from 'svelte-i18n';
+	import PlanGrid from '$lib/components/shared/PlanGrid.svelte';
+	import PlanScale from '$lib/components/shared/PlanScale.svelte';
+	import PlanTools from '$lib/components/shared/PlanTools.svelte';
+	import { PlanView, boundsOf, type Bounds } from '$lib/components/shared/plan-view.svelte';
 	import type { Line, Point, Zone } from '$lib/core/zones';
 	import { round } from '$lib/core/zones';
 	import { cn } from '$lib/utils';
 
-	type Bounds = { minX: number; maxX: number; minY: number; maxY: number };
 	type Drag =
 		| { kind: 'vertex'; zoneId: string; index: number }
 		| { kind: 'line'; lineId: string; end: 'start' | 'end' }
@@ -38,7 +40,6 @@
 		| { kind: 'pan'; last: Point; travelled: number; onFloor: boolean }
 		| { kind: 'pinch'; distance: number; middle: Point }
 		| null;
-	type View = { key: string; zoom: number; cx: number; cy: number };
 
 	interface Props {
 		width: number;
@@ -83,78 +84,26 @@
 		onCommit
 	}: Props = $props();
 
-	/** Screen pixels around the level when it is fitted. */
-	const PAD = 28;
-	const MIN_ZOOM = 0.5;
-	const MAX_ZOOM = 40;
 	/** A pointer that travels less than this many pixels clicks rather than drags. */
 	const SLOP = 4;
 
 	let wrapper = $state<HTMLDivElement>();
 	let svg = $state<SVGSVGElement>();
-	let cw = $state(0);
-	let ch = $state(0);
 	let drag = $state<Drag>(null);
 	let gesture = $state<Gesture>(null);
 	let handTool = $state(false);
 	let cursor = $state<Point | null>(null);
-	let fullscreen = $state(false);
-	let canFullscreen = $state(false);
 	/** The pointers on the plan (touch pinch); not reactive, read only in handlers. */
 	const pointers = new Map<number, Point>();
 
-	// The view: a zoom relative to the fitted level and the floor point at the middle of the canvas. A view kept for
-	// another level (other width or depth) is dropped, so every level opens fitted.
-	const levelKey = $derived(`${width}x${depth}`);
-	let kept = $state<View | null>(null);
-	const view = $derived(
-		kept && kept.key === levelKey ? kept : { key: levelKey, zoom: 1, cx: width / 2, cy: depth / 2 }
-	);
-	const fitScale = $derived(
-		cw > 0 && ch > 0 ? Math.max(Math.min((cw - 2 * PAD) / width, (ch - 2 * PAD) / depth), 1e-6) : 0
-	);
-	/** Screen pixels per metre. */
-	const scale = $derived(fitScale * view.zoom);
-	const box = $derived(
-		scale > 0
-			? { x: view.cx - cw / 2 / scale, y: view.cy - ch / 2 / scale, w: cw / scale, h: ch / scale }
-			: { x: 0, y: 0, w: width, h: depth }
-	);
-	/** One screen pixel in metres: handles and labels keep their size on screen at any zoom. */
-	const pixel = $derived(scale > 0 ? 1 / scale : Math.max(width, depth) / 800);
-	const zoomPercent = $derived(Math.round(view.zoom * 100));
+	// The view: zoom, pan and fit around the level (shared with the live floor plan, ARV-299a).
+	const view = new PlanView(() => ({ width, depth }));
 	/** The selected zone is drawn last, on top: zones often overlap (a new one starts in the middle of the level). */
 	const ordered = $derived(
 		selected?.kind === 'zone'
 			? [...zones.filter((z) => z.id !== selected.id), ...zones.filter((z) => z.id === selected.id)]
 			: zones
 	);
-
-	const steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
-	/** Grid lines inside the level and the view, about every 20 pixels; every fifth is stronger. */
-	const grid = $derived.by(() => {
-		if (scale <= 0) return { minor: [] as number[][], major: [] as number[][] };
-		const step = steps.find((s) => s * scale >= 20) ?? 1000;
-		const minor: number[][] = [];
-		const major: number[][] = [];
-		const x0 = Math.max(0, Math.ceil(box.x / step) * step);
-		const x1 = Math.min(width, box.x + box.w);
-		const y0 = Math.max(0, Math.ceil(box.y / step) * step);
-		const y1 = Math.min(depth, box.y + box.h);
-		const top = Math.max(0, box.y);
-		const left = Math.max(0, box.x);
-		for (let x = x0, i = 0; x <= x1 && i < 400; x += step, i++)
-			(Math.round(x / step) % 5 === 0 ? major : minor).push([x, top, x, y1]);
-		for (let y = y0, i = 0; y <= y1 && i < 400; y += step, i++)
-			(Math.round(y / step) % 5 === 0 ? major : minor).push([left, y, x1, y]);
-		return { minor, major };
-	});
-	/** A scale bar of a round length between 60 and 150 pixels. */
-	const bar = $derived.by(() => {
-		if (scale <= 0) return null;
-		const metres = steps.find((s) => s * scale >= 60) ?? 1000;
-		return { metres, pixels: metres * scale };
-	});
 
 	const zoneTone: Record<string, string> = {
 		Queue: 'fill-status-info/45 stroke-status-info-solid',
@@ -169,80 +118,17 @@
 		OverflowEntry: 'stroke-status-warning-solid'
 	};
 
-	$effect(() => {
-		canFullscreen = document.fullscreenEnabled === true;
-		const changed = () =>
-			(fullscreen = document.fullscreenElement !== null && document.fullscreenElement === wrapper);
-		document.addEventListener('fullscreenchange', changed);
-		return () => document.removeEventListener('fullscreenchange', changed);
-	});
-
-	// The wheel zooms around the pointer (Shift and the wheel pan sideways). Added by hand: a wheel listener Svelte adds is
-	// passive, and the page must not scroll while the plan zooms.
+	// The wheel zooms around the pointer (Shift and the wheel pan sideways); the page does not scroll under the editor.
 	$effect(() => {
 		const element = svg;
 		if (!element) return;
-		const wheel = (event: WheelEvent) => {
-			event.preventDefault();
-			const rect = element.getBoundingClientRect();
-			const amount = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
-			if (event.shiftKey) panBy(-(event.deltaX || amount), 0);
-			else zoomAt(event.clientX - rect.left, event.clientY - rect.top, Math.exp(-amount * 0.0015));
-		};
-		element.addEventListener('wheel', wheel, { passive: false });
-		return () => element.removeEventListener('wheel', wheel);
+		return view.listen(element);
 	});
-
-	function setView(zoom: number, cx: number, cy: number): void {
-		kept = {
-			key: levelKey,
-			zoom,
-			cx: Math.min(Math.max(cx, 0), width),
-			cy: Math.min(Math.max(cy, 0), depth)
-		};
-	}
-
-	/** Zooms by a factor around a point of the canvas (pixels from its top left corner); that floor point stays put. */
-	function zoomAt(x: number, y: number, factor: number): void {
-		if (scale <= 0) return;
-		const zoom = Math.min(Math.max(view.zoom * factor, MIN_ZOOM), MAX_ZOOM);
-		const next = fitScale * zoom;
-		const floorX = box.x + x / scale;
-		const floorY = box.y + y / scale;
-		setView(zoom, floorX - (x - cw / 2) / next, floorY - (y - ch / 2) / next);
-	}
-
-	function zoomBy(factor: number): void {
-		zoomAt(cw / 2, ch / 2, factor);
-	}
-
-	function panBy(dx: number, dy: number): void {
-		if (scale <= 0) return;
-		setView(view.zoom, view.cx - dx / scale, view.cy - dy / scale);
-	}
-
-	function fit(): void {
-		kept = null;
-	}
 
 	/** Zooms to the selected shape with room around it. */
 	function focusSelection(): void {
 		const points = selectedPoints();
-		if (points.length === 0 || fitScale <= 0) return;
-		const b = boundsOf(points);
-		const w = Math.max(b.maxX - b.minX, 2);
-		const h = Math.max(b.maxY - b.minY, 2);
-		const zoom = Math.min(
-			Math.max(Math.min((cw - 4 * PAD) / w, (ch - 4 * PAD) / h) / fitScale, MIN_ZOOM),
-			MAX_ZOOM
-		);
-		setView(zoom, (b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
-	}
-
-	async function toggleFullscreen(): Promise<void> {
-		if (!wrapper) return;
-		if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined);
-		else await wrapper.requestFullscreen().catch(() => undefined);
+		if (points.length > 0) view.focus(boundsOf(points));
 	}
 
 	function selectedPoints(): Point[] {
@@ -255,15 +141,6 @@
 			return line ? endsOf(line) : [];
 		}
 		return [];
-	}
-
-	function boundsOf(points: Point[]): Bounds {
-		return {
-			minX: Math.min(...points.map((p) => p.x)),
-			maxX: Math.max(...points.map((p) => p.x)),
-			minY: Math.min(...points.map((p) => p.y)),
-			maxY: Math.max(...points.map((p) => p.y))
-		};
 	}
 
 	/** A zone with its own lines: what moves when the whole zone moves. */
@@ -403,16 +280,16 @@
 			const distance = Math.hypot(a.x - b.x, a.y - b.y);
 			const middle = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 			const rect = svg.getBoundingClientRect();
-			panBy(middle.x - gesture.middle.x, middle.y - gesture.middle.y);
+			view.panBy(middle.x - gesture.middle.x, middle.y - gesture.middle.y);
 			if (gesture.distance > 0)
-				zoomAt(middle.x - rect.left, middle.y - rect.top, distance / gesture.distance);
+				view.zoomAt(middle.x - rect.left, middle.y - rect.top, distance / gesture.distance);
 			gesture = { kind: 'pinch', distance, middle };
 			return;
 		}
 		if (gesture?.kind === 'pan') {
 			const dx = event.clientX - gesture.last.x;
 			const dy = event.clientY - gesture.last.y;
-			panBy(dx, dy);
+			view.panBy(dx, dy);
 			gesture = {
 				...gesture,
 				last: { x: event.clientX, y: event.clientY },
@@ -532,32 +409,12 @@
 		}
 	}
 
-	/** + and - zoom, 0 fits the level, while the focus is on the plan or its tools. */
-	function keys(event: KeyboardEvent): void {
-		const target = event.target as HTMLElement;
-		if (
-			['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName) ||
-			event.ctrlKey ||
-			event.metaKey ||
-			event.altKey
-		)
-			return;
-		if (event.key === '+' || event.key === '=') zoomBy(1.25);
-		else if (event.key === '-') zoomBy(0.8);
-		else if (event.key === '0') fit();
-		else return;
-		event.preventDefault();
-	}
-
 	function centre(points: Point[]): Point {
 		return {
 			x: points.reduce((s, p) => s + p.x, 0) / points.length,
 			y: points.reduce((s, p) => s + p.y, 0) / points.length
 		};
 	}
-
-	const toolClass =
-		'inline-flex size-8 items-center justify-center rounded-md text-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-40';
 </script>
 
 <!-- The level in metres: the plan underneath, a grid, zones by kind, lines by role. Each shape carries its name as text
@@ -566,14 +423,14 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	bind:this={wrapper}
-	bind:clientWidth={cw}
-	bind:clientHeight={ch}
+	bind:clientWidth={view.cw}
+	bind:clientHeight={view.ch}
 	data-testid="zone-editor"
 	class={cn(
 		'relative overflow-hidden border bg-surface-2',
-		fullscreen ? 'h-screen w-screen rounded-none' : 'h-[min(70vh,44rem)] min-h-80 rounded-xl'
+		view.fullscreen ? 'h-screen w-screen rounded-none' : 'h-[min(70vh,44rem)] min-h-80 rounded-xl'
 	)}
-	onkeydown={keys}
+	onkeydown={(event) => view.keys(event)}
 >
 	<svg
 		bind:this={svg}
@@ -581,7 +438,7 @@
 		data-zoom={view.zoom}
 		role="group"
 		aria-label={$_('zones.canvas')}
-		viewBox="{box.x} {box.y} {box.w} {box.h}"
+		viewBox="{view.box.x} {view.box.y} {view.box.w} {view.box.h}"
 		preserveAspectRatio="xMidYMid meet"
 		class={cn(
 			'absolute inset-0 size-full touch-none select-none',
@@ -619,30 +476,7 @@
 				data-floor=""
 			/>
 		{/if}
-		<g class="pointer-events-none" aria-hidden="true">
-			{#each grid.minor as [x1, y1, x2, y2], i (i)}
-				<line
-					{x1}
-					{y1}
-					{x2}
-					{y2}
-					class="stroke-border"
-					stroke-width="0.5"
-					vector-effect="non-scaling-stroke"
-				/>
-			{/each}
-			{#each grid.major as [x1, y1, x2, y2], i (i)}
-				<line
-					{x1}
-					{y1}
-					{x2}
-					{y2}
-					class="stroke-muted-foreground/30"
-					stroke-width="1"
-					vector-effect="non-scaling-stroke"
-				/>
-			{/each}
-		</g>
+		<PlanGrid {view} />
 		{#each ordered as zone (zone.id)}
 			{@const points = pointsOf(zone)}
 			{@const isSelected = selected?.kind === 'zone' && selected.id === zone.id}
@@ -671,7 +505,7 @@
 				<text
 					x={middle.x}
 					y={middle.y}
-					font-size={12 * pixel}
+					font-size={12 * view.pixel}
 					text-anchor="middle"
 					dominant-baseline="middle"
 					class="pointer-events-none fill-foreground font-medium">{zone.name}</text
@@ -726,7 +560,7 @@
 						data-testid="vertex-handle"
 						cx={point.x}
 						cy={point.y}
-						r={7 * pixel}
+						r={7 * view.pixel}
 						role="button"
 						tabindex="0"
 						aria-label={$_('zones.vertexHandle', {
@@ -757,7 +591,7 @@
 						data-testid="line-handle"
 						cx={point.x}
 						cy={point.y}
-						r={7 * pixel}
+						r={7 * view.pixel}
 						role="button"
 						tabindex="0"
 						aria-label={$_(`zones.lineHandle.${which}`, {
@@ -781,117 +615,19 @@
 		{/if}
 	</svg>
 
-	<div
-		role="toolbar"
-		aria-label={$_('zones.tools.toolbar')}
-		data-testid="zone-tools"
-		class="absolute start-3 top-3 flex items-center gap-0.5 rounded-lg border bg-card/95 p-1 shadow-sm backdrop-blur"
-	>
-		<button
-			type="button"
-			data-testid="zoom-out"
-			class={toolClass}
-			aria-label={$_('zones.tools.zoomOut')}
-			title={$_('zones.tools.zoomOut')}
-			disabled={view.zoom <= MIN_ZOOM}
-			onclick={() => zoomBy(0.8)}
-		>
-			<Minus class="size-4" aria-hidden="true" />
-		</button>
-		<output
-			data-testid="zoom-level"
-			class="min-w-12 text-center text-xs font-medium tabular-nums"
-			aria-live="polite"
-			aria-label={$_('zones.tools.zoomLevel')}>{zoomPercent}%</output
-		>
-		<button
-			type="button"
-			data-testid="zoom-in"
-			class={toolClass}
-			aria-label={$_('zones.tools.zoomIn')}
-			title={$_('zones.tools.zoomIn')}
-			disabled={view.zoom >= MAX_ZOOM}
-			onclick={() => zoomBy(1.25)}
-		>
-			<Plus class="size-4" aria-hidden="true" />
-		</button>
-		<span class="mx-1 h-5 w-px bg-border" aria-hidden="true"></span>
-		<button
-			type="button"
-			data-testid="zoom-fit"
-			class={toolClass}
-			aria-label={$_('zones.tools.fit')}
-			title={$_('zones.tools.fit')}
-			onclick={fit}
-		>
-			<Scan class="size-4" aria-hidden="true" />
-		</button>
-		<button
-			type="button"
-			data-testid="zoom-selection"
-			class={toolClass}
-			aria-label={$_('zones.tools.focus')}
-			title={$_('zones.tools.focus')}
-			disabled={!selected}
-			onclick={focusSelection}
-		>
-			<Crosshair class="size-4" aria-hidden="true" />
-		</button>
-		<button
-			type="button"
-			data-testid="pan-tool"
-			class={cn(toolClass, handTool && 'bg-primary/10 text-primary')}
-			aria-label={$_('zones.tools.pan')}
-			aria-pressed={handTool}
-			title={$_('zones.tools.pan')}
-			onclick={() => (handTool = !handTool)}
-		>
-			<Hand class="size-4" aria-hidden="true" />
-		</button>
-		{#if canFullscreen}
-			<button
-				type="button"
-				data-testid="zoom-fullscreen"
-				class={toolClass}
-				aria-label={fullscreen ? $_('zones.tools.exitFullscreen') : $_('zones.tools.fullscreen')}
-				title={fullscreen ? $_('zones.tools.exitFullscreen') : $_('zones.tools.fullscreen')}
-				onclick={toggleFullscreen}
-			>
-				{#if fullscreen}
-					<Minimize class="size-4" aria-hidden="true" />
-				{:else}
-					<Maximize class="size-4" aria-hidden="true" />
-				{/if}
-			</button>
-		{/if}
-	</div>
+	<PlanTools
+		{view}
+		label={$_('zones.tools.toolbar')}
+		target={wrapper}
+		testId="zone-tools"
+		focus={{ disabled: !selected, run: focusSelection }}
+		bind:hand={handTool}
+	/>
 
 	<p
 		class="pointer-events-none absolute start-3 bottom-3 hidden max-w-[60%] rounded-md bg-card/90 px-2 py-1 text-xs text-muted-foreground shadow-sm md:block"
 	>
 		{editable ? $_('zones.tools.hint') : $_('zones.tools.hintReadOnly')}
 	</p>
-	<div
-		class="pointer-events-none absolute end-3 bottom-3 flex flex-col items-end gap-1 text-xs text-muted-foreground"
-		aria-hidden="true"
-	>
-		{#if cursor}
-			<span
-				data-testid="zone-cursor"
-				class="rounded-md bg-card/90 px-2 py-0.5 tabular-nums shadow-sm"
-				>{$_('zones.tools.position', {
-					values: { x: cursor.x.toFixed(1), y: cursor.y.toFixed(1) }
-				})}</span
-			>
-		{/if}
-		{#if bar}
-			<span class="flex flex-col items-end rounded-md bg-card/90 px-2 py-1 shadow-sm">
-				<span class="tabular-nums"
-					>{$_('zones.tools.scale', { values: { metres: bar.metres } })}</span
-				>
-				<span class="h-1.5 border-x-2 border-b-2 border-foreground/70" style:width="{bar.pixels}px"
-				></span>
-			</span>
-		{/if}
-	</div>
+	<PlanScale {view} {cursor} />
 </div>

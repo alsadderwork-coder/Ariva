@@ -2795,6 +2795,25 @@
       "dependsOn": [
         "ARV-051"
       ]
+    },
+    {
+      "id": "ARV-299a",
+      "title": "[E8] Loading skeletons, empty states, and the live floor plan on the zones editor's view",
+      "description": "Follow-up of ARV-299, taken on 2026-11-16 after the owner saw the first round (\"Continue\"). The live floor plan (ARV-055) drew the level at one fixed scale; it now uses the zones editor's view (ARV-298), shared as PlanView, PlanTools, PlanGrid and PlanScale. The list screens showed an empty table header while loading and one grey line when empty. CWEs to review: CWE-79 (zone names and keys on the plan, dictionary text only in the empty states), CWE-862 (no new endpoint; the plan shows what the hub already sends).",
+      "acceptanceCriteria": [
+        "The zones editor's view is one shared piece (plan-view.svelte.ts with PlanTools, PlanGrid and PlanScale) and the Zones screen behaves as in ARV-298, its tests unchanged",
+        "The live floor plan zooms with its buttons, a two-finger pinch and Ctrl or Cmd with the wheel around the pointer; a plain wheel is left to the page, which scrolls, and a hint says how to zoom; in full screen the plain wheel zooms; dragging pans and never selects; a click on a zone selects it as the table does; Fit the level, Zoom to the selection and Full screen; + and - zoom and 0 fits; names and waits keep their size on screen and show when the zone holds them on screen; the tools and the scale sit in a bar above the plan, never over a zone; a touch on the fitted plan scrolls the page and one finger pans once zoomed in",
+        "While a list loads, skeleton rows stand in for it with the screen's loading text for screen readers (users, alert rules, displays, instruction slides, the advertisement library, advertising, validation campaigns and their counts, the audit trail, immigration staffing); an empty list shows an icon, the screen's own words and, on the main screens, one line on what would fill it (users, alert rules, displays, instruction slides, devices, report schedules, the advertisement library, validation campaigns, topology columns, the audit trail); motion stops for people who ask for less",
+        "Functional tests for the live plan (buttons, keys, the plain wheel not prevented, Ctrl and the wheel around the pointer, pan without selecting, click to select, zoom to the selection, a pinch, the touch action, Arabic) and for the skeleton and the empty state (held first read, axe, Arabic); the existing functional, accessibility and visual suites pass, the live baselines taken again in the pinned image",
+        "node scripts/verify.mjs web passes; security-reviewer verdict PASS recorded in backlog/progress.md; wiki 12 updated; node scripts/verify.mjs docs passes"
+      ],
+      "priority": 332,
+      "passes": false,
+      "notes": "Filed and built 2026-11-16. Not sign-in or authentication code: the sign-in, first sign-in, step-up and account security pages are left as they are under the owner's sign-in freeze.",
+      "dependsOn": [
+        "ARV-298",
+        "ARV-299"
+      ]
     }
   ]
 }

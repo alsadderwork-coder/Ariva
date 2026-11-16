@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { ArrowDown, ArrowUp, Pencil, Plus, Presentation } from '@lucide/svelte';
+	import EmptyState from '$lib/components/shared/EmptyState.svelte';
+	import ListSkeleton from '$lib/components/shared/ListSkeleton.svelte';
 	import { onMount } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
@@ -218,8 +220,10 @@
 				<h2 id="slides-title" class="text-base font-semibold">{$_('slides.listTitle')}</h2>
 				<p class="text-xs text-muted-foreground">{$_('slides.orderHint')}</p>
 			</div>
-			{#if !loading && list.length === 0}
-				<p class="px-4 py-6 text-sm text-muted-foreground">{$_('slides.none')}</p>
+			{#if loading && list.length === 0}
+				<ListSkeleton label={$_('app.loading')} columns={4} />
+			{:else if list.length === 0}
+				<EmptyState icon={Presentation} title={$_('slides.none')} hint={$_('slides.emptyHint')} />
 			{:else}
 				<div class="overflow-x-auto">
 					<table class="w-full text-sm">

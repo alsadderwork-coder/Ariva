@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Megaphone, TriangleAlert } from '@lucide/svelte';
+	import ListSkeleton from '$lib/components/shared/ListSkeleton.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
@@ -195,9 +196,9 @@
 {:else}
 	<div class="flex flex-col gap-4" data-testid="plans-page" data-state={view} data-site={siteCode}>
 		{#if view === 'loading'}
-			<p class="text-sm text-muted-foreground" role="status" data-testid="plans-loading">
-				{$_('advertisingPlans.loading')}
-			</p>
+			<div class="rounded-xl border bg-card shadow-xs">
+				<ListSkeleton label={$_('advertisingPlans.loading')} rows={4} testId="plans-loading" />
+			</div>
 		{:else if view === 'none'}
 			<p class="text-sm text-muted-foreground" data-testid="plans-no-site">
 				{$_('advertisingPlans.noSite')}

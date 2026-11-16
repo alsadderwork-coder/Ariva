@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { Download, FileChartColumn, Pencil, Plus } from '@lucide/svelte';
+	import { CalendarClock, Download, FileChartColumn, Pencil, Plus } from '@lucide/svelte';
+	import EmptyState from '$lib/components/shared/EmptyState.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { _, locale } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
@@ -267,7 +268,11 @@
 						</h2>
 					</div>
 					{#if scheduleList.length === 0}
-						<p class="px-4 py-6 text-sm text-muted-foreground">{$_('reports.schedules.none')}</p>
+						<EmptyState
+							icon={CalendarClock}
+							title={$_('reports.schedules.none')}
+							hint={$_('reports.schedules.emptyHint')}
+						/>
 					{:else}
 						<div class="overflow-x-auto">
 							<table class="w-full text-sm" data-testid="schedules-table">

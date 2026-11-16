@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { Plus, Search } from '@lucide/svelte';
+	import { ClipboardCheck, Plus, Search } from '@lucide/svelte';
+	import EmptyState from '$lib/components/shared/EmptyState.svelte';
+	import ListSkeleton from '$lib/components/shared/ListSkeleton.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { _, locale } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
@@ -151,15 +153,19 @@
 	{#if problem}
 		<p role="alert" class="mt-4 text-sm text-status-danger-foreground">{problem}</p>
 	{:else if loading && list.length === 0}
-		<p class="mt-4 text-sm text-muted-foreground" role="status">
-			{$_('validationCampaigns.loading')}
-		</p>
+		<div class="mt-4 rounded-lg border">
+			<ListSkeleton label={$_('validationCampaigns.loading')} rows={3} />
+		</div>
 	{:else if list.length === 0}
-		<p class="mt-4 text-sm text-muted-foreground" data-testid="campaigns-none">
-			{text.trim() || status
+		<EmptyState
+			class="mt-4 rounded-lg border border-dashed"
+			icon={ClipboardCheck}
+			title={text.trim() || status
 				? $_('validationCampaigns.list.noneMatching')
 				: $_('validationCampaigns.list.none')}
-		</p>
+			hint={text.trim() || status ? undefined : $_('validationCampaigns.list.emptyHint')}
+			testId="campaigns-none"
+		/>
 	{:else}
 		<div class="mt-4 overflow-x-auto rounded-lg border">
 			<table class="w-full text-sm" data-testid="campaigns-table">

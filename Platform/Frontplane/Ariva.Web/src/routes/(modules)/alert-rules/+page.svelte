@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { BellRing, Copy, Pencil, Plus } from '@lucide/svelte';
+	import EmptyState from '$lib/components/shared/EmptyState.svelte';
+	import ListSkeleton from '$lib/components/shared/ListSkeleton.svelte';
 	import { onMount } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
@@ -253,8 +255,10 @@
 				{$_('alertRules.count', { values: { count: list.length } })}
 			</p>
 		</div>
-		{#if !loading && list.length === 0}
-			<p class="px-4 py-6 text-sm text-muted-foreground">{$_('alertRules.none')}</p>
+		{#if loading && list.length === 0}
+			<ListSkeleton label={$_('app.loading')} columns={5} />
+		{:else if list.length === 0}
+			<EmptyState icon={BellRing} title={$_('alertRules.none')} hint={$_('alertRules.emptyHint')} />
 		{:else}
 			<div class="overflow-x-auto">
 				<table class="w-full text-sm" data-testid="rules-table">

@@ -5,7 +5,8 @@
 		"language": {
 			"toggle": "العربية",
 			"label": "Switch the language to Arabic"
-		}
+		},
+		"loading": "Loading"
 	},
 	"navigation": {
 		"label": "Main navigation",
@@ -194,7 +195,9 @@
 			"noBin": "No bin yet",
 			"failed": "The data quality could not be read",
 			"loading": "Loading the data quality…"
-		}
+		},
+		"planTools": "Floor plan view",
+		"planHint": "Zoom with the buttons, a pinch, or Ctrl and the scroll wheel; drag to pan; select a zone for its wait chart."
 	},
 	"errors": {
 		"notFound": {
@@ -488,18 +491,8 @@
 		"moveUnsaved": "Save or undo the move of {name} first.",
 		"tools": {
 			"toolbar": "Plan view",
-			"zoomIn": "Zoom in",
-			"zoomOut": "Zoom out",
-			"zoomLevel": "Zoom level",
-			"fit": "Fit the level",
-			"focus": "Zoom to the selection",
-			"pan": "Hand tool: drag anywhere to move the view",
-			"fullscreen": "Full screen",
-			"exitFullscreen": "Leave full screen",
 			"hint": "Scroll or pinch to zoom, drag the floor to pan, drag a zone or line to move it.",
-			"hintReadOnly": "Scroll or pinch to zoom, drag to pan.",
-			"position": "x {x} m, y {y} m",
-			"scale": "{metres} m"
+			"hintReadOnly": "Scroll or pinch to zoom, drag to pan."
 		}
 	},
 	"devices": {
@@ -658,7 +651,8 @@
 			"notInZone": "Lines it lists that its zone no longer has: {lines}",
 			"uncovered": "Lines no commissioned device counts",
 			"uncoveredRow": "{zone}: {lines}"
-		}
+		},
+		"emptyHint": "The sensors registered here feed this site's queue figures."
 	},
 	"csvImport": {
 		"devices": {
@@ -932,7 +926,8 @@
 			"saved": "Rule {code} saved.",
 			"deleted": "Rule {code} deleted.",
 			"failed": "That did not work: {reason}"
-		}
+		},
+		"emptyHint": "The rules added here drive the alerts of this site."
 	},
 	"immigration": {
 		"title": "Immigration",
@@ -1160,7 +1155,8 @@
 		"advertisingShown": "Second region: advertising",
 		"advertisingFallsBack": "Second region: advertising is off, instructions shown",
 		"advertisingPauseSummary": "Advertising gives way to instructions at a wait of {minutes} minutes",
-		"advertisingPauseNever": "Advertising plays whatever the wait"
+		"advertisingPauseNever": "Advertising plays whatever the wait",
+		"emptyHint": "The displays registered here show this site's waits as bands of minutes."
 	},
 	"advertising": {
 		"title": "Advertising policy",
@@ -1258,7 +1254,8 @@
 			"tooLarge": "The image is larger than 10 MB.",
 			"failed": "The advertisement library could not be updated: {reason}",
 			"tooLargeVideo": "The video is larger than 100 MB, more than any installation takes."
-		}
+		},
+		"emptyHint": "An uploaded image or video plays only once a second person approves it."
 	},
 	"advertisingPlans": {
 		"title": "Advertising",
@@ -1512,7 +1509,8 @@
 			"restored": "Slide {position} restored.",
 			"moved": "The order is saved.",
 			"failed": "That did not work: {reason}"
-		}
+		},
+		"emptyHint": "The slides added here appear on the passenger displays beside the waits."
 	},
 	"users": {
 		"title": "Users and access",
@@ -1622,7 +1620,8 @@
 			"about": "About {user}",
 			"by": "By {user}",
 			"utcNote": "Newest first. The trail is read only: nobody, administrators included, can change or delete an entry."
-		}
+		},
+		"emptyHint": "Change the search or the filters."
 	},
 	"reports": {
 		"title": "Reports",
@@ -1735,7 +1734,8 @@
 			"actions": "Actions",
 			"edit": "Edit",
 			"delete": "Delete",
-			"confirmDelete": "Delete this schedule"
+			"confirmDelete": "Delete this schedule",
+			"emptyHint": "A schedule emails the site's daily report to its recipients."
 		}
 	},
 	"site": {
@@ -1993,7 +1993,8 @@
 			"scope": "{zones, plural, one {# queue zone} other {# queue zones}}, {lines, plural, one {# line} other {# lines}}",
 			"days": "{count, plural, one {# day} other {# days}} from {first}",
 			"new": "New campaign",
-			"more": "Showing the newest {shown} of {total} campaigns: search by name to find older ones."
+			"more": "Showing the newest {shown} of {total} campaigns: search by name to find older ones.",
+			"emptyHint": "A campaign checks the site's numbers against manual counts, timed tracers and desk logs."
 		},
 		"statuses": {
 			"Planned": "Planned",
@@ -2321,5 +2322,18 @@
 		"none": "Nothing matches",
 		"open": "Search",
 		"shortcut": "Ctrl K"
+	},
+	"planView": {
+		"zoomIn": "Zoom in",
+		"zoomOut": "Zoom out",
+		"zoomLevel": "Zoom level",
+		"fit": "Fit the level",
+		"focus": "Zoom to the selection",
+		"pan": "Hand tool: drag anywhere to move the view",
+		"fullscreen": "Full screen",
+		"exitFullscreen": "Leave full screen",
+		"position": "x {x} m, y {y} m",
+		"scale": "{metres} m",
+		"modifierHint": "Hold Ctrl (Cmd on a Mac) and scroll to zoom the plan"
 	}
 }

@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { Check, Film, Images, Pencil, Upload } from '@lucide/svelte';
+	import EmptyState from '$lib/components/shared/EmptyState.svelte';
+	import ListSkeleton from '$lib/components/shared/ListSkeleton.svelte';
 	import { onDestroy, untrack } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
@@ -433,11 +435,19 @@
 		{/if}
 
 		{#if loading}
-			<p class="text-muted-foreground" data-testid="media-loading">
-				{$_('advertisingMedia.loading')}
-			</p>
+			<ListSkeleton
+				label={$_('advertisingMedia.loading')}
+				rows={3}
+				columns={3}
+				testId="media-loading"
+			/>
 		{:else if items.length === 0}
-			<p class="text-muted-foreground" data-testid="media-empty">{$_('advertisingMedia.none')}</p>
+			<EmptyState
+				icon={Images}
+				title={$_('advertisingMedia.none')}
+				hint={$_('advertisingMedia.emptyHint')}
+				testId="media-empty"
+			/>
 		{:else}
 			<ul class="flex flex-col divide-y" data-testid="media-list">
 				{#each items as item (item.id)}

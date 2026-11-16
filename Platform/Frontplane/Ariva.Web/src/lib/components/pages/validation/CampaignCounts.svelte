@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { ChevronLeft, ChevronRight, TriangleAlert } from '@lucide/svelte';
+	import ListSkeleton from '$lib/components/shared/ListSkeleton.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { _, locale } from 'svelte-i18n';
 	import { campaignCounts, type Campaign, type ManualCount } from '$lib/core/validation';
@@ -110,9 +111,9 @@
 	{#if problem}
 		<p role="alert" class="mt-4 text-sm text-status-danger-foreground">{problem}</p>
 	{:else if loading && rows.length === 0}
-		<p class="mt-4 text-sm text-muted-foreground" role="status">
-			{$_('validationCampaigns.loading')}
-		</p>
+		<div class="mt-4 rounded-lg border">
+			<ListSkeleton label={$_('validationCampaigns.loading')} rows={3} />
+		</div>
 	{:else if rows.length === 0}
 		<p class="mt-4 text-sm text-muted-foreground" data-testid="counts-none">
 			{$_('validationCampaigns.counts.none')}

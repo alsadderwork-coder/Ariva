@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import { accounts, call, signIn } from '../support/accounts';
 import { guardPage } from '../support/browser-guards';
@@ -227,3 +228,65 @@ test('Immigration keeps the chosen site when the first site answers last', async
 	allowStatuses(guards, 404);
 	await guards.expectClean();
 });
+
+// ARV-299a: while a list screen's first read is out, skeleton rows stand in for its table and the screen's loading text is
+// read out; a site with nothing to list shows an empty state: an icon (decorative), the screen's own words and one line on
+// what would fill it. The held read of DMO is what keeps the screen loading here.
+for (const screen of [
+	{
+		link: 'Alert rules',
+		select: '#rules-site',
+		dmo: /\/api\/v1\/admin\/alert-rules\?siteCode=DMO&pageSize=500$/,
+		chosen: new RegExp(`/api/v1/admin/alert-rules\\?siteCode=${site}&`),
+		row: 'rule-row',
+		title: 'No alert rules at this site yet',
+		hint: 'The rules added here drive the alerts of this site.'
+	},
+	{
+		link: 'Display instructions',
+		select: '#slides-site',
+		dmo: /\/api\/v1\/admin\/display-slides\?siteCode=DMO$/,
+		chosen: new RegExp(`/api/v1/admin/display-slides\\?siteCode=${site}$`),
+		row: 'slide-row',
+		title: 'No instruction slides at this site yet',
+		hint: 'The slides added here appear on the passenger displays beside the waits.'
+	}
+]) {
+	test(`${screen.link} shows skeleton rows while it loads and an empty state for an empty site (ARV-299a)`, async ({ page }) => {
+		const guards = await guardPage(page);
+		await signInThroughUi(page, accounts().switchAdmin);
+		const held = await hold(page, screen.dmo);
+		await open(page, screen.link);
+		await expect.poll(held.asked, { message: 'the screen asked for its first site' }).toBe(1);
+
+		const skeleton = page.getByTestId('list-skeleton');
+		await expect(skeleton).toBeVisible();
+		await expect(skeleton).toHaveAttribute('role', 'status');
+		await expect(skeleton, 'the loading text is there for screen readers').toHaveText('Loading');
+		await expect(page.getByText(screen.title), 'no empty state while the list loads').toHaveCount(0);
+
+		await answerLate(page, held, screen.dmo);
+		await expect(skeleton, 'the skeleton goes once the list answered').toHaveCount(0);
+		if (screen.row === 'rule-row') await expect(page.getByTestId(screen.row).first(), "DMO's rules are listed").toBeVisible();
+
+		const chosen = page.waitForResponse(screen.chosen);
+		await page.locator(screen.select).selectOption(site);
+		await chosen;
+		const title = page.getByText(screen.title, { exact: true });
+		await expect(title).toBeVisible();
+		const empty = title.locator('..');
+		await expect(empty.getByText(screen.hint, { exact: true })).toBeVisible();
+		await expect(empty.locator('svg').first(), 'the icon is decorative').toBeAttached();
+		await expect(empty.locator('[aria-hidden="true"]').first()).toBeAttached();
+		await expect(page.getByTestId(screen.row)).toHaveCount(0);
+		const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
+		expect(results.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`)).toEqual([]);
+
+		// Arabic: the same empty state in the dictionary's words, laid out right to left.
+		await page.getByTestId('language-toggle').click();
+		await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+		await expect(page.getByText(screen.title, { exact: true })).toHaveCount(0);
+		allowStatuses(guards, 404);
+		await guards.expectClean();
+	});
+}

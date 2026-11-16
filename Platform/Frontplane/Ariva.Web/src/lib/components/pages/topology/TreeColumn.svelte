@@ -11,7 +11,8 @@
 </script>
 
 <script lang="ts">
-	import { ChevronRight, Plus } from '@lucide/svelte';
+	import { ChevronRight, Network, Plus } from '@lucide/svelte';
+	import EmptyState from '$lib/components/shared/EmptyState.svelte';
 	import type { Snippet } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { cn } from '$lib/utils';
@@ -82,7 +83,7 @@
 	{#if waitingFor}
 		<p class="p-4 text-sm text-muted-foreground">{waitingFor}</p>
 	{:else if items.length === 0}
-		<p class="p-4 text-sm text-muted-foreground">{$_('topology.empty')}</p>
+		<EmptyState compact icon={Network} title={$_('topology.empty')} />
 	{:else}
 		<ul class="sidebar-scroll max-h-[28rem] overflow-y-auto p-1.5">
 			{#each items as item (item.id)}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { ChevronDown, UserRoundCheck } from '@lucide/svelte';
+	import ListSkeleton from '$lib/components/shared/ListSkeleton.svelte';
 	import { onDestroy, untrack } from 'svelte';
 	import { _, locale } from 'svelte-i18n';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -280,9 +281,7 @@
 	</div>
 
 	{#if status === 'loading'}
-		<p class="px-4 py-6 text-sm text-muted-foreground" aria-busy="true">
-			{$_('immigration.staffing.loading')}
-		</p>
+		<ListSkeleton label={$_('immigration.staffing.loading')} rows={4} columns={5} />
 	{:else if status === 'refused'}
 		<p class="px-4 py-6 text-sm text-muted-foreground" data-testid="staffing-refused">
 			{$_('immigration.staffing.refused')}

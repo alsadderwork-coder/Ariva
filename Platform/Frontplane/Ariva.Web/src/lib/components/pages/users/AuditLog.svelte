@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { ChevronLeft, ChevronRight, X } from '@lucide/svelte';
+	import { ChevronLeft, ChevronRight, ScrollText, X } from '@lucide/svelte';
+	import EmptyState from '$lib/components/shared/EmptyState.svelte';
+	import ListSkeleton from '$lib/components/shared/ListSkeleton.svelte';
 	import { untrack } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import * as users from '$lib/core/users';
@@ -142,10 +144,10 @@
 	{/if}
 
 	<div class="overflow-hidden rounded-xl border bg-card shadow-xs">
-		{#if !loading && entries.length === 0}
-			<p class="px-4 py-6 text-sm text-muted-foreground" data-testid="audit-none">
-				{$_('users.audit.none')}
-			</p>
+		{#if loading && entries.length === 0}
+			<ListSkeleton label={$_('app.loading')} columns={5} />
+		{:else if entries.length === 0}
+			<EmptyState compact icon={ScrollText} title={$_('users.audit.none')} testId="audit-none" />
 		{:else}
 			<div class="overflow-x-auto">
 				<table class="w-full text-sm" data-testid="audit-table" aria-busy={loading}>

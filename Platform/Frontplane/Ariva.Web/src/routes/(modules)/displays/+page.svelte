@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { KeyRound, MonitorPlay, Pencil, Plus } from '@lucide/svelte';
+	import EmptyState from '$lib/components/shared/EmptyState.svelte';
+	import ListSkeleton from '$lib/components/shared/ListSkeleton.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { toast } from 'svelte-sonner';
@@ -217,8 +219,10 @@
 		<div class="border-b px-4 py-3">
 			<h2 id="displays-title" class="text-base font-semibold">{$_('displays.listTitle')}</h2>
 		</div>
-		{#if !loading && list.length === 0}
-			<p class="px-4 py-6 text-sm text-muted-foreground">{$_('displays.none')}</p>
+		{#if loading && list.length === 0}
+			<ListSkeleton label={$_('app.loading')} columns={5} />
+		{:else if list.length === 0}
+			<EmptyState icon={MonitorPlay} title={$_('displays.none')} hint={$_('displays.emptyHint')} />
 		{:else}
 			<div class="overflow-x-auto">
 				<table class="w-full text-sm" data-testid="displays-table">
