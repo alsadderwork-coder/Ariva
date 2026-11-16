@@ -191,7 +191,7 @@
 <IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 {#if !canView}
-	<section class="rounded-xl border bg-card p-6" data-testid="no-access">
+	<section class="rounded-xl border bg-card p-6 shadow-xs" data-testid="no-access">
 		<h2 class="text-base font-semibold">{$_('access.title')}</h2>
 		<p class="mt-1 text-sm text-muted-foreground">{$_('access.description')}</p>
 	</section>
@@ -210,7 +210,10 @@
 			{/key}
 		{/if}
 
-		<section class="overflow-hidden rounded-xl border bg-card" aria-labelledby="slides-title">
+		<section
+			class="overflow-hidden rounded-xl border bg-card shadow-xs"
+			aria-labelledby="slides-title"
+		>
 			<div class="border-b px-4 py-3">
 				<h2 id="slides-title" class="text-base font-semibold">{$_('slides.listTitle')}</h2>
 				<p class="text-xs text-muted-foreground">{$_('slides.orderHint')}</p>

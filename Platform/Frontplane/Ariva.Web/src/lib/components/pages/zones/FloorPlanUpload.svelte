@@ -37,7 +37,7 @@
 </script>
 
 <form
-	class="flex flex-col gap-2.5 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-2.5 rounded-xl border bg-card p-4 shadow-xs"
 	onsubmit={submit}
 	data-testid="plan-form"
 >

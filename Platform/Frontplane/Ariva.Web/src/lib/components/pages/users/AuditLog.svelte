@@ -141,7 +141,7 @@
 		</ul>
 	{/if}
 
-	<div class="overflow-hidden rounded-xl border bg-card">
+	<div class="overflow-hidden rounded-xl border bg-card shadow-xs">
 		{#if !loading && entries.length === 0}
 			<p class="px-4 py-6 text-sm text-muted-foreground" data-testid="audit-none">
 				{$_('users.audit.none')}

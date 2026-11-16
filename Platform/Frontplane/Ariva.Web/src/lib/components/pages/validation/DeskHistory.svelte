@@ -80,7 +80,7 @@
 		});
 </script>
 
-<section aria-labelledby="desk-history-title" class="rounded-xl border bg-card p-5">
+<section aria-labelledby="desk-history-title" class="rounded-xl border bg-card p-5 shadow-xs">
 	<div class="flex flex-wrap items-end justify-between gap-3">
 		<h2 id="desk-history-title" class="text-xl font-semibold">
 			{$_('validation.desks.history.title')}

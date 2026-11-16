@@ -88,7 +88,7 @@
 
 <!-- Rule and zone names are text from the server; state and severity are words as well as colours. -->
 <section
-	class="flex flex-col gap-3 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-xs"
 	aria-labelledby="health-alarms-title"
 	data-testid="health-alarms"
 >

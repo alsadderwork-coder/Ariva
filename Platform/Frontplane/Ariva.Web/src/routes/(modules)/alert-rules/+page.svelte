@@ -243,7 +243,10 @@
 		{/key}
 	{/if}
 
-	<section class="overflow-hidden rounded-xl border bg-card" aria-labelledby="rules-title">
+	<section
+		class="overflow-hidden rounded-xl border bg-card shadow-xs"
+		aria-labelledby="rules-title"
+	>
 		<div class="border-b px-4 py-3">
 			<h2 id="rules-title" class="text-base font-semibold">{$_('alertRules.listTitle')}</h2>
 			<p class="text-xs text-muted-foreground">

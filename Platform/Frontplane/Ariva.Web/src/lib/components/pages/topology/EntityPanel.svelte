@@ -109,7 +109,7 @@
 <section
 	data-testid="entity-panel"
 	aria-labelledby="entity-panel-title"
-	class="mt-4 rounded-xl border bg-card p-5"
+	class="mt-4 rounded-xl border bg-card p-5 shadow-xs"
 >
 	<header class="mb-4 flex items-start justify-between gap-3">
 		<div class="min-w-0">

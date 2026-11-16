@@ -87,7 +87,7 @@
 
 <div class="flex flex-col gap-4">
 	{#if !log.logging}
-		<section aria-labelledby="choose-desks" class="rounded-xl border bg-card p-5">
+		<section aria-labelledby="choose-desks" class="rounded-xl border bg-card p-5 shadow-xs">
 			<h2 id="choose-desks" class="text-xl font-semibold">{$_('validation.desks.chooseTitle')}</h2>
 			<p class="mt-1 max-w-prose text-sm text-secondary-foreground">
 				{$_('validation.desks.chooseHint')}
@@ -169,7 +169,10 @@
 			{/if}
 		</section>
 	{:else}
-		<section aria-labelledby="desk-log-title" class="@container rounded-xl border bg-card p-5">
+		<section
+			aria-labelledby="desk-log-title"
+			class="@container rounded-xl border bg-card p-5 shadow-xs"
+		>
 			<div class="flex flex-wrap items-start justify-between gap-3">
 				<div class="min-w-0">
 					<h2 id="desk-log-title" class="text-xl font-semibold" data-testid="desk-log-title">

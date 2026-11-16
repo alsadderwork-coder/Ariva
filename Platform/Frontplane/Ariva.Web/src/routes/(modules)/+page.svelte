@@ -303,7 +303,7 @@
 
 {#if !canSee}
 	<p
-		class="rounded-xl border bg-card p-4 text-sm text-muted-foreground"
+		class="rounded-xl border bg-card p-4 text-sm text-muted-foreground shadow-xs"
 		data-testid="no-live-access"
 	>
 		{$_('liveOperations.noAccess')}
@@ -320,7 +320,7 @@
 {:else}
 	<section
 		aria-label={$_('liveOperations.metrics.label')}
-		class="mb-4 grid overflow-hidden rounded-xl border bg-card sm:grid-cols-2 xl:grid-cols-4 [&>*]:border-b sm:[&>*]:border-e xl:[&>*]:border-b-0"
+		class="mb-4 grid overflow-hidden rounded-xl border bg-card shadow-xs sm:grid-cols-2 xl:grid-cols-4 [&>*]:border-b sm:[&>*]:border-e xl:[&>*]:border-b-0"
 	>
 		<MetricCard
 			testId="metric-waiting"
@@ -356,7 +356,7 @@
 	<div class="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
 		<div class="flex min-w-0 flex-col gap-4">
 			<section
-				class="flex flex-col gap-2 rounded-xl border bg-card p-4"
+				class="flex flex-col gap-2 rounded-xl border bg-card p-4 shadow-xs"
 				aria-labelledby="plan-title"
 			>
 				<div class="flex flex-wrap items-center justify-between gap-2">
@@ -391,7 +391,7 @@
 				</p>
 			</section>
 
-			<section class="rounded-xl border bg-card" aria-labelledby="zones-title">
+			<section class="rounded-xl border bg-card shadow-xs" aria-labelledby="zones-title">
 				<div class="border-b px-5 py-3">
 					<h2 id="zones-title" class="text-base font-semibold">
 						{$_('liveOperations.zones.title')}
@@ -525,7 +525,7 @@
 			</section>
 
 			{#if selected}
-				<section class="rounded-xl border bg-card p-4">
+				<section class="rounded-xl border bg-card p-4 shadow-xs">
 					<WaitChart zone={selected.name} points={history.get(selected.key) ?? []} />
 				</section>
 				<!-- ARV-120: the selected zone's health checks, for DataQuality.View holders only (the server checks it too). -->

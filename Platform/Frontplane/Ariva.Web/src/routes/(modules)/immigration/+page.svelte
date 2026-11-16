@@ -280,7 +280,7 @@
 
 	{#if problem}
 		<p
-			class="rounded-xl border bg-card p-4 text-sm text-status-danger-foreground"
+			class="rounded-xl border bg-card p-4 text-sm text-status-danger-foreground shadow-xs"
 			data-testid="immigration-problem"
 		>
 			{problem}
@@ -288,7 +288,11 @@
 	{/if}
 
 	{#if hall}
-		<section class="rounded-xl border bg-card" aria-labelledby="lanes-title" data-testid="lanes">
+		<section
+			class="rounded-xl border bg-card shadow-xs"
+			aria-labelledby="lanes-title"
+			data-testid="lanes"
+		>
 			<div class="border-b px-4 py-3">
 				<h2 id="lanes-title" class="text-base font-semibold">{$_('immigration.lanesTitle')}</h2>
 				<p class="text-xs text-muted-foreground">
@@ -390,7 +394,7 @@
 				<StaffingPanel {siteCode} laneOrder={lanesKnown} />
 			{:else}
 				<p
-					class="rounded-xl border bg-card px-4 py-3 text-sm text-muted-foreground"
+					class="rounded-xl border bg-card px-4 py-3 text-sm text-muted-foreground shadow-xs"
 					data-testid="staffing-departures"
 				>
 					{$_('immigration.staffing.departures')}
@@ -411,7 +415,7 @@
 
 		<div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
 			<section
-				class="flex flex-col gap-3 rounded-xl border bg-card p-4"
+				class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-xs"
 				aria-labelledby="egates-title"
 				data-testid="egates"
 			>
@@ -479,7 +483,7 @@
 			</section>
 
 			<section
-				class="flex flex-col gap-3 rounded-xl border bg-card p-4"
+				class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-xs"
 				aria-labelledby="desks-title"
 				data-testid="desk-grid"
 			>

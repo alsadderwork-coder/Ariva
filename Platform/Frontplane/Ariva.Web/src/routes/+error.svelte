@@ -12,7 +12,7 @@
 <!-- Outside the signed-in shell: an unknown address shows nothing about the app beyond this page. -->
 <PublicFrame>
 	<section
-		class="w-full max-w-md rounded-xl border bg-card p-8 text-center"
+		class="w-full max-w-md rounded-xl border bg-card p-8 text-center shadow-xs"
 		aria-labelledby="error-title"
 	>
 		<CircleAlert class="mx-auto mb-3 size-8 text-muted-foreground" aria-hidden="true" />

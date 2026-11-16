@@ -69,7 +69,7 @@
 	});
 </script>
 
-<section aria-labelledby="counts-title" class="rounded-xl border bg-card p-5">
+<section aria-labelledby="counts-title" class="rounded-xl border bg-card p-5 shadow-xs">
 	<h3 id="counts-title" class="text-xl font-semibold">{$_('validationCampaigns.counts.title')}</h3>
 	<p class="mt-1 max-w-prose text-sm text-secondary-foreground">
 		{$_('validationCampaigns.counts.intro')}

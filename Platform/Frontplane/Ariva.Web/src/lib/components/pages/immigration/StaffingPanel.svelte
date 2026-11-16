@@ -246,7 +246,7 @@
 
 <!-- Zone names come from the zone profile and are text; every status is a word as well as a colour. -->
 <section
-	class="rounded-xl border bg-card"
+	class="rounded-xl border bg-card shadow-xs"
 	aria-labelledby="{id}-title"
 	data-testid="staffing"
 	data-state={status}

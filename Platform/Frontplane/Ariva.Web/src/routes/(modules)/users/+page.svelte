@@ -160,7 +160,7 @@
 </SimplePageHeader>
 
 {#if !canSearch}
-	<section class="rounded-xl border bg-card p-6" data-testid="no-access">
+	<section class="rounded-xl border bg-card p-6 shadow-xs" data-testid="no-access">
 		<h2 class="text-base font-semibold">{$_('access.title')}</h2>
 		<p class="mt-1 text-sm text-muted-foreground">{$_('access.description')}</p>
 	</section>
@@ -277,8 +277,11 @@
 					</button>
 				</form>
 
-				<div class="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
-					<section class="overflow-hidden rounded-xl border bg-card" aria-labelledby="users-title">
+				<div class="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(22rem,1fr)]">
+					<section
+						class="overflow-hidden rounded-xl border bg-card shadow-xs"
+						aria-labelledby="users-title"
+					>
 						<div class="border-b px-4 py-3">
 							<h2 id="users-title" class="text-base font-semibold">{$_('users.listTitle')}</h2>
 						</div>
@@ -309,7 +312,7 @@
 														data-testid="open-user"
 														onclick={() => open(user)}
 														aria-current={selected?.id === user.id ? 'true' : undefined}
-														class="text-start font-mono text-xs break-all underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+														class="text-start font-mono text-xs whitespace-nowrap underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 													>
 														{user.userName}
 													</button>
@@ -359,27 +362,32 @@
 						</div>
 					</section>
 
-					{#if selected}
-						{#key selected.id}
-							<UserPanel
-								user={selected}
-								roles={roleList}
-								{ownRank}
-								self={selected.userName.toLowerCase() === auth.user?.userName.toLowerCase()}
-								{canEdit}
-								sites={siteList}
-								callerAllSites={auth.user?.allSites ?? false}
-								{canAudit}
-								onChanged={changed}
-								onTemporaryPassword={(userName, password) => (revealed = { userName, password })}
-								onAudit={showAudit}
-							/>
-						{/key}
-					{:else}
-						<p class="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
-							{$_('users.pick')}
-						</p>
-					{/if}
+					<!-- The account panel stays in view while the list scrolls (ARV-299). -->
+					<div
+						class="min-w-0 xl:sticky xl:top-20 xl:max-h-[calc(100dvh-6rem)] xl:self-start xl:overflow-y-auto"
+					>
+						{#if selected}
+							{#key selected.id}
+								<UserPanel
+									user={selected}
+									roles={roleList}
+									{ownRank}
+									self={selected.userName.toLowerCase() === auth.user?.userName.toLowerCase()}
+									{canEdit}
+									sites={siteList}
+									callerAllSites={auth.user?.allSites ?? false}
+									{canAudit}
+									onChanged={changed}
+									onTemporaryPassword={(userName, password) => (revealed = { userName, password })}
+									onAudit={showAudit}
+								/>
+							{/key}
+						{:else}
+							<p class="rounded-xl border border-dashed p-6 text-sm text-muted-foreground">
+								{$_('users.pick')}
+							</p>
+						{/if}
+					</div>
 				</div>
 			</div>
 		{/if}

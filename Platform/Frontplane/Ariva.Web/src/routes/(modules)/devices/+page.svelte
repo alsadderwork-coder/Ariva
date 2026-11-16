@@ -323,7 +323,7 @@
 {/if}
 
 {#if registering}
-	<div class="mb-4 rounded-xl border bg-card p-5">
+	<div class="mb-4 rounded-xl border bg-card p-5 shadow-xs">
 		<RegisterForm
 			{levels}
 			{queueZones}
@@ -336,7 +336,7 @@
 {/if}
 
 <div class="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-	<section class="min-w-0 rounded-xl border bg-card" aria-labelledby="devices-list-title">
+	<section class="min-w-0 rounded-xl border bg-card shadow-xs" aria-labelledby="devices-list-title">
 		<h2 id="devices-list-title" class="border-b px-5 py-3 text-base font-semibold">
 			{$_('devices.list')}
 		</h2>
@@ -442,7 +442,7 @@
 	</section>
 
 	<section
-		class="flex min-w-0 flex-col gap-2 rounded-xl border bg-card p-4"
+		class="flex min-w-0 flex-col gap-2 rounded-xl border bg-card p-4 shadow-xs"
 		aria-labelledby="coverage-title"
 	>
 		<div class="flex flex-wrap items-center justify-between gap-2">

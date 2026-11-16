@@ -135,7 +135,7 @@
 
 <!-- Zone names come from the zone profile and are text; every judgement is a word as well as a colour. -->
 <section
-	class="flex flex-col gap-3 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-xs"
 	aria-labelledby="{id}-title"
 	data-testid="data-quality"
 >

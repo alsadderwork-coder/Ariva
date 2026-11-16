@@ -215,7 +215,7 @@
 
 <!-- Typed fields only: no expression of any kind (CWE-94). Zone names and server messages are text. -->
 <form
-	class="flex flex-col gap-4 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-4 rounded-xl border bg-card p-4 shadow-xs"
 	data-testid="rule-form"
 	aria-labelledby="rule-form-title"
 	onsubmit={submit}

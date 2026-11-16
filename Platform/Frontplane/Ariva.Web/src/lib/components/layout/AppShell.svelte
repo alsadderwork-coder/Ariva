@@ -4,6 +4,7 @@
 	import { cn } from '$lib/utils';
 	import AppHeader from './AppHeader.svelte';
 	import AppSidebar from './AppSidebar.svelte';
+	import CommandPalette from './CommandPalette.svelte';
 	import Logo from './Logo.svelte';
 	import SidebarNav from './SidebarNav.svelte';
 	import UserCard from './UserCard.svelte';
@@ -23,6 +24,7 @@
 
 	let sidebarOpen = $state(readSidebarCookie());
 	let mobileOpen = $state(false);
+	let palette = $state<CommandPalette>();
 
 	function toggleSidebar(): void {
 		if (window.matchMedia('(min-width: 768px)').matches) {
@@ -33,8 +35,13 @@
 		}
 	}
 
-	// Mod+B toggles the sidebar, as in Aman.Web.
+	// Mod+B toggles the sidebar, as in Aman.Web; Mod+K opens the command palette (ARV-299).
 	function onKeydown(event: KeyboardEvent): void {
+		if (event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey) && !event.altKey) {
+			event.preventDefault();
+			palette?.open();
+			return;
+		}
 		if (event.key.toLowerCase() === 'b' && (event.metaKey || event.ctrlKey)) {
 			event.preventDefault();
 			toggleSidebar();
@@ -86,7 +93,7 @@
 	{/if}
 
 	<div class="flex min-w-0 flex-1 flex-col">
-		<AppHeader {sidebarOpen} onToggleSidebar={toggleSidebar} />
+		<AppHeader {sidebarOpen} onToggleSidebar={toggleSidebar} onSearch={() => palette?.open()} />
 		<main
 			id="main"
 			tabindex="-1"
@@ -98,3 +105,5 @@
 		</main>
 	</div>
 </div>
+
+<CommandPalette bind:this={palette} />

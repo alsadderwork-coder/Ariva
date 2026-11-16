@@ -100,7 +100,7 @@
 
 <!-- Every value is text or a number; labels and messages are shown on the board as text, never as markup. -->
 <form
-	class="flex flex-col gap-4 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-4 rounded-xl border bg-card p-4 shadow-xs"
 	data-testid="display-form"
 	aria-labelledby="display-form-title"
 	onsubmit={submit}

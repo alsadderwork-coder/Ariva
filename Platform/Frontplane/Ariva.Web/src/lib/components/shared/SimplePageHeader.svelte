@@ -14,14 +14,15 @@
 	let { title, description, icon, actions, class: className = '' }: Props = $props();
 </script>
 
-<!-- Aman.Web SimplePageHeader: 44px icon chip, 28px title, 13px description, actions on the end side. -->
+<!-- Aman.Web SimplePageHeader: 44px icon chip, 28px title, 13px description, actions on the end side. The actions
+     wrap under the title on narrower screens rather than squeezing it, and a button never breaks its label (ARV-299). -->
 <div
 	class={cn(
-		'mb-5 flex flex-col gap-3 pt-4.5 sm:flex-row sm:items-center sm:justify-between',
+		'mb-6 flex flex-col gap-4 pt-4.5 xl:flex-row xl:items-center xl:justify-between',
 		className
 	)}
 >
-	<div class="flex items-center gap-4">
+	<div class="flex min-w-0 items-center gap-4">
 		{#if icon}
 			{@const Icon = icon}
 			<div
@@ -30,7 +31,7 @@
 				<Icon class="size-5.5" aria-hidden="true" />
 			</div>
 		{/if}
-		<div>
+		<div class="min-w-0">
 			<h1
 				class={cn(
 					'text-[28px] leading-none font-semibold tracking-[-0.14px]',
@@ -39,10 +40,16 @@
 			>
 				{title}
 			</h1>
-			{#if description}<p class="text-[13px] text-secondary-foreground">{description}</p>{/if}
+			{#if description}<p class="max-w-prose text-[13px] text-secondary-foreground">
+					{description}
+				</p>{/if}
 		</div>
 	</div>
 	{#if actions}
-		<div class="flex items-center gap-2">{@render actions()}</div>
+		<div
+			class="flex flex-wrap items-end gap-2 xl:justify-end [&_a]:whitespace-nowrap [&_button]:whitespace-nowrap [&_select]:max-w-72"
+		>
+			{@render actions()}
+		</div>
 	{/if}
 </div>

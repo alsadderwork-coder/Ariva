@@ -254,6 +254,8 @@
 	html {
 		/* Fallback before theme-init.js runs, and if it cannot run */
 		background-color: #f0f0f2;
+		/* Scrolling to a field or a handle keeps it clear of the sticky 4rem header (ARV-299). */
+		scroll-padding-top: 5rem;
 	}
 
 	body {
@@ -273,5 +275,30 @@
 
 	.dark .sidebar-scroll {
 		scrollbar-color: rgb(71 85 105) transparent;
+	}
+}
+
+/*
+ * ARV-299: a native select's arrow (drawn by @tailwindcss/forms) sits on the end side in both directions, with room
+ * kept for it. Outside any layer, so it wins over a px- utility that would put the text under the arrow.
+ */
+select:not([multiple]):not([size]) {
+	padding-inline-end: 2.25rem;
+	background-position: right 0.625rem center;
+}
+
+[dir='rtl'] select:not([multiple]):not([size]) {
+	background-position: left 0.625rem center;
+}
+
+/* ARV-299: transitions and animations stop for people who ask their system for less motion. */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	::before,
+	::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		scroll-behavior: auto !important;
+		transition-duration: 0.01ms !important;
 	}
 }

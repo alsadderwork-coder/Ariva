@@ -51,7 +51,7 @@
 
 <!-- Alerts the caller's role is responsible for (the API decides); names and notes are text. -->
 <section
-	class="flex flex-col gap-3 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-xs"
 	aria-labelledby="alerts-title"
 	data-testid="alerts-panel"
 >

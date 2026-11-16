@@ -83,7 +83,7 @@
 	<CampaignForm {siteCode} {seesDesks} onSubmit={create} onCancel={() => (creating = false)} />
 {/if}
 
-<section aria-labelledby="campaigns-title" class="rounded-xl border bg-card p-5">
+<section aria-labelledby="campaigns-title" class="rounded-xl border bg-card p-5 shadow-xs">
 	<div class="flex flex-wrap items-start justify-between gap-3">
 		<div class="min-w-0">
 			<h2 id="campaigns-title" class="text-xl font-semibold">

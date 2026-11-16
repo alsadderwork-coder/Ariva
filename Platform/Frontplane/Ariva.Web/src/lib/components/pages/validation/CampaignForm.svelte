@@ -215,7 +215,7 @@
 </script>
 
 <form
-	class="mb-4 flex flex-col gap-5 rounded-xl border bg-card p-5"
+	class="mb-4 flex flex-col gap-5 rounded-xl border bg-card p-5 shadow-xs"
 	data-testid="campaign-form"
 	aria-labelledby="campaign-form-title"
 	novalidate

@@ -140,7 +140,7 @@
 		{$_('validationCampaigns.detail.loading')}
 	</p>
 {:else if missing}
-	<p class="rounded-xl border bg-card p-6 text-sm" data-testid="campaign-missing">
+	<p class="rounded-xl border bg-card p-6 text-sm shadow-xs" data-testid="campaign-missing">
 		{$_('validationCampaigns.detail.notFound')}
 	</p>
 {:else if problem || !campaign}
@@ -149,7 +149,7 @@
 	{@const zone = safeTimeZone(campaign.timeZoneId)}
 	<section
 		aria-labelledby="campaign-name"
-		class="mb-4 flex flex-col gap-4 rounded-xl border bg-card p-5"
+		class="mb-4 flex flex-col gap-4 rounded-xl border bg-card p-5 shadow-xs"
 		data-testid="campaign-detail"
 		data-status={campaign.status}
 	>

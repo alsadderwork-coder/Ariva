@@ -140,12 +140,12 @@
 </script>
 
 {#if loading}
-	<p class="rounded-xl border bg-card p-5 text-sm text-muted-foreground" role="status">
+	<p class="rounded-xl border bg-card p-5 text-sm text-muted-foreground shadow-xs" role="status">
 		{$_('validationCampaigns.results.loading')}
 	</p>
 {:else if problem}
 	<div
-		class="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-5"
+		class="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-5 shadow-xs"
 		data-testid="results-problem"
 	>
 		<p role="alert" class="text-sm text-status-danger-foreground">{problem}</p>
@@ -167,7 +167,7 @@
 			{@const frozen = results.revision}
 			<section
 				aria-labelledby="results-frozen-title"
-				class="rounded-xl border bg-card p-5"
+				class="rounded-xl border bg-card p-5 shadow-xs"
 				data-testid="results-frozen"
 			>
 				<div class="flex flex-wrap items-start justify-between gap-3">
@@ -291,7 +291,10 @@
 			</section>
 		{/if}
 
-		<section aria-labelledby="results-criteria-title" class="rounded-xl border bg-card p-5">
+		<section
+			aria-labelledby="results-criteria-title"
+			class="rounded-xl border bg-card p-5 shadow-xs"
+		>
 			<h3 id="results-criteria-title" class="text-xl font-semibold">
 				{$_('validationCampaigns.results.criteriaTitle')}
 			</h3>

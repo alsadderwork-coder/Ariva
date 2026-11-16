@@ -96,3 +96,18 @@ for (const screen of screens) {
 		});
 	});
 }
+
+// ARV-299: the command palette (a modal dialog with a combobox over a listbox), open with a search, in both schemes.
+test.describe('accessibility: command palette', () => {
+	test.skip(!databaseAvailable, 'signing in needs the E2E database');
+	for (const scheme of ['light', 'dark'] as const)
+		test(`${scheme} mode, open with a search`, async ({ page }) => {
+			await signInThroughUi(page);
+			await page.emulateMedia({ colorScheme: scheme });
+			await open(page, '/');
+			await page.keyboard.press('Control+k');
+			await page.getByTestId('command-palette').getByRole('combobox').fill('o');
+			await expect(page.getByTestId('command-palette').getByRole('option').first()).toBeVisible();
+			await expectNoViolations(page);
+		});
+});

@@ -210,7 +210,10 @@
 		{/key}
 	{/if}
 
-	<section class="overflow-hidden rounded-xl border bg-card" aria-labelledby="displays-title">
+	<section
+		class="overflow-hidden rounded-xl border bg-card shadow-xs"
+		aria-labelledby="displays-title"
+	>
 		<div class="border-b px-4 py-3">
 			<h2 id="displays-title" class="text-base font-semibold">{$_('displays.listTitle')}</h2>
 		</div>

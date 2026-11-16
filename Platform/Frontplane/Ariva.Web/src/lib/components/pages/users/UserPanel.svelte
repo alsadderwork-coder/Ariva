@@ -111,7 +111,7 @@
 </script>
 
 <section
-	class="flex flex-col gap-4 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-4 rounded-xl border bg-card p-4 shadow-xs"
 	data-testid="user-panel"
 	data-user={user.userName}
 	aria-labelledby="user-panel-title"

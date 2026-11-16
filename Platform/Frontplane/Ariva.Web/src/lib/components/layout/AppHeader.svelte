@@ -1,12 +1,15 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { ChevronRight, Languages, Moon, PanelLeft, Sun } from '@lucide/svelte';
+	import { ChevronRight, Languages, Moon, PanelLeft, Search, Sun } from '@lucide/svelte';
 	import { _, locale } from 'svelte-i18n';
 	import { findNavItem } from '$lib/navigation';
 	import { theme } from '$lib/theme/theme.svelte';
 
-	let { sidebarOpen, onToggleSidebar }: { sidebarOpen: boolean; onToggleSidebar: () => void } =
-		$props();
+	let {
+		sidebarOpen,
+		onToggleSidebar,
+		onSearch
+	}: { sidebarOpen: boolean; onToggleSidebar: () => void; onSearch?: () => void } = $props();
 
 	const current = $derived(findNavItem(page.url.pathname));
 	const crumb = $derived(
@@ -24,8 +27,11 @@
 	}
 </script>
 
-<!-- Aman.Web header: sticky, card background, 4rem high, breadcrumb on the start side, actions on the end side. -->
-<header class="sticky top-0 z-40 border-b bg-card">
+<!-- Aman.Web header: sticky, card background, 4rem high, breadcrumb on the start side, actions on the end side; the
+     card colour lets the page show through slightly while it scrolls (ARV-299). -->
+<header
+	class="sticky top-0 z-40 border-b bg-card/90 backdrop-blur supports-[backdrop-filter]:bg-card/75"
+>
 	<div class="flex h-16 items-center gap-3 px-4 md:px-6">
 		<button
 			type="button"
@@ -41,6 +47,12 @@
 		<nav aria-label={$_('shell.breadcrumb')} class="min-w-0 flex-1">
 			<ol class="flex items-center gap-1.5 text-sm text-muted-foreground">
 				<li class="truncate">{$_('app.title')}</li>
+				{#if current && page.status < 400}
+					<li aria-hidden="true" class="hidden sm:block">
+						<ChevronRight class="size-4 rtl:-scale-x-100" />
+					</li>
+					<li class="hidden truncate sm:block">{$_(`navigation.groups.${current.group}`)}</li>
+				{/if}
 				{#if crumb}
 					<li aria-hidden="true"><ChevronRight class="size-4 rtl:-scale-x-100" /></li>
 					<li class="truncate font-medium text-foreground" aria-current="page">{crumb}</li>
@@ -49,6 +61,23 @@
 		</nav>
 
 		<div class="flex items-center gap-2">
+			{#if onSearch}
+				<button
+					type="button"
+					data-testid="palette-open"
+					aria-label={$_('palette.title')}
+					aria-keyshortcuts="Control+K Meta+K"
+					onclick={onSearch}
+					class="inline-flex h-10 items-center gap-2 rounded-lg border bg-card px-3 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+				>
+					<Search class="size-4" aria-hidden="true" />
+					<span class="hidden lg:inline">{$_('palette.open')}</span>
+					<kbd
+						class="hidden rounded border bg-muted px-1.5 py-0.5 font-sans text-[10px] font-medium text-muted-foreground lg:inline"
+						>{$_('palette.shortcut')}</kbd
+					>
+				</button>
+			{/if}
 			<span
 				data-testid="environment-chip"
 				class="hidden rounded-full border border-status-info-border bg-status-info px-2.5 py-1 text-xs font-medium text-status-info-foreground sm:inline"

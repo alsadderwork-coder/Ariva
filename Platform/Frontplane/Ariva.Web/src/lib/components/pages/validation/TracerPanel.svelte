@@ -50,7 +50,7 @@
 	<section
 		aria-labelledby="clock-title"
 		data-testid="clock-offset"
-		class="flex items-start gap-3 rounded-xl border bg-card p-5"
+		class="flex items-start gap-3 rounded-xl border bg-card p-5 shadow-xs"
 	>
 		<Clock class="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
 		<div class="min-w-0">
@@ -80,7 +80,7 @@
 		</div>
 	</section>
 
-	<section aria-labelledby="join-title" class="rounded-xl border bg-card p-5">
+	<section aria-labelledby="join-title" class="rounded-xl border bg-card p-5 shadow-xs">
 		<h2 id="join-title" class="text-xl font-semibold">{$_('validation.tracers.joinTitle')}</h2>
 		<form
 			onsubmit={join}
@@ -146,7 +146,7 @@
 		{/if}
 	</section>
 
-	<section aria-labelledby="active-title" class="rounded-xl border bg-card p-5">
+	<section aria-labelledby="active-title" class="rounded-xl border bg-card p-5 shadow-xs">
 		<h2 id="active-title" class="text-xl font-semibold">{$_('validation.tracers.activeTitle')}</h2>
 		{#if tracers.active.length === 0}
 			<p class="mt-2 text-sm text-muted-foreground">{$_('validation.tracers.activeEmpty')}</p>
@@ -233,7 +233,7 @@
 		{/if}
 	</section>
 
-	<section aria-labelledby="recorded-title" class="rounded-xl border bg-card p-5">
+	<section aria-labelledby="recorded-title" class="rounded-xl border bg-card p-5 shadow-xs">
 		<h2 id="recorded-title" class="text-xl font-semibold">
 			{$_('validation.tracers.recordedTitle')}
 		</h2>

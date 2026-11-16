@@ -469,7 +469,7 @@
 </SimplePageHeader>
 
 {#if !canCapture}
-	<section class="rounded-xl border bg-card p-6" data-testid="no-access">
+	<section class="rounded-xl border bg-card p-6 shadow-xs" data-testid="no-access">
 		<h2 class="text-base font-semibold">{$_('access.title')}</h2>
 		<p class="mt-1 text-sm text-muted-foreground">{$_('access.description')}</p>
 	</section>
@@ -515,7 +515,7 @@
 	{/if}
 
 	{#if !campaign}
-		<section aria-labelledby="campaigns-title" class="rounded-xl border bg-card p-5">
+		<section aria-labelledby="campaigns-title" class="rounded-xl border bg-card p-5 shadow-xs">
 			<div class="flex flex-wrap items-start justify-between gap-3">
 				<div>
 					<h2 id="campaigns-title" class="text-xl font-semibold">
@@ -581,7 +581,7 @@
 	{:else}
 		<section
 			aria-labelledby="campaign-title"
-			class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-5"
+			class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-5 shadow-xs"
 		>
 			<div class="min-w-0">
 				<h2

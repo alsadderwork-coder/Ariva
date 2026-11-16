@@ -85,7 +85,7 @@
 
 <div class="flex flex-col gap-4" data-testid="daily-report">
 	<section
-		class="grid overflow-hidden rounded-xl border bg-card sm:grid-cols-2 2xl:grid-cols-4 [&>*]:border-b sm:[&>*]:border-e"
+		class="grid overflow-hidden rounded-xl border bg-card shadow-xs sm:grid-cols-2 2xl:grid-cols-4 [&>*]:border-b sm:[&>*]:border-e"
 		aria-label={$_('reports.headline.label')}
 	>
 		<MetricCard
@@ -132,7 +132,10 @@
 		/>
 	</section>
 
-	<section class="overflow-hidden rounded-xl border bg-card" aria-labelledby="report-lanes-title">
+	<section
+		class="overflow-hidden rounded-xl border bg-card shadow-xs"
+		aria-labelledby="report-lanes-title"
+	>
 		<div class="flex flex-wrap items-baseline justify-between gap-2 border-b px-4 py-3">
 			<h2 id="report-lanes-title" class="text-base font-semibold">{$_('reports.lanesTitle')}</h2>
 			<p class="text-xs text-muted-foreground">
@@ -282,7 +285,7 @@
 
 	<div class="grid gap-4 xl:grid-cols-2">
 		<section
-			class="overflow-hidden rounded-xl border bg-card"
+			class="overflow-hidden rounded-xl border bg-card shadow-xs"
 			aria-labelledby="report-alerts-title"
 		>
 			<div class="flex flex-wrap items-baseline justify-between gap-2 border-b px-4 py-3">
@@ -361,7 +364,7 @@
 		</section>
 
 		<section
-			class="overflow-hidden rounded-xl border bg-card"
+			class="overflow-hidden rounded-xl border bg-card shadow-xs"
 			aria-labelledby="report-devices-title"
 		>
 			<div class="border-b px-4 py-3">

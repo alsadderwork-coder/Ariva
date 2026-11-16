@@ -192,7 +192,7 @@
 <IllustrativeBanner site={siteList.find((s) => s.code === siteCode)} />
 
 {#if !canView}
-	<section class="rounded-xl border bg-card p-6" data-testid="no-access">
+	<section class="rounded-xl border bg-card p-6 shadow-xs" data-testid="no-access">
 		<h2 class="text-base font-semibold">{$_('access.title')}</h2>
 		<p class="mt-1 text-sm text-muted-foreground">{$_('access.description')}</p>
 	</section>
@@ -258,7 +258,7 @@
 				{/if}
 
 				<section
-					class="overflow-hidden rounded-xl border bg-card"
+					class="overflow-hidden rounded-xl border bg-card shadow-xs"
 					aria-labelledby="schedules-title"
 				>
 					<div class="border-b px-4 py-3">

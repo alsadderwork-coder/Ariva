@@ -148,7 +148,7 @@
 	}
 </script>
 
-<section aria-labelledby="results-lines-title" class="rounded-xl border bg-card p-5">
+<section aria-labelledby="results-lines-title" class="rounded-xl border bg-card p-5 shadow-xs">
 	<h3 id="results-lines-title" class="text-xl font-semibold">
 		{$_('validationCampaigns.results.linesTitle')}
 	</h3>
@@ -199,7 +199,7 @@
 	{/if}
 </section>
 
-<section aria-labelledby="results-tracers-title" class="rounded-xl border bg-card p-5">
+<section aria-labelledby="results-tracers-title" class="rounded-xl border bg-card p-5 shadow-xs">
 	<h3 id="results-tracers-title" class="text-xl font-semibold">
 		{$_('validationCampaigns.results.tracersTitle')}
 	</h3>
@@ -282,7 +282,7 @@
 </section>
 
 {#if results.trackCompletion.length > 0}
-	<section aria-labelledby="results-tracks-title" class="rounded-xl border bg-card p-5">
+	<section aria-labelledby="results-tracks-title" class="rounded-xl border bg-card p-5 shadow-xs">
 		<h3 id="results-tracks-title" class="text-xl font-semibold">
 			{$_('validationCampaigns.results.tracksTitle')}
 		</h3>
@@ -332,7 +332,7 @@
 {#if results.desks}
 	<section
 		aria-labelledby="results-desks-title"
-		class="rounded-xl border bg-card p-5"
+		class="rounded-xl border bg-card p-5 shadow-xs"
 		data-testid="results-desks-section"
 	>
 		<h3 id="results-desks-title" class="text-xl font-semibold">
@@ -426,7 +426,7 @@
 {#if showProof && results.nowcast}
 	<section
 		aria-labelledby="results-proof-title"
-		class="rounded-xl border bg-card p-5"
+		class="rounded-xl border bg-card p-5 shadow-xs"
 		data-testid="results-proof-section"
 	>
 		<h3 id="results-proof-title" class="text-xl font-semibold">
@@ -486,7 +486,10 @@
 	</section>
 {/if}
 
-<section aria-labelledby="results-calibrations-title" class="rounded-xl border bg-card p-5">
+<section
+	aria-labelledby="results-calibrations-title"
+	class="rounded-xl border bg-card p-5 shadow-xs"
+>
 	<h3 id="results-calibrations-title" class="text-xl font-semibold">
 		{$_('validationCampaigns.results.calibrationsTitle')}
 	</h3>

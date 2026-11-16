@@ -57,7 +57,7 @@
 <section
 	data-testid="publish-panel"
 	aria-labelledby="publish-title"
-	class="flex flex-col gap-3 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-xs"
 >
 	<h2 id="publish-title" class="text-base font-semibold">{$_('zones.publishTitle')}</h2>
 	<p class="text-xs text-muted-foreground">{$_('zones.publishHint')}</p>

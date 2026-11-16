@@ -24,7 +24,7 @@
 
 <!-- Every state is a word as well as a colour. Desk codes come from the server and are text. -->
 <section
-	class="flex flex-col gap-3 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-xs"
 	aria-labelledby="desks-title"
 	data-testid="desk-states"
 >

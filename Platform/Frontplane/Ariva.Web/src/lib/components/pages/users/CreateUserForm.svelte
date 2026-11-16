@@ -75,7 +75,7 @@
 </script>
 
 <form
-	class="flex flex-col gap-4 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-4 rounded-xl border bg-card p-4 shadow-xs"
 	data-testid="user-form"
 	aria-labelledby="user-form-title"
 	onsubmit={submit}

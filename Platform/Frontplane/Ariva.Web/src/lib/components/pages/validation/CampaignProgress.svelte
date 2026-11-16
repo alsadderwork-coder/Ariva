@@ -72,7 +72,7 @@
 </script>
 
 <div class="flex flex-col gap-4">
-	<section aria-labelledby="progress-lines-title" class="rounded-xl border bg-card p-5">
+	<section aria-labelledby="progress-lines-title" class="rounded-xl border bg-card p-5 shadow-xs">
 		<h3 id="progress-lines-title" class="text-xl font-semibold">
 			{$_('validationCampaigns.progress.linesTitle')}
 		</h3>
@@ -138,7 +138,7 @@
 		{/if}
 	</section>
 
-	<section aria-labelledby="progress-tracers-title" class="rounded-xl border bg-card p-5">
+	<section aria-labelledby="progress-tracers-title" class="rounded-xl border bg-card p-5 shadow-xs">
 		<div class="flex flex-wrap items-baseline justify-between gap-2">
 			<h3 id="progress-tracers-title" class="text-xl font-semibold">
 				{$_('validationCampaigns.progress.tracersTitle')}
@@ -245,7 +245,7 @@
 	{#if campaign.desksIncluded}
 		<section
 			aria-labelledby="progress-desks-title"
-			class="rounded-xl border bg-card p-5"
+			class="rounded-xl border bg-card p-5 shadow-xs"
 			data-testid="progress-desks-section"
 		>
 			<h3 id="progress-desks-title" class="text-xl font-semibold">

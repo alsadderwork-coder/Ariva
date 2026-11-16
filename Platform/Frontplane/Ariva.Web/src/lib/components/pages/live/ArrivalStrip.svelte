@@ -12,7 +12,7 @@
 </script>
 
 <section
-	class="flex flex-col gap-2 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-2 rounded-xl border bg-card p-4 shadow-xs"
 	aria-labelledby="wave-title"
 	data-testid="arrival-strip"
 >

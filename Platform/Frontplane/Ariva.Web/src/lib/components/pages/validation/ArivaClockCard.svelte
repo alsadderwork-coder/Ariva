@@ -22,7 +22,7 @@
 <section
 	aria-labelledby="ariva-clock-title"
 	data-testid="ariva-clock"
-	class="mb-4 flex items-start gap-3 rounded-xl border bg-card p-5"
+	class="mb-4 flex items-start gap-3 rounded-xl border bg-card p-5 shadow-xs"
 >
 	<Clock class="mt-0.5 size-5 shrink-0 text-primary" aria-hidden="true" />
 	<div class="min-w-0">

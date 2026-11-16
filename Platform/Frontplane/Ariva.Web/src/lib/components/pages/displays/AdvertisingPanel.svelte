@@ -142,7 +142,7 @@
 </script>
 
 <section
-	class="rounded-xl border bg-card"
+	class="rounded-xl border bg-card shadow-xs"
 	aria-labelledby="advertising-title"
 	data-testid="advertising-policy"
 	data-allowed={policy.allowed}

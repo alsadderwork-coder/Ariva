@@ -63,7 +63,7 @@
 </script>
 
 {#if !tally.line}
-	<section aria-labelledby="choose-line" class="rounded-xl border bg-card p-5">
+	<section aria-labelledby="choose-line" class="rounded-xl border bg-card p-5 shadow-xs">
 		<h2 id="choose-line" class="text-xl font-semibold">{$_('validation.tally.chooseLine')}</h2>
 		<p class="mt-1 max-w-prose text-sm text-secondary-foreground">
 			{$_('validation.tally.chooseLineHint')}
@@ -92,7 +92,7 @@
 	</section>
 {:else}
 	{@const line = tally.line}
-	<section aria-labelledby="counting-title" class="rounded-xl border bg-card p-5">
+	<section aria-labelledby="counting-title" class="rounded-xl border bg-card p-5 shadow-xs">
 		<div class="flex flex-wrap items-start justify-between gap-3">
 			<div class="min-w-0">
 				<h2 id="counting-title" data-testid="counting-line" class="text-xl font-semibold break-all">
@@ -225,7 +225,7 @@
 {/if}
 
 {#if tally.line}
-	<section aria-labelledby="history-title" class="mt-4 rounded-xl border bg-card p-5">
+	<section aria-labelledby="history-title" class="mt-4 rounded-xl border bg-card p-5 shadow-xs">
 		<h2 id="history-title" class="text-xl font-semibold">{$_('validation.history.title')}</h2>
 		{#if notice}
 			<p

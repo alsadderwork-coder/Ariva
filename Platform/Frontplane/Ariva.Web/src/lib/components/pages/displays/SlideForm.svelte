@@ -82,7 +82,7 @@
 
 <!-- Every word is text: the preview below and the displays show it as text, never as markup. -->
 <form
-	class="flex flex-col gap-4 rounded-xl border bg-card p-4"
+	class="flex flex-col gap-4 rounded-xl border bg-card p-4 shadow-xs"
 	data-testid="slide-form"
 	aria-labelledby="slide-form-title"
 	onsubmit={submit}

@@ -317,7 +317,7 @@
 </script>
 
 <section
-	class="rounded-xl border bg-card"
+	class="rounded-xl border bg-card shadow-xs"
 	aria-labelledby="advertising-library-title"
 	data-testid="advertising-library"
 >

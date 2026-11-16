@@ -249,7 +249,7 @@
 <section
 	data-testid="device-panel"
 	aria-labelledby="device-title"
-	class="flex flex-col gap-5 rounded-xl border bg-card p-5"
+	class="flex flex-col gap-5 rounded-xl border bg-card p-5 shadow-xs"
 >
 	<header class="flex items-start justify-between gap-3">
 		<div class="min-w-0">

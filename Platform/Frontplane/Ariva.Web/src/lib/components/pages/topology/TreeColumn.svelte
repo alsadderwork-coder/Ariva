@@ -51,7 +51,7 @@
 <section
 	data-testid="column-{id}"
 	aria-labelledby="column-{id}-title"
-	class="flex min-w-0 flex-col rounded-xl border bg-card"
+	class="flex min-w-0 flex-col rounded-xl border bg-card shadow-xs"
 >
 	<header class="flex items-center justify-between gap-2 border-b px-4 py-3">
 		<div class="min-w-0">
