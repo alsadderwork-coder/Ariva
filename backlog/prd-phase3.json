@@ -2772,7 +2772,7 @@
         "security-reviewer verdict PASS recorded in backlog/progress.md; wiki 11 and 12 updated; node scripts/verify.mjs docs passes"
       ],
       "priority": 330,
-      "passes": false,
+      "passes": true,
       "notes": "Filed and built 2026-11-16 at the owner's request (bug report with the UI modernisation, ARV-299). Not sign-in or authentication code.",
       "dependsOn": [
         "ARV-053"
@@ -2790,7 +2790,7 @@
         "node scripts/verify.mjs web passes; security-reviewer verdict PASS recorded in backlog/progress.md; wiki 12 updated; node scripts/verify.mjs docs passes"
       ],
       "priority": 331,
-      "passes": false,
+      "passes": true,
       "notes": "Filed 2026-11-16. The sign-in and first sign-in frames (PublicFrame, /login, /setup) are left for after the sign-in freeze. Screen-by-screen refinements beyond the shared patterns (skeletons while loading, empty states with icons, the live floor plan on the zones editor's viewport) can follow as ARV-299a once the owner has seen this round.",
       "dependsOn": [
         "ARV-051"
