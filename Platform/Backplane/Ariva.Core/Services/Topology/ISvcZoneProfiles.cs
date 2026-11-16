@@ -10,6 +10,7 @@ public static class ZoneProfileErrors
     public const string DraftExists = "The site already has a draft; edit or discard it.";
     public const string NotPublishable = "The draft cannot be published yet; see the problems.";
     public const string ChangedSinceReview = "The draft changed since it was validated; validate it again and publish the geometry you reviewed.";
+    public const string MoveFormat = "A move is dx and dy in metres.";
     public const string PolygonFormat = "A polygon is \"x y,x y,...\" in metres, with 3 to 200 points.";
 
     /// <summary>Errors that mean "the state does not allow it" (409).</summary>
@@ -36,6 +37,9 @@ public interface ISvcZoneProfiles : ISvcScoped
     Task<Result<ZoneViewModel>> AddZoneAsync(Guid id, AddZoneRequest request, CancellationToken ct = default);
 
     Task<Result<ZoneViewModel>> UpdateZoneAsync(Guid id, Guid zoneId, UpdateZoneRequest request, CancellationToken ct = default);
+
+    /// <summary>Moves a zone and its lines by one offset (ARV-298), so the lines stay on its edges.</summary>
+    Task<Result<ZoneMovedViewModel>> MoveZoneAsync(Guid id, Guid zoneId, MoveZoneRequest request, CancellationToken ct = default);
 
     Task<Result<bool>> RemoveZoneAsync(Guid id, Guid zoneId, CancellationToken ct = default);
 

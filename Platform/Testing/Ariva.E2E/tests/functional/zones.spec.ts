@@ -97,8 +97,9 @@ test('a duty manager draws a queue zone and its lines, checks the draft and publ
 
 	// Drag the third corner on the plan; letting go saves it.
 	const handle = page.getByTestId('vertex-handle').nth(2);
-	// Saving scrolled the details panel's button into view; a mouse drag needs the handle itself on screen.
-	await handle.scrollIntoViewIfNeeded();
+	// Saving scrolled the details panel's button into view; a mouse drag needs the handle itself on screen, clear of the
+	// sticky header.
+	await handle.evaluate((element) => element.scrollIntoView({ block: 'center' }));
 	const box = (await handle.boundingBox())!;
 	await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 	await page.mouse.down();
@@ -210,6 +211,184 @@ test('zone names are shown as text: script payloads are neither executed nor inj
 	await guards.expectClean();
 });
 
+/** Floor coordinates (metres) to the page's coordinates, through the canvas's own transform. */
+async function screenOf(page: Page, x: number, y: number): Promise<{ x: number; y: number }> {
+	return page.getByTestId('zone-canvas').evaluate(
+		(svg, p) => {
+			const q = new DOMPoint(p.x, p.y).matrixTransform((svg as SVGSVGElement).getScreenCTM()!);
+			return { x: q.x, y: q.y };
+		},
+		{ x, y }
+	);
+}
+
+/** The page's coordinates to floor coordinates (metres). */
+async function floorOf(page: Page, x: number, y: number): Promise<{ x: number; y: number }> {
+	return page.getByTestId('zone-canvas').evaluate(
+		(svg, p) => {
+			const q = new DOMPoint(p.x, p.y).matrixTransform((svg as SVGSVGElement).getScreenCTM()!.inverse());
+			return { x: q.x, y: q.y };
+		},
+		{ x, y }
+	);
+}
+
+/** Brings the whole plan on screen, clear of the sticky header, before a pointer gesture. */
+async function showCanvas(page: Page): Promise<void> {
+	await page.getByTestId('zone-editor').evaluate((element) => element.scrollIntoView({ block: 'center' }));
+}
+
+async function viewBox(page: Page): Promise<number[]> {
+	return ((await page.getByTestId('zone-canvas').getAttribute('viewBox')) ?? '').split(' ').map(Number);
+}
+
+async function drag(page: Page, from: { x: number; y: number }, by: { x: number; y: number }): Promise<void> {
+	await page.mouse.move(from.x, from.y);
+	await page.mouse.down();
+	await page.mouse.move(from.x + by.x, from.y + by.y, { steps: 6 });
+	await page.mouse.up();
+}
+
+async function corners(page: Page): Promise<number[][]> {
+	const rows = await page.getByTestId('vertex-table').getByRole('row').count();
+	const points: number[][] = [];
+	for (let n = 1; n < rows; n++)
+		points.push([
+			Number(await page.getByLabel(`Corner ${n}, x in metres`).inputValue()),
+			Number(await page.getByLabel(`Corner ${n}, y in metres`).inputValue())
+		]);
+	return points;
+}
+
+test('the plan zooms, pans and fits, and a whole zone moves with its lines, by mouse, keys and touch (ARV-298)', async ({ page }) => {
+	const guards = await guardPage(page);
+	await signInThroughUi(page, accounts().webAdmin);
+	await page.goto('/zones');
+	await expect(page.getByRole('heading', { level: 1 })).toHaveText('Zones');
+	await page.getByLabel('Site', { exact: true }).selectOption(site());
+	await expect(page.getByLabel('Level', { exact: true })).toContainText('LZ');
+	await expect(page.getByLabel('Version')).toContainText(/Draft|Published/);
+	if ((await page.getByTestId('new-draft').count()) > 0) await page.getByTestId('new-draft').click();
+	await expect(page.getByLabel('Version')).toContainText('Draft');
+
+	// Zoom: the buttons, the keys and the wheel. The wheel keeps the floor point under the pointer where it is.
+	const level = page.getByTestId('zoom-level');
+	await expect(level).toHaveText('100%');
+	const fitted = await viewBox(page);
+	await page.getByTestId('zoom-in').click();
+	await expect(level).toHaveText('125%');
+	expect((await viewBox(page))[2]).toBeCloseTo(fitted[2] / 1.25, 3);
+	await page.getByTestId('zoom-out').click();
+	await expect(level).toHaveText('100%');
+	await page.getByTestId('zoom-fit').focus();
+	await page.keyboard.press('+');
+	await expect(level).toHaveText('125%');
+	await page.keyboard.press('0');
+	await expect(level).toHaveText('100%');
+	await showCanvas(page);
+	const corner = await screenOf(page, 6, 6);
+	await page.mouse.move(corner.x, corner.y);
+	await page.mouse.wheel(0, -400);
+	await expect.poll(async () => Number(await page.getByTestId('zone-canvas').getAttribute('data-zoom'))).toBeGreaterThan(1.5);
+	const under = await floorOf(page, corner.x, corner.y);
+	expect(under.x, 'the point under the pointer stays').toBeCloseTo(6, 1);
+	expect(under.y).toBeCloseTo(6, 1);
+
+	// Pan: dragging the empty floor moves the view, not a shape; Fit brings the whole level back.
+	const before = await viewBox(page);
+	await drag(page, corner, { x: 120, y: 80 });
+	const after = await viewBox(page);
+	expect(after[0], 'the view moved left as the floor moved right').toBeLessThan(before[0]);
+	expect(after[2], 'panning keeps the zoom').toBeCloseTo(before[2], 3);
+	await page.getByTestId('zoom-fit').click();
+	expect(await viewBox(page)).toEqual(fitted);
+
+	// A queue zone with an entry line. A new zone starts in the middle, under the others; selected, it is drawn on top.
+	await page.getByTestId('add-zone').click();
+	await page.getByTestId('add-zone-form').getByLabel('Name').fill('Move Z');
+	await page.getByTestId('add-zone-form').getByRole('button', { name: 'Create' }).click();
+	await expect(page.getByTestId('zone-details').getByRole('heading', { level: 2 })).toHaveText('Move Z');
+	await page.getByTestId('add-line').click();
+	const form = page.getByTestId('add-line-form');
+	await form.getByLabel('Name').fill('Move in');
+	await form.getByLabel('Role').selectOption('Entry');
+	await form.getByLabel('Queue zone').selectOption({ label: 'Move Z' });
+	await form.getByRole('button', { name: 'Create' }).click();
+	await expect(page.getByTestId('line-details')).toContainText('Move in');
+	await page.getByTestId('zones-list').getByRole('button', { name: /Move Z/ }).click();
+	const start = await corners(page);
+	const token = (await signIn(accounts().webAdmin)).accessToken;
+	const stored = async () => {
+		const versions = (await (await call('GET', `${api}/zone-profiles?siteCode=${site()}`, { token })).json()) as { id: string; status: string }[];
+		const draft = versions.find((p) => p.status === 'Draft')!;
+		return (await (await call('GET', `${api}/zone-profiles/${draft.id}`, { token })).json()) as {
+			zones: { id: string; name: string; polygon: string }[];
+			lines: { name: string; zoneId: string; startX: number; startY: number; endX: number; endY: number }[];
+		};
+	};
+	const entryBefore = (await stored()).lines.find((l) => l.name === 'Move in')!;
+
+	// Drag the whole zone by its middle: every corner and the entry line move by the same offset, saved in one call.
+	await showCanvas(page);
+	const middle = await screenOf(page, (start[0][0] + start[2][0]) / 2, (start[0][1] + start[2][1]) / 2);
+	await drag(page, middle, { x: 90, y: -45 });
+	await expect(page.getByText('Move Z saved.')).toBeVisible();
+	const moved = await corners(page);
+	const dx = moved[0][0] - start[0][0];
+	const dy = moved[0][1] - start[0][1];
+	expect(dx, 'the zone moved right').toBeGreaterThan(2);
+	expect(dy, 'and up').toBeLessThan(-1);
+	moved.forEach(([x, y], i) => {
+		expect(x).toBeCloseTo(start[i][0] + dx, 3);
+		expect(y).toBeCloseTo(start[i][1] + dy, 3);
+	});
+	const saved = await stored();
+	const zone = saved.zones.find((z) => z.name === 'Move Z')!;
+	expect(zone.polygon.split(',').map((p) => p.split(' ').map(Number))).toEqual(moved);
+	const entry = saved.lines.find((l) => l.name === 'Move in')!;
+	expect(entry.zoneId).toBe(zone.id);
+	expect([entry.startX, entry.startY, entry.endX, entry.endY], 'the entry line moved with its zone, by the same offset').toEqual(
+		[entryBefore.startX + dx, entryBefore.startY + dy, entryBefore.endX + dx, entryBefore.endY + dy].map((v) => Math.round(v * 1000) / 1000)
+	);
+
+	// The keyboard: the selected zone takes the focus; Shift and an arrow move it 1 m, Enter saves.
+	const shape = page.getByRole('button', { name: /^Move Z\. Arrow keys move the whole zone/ });
+	await shape.focus();
+	await shape.press('Shift+ArrowLeft');
+	await shape.press('Enter');
+	await expect(page.getByText('Move Z saved.').first()).toBeVisible();
+	await expect.poll(async () => (await corners(page))[0][0]).toBeCloseTo(moved[0][0] - 1, 3);
+
+	// A corner typed and not saved: moving the whole zone waits until it is saved or undone.
+	await page.getByLabel('Corner 1, x in metres').fill(String(moved[0][0] - 1.5));
+	await page.getByLabel('Corner 1, x in metres').press('Tab');
+	await shape.focus();
+	await shape.press('ArrowRight');
+	await expect(page.getByText(/before moving the whole zone/)).toBeVisible();
+	await page.getByRole('button', { name: 'Undo changes' }).click();
+
+	// Two fingers: a pinch apart zooms in around their middle.
+	const fit = await page.getByTestId('zone-canvas').getAttribute('data-zoom');
+	await showCanvas(page);
+	const a = await screenOf(page, 8, 30);
+	const b = await screenOf(page, 14, 30);
+	await page.getByTestId('zone-canvas').evaluate(
+		(svg, [p, q]) => {
+			const send = (type: string, id: number, x: number, y: number) =>
+				svg.dispatchEvent(new PointerEvent(type, { pointerId: id, pointerType: 'touch', clientX: x, clientY: y, bubbles: true, isPrimary: id === 1 }));
+			send('pointerdown', 1, p.x, p.y);
+			send('pointerdown', 2, q.x, q.y);
+			for (let i = 1; i <= 5; i++) send('pointermove', 2, q.x + i * 20, q.y);
+			send('pointerup', 2, q.x + 100, q.y);
+			send('pointerup', 1, p.x, p.y);
+		},
+		[a, b]
+	);
+	expect(Number(await page.getByTestId('zone-canvas').getAttribute('data-zoom')), 'the pinch zoomed in').toBeGreaterThan(Number(fit) * 1.5);
+	allowStatuses(guards, 401, 404);
+	await guards.expectClean();
+});
+
 test('an uploaded SVG plan with script is shown as an image from a blob URL: nothing runs, the CSP holds', async ({ page }) => {
 	const guards = await guardPage(page);
 	await signInThroughUi(page, accounts().webAdmin);
@@ -247,6 +426,31 @@ test('a handler station manager sees the demo airport zones read only', async ({
 	await expect(page.getByTestId('vertex-handle')).toHaveCount(0);
 	await expect(page.getByTestId('save-zone')).toHaveCount(0);
 	await expect(page.getByLabel('Corner 1, x in metres')).toHaveAttribute('readonly', '');
+
+	// ARV-298: viewing needs the tools too; without edit rights a drag on a zone pans the view and moves nothing.
+	const cornerBefore = await page.getByLabel('Corner 1, x in metres').inputValue();
+	await showCanvas(page);
+	const box = (await page.getByTestId('zone-shape').last().locator('polygon').boundingBox())!;
+	const viewBefore = await viewBox(page);
+	await drag(page, { x: box.x + box.width / 2, y: box.y + box.height / 2 }, { x: 60, y: 0 });
+	expect((await viewBox(page))[0], 'the view moved').toBeLessThan(viewBefore[0]);
+	await expect(page.getByLabel('Corner 1, x in metres')).toHaveValue(cornerBefore);
+	// The keys move nothing either, even on a zone given the focus: no move is sent.
+	const moves: string[] = [];
+	page.on('request', (request) => {
+		if (request.url().includes('/zone-profiles/') && request.method() !== 'GET') moves.push(`${request.method()} ${request.url()}`);
+	});
+	const shape = page.getByTestId('zone-shape').last().locator('polygon');
+	await shape.evaluate((polygon) => (polygon as SVGElement).focus());
+	await expect(shape, 'the keys go to the zone').toBeFocused();
+	await page.keyboard.press('ArrowRight');
+	await page.keyboard.press('Shift+ArrowDown');
+	await page.keyboard.press('Enter');
+	await page.waitForTimeout(500);
+	expect(moves, 'no change was sent').toEqual([]);
+	await expect(page.getByLabel('Corner 1, x in metres')).toHaveValue(cornerBefore);
+	await page.getByTestId('zoom-in').click();
+	await expect(page.getByTestId('zoom-level')).toHaveText('125%');
 
 	// The server refuses what the screen hides.
 	const token = (await signIn(accounts().webHandler)).accessToken;

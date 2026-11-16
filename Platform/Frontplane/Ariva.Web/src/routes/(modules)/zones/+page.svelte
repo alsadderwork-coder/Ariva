@@ -9,7 +9,10 @@
 	import FloorPlanUpload from '$lib/components/pages/zones/FloorPlanUpload.svelte';
 	import LineDetails from '$lib/components/pages/zones/LineDetails.svelte';
 	import PublishPanel from '$lib/components/pages/zones/PublishPanel.svelte';
-	import ZoneCanvas, { type Selected } from '$lib/components/pages/zones/ZoneCanvas.svelte';
+	import ZoneCanvas, {
+		type Offset,
+		type Selected
+	} from '$lib/components/pages/zones/ZoneCanvas.svelte';
 	import ZoneDetails from '$lib/components/pages/zones/ZoneDetails.svelte';
 	import IllustrativeBanner from '$lib/components/shared/IllustrativeBanner.svelte';
 	import SimplePageHeader from '$lib/components/shared/SimplePageHeader.svelte';
@@ -37,6 +40,8 @@
 	/** Unsaved shapes: zone corners and line ends moved on the plan or typed in the table, by zone or line id. */
 	const zoneEdits = new SvelteMap<string, Point[]>();
 	const lineEdits = new SvelteMap<string, [Point, Point]>();
+	/** Whole-zone moves not saved yet (ARV-298): the offset from the stored zone, by zone id. Its lines go with it. */
+	const zoneMoves = new SvelteMap<string, Offset>();
 	let zoneName = $state('');
 	let zoneLane = $state('');
 	/** The selected zone's physical capacity as typed (ARV-114a); empty for none. */
@@ -113,6 +118,7 @@
 		profileId = id;
 		zoneEdits.clear();
 		lineEdits.clear();
+		zoneMoves.clear();
 		select(null);
 		if (!id) {
 			profile = null;
@@ -202,6 +208,8 @@
 	}
 
 	async function saveZone(id: string): Promise<void> {
+		// A pending whole-zone move is sent first, with its lines; then the name, lane and capacity.
+		if (zoneMoves.has(id) && !(await saveMove(id))) return;
 		const zone = profile?.zones.find((z) => z.id === id);
 		if (!zone || !profile) return;
 		const chosen = selected?.kind === 'zone' && selected.id === id;
@@ -221,6 +229,62 @@
 		replaceZone(result.data);
 		revision++;
 		toast.success($_('zones.saved', { values: { name: result.data.name } }));
+	}
+
+	function ownLines(zoneId: string): Line[] {
+		return profile?.lines.filter((l) => l.zoneId === zoneId) ?? [];
+	}
+
+	/**
+	 * One more step of a whole-zone move (a drag or an arrow key, ARV-298): the zone and its lines are shown moved by the
+	 * pending offset until it is saved. Refused while the zone or its lines have other unsaved shape changes.
+	 */
+	function moveZone(zoneId: string, step: Offset): boolean {
+		const zone = profile?.zones.find((z) => z.id === zoneId);
+		// Only a draft the caller may edit moves; the server refuses anything else too.
+		if (!zone || !editable) return false;
+		const own = ownLines(zoneId);
+		if (!zoneMoves.has(zoneId) && (zoneEdits.has(zoneId) || own.some((l) => lineEdits.has(l.id)))) {
+			toast.info($_('zones.moveFirst', { values: { name: zone.name } }));
+			return false;
+		}
+		const before = zoneMoves.get(zoneId) ?? { dx: 0, dy: 0 };
+		const offset = { dx: zones.round(before.dx + step.dx), dy: zones.round(before.dy + step.dy) };
+		const shift = (p: Point): Point => ({
+			x: zones.round(p.x + offset.dx),
+			y: zones.round(p.y + offset.dy)
+		});
+		zoneMoves.set(zoneId, offset);
+		zoneEdits.set(zoneId, (zones.parsePolygon(zone.polygon) ?? []).map(shift));
+		for (const line of own)
+			lineEdits.set(line.id, [
+				shift({ x: line.startX, y: line.startY }),
+				shift({ x: line.endX, y: line.endY })
+			]);
+		return true;
+	}
+
+	function dropMove(zoneId: string): void {
+		zoneMoves.delete(zoneId);
+		zoneEdits.delete(zoneId);
+		for (const line of ownLines(zoneId)) lineEdits.delete(line.id);
+	}
+
+	/** Saves a pending whole-zone move in one call: the server moves the zone and its lines together. */
+	async function saveMove(id: string): Promise<boolean> {
+		const offset = zoneMoves.get(id);
+		if (!offset || !profile) return false;
+		const result = await zones.moveZone(profile.profile.id, id, offset);
+		dropMove(id);
+		if (result.hasErrors || !result.data) {
+			failed(result.errorMessages[0] ?? '');
+			return false;
+		}
+		replaceZone(result.data.zone);
+		for (const line of result.data.lines) replaceLine(line.id, line);
+		revision++;
+		toast.success($_('zones.saved', { values: { name: result.data.zone.name } }));
+		return true;
 	}
 
 	/** Lines are not changed in place: the old line goes and a new one with the same name, role and zone takes its place. */
@@ -259,7 +323,8 @@
 	}
 
 	async function commit(target: NonNullable<Selected>): Promise<void> {
-		if (target.kind === 'zone') await saveZone(target.id);
+		if (target.kind === 'zone' && zoneMoves.has(target.id)) await saveMove(target.id);
+		else if (target.kind === 'zone') await saveZone(target.id);
 		else await saveLine(target.id);
 	}
 
@@ -467,6 +532,10 @@
 						lineEdits.set(lineId, end === 'start' ? [point, b] : [a, point]);
 					}
 				}}
+				onMoveZone={moveZone}
+				onMoveLine={(lineId, ends) => {
+					if (editable) lineEdits.set(lineId, ends);
+				}}
 				onCommit={commit}
 			/>
 			<p class="text-xs text-muted-foreground">
@@ -475,7 +544,7 @@
 		</div>
 		<aside class="flex min-w-0 flex-col gap-4">
 			{#if adding}
-				<div class="rounded-xl border bg-card p-4">
+				<div class="rounded-xl border bg-card p-4 shadow-xs">
 					<AddShapeForm
 						mode={adding}
 						profileId={profile.profile.id}
@@ -490,7 +559,7 @@
 					/>
 				</div>
 			{:else if selectedZone}
-				<div class="rounded-xl border bg-card p-4">
+				<div class="rounded-xl border bg-card p-4 shadow-xs">
 					{#key selectedZone.id}
 						<ZoneDetails
 							zone={selectedZone}
@@ -509,10 +578,15 @@
 							bind:lane={zoneLane}
 							bind:capacity={zoneCapacity}
 							onPoints={(points) => {
+								if (zoneMoves.has(selectedZone.id))
+									return void toast.info(
+										$_('zones.moveUnsaved', { values: { name: selectedZone.name } })
+									);
 								zoneEdits.set(selectedZone.id, points);
 							}}
 							onSave={() => saveZone(selectedZone.id)}
 							onRevert={() => {
+								dropMove(selectedZone.id);
 								zoneEdits.delete(selectedZone.id);
 								zoneName = selectedZone.name;
 								zoneLane = selectedZone.laneCategory ?? '';
@@ -523,7 +597,7 @@
 					{/key}
 				</div>
 			{:else if selectedLine}
-				<div class="rounded-xl border bg-card p-4">
+				<div class="rounded-xl border bg-card p-4 shadow-xs">
 					{#key selectedLine.id}
 						<LineDetails
 							line={selectedLine}
@@ -546,7 +620,7 @@
 				</div>
 			{/if}
 
-			<section class="rounded-xl border bg-card p-4" aria-labelledby="zones-list-title">
+			<section class="rounded-xl border bg-card p-4 shadow-xs" aria-labelledby="zones-list-title">
 				<h2 id="zones-list-title" class="mb-2 text-sm font-semibold">{$_('zones.zonesList')}</h2>
 				{#if levelZones.length === 0}
 					<p class="text-sm text-muted-foreground">{$_('zones.noZones')}</p>

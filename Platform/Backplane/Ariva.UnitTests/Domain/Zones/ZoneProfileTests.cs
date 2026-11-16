@@ -144,6 +144,79 @@ public sealed class ZoneProfileTests
     }
 
     [Fact]
+    public void TranslateZone_Should_MoveTheZoneAndItsLinesTogether_When_TheWholeZoneIsDragged()
+    {
+        var (profile, level, queue) = Publishable();
+        var overflow = profile.Zones.Single(z => z.Kind == ZoneKind.Overflow);
+        var overflowPolygon = overflow.Polygon;
+        var hall = profile.Lines.Single(l => l.Name == "Count hall");
+
+        // MoveZone alone refuses this: the entry and exit lines would be left behind (ARV-298).
+        var alone = () => profile.MoveZone(queue, level, Rect(12.5, 13, 24, 12));
+        alone.Should().Throw<InvalidOperationException>();
+
+        var moved = profile.TranslateZone(queue, level, 2.5, 3.0004);
+
+        queue.Points.Should().Equal(new FloorPoint(12.5, 13), new FloorPoint(36.5, 13), new FloorPoint(36.5, 25), new FloorPoint(12.5, 25));
+        moved.Select(l => l.Name).Should().BeEquivalentTo("Entry A", "Exit A");
+        var entry = profile.Lines.Single(l => l.Name == "Entry A");
+        (entry.Start, entry.End).Should().Be((new FloorPoint(12.5, 15), new FloorPoint(12.5, 19)), "the offset is rounded to the millimetre");
+        var exit = profile.Lines.Single(l => l.Name == "Exit A");
+        (exit.Start, exit.End).Should().Be((new FloorPoint(32.5, 25), new FloorPoint(36.5, 25)));
+        overflow.Polygon.Should().Be(overflowPolygon, "a zone that hangs off the queue keeps its place");
+        (hall.Start, hall.End).Should().Be((new FloorPoint(40, 0), new FloorPoint(40, 40)), "a count line of no zone stays");
+        profile.Lines.Where(l => l.Zone == queue && l.Role != LineRole.Count)
+            .Should().OnlyContain(l => Geometry.EdgeContaining(queue.Points, l.Start, l.End) >= 0, "every line still lies on an edge");
+    }
+
+    [Fact]
+    public void TranslateZone_Should_RefuseAndChangeNothing_When_AnyPointWouldLeaveTheLevelOrTheOffsetIsNotANumber()
+    {
+        var (profile, level, queue) = Publishable();
+        // A count line may belong to a zone and lie anywhere: it must stay inside the level as well.
+        profile.AddLine("Count edge", LineRole.Count, level, new FloorPoint(59, 12), new FloorPoint(59, 16), queue);
+        var polygon = queue.Polygon;
+        var ends = profile.Lines.Select(l => (l.Name, l.Start, l.End)).ToList();
+
+        var refusals = new (double Dx, double Dy, string Why)[]
+        {
+            (26.001, 0, "the zone's east edge would pass x = 60"),
+            (0, -10.001, "the zone's north edge would pass y = 0"),
+            (1.5, 0, "the zone's count line would pass x = 60"),
+            (double.NaN, 0, "not a number"),
+            (0, double.PositiveInfinity, "not finite"),
+            (2_000.001, 0, "beyond the largest move"),
+            (0, -2_000.001, "beyond the largest move the other way")
+        };
+        foreach (var (dx, dy, why) in refusals)
+        {
+            var move = () => profile.TranslateZone(queue, level, dx, dy);
+            move.Should().Throw<ArgumentException>(why);
+            queue.Polygon.Should().Be(polygon, why);
+            profile.Lines.Select(l => (l.Name, l.Start, l.End)).Should().Equal(ends, why);
+        }
+
+        profile.TranslateZone(queue, level, 1, -10).Should().HaveCount(3, "a move to the very edge of the level is allowed");
+    }
+
+    [Fact]
+    public void TranslateZone_Should_Refuse_When_TheLevelOrTheZoneIsNotTheZonesOwn()
+    {
+        var (profile, level, queue) = Publishable();
+        var other = new Airport("DMO", null, "Demo", "Asia/Amman").AddTerminal("T1", "T1", "DMO-T1").AddLevel("L1", "Upper", 1, 60, 40);
+        other.Id = Guid.Parse("0199a000-0000-7000-8000-00000000c0df");
+        var stranger = new ZoneProfile("DMO-T1", "Another").AddZone("Snake B", ZoneKind.Queue, level, Rect(1, 1, 4, 4));
+
+        var wrongLevel = () => profile.TranslateZone(queue, other, 1, 1);
+        var noLevel = () => profile.TranslateZone(queue, null, 1, 1);
+        var notOwn = () => profile.TranslateZone(stranger, level, 1, 1);
+
+        wrongLevel.Should().Throw<InvalidOperationException>().WithMessage("A zone stays on its level.");
+        noLevel.Should().Throw<InvalidOperationException>().WithMessage("A zone stays on its level.");
+        notOwn.Should().Throw<InvalidOperationException>().WithMessage("The zone is not in this profile.");
+    }
+
+    [Fact]
     public void RemoveZone_Should_RemoveItsLinesAndRefuseWhileZonesHangOffIt_When_Removed()
     {
         var (profile, _, queue) = Publishable();
@@ -350,6 +423,7 @@ public sealed class ZoneProfileTests
             () => profile.AddZone("Late", ZoneKind.Queue, level, Rect(0, 0, 2, 2)),
             () => profile.AddLine("Late", LineRole.Count, level, new FloorPoint(1, 1), new FloorPoint(1, 2)),
             () => profile.MoveZone(queue, level, Rect(10, 10, 24, 14)),
+            () => profile.TranslateZone(queue, level, 1, 1),
             () => profile.RenameZone(queue, "Renamed"),
             () => profile.RemoveLine(profile.Lines[0]),
             () => profile.RemoveZone(profile.Zones.Single(z => z.Kind == ZoneKind.Overflow)),

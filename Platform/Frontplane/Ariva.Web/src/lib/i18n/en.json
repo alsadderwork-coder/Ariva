@@ -430,7 +430,7 @@
 		"linesList": "Lines on this level",
 		"noZones": "No zones on this level",
 		"noLines": "No lines on this level",
-		"starterZone": "The zone starts as a small square in the middle of the level; drag its corners or type them in the table.",
+		"starterZone": "The zone starts as a small square in the middle of the level; drag it into place, drag its corners or type them in the table.",
 		"starterLine": "The line starts on an edge of its zone (an exit across from the entry); drag its ends along the edge or type them.",
 		"area": "{area} m²",
 		"length": "{length} m long",
@@ -481,7 +481,26 @@
 		"laneHint": "The lane category whose queue this is: the immigration screen shows its wait for that lane.",
 		"capacity": "Physical capacity (people)",
 		"capacityHint": "Optional, 1 to 5,000: the most people the area holds. The stream flags minutes whose occupancy is above it.",
-		"capacityInvalid": "The physical capacity is a whole number from 1 to 5,000, or empty."
+		"capacityInvalid": "The physical capacity is a whole number from 1 to 5,000, or empty.",
+		"moveZone": "{name}. Arrow keys move the whole zone with its lines, Enter saves.",
+		"moveLine": "{name}. Arrow keys move the whole line, Enter saves.",
+		"moveFirst": "Save or undo the changes to the corners of {name} or its lines before moving the whole zone.",
+		"moveUnsaved": "Save or undo the move of {name} first.",
+		"tools": {
+			"toolbar": "Plan view",
+			"zoomIn": "Zoom in",
+			"zoomOut": "Zoom out",
+			"zoomLevel": "Zoom level",
+			"fit": "Fit the level",
+			"focus": "Zoom to the selection",
+			"pan": "Hand tool: drag anywhere to move the view",
+			"fullscreen": "Full screen",
+			"exitFullscreen": "Leave full screen",
+			"hint": "Scroll or pinch to zoom, drag the floor to pan, drag a zone or line to move it.",
+			"hintReadOnly": "Scroll or pinch to zoom, drag to pan.",
+			"position": "x {x} m, y {y} m",
+			"scale": "{metres} m"
+		}
 	},
 	"devices": {
 		"title": "Devices",
@@ -2292,5 +2311,15 @@
 			"calibrationFailed": "Failed",
 			"noCalibrations": "No calibration record for the devices in scope."
 		}
+	},
+	"palette": {
+		"title": "Go to a screen or run a command",
+		"search": "Search screens and commands",
+		"placeholder": "Type a screen or a command",
+		"results": "Screens and commands",
+		"actions": "Commands",
+		"none": "Nothing matches",
+		"open": "Search",
+		"shortcut": "Ctrl K"
 	}
 }

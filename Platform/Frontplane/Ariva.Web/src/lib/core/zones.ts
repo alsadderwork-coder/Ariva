@@ -171,6 +171,23 @@ export function updateZone(
 	return ids([id, zoneId], () => Api.put<Zone>(`${base}/${id}/zones/${zoneId}`, zone));
 }
 
+/**
+ * Moves a whole zone and its lines by one offset in metres (ARV-298): the server keeps the entry and exit lines on the
+ * zone's edges, which a polygon change alone refuses.
+ */
+export function moveZone(
+	id: string,
+	zoneId: string,
+	offset: { dx: number; dy: number }
+): Promise<Result<{ zone: Zone; lines: Line[] }>> {
+	return ids([id, zoneId], () =>
+		Api.post<{ zone: Zone; lines: Line[] }>(`${base}/${id}/zones/${zoneId}/move`, {
+			dx: round(offset.dx),
+			dy: round(offset.dy)
+		})
+	);
+}
+
 export function removeZone(id: string, zoneId: string): Promise<Result<unknown>> {
 	return ids([id, zoneId], () => Api.delete<unknown>(`${base}/${id}/zones/${zoneId}`));
 }

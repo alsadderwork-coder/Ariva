@@ -27,6 +27,9 @@ public sealed record ZoneViewModel(Guid Id, string Name, string Kind, Guid Level
 
 public sealed record LineViewModel(Guid Id, string Name, string Role, Guid? ZoneId, Guid LevelId, double StartX, double StartY, double EndX, double EndY, double LengthMetres);
 
+/// <summary>A zone moved with its lines (ARV-298): the zone and every line of it, as stored after the move.</summary>
+public sealed record ZoneMovedViewModel(ZoneViewModel Zone, IReadOnlyList<LineViewModel> Lines);
+
 /// <summary>A version with its geometry.</summary>
 public sealed record ZoneProfileViewModel(ZoneProfileSummaryViewModel Profile, IReadOnlyList<ZoneViewModel> Zones, IReadOnlyList<LineViewModel> Lines);
 

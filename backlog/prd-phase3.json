@@ -2758,6 +2758,43 @@
       "dependsOn": [
         "ARV-297"
       ]
+    },
+    {
+      "id": "ARV-298",
+      "title": "[E8] Zones editor: zoom, pan and fit the plan, and move a whole zone with its lines",
+      "description": "Reported by the owner on 2026-11-16: on the Zones screen (ARV-053) the shapes of a zone or line just added cannot be moved, and the plan cannot be zoomed in or out. The canvas drew the level at one fixed scale with touch gestures turned off, so a 4 m starter square in a large hall was a few pixels wide and could be reshaped only corner by corner; the server refused a zone polygon that left its entry and exit lines behind, so a zone with lines could not be moved at all. CWEs to review: CWE-862, CWE-863 (the new endpoint), CWE-20 (strict input), CWE-79 (names on the plan).",
+      "acceptanceCriteria": [
+        "The plan zooms around the pointer with the wheel and with a two-finger pinch, pans by dragging the empty floor, with the middle button or with a hand tool, and has tools to zoom out and in, show the zoom level, fit the level, zoom to the selection and go full screen; + and - zoom and 0 fits; handles and labels keep their size on screen at any zoom; a grid, a scale bar and the pointer position in metres are shown; read-only users can zoom and pan",
+        "A whole zone moves by dragging it or with the arrow keys (0.1 m, 1 m with Shift, Enter saves), together with every line that belongs to it (entry, exit, overflow entry, and a count line given the zone), in one call; a whole line moves by dragging it or with the arrow keys; a zone with unsaved corner changes moves only once they are saved or undone; the selected zone is drawn on top; nothing moves on a read-only plan, by drag or by key",
+        "POST api/v1/admin/zone-profiles/{id}/zones/{zoneId}/move {dx, dy} moves a draft zone and its own lines by one offset rounded to the millimetre (ZoneProfile.TranslateZone), every point inside the level and at most 2,000 m each way, zones that hang off it unchanged, audited as ZoneProfile.ZoneMoved; EditZoneProfile, limited to the caller's sites (404 outside), 409 on a published version, 400 on strict input and range errors; listed in security/permission-matrix.json and docs/security/field-authorization.md, and the cross-field rule in wiki 11 section 13.3",
+        "Unit tests for TranslateZone (lines kept on their edges, refusals change nothing, the level and zone checks, published versions), integration tests against PostgreSQL (stored together, line ids kept, audited, refusals), API end-to-end tests (authorization and attack payloads) and Playwright functional tests (wheel, keys, buttons, pan, fit, a whole zone dragged and moved by keys, the unsaved-corner guard, a touch pinch, read-only pan)",
+        "node scripts/verify.mjs backend and web pass; the story's integration and E2E tests pass through node scripts/verify.mjs story",
+        "security-reviewer verdict PASS recorded in backlog/progress.md; wiki 11 and 12 updated; node scripts/verify.mjs docs passes"
+      ],
+      "priority": 330,
+      "passes": false,
+      "notes": "Filed and built 2026-11-16 at the owner's request (bug report with the UI modernisation, ARV-299). Not sign-in or authentication code.",
+      "dependsOn": [
+        "ARV-053"
+      ]
+    },
+    {
+      "id": "ARV-299",
+      "title": "[E8] A modern look and feel inside the AMAN family: shell, page patterns and every screen",
+      "description": "Owner request of 2026-11-16 (\"redesign the UI to the modern UI/UX\"), scoped by the owner the same day: modernise, keep the AMAN family (Aman.Web's colour tokens, DM Sans, sidebar and header measurements stay; Ariva.Web/CLAUDE.md unchanged). The sign-in and first sign-in pages stay as they are under the owner's sign-in freeze. CWEs to review: CWE-79 (the palette renders dictionary text only; the search is a field value), CWE-862 (the palette lists only the screens the sidebar shows; the server checks every call).",
+      "acceptanceCriteria": [
+        "A command palette (Ctrl+K or Cmd+K, and a Search button in the header) lists the screens the user's permissions cover, as the sidebar does, and a few commands (account security, theme, language), searches in the language on screen, works by keyboard (arrows, Enter, Escape) as a combobox over a listbox in a native modal dialog with no inline styles (CSP), never over another open modal dialog",
+        "The header is frosted and shows the screen's section in the breadcrumb; page headers wrap their actions under the title on narrower screens and never break a button's label; cards carry a hairline shadow; metric cards use tokens only; a native select's arrow never covers its text in either direction; motion stops for people who ask for less; scrolling to a target keeps it clear of the sticky header; the account panel stays in view beside the user list",
+        "Functional tests for the palette (shortcut, keyboard, role hiding against the sidebar, Arabic, an XSS probe on the search) and axe on the open palette in light and dark; the existing functional suite and the accessibility suite pass; the visual baselines are taken again in the pinned image and reviewed",
+        "Before and after screenshots of every screen for the owner",
+        "node scripts/verify.mjs web passes; security-reviewer verdict PASS recorded in backlog/progress.md; wiki 12 updated; node scripts/verify.mjs docs passes"
+      ],
+      "priority": 331,
+      "passes": false,
+      "notes": "Filed 2026-11-16. The sign-in and first sign-in frames (PublicFrame, /login, /setup) are left for after the sign-in freeze. Screen-by-screen refinements beyond the shared patterns (skeletons while loading, empty states with icons, the live floor plan on the zones editor's viewport) can follow as ARV-299a once the owner has seen this round.",
+      "dependsOn": [
+        "ARV-051"
+      ]
     }
   ]
 }

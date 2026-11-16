@@ -70,6 +70,19 @@ public sealed class ZoneProfilesController(ISvcZoneProfiles profiles) : Controll
     public async Task<IActionResult> UpdateZone(Guid id, Guid zoneId, UpdateZoneRequest request, CancellationToken ct) =>
         TopologyAnswers.Ok(this, await profiles.UpdateZoneAsync(id, zoneId, request, ct));
 
+    /// <summary>
+    /// Moves a zone and the lines that belong to it by one offset in metres (ARV-298), so its entry and exit lines stay on its
+    /// edges; zones that hang off it keep their place.
+    /// </summary>
+    [HttpPost("{id:guid}/zones/{zoneId:guid}/move")]
+    [Permission(nameof(Global.Defaults.Permissions.EditZoneProfile))]
+    [ProducesResponseType<ZoneMovedViewModel>(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> MoveZone(Guid id, Guid zoneId, MoveZoneRequest request, CancellationToken ct) =>
+        TopologyAnswers.Ok(this, await profiles.MoveZoneAsync(id, zoneId, request, ct));
+
     [HttpDelete("{id:guid}/zones/{zoneId:guid}")]
     [Permission(nameof(Global.Defaults.Permissions.EditZoneProfile))]
     [ProducesResponseType(StatusCodes.Status204NoContent)]

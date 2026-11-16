@@ -144,6 +144,13 @@ Content-Type: application/json
 
 { "name": "Entry A", "role": "Entry", "levelId": "{{levelId}}", "startX": 10, "startY": 12, "endX": 10, "endY": 16, "zoneId": "{{zoneId}}" }
 
+### Move the zone and its lines together by an offset in metres (EditZoneProfile, ARV-298)
+POST {{Ariva.Api.Main_HostAddress}}/api/v1/admin/zone-profiles/{{profileId}}/zones/{{zoneId}}/move
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{ "dx": 2.5, "dy": -1 }
+
 ### What stops the draft from being published (ViewZoneProfile)
 GET {{Ariva.Api.Main_HostAddress}}/api/v1/admin/zone-profiles/{{profileId}}/validation
 Authorization: Bearer {{accessToken}}

@@ -245,3 +245,66 @@ test("another site's caller sees nothing, and only administrators discard", asyn
 	const administrator = (await signIn(accounts().SystemAdministrator)).accessToken;
 	expect((await call('DELETE', `${api}/${draft.profile.id}`, { token: administrator })).status()).toBe(204);
 });
+
+test('a whole zone moves with its lines in one call; refused moves and other callers change nothing (ARV-298)', async () => {
+	const draft = await (await call('POST', `${api}/drafts`, { token: withSecondFactor, data: { siteCode: 'E2E2' } })).json();
+	const id = draft.profile.id as string;
+	type Line = { id: string; zoneId: string | null; startX: number; startY: number; endX: number; endY: number };
+	const snake = (draft.zones as { id: string; name: string; polygon: string }[]).find((z) => z.name === 'Snake A')!;
+	const own = (draft.lines as Line[]).filter((l) => l.zoneId === snake.id);
+	expect(own.length, 'the snake has its entry and exit lines').toBe(2);
+	const shifted = snake.polygon
+		.split(',')
+		.map((p) => p.split(' ').map(Number))
+		.map(([x, y]) => `${x + 2.5} ${y - 1}`)
+		.join(',');
+
+	// The polygon alone is refused: its entry and exit lines would stay behind.
+	const alone = await call('PUT', `${api}/${id}/zones/${snake.id}`, { token: withSecondFactor, data: { name: 'Snake A', polygon: shifted } });
+	expect(alone.status(), 'a polygon that leaves its lines behind').toBe(400);
+
+	const moved = await call('POST', `${api}/${id}/zones/${snake.id}/move`, { token: withSecondFactor, data: { dx: 2.5, dy: -1 } });
+	await expectStatus(moved, 200);
+	const answer = (await moved.json()) as { zone: { id: string; polygon: string }; lines: Line[] };
+	expect(answer.zone.id).toBe(snake.id);
+	expect(answer.zone.polygon.split(',').map((p) => p.split(' ').map(Number))).toEqual(shifted.split(',').map((p) => p.split(' ').map(Number)));
+	expect(answer.lines.map((l) => [l.id, l.startX, l.startY, l.endX, l.endY]).sort()).toEqual(
+		own.map((l) => [l.id, l.startX + 2.5, l.startY - 1, l.endX + 2.5, l.endY - 1]).sort()
+	);
+	const stored = await (await call('GET', `${api}/${id}`, { token: withSecondFactor })).json();
+	expect(stored.zones.find((z: { id: string }) => z.id === snake.id).polygon).toBe(answer.zone.polygon);
+	const validation = await (await call('GET', `${api}/${id}/validation`, { token: withSecondFactor })).json();
+	expect(validation.problems.filter((p: string) => p.includes('edge')), 'the lines still lie on the edges').toEqual([]);
+
+	// Strict input (CWE-20): a string, a missing offset, an unknown member and an offset past 2,000 m are refused before any change.
+	const refusedBodies: [unknown, string][] = [
+		[{ dx: '1', dy: 1 }, 'a number sent as a string'],
+		[{ dx: 1 }, 'no dy'],
+		[{ dx: 1, dy: 1, polygon: '0 0,1 0,1 1' }, 'an unknown member'],
+		[{ dx: 2000.5, dy: 0 }, 'past the largest move'],
+		[{ dx: 1e308, dy: 0 }, 'a huge number'],
+		[{ dx: 70, dy: 0 }, 'out of the 100 m level'],
+		['{"dx": 1, "dy": 1, "dx": 2}', 'a member sent twice']
+	];
+	for (const [data, why] of refusedBodies) {
+		const body = typeof data === 'string' ? { raw: data, headers: { 'Content-Type': 'application/json' } } : { data };
+		const response = await call('POST', `${api}/${id}/zones/${snake.id}/move`, { token: withSecondFactor, ...body });
+		expect(response.status(), why).toBe(400);
+		expect(await response.text(), `${why}: nothing echoed back as markup`).not.toContain('<');
+	}
+	const after = await (await call('GET', `${api}/${id}`, { token: withSecondFactor })).json();
+	expect(after.zones.find((z: { id: string }) => z.id === snake.id).polygon, 'refused moves change nothing').toBe(answer.zone.polygon);
+
+	// Authorization (CWE-862, CWE-863): no permission, another site, an id that is not a zone of this draft, a published version.
+	const handler = (await signIn(accounts().HandlerStationManager)).accessToken;
+	expect((await call('POST', `${api}/${id}/zones/${snake.id}/move`, { token: handler, data: { dx: 1, dy: 1 } })).status(), 'no EditZoneProfile').toBe(403);
+	const border = (await signIn(accounts().BorderShiftSupervisor)).accessToken;
+	expect((await call('POST', `${api}/${id}/zones/${snake.id}/move`, { token: border, data: { dx: 1, dy: 1 } })).status(), 'another site').toBe(404);
+	expect((await call('POST', `${api}/${id}/zones/${snake.id}/move`, { data: { dx: 1, dy: 1 } })).status(), 'no token').toBe(401);
+	expect((await call('POST', `${api}/${id}/zones/${id}/move`, { token: withSecondFactor, data: { dx: 1, dy: 1 } })).status(), 'not a zone').toBe(404);
+	expect((await call('POST', `${api}/${id}/zones/1%27%20OR%201=1--/move`, { token: withSecondFactor, data: { dx: 1, dy: 1 } })).status(), 'SQL in the route').toBe(404);
+	expect((await call('POST', `${api}/${firstId}/zones/${queueId}/move`, { token: withSecondFactor, data: { dx: 1, dy: 1 } })).status(), 'a retired version').toBe(409);
+
+	const administrator = (await signIn(accounts().SystemAdministrator)).accessToken;
+	expect((await call('DELETE', `${api}/${id}`, { token: administrator })).status()).toBe(204);
+});

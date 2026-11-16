@@ -188,6 +188,49 @@ public sealed class ZoneProfileWorkflowTests(PostgresFixture fixture) : IAsyncDi
     }
 
     [Fact]
+    public async Task MoveZone_Should_StoreTheZoneAndItsLinesMovedTogetherAndAuditIt_When_TheWholeZoneIsDragged()
+    {
+        // ARV-298: the zones screen drags a whole zone; its entry and exit lines go with it in one change.
+        var (admin, level) = await SiteAsync("ZPG", "ZPG");
+        var (_, foreignLevel) = await SiteAsync("ZPH", "ZPH");
+        var id = (await _host.AsCallerAsync(admin, s => Profiles(s).CreateDraftAsync(new CreateZoneProfileDraftRequest("ZPG", "G"), Ct))).Data.Profile.Id;
+        var queue = (await _host.AsCallerAsync(admin, s => Profiles(s).AddZoneAsync(id, new AddZoneRequest("Snake", "Queue", level, Rect(10, 10, 24, 12)), Ct))).Data.Id;
+        var entry = (await _host.AsCallerAsync(admin, s => Profiles(s).AddLineAsync(id, new AddLineRequest("Entry", "Entry", level, 10, 12, 10, 16, queue), Ct))).Data.Id;
+        var exit = (await _host.AsCallerAsync(admin, s => Profiles(s).AddLineAsync(id, new AddLineRequest("Exit", "Exit", level, 30, 22, 34, 22, queue), Ct))).Data.Id;
+        var other = (await _host.AsCallerAsync(admin, s => Profiles(s).CreateDraftAsync(new CreateZoneProfileDraftRequest("ZPH", "H"), Ct))).Data.Profile.Id;
+        var foreignZone = (await _host.AsCallerAsync(admin, s => Profiles(s).AddZoneAsync(other, new AddZoneRequest("Snake H", "Queue", foreignLevel, Rect(10, 10, 24, 12)), Ct))).Data.Id;
+
+        var moved = await _host.AsCallerAsync(admin, s => Profiles(s).MoveZoneAsync(id, queue, new MoveZoneRequest(5.5, -2.0004), Ct));
+
+        moved.HasErrors.Should().BeFalse(string.Join(", ", moved.ErrorMessages ?? []));
+        moved.Data.Zone.Polygon.Should().Be("15.500 8.000,39.500 8.000,39.500 20.000,15.500 20.000");
+        moved.Data.Lines.Select(l => (l.Id, l.StartX, l.StartY, l.EndX, l.EndY)).Should().Equal(
+            (entry, 15.5, 10.0, 15.5, 14.0), (exit, 35.5, 20.0, 39.5, 20.0));
+        (await _host.ReadAsync<string>("SELECT polygon FROM zone WHERE id = @id", queue)).Should().Be(moved.Data.Zone.Polygon, "stored as answered");
+        (await _host.ReadAsync<double>("SELECT start_x FROM line WHERE id = @id", entry)).Should().Be(15.5, "the line moved in place, its id kept");
+        (await _host.ReadAsync<string>("SELECT after_summary FROM audit_entry WHERE action = 'ZoneProfile.ZoneMoved' AND target_name = 'ZPG/Snake'"))
+            .Should().EndWith("; offset=5.500 -2.000; lines=Entry,Exit");
+        (await _host.AsCallerAsync(admin, s => Profiles(s).ValidateAsync(id, Ct))).Data.Problems.Should().NotContain(p => p.Contains("edge"), "the lines still lie on the edges");
+
+        // Refused moves change nothing: past the level's edge (100 by 50 m), a zone of another profile, a missing body.
+        var polygon = moved.Data.Zone.Polygon;
+        (await _host.AsCallerAsync(admin, s => Profiles(s).MoveZoneAsync(id, queue, new MoveZoneRequest(60.501, 0), Ct)))
+            .ErrorMessages.Should().ContainSingle().Which.Should().Contain("inside level L0");
+        (await _host.AsCallerAsync(admin, s => Profiles(s).MoveZoneAsync(id, foreignZone, new MoveZoneRequest(1, 1), Ct)))
+            .ErrorMessages.Should().Equal(new[] { TopologyErrors.NotFound }, "a zone of another profile");
+        (await _host.AsCallerAsync(admin, s => Profiles(s).MoveZoneAsync(id, queue, null, Ct)))
+            .ErrorMessages.Should().Equal(ZoneProfileErrors.MoveFormat);
+        (await _host.ReadAsync<string>("SELECT polygon FROM zone WHERE id = @id", queue)).Should().Be(polygon);
+        (await _host.ReadAsync<double>("SELECT start_x FROM line WHERE id = @id", entry)).Should().Be(15.5);
+        (await _host.ReadAsync<long>("SELECT count(*) FROM audit_entry WHERE action = 'ZoneProfile.ZoneMoved' AND target_name = 'ZPG/Snake'")).Should().Be(1);
+
+        // A published version never moves.
+        (await PublishReviewedAsync(admin, id)).HasErrors.Should().BeFalse();
+        (await _host.AsCallerAsync(admin, s => Profiles(s).MoveZoneAsync(id, queue, new MoveZoneRequest(1, 1), Ct)))
+            .ErrorMessages.Should().Equal(ZoneProfileErrors.NotADraft);
+    }
+
+    [Fact]
     public async Task Database_Should_RefuseAZoneOfAnotherProfileAndALaterRetirementDate_When_WrittenDirectly()
     {
         var (admin, level) = await SiteAsync("ZPF", "ZPF");

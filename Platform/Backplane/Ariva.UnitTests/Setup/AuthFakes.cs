@@ -161,6 +161,7 @@ public sealed class FakeTopology : Ariva.Core.Services.Topology.ISvcTopology, Ar
     public Task<Fluentx.Result<ZoneProfileViewModel>> RenameAsync(Guid id, RenameZoneProfileRequest request, CancellationToken ct = default) => Missing<ZoneProfileViewModel>();
     public Task<Fluentx.Result<ZoneViewModel>> AddZoneAsync(Guid id, AddZoneRequest request, CancellationToken ct = default) => Missing<ZoneViewModel>();
     public Task<Fluentx.Result<ZoneViewModel>> UpdateZoneAsync(Guid id, Guid zoneId, UpdateZoneRequest request, CancellationToken ct = default) => Missing<ZoneViewModel>();
+    public Task<Fluentx.Result<ZoneMovedViewModel>> MoveZoneAsync(Guid id, Guid zoneId, MoveZoneRequest request, CancellationToken ct = default) => Missing<ZoneMovedViewModel>();
     public Task<Fluentx.Result<bool>> RemoveZoneAsync(Guid id, Guid zoneId, CancellationToken ct = default) => Missing<bool>();
     public Task<Fluentx.Result<LineViewModel>> AddLineAsync(Guid id, AddLineRequest request, CancellationToken ct = default) => Missing<LineViewModel>();
     public Task<Fluentx.Result<bool>> RemoveLineAsync(Guid id, Guid lineId, CancellationToken ct = default) => Missing<bool>();

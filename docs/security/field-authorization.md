@@ -84,10 +84,10 @@ All fields: read with the entity's View or Search (BSS, TDM, HSM, SA), written w
 
 ### 3.3 Zones and profiles
 
-View models: `ZoneProfileSummaryViewModel`, `ZoneViewModel`, `LineViewModel`, `ZoneProfileViewModel`, `ZoneProfileValidationViewModel`
+View models: `ZoneProfileSummaryViewModel`, `ZoneViewModel`, `LineViewModel`, `ZoneMovedViewModel`, `ZoneProfileViewModel`, `ZoneProfileValidationViewModel`
 Other answer types: none.
 
-All fields: read with `ZoneProfile.View` or `.Search` (BSS, TDM, HSM, SA), written with `ZoneProfile.Create` and `.Edit` (BSS, TDM, SA) through `ZoneProfilesController`; only a draft changes (`ZoneProfile` entity).
+All fields: read with `ZoneProfile.View` or `.Search` (BSS, TDM, HSM, SA), written with `ZoneProfile.Create` and `.Edit` (BSS, TDM, SA) through `ZoneProfilesController`; only a draft changes (`ZoneProfile` entity). A zone's polygon and the ends of its lines are also written by `POST {id}/zones/{zoneId}/move` (ARV-298: `ZoneProfile.Edit`, drafts only, the caller's sites only, one offset for the zone and every line of it, `ZoneProfile.TranslateZone`), which answers `ZoneMovedViewModel`, the zone and its lines as stored.
 
 | Field or field group | Read by | Written by | Rule and where enforced | Test |
 |---|---|---|---|---|

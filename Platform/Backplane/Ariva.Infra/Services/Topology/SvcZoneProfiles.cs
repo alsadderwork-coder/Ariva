@@ -160,6 +160,35 @@ internal sealed class SvcZoneProfiles(
             return new Result<ZoneViewModel>(View(zone));
         });
 
+    public Task<Result<ZoneMovedViewModel>> MoveZoneAsync(Guid id, Guid zoneId, MoveZoneRequest request, CancellationToken ct = default) =>
+        DraftAsync(id, ct, async draft =>
+        {
+            if (request?.Dx is null || request.Dy is null)
+                return Result.Error<ZoneMovedViewModel>(ZoneProfileErrors.MoveFormat);
+            var dx = request.Dx.Value;
+            var dy = request.Dy.Value;
+            var zone = draft.Zones.FirstOrDefault(z => z.Id == zoneId);
+            if (zone is null)
+                return Result.Error<ZoneMovedViewModel>(TopologyErrors.NotFound);
+            var level = await LevelAsync(zone.LevelId, draft.SiteCode, ct);
+            if (level is null)
+                return Result.Error<ZoneMovedViewModel>(TopologyErrors.NotFound);
+
+            var before = Describe(zone);
+            var lines = draft.TranslateZone(zone, level, dx, dy);
+            await UpdateAsync(zone, ct);
+            foreach (var line in lines)
+                await UpdateAsync(line, ct);
+            await TouchAsync(draft, ct);
+            // The offset as applied (rounded to the millimetre, as the points are) and the lines that went with it; a line's
+            // ends follow from its LineAdded entry and the moves recorded after it.
+            var applied = new FloorPoint(dx, dy).Rounded();
+            var moved = string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"; offset={applied.X:0.000} {applied.Y:0.000}; lines={string.Join(",", lines.Select(l => l.Name).Order(StringComparer.Ordinal))}");
+            await AuditPartAsync("ZoneMoved", draft, zone.Name, before, Describe(zone) + moved, ct);
+            return new Result<ZoneMovedViewModel>(new ZoneMovedViewModel(View(zone), [.. lines.OrderBy(l => l.Name, StringComparer.Ordinal).Select(View)]));
+        });
+
     public Task<Result<bool>> RemoveZoneAsync(Guid id, Guid zoneId, CancellationToken ct = default) =>
         DraftAsync(id, ct, async draft =>
         {

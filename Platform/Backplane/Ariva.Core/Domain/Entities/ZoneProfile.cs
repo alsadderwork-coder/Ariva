@@ -134,6 +134,43 @@ public class ZoneProfile : BaseAuditableEntity<ZoneProfile>, ISiteBound
         own.SetPoints(points);
     }
 
+    /// <summary>The largest offset of one move, in metres: a level is at most 2,000 m on a side.</summary>
+    public const double MaxMoveMetres = 2_000;
+
+    /// <summary>
+    /// Moves a zone and the lines that belong to it by one offset in metres (ARV-298), so its entry, exit and overflow entry
+    /// lines stay on its edges; <see cref="MoveZone"/> refuses a change that leaves them behind. Zones that hang off it keep
+    /// their place (service desks and overflow bands are where they are in the hall). Every point stays inside the level;
+    /// the offset is rounded to the millimetre, as stored points are. Returns the zone's lines, moved.
+    /// </summary>
+    public virtual IReadOnlyList<Line> TranslateZone(Zone zone, Level level, double dx, double dy)
+    {
+        EnsureDraft();
+        var own = Own(zone);
+        if (level is null || level.Id != own.LevelId)
+            throw new DomainRuleException("A zone stays on its level.");
+        var offset = new FloorPoint(dx, dy).Rounded();
+        if (!offset.IsFinite || Math.Abs(offset.X) > MaxMoveMetres || Math.Abs(offset.Y) > MaxMoveMetres)
+            throw new DomainArgumentException($"A move is at most {MaxMoveMetres:0} m each way.", nameof(dx));
+
+        var points = Zone.RequirePolygon([.. own.Points.Select(p => Shift(p, offset))], level);
+        var lines = Lines.Where(l => l.Zone == own).ToList();
+        var ends = lines.Select(l => (Line: l, Start: Shift(l.Start, offset), End: Shift(l.End, offset))).ToList();
+        if (ends.Any(e => !level.Contains(e.Start.X, e.Start.Y) || !level.Contains(e.End.X, e.End.Y)))
+            throw new DomainArgumentException($"Every line of zone {Label(own.Name)} stays inside level {level.Code}.", nameof(dx));
+        // A move keeps a line on its edge; checked again, so that rounding can never strand one.
+        var stranded = ends.FirstOrDefault(e => e.Line.Role != LineRole.Count && Geometry.EdgeContaining(points, e.Start, e.End) < 0);
+        if (stranded.Line is not null)
+            throw new DomainRuleException($"Line {Label(stranded.Line.Name)} would no longer lie on the zone's edge; move or remove it first.");
+
+        own.SetPoints(points);
+        foreach (var e in ends)
+            e.Line.SetEnds(e.Start, e.End);
+        return lines;
+    }
+
+    private static FloorPoint Shift(FloorPoint point, FloorPoint offset) => new FloorPoint(point.X + offset.X, point.Y + offset.Y).Rounded();
+
     public virtual void RenameZone(Zone zone, string name)
     {
         EnsureDraft();
@@ -612,4 +649,13 @@ public class Line : EntityBase<Line>
     public virtual FloorPoint Start => new(StartX, StartY);
     public virtual FloorPoint End => new(EndX, EndY);
     public virtual double LengthMetres => Geometry.Length(Start, End);
+
+    /// <summary>Moves both ends (a zone moved with its lines, ARV-298); the profile checks the new ends first.</summary>
+    protected internal virtual void SetEnds(FloorPoint start, FloorPoint end)
+    {
+        StartX = start.X;
+        StartY = start.Y;
+        EndX = end.X;
+        EndY = end.Y;
+    }
 }

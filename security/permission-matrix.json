@@ -2044,6 +2044,27 @@
     },
     {
       "host": "main",
+      "method": "POST",
+      "route": "/api/v1/admin/zone-profiles/{id:guid}/zones/{zoneId:guid}/move",
+      "access": "permission",
+      "permissions": [
+        "EditZoneProfile"
+      ],
+      "body": {
+        "dx": 1,
+        "dy": 1
+      },
+      "expected": {
+        "anonymous": 401,
+        "BorderShiftSupervisor": 404,
+        "TerminalDutyManager": 404,
+        "HandlerStationManager": 403,
+        "SystemAdministrator": 404,
+        "ValidationObserver": 403
+      }
+    },
+    {
+      "host": "main",
       "method": "DELETE",
       "route": "/api/v1/admin/zone-profiles/{id:guid}/zones/{zoneId:guid}",
       "access": "permission",

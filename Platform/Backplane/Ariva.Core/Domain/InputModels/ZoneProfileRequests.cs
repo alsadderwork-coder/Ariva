@@ -32,6 +32,14 @@ public sealed record UpdateZoneRequest(
     [MaxLength(4)] string LaneCategory = null,
     [Range(0, Entities.Zone.MaxPhysicalCapacity)] int? PhysicalCapacity = null);
 
+/// <summary>
+/// Moves a zone and its lines by one offset in metres (ARV-298): what the zones screen sends when a whole zone is dragged
+/// or moved with the arrow keys. Rounded to the millimetre; every point stays inside the level.
+/// </summary>
+public sealed record MoveZoneRequest(
+    [Required, Range(-Entities.ZoneProfile.MaxMoveMetres, Entities.ZoneProfile.MaxMoveMetres)] double? Dx,
+    [Required, Range(-Entities.ZoneProfile.MaxMoveMetres, Entities.ZoneProfile.MaxMoveMetres)] double? Dy);
+
 public sealed record AddLineRequest(
     [Required, MaxLength(200)] string Name,
     [Required, MaxLength(32)] string Role,
