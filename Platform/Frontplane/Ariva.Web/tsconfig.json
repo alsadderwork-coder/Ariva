@@ -1,5 +1,9 @@
 {
-	"extends": "./.svelte-kit/tsconfig.json",
+	// SvelteKit 3 (ARV-300) writes its base configuration to node_modules/$app/tsconfig.json on every sync; the
+	// include and exclude lists are the ones it asks for (TypeScript does not merge them from the base).
+	"extends": "$app/tsconfig",
+	"include": ["src", "test", "*"],
+	"exclude": ["src/service-worker"],
 	"compilerOptions": {
 		"allowJs": true,
 		"checkJs": true,
@@ -14,8 +18,5 @@
 		"strictNullChecks": true,
 		"noImplicitAny": true
 	}
-	// Path aliases are handled by https://kit.svelte.dev/docs/configuration#alias
-	//
-	// If you want to overwrite includes/excludes, make sure to copy over the relevant includes/excludes
-	// from the referenced tsconfig.json - TypeScript does not merge them in
+	// Path aliases ($lib and @) are declared in vite.config.ts (kitOptions.alias)
 }

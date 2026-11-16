@@ -53,7 +53,7 @@ The repository mirrors AMAN's layout (see [ADR-0016](adr/ADR-0016-repository-mir
 | Ariva.Api.Integration | Platform/Backplane | 51005 | Anti-corruption layers: AODB adapters (AIDX, ACRIS, SSIM, vendor), AMAN feed translator (border only), notification channels, outbound wait-times API and webhooks, border-to-airport feed |
 | Ariva.UnitTests, Ariva.IntegrationTests | Platform/Backplane | | xUnit v3, Moq, FluentAssertions, Bogus |
 | Ariva.Business.Contracts | Platform/Business | | AMAN feed contracts V1: `DeskSessionChanged`, `DeskIntervalStats`, `EGateIntervalStats`, `InboundFlightLaneDemand` |
-| Ariva.Web | Platform/Frontplane | 51010 | SvelteKit 2, Svelte 5, Tailwind 4, bits-ui, ECharts, svelte-i18n: dashboards, live floor plan, zone editor, display pages |
+| Ariva.Web | Platform/Frontplane | 51010 | SvelteKit 3, Svelte 5, Tailwind 4, bits-ui, ECharts, svelte-i18n: dashboards, live floor plan, zone editor, display pages |
 | Ariva.Simulation.Api | Platform/Simulation | 51020 | Sensor, AODB and AMAN emulators; reference scenario = the prototype's seeded day (seed 9303, scripted events at 18:05, 18:20 to 18:30 and 19:10) |
 | Ariva.K8s | Platform/Cloud | | Helm charts and Helmfile |
 | Ariva.Cicd | Platform/Cloud | | Azure DevOps YAML pipelines for Dalil Container Registry deployments. CI was GitHub Actions, archived on 2026-11-06 to `github_archived/workflows` (ARV-295) and run by nothing; the Azure pipelines take over with ARV-217 to ARV-221 (`docs/plan/azure-devops-move.md`) |

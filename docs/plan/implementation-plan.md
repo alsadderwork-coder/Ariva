@@ -37,7 +37,7 @@ What already exists and passes in the build environment: the full solution skele
 | Aman.Api.Cronz | Ariva.Api.Cronz (51004) | TickerQ jobs |
 | Aman.Api.Integration | Ariva.Api.Integration (51005) | AODB and immigration integration, TOTP clients |
 | Aman.Business.Contracts | Ariva.Business.Contracts | AMAN feed contracts (packable) |
-| Aman.Web (50010) | Ariva.Web (51010) | SvelteKit 2, Svelte 5, Tailwind 4, bits-ui, ECharts |
+| Aman.Web (50010) | Ariva.Web (51010) | SvelteKit (Ariva 3 since ARV-300, Aman.Web 2), Svelte 5, Tailwind 4, bits-ui, ECharts |
 | Aman.Simulation.* | Ariva.Simulation.Api (51020) | Sensor, AODB and AMAN emulators, seed 9303 scenario |
 | Aman.UnitTests | Ariva.UnitTests, Ariva.IntegrationTests, Platform/Testing/Ariva.E2E | Unit, Testcontainers, Playwright API and functional |
 | Aman.K8s, Aman.Cicd | Ariva.K8s, Ariva.Cicd | Helm and Helmfile, Azure DevOps YAML |

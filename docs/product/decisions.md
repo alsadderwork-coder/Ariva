@@ -68,7 +68,7 @@ Product and architecture decisions in date order. Architecture decisions with co
 - Live push: SignalR with Redis backplane and MessagePack. ADR-0021.
 - Observability: Serilog plus OpenTelemetry to SigNoz or Loki. ADR-0022.
 - OpenSearch is not used in Phase 0 or the MVP. ADR-0023.
-- Front end: SvelteKit 2, Svelte 5, Tailwind 4, bits-ui, ECharts, svelte-i18n. ADR-0024.
+- Front end: SvelteKit 2, Svelte 5, Tailwind 4, bits-ui, ECharts, svelte-i18n. ADR-0024. SvelteKit 3 since ARV-300 (2026-11-16, for advisories with no 2.x fix): amendment proposed for the owner's decision.
 - Ariva.Simulation.Api with sensor, AODB and AMAN emulators; reference scenario is the prototype's seeded day (seed 9303; scripted events at 18:05, 18:20 to 18:30 and 19:10). AODB mocks cover AIDX 22.1, ACRIS and SSIM import. ADR-0025.
 - AMAN feed contracts V1 live in `Ariva.Business.Contracts`: DeskSessionChanged, DeskIntervalStats, EGateIntervalStats, InboundFlightLaneDemand.
 

@@ -1,14 +1,15 @@
 // Content security policy and security headers for Ariva.Web (CWE-79), defined once and used by:
-//   svelte.config.js              kit.csp in hash mode: SvelteKit hashes its inline bootstrap script, sends the
-//                                 policy as a header from `vite preview` and as a meta tag in build/index.html
-//   vite.config.ts                preview.headers, so the functional tests run against the production headers
+//   vite.config.ts                SvelteKit's csp option in hash mode (kitOptions, ARV-300): SvelteKit hashes its
+//                                 inline bootstrap script, sends the policy as a header from `vite preview` and
+//                                 as a meta tag in build/index.html; and preview.headers, so the functional
+//                                 tests run against the production headers
 //   scripts/postbuild-nginx.mjs   writes the same policy, with the script hashes, into build/nginx/default.conf
 // connect-src lists the API origins the app calls, taken from the same VITE_ARIVA_* variables as
 // src/lib/core/Endpoints.ts, read at build time (environment variables, then .env files in the working
 // directory, which is the project folder for every npm script).
 import { loadEnv } from 'vite';
 
-/** @typedef {NonNullable<NonNullable<import('@sveltejs/kit').KitConfig['csp']>['directives']>} CspDirectives */
+/** @typedef {NonNullable<NonNullable<import('@sveltejs/kit/vite').Config['csp']>['directives']>} CspDirectives */
 
 /**
  * API base URLs and their local defaults; keep in step with src/lib/core/Endpoints.ts. Ariva.Api.Main is on the web
@@ -90,7 +91,7 @@ export function apiOrigins(env) {
 }
 
 /**
- * The policy in SvelteKit's kit.csp format (keywords without quotes).
+ * The policy in the format of SvelteKit's csp option (keywords without quotes).
  * style-src needs no 'unsafe-inline': Tailwind and the Svelte component styles are emitted as external CSS files,
  * and Svelte sets dynamic styles through the CSSOM (element.style), which CSP does not restrict. The one static
  * inline style attribute, SvelteKit's route announcer, is allowed by hash in style-src-attr.

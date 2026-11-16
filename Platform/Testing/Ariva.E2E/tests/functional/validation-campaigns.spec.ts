@@ -372,8 +372,12 @@ test('a border shift supervisor plans a campaign on the screen, starts it, follo
 	await expect(page.locator('[data-testid="progress-desk"][data-desk="WIMM WD02"] [data-testid="progress-desk-minutes"]')).toHaveText('0');
 
 	// Every observer's counts: current revisions, then every revision; the reason as text, never markup.
+	const historyBefore = await page.evaluate(() => history.length);
 	await page.getByTestId('campaign-tab-counts').click();
 	await expect(page).toHaveURL(/view=counts/);
+	// A view replaces the history entry and keeps the focus where it was (goto with replace and reset false, ARV-300).
+	await expect(page.getByTestId('campaign-tab-counts')).toBeFocused();
+	expect(await page.evaluate(() => history.length), 'a view adds no history entry').toBe(historyBefore);
 	await expect(page.getByTestId('counts-no-names')).toContainText('never name a person');
 	await expect(page.getByTestId('count-row')).toHaveCount(2);
 	await expect(page.getByTestId('count-in')).toHaveText(['12', '14']);

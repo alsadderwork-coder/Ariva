@@ -55,7 +55,8 @@
 			query.set('campaign', campaign);
 			if (next && next !== 'progress' && views.includes(next)) query.set('view', next);
 		}
-		return `${resolve('/validation')}?${query}`;
+		// SvelteKit 3 (ARV-300): a path that starts with a slash is a route id, groups included.
+		return `${resolve('/(modules)/validation')}?${query}`;
 	}
 
 	function changeSite(event: Event): void {
@@ -65,10 +66,10 @@
 
 	function showView(next: CampaignView): void {
 		if (!campaignId) return;
+		// SvelteKit 3 (ARV-300): reset false keeps the scroll position and the focused element (noScroll and keepFocus).
 		void goto(address(siteCode, campaignId, next), {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true
+			replace: true,
+			reset: false
 		});
 	}
 

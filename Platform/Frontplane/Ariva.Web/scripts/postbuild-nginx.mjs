@@ -20,15 +20,16 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const indexPath = path.join(root, 'build', 'index.html');
 const nginxPath = path.join(root, 'build', 'nginx', 'default.conf');
 const cspLine = /add_header\s+Content-Security-Policy\s+"[^"]*"\s+always;/;
+// SvelteKit 3 (ARV-300) renders the announcer from its root component; SvelteKit 2 generated it in sync/write_root.js.
 const kitRootTemplate = path.join(
 	root,
 	'node_modules',
 	'@sveltejs',
 	'kit',
 	'src',
-	'core',
-	'sync',
-	'write_root.js'
+	'runtime',
+	'components',
+	'root.svelte'
 );
 
 const sha256 = (text) => `sha256-${createHash('sha256').update(text, 'utf8').digest('base64')}`;
@@ -50,6 +51,10 @@ if (inlineScripts.length === 0) fail('no inline script found in build/index.html
 
 const hashes = inlineScripts.map(sha256);
 
+if (!fs.existsSync(kitRootTemplate))
+	fail(
+		`${kitRootTemplate} not found; SvelteKit moved its route announcer, review style-src-attr in csp.config.js.`
+	);
 const announcer = fs
 	.readFileSync(kitRootTemplate, 'utf8')
 	.match(/id="svelte-announcer"[^>]*style="([^"]*)"/);
@@ -67,7 +72,7 @@ if (
 const meta = html.match(/<meta http-equiv="content-security-policy" content="([^"]*)"/i);
 if (!meta)
 	fail(
-		'SvelteKit did not write a content-security-policy meta tag; check kit.csp in svelte.config.js.'
+		'SvelteKit did not write a content-security-policy meta tag; check the csp option in vite.config.ts.'
 	);
 for (const hash of hashes) {
 	if (!meta[1].includes(`'${hash}'`))

@@ -1,13 +1,44 @@
+import adapter from '@sveltejs/adapter-static';
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig, type Plugin } from 'vite';
 import { cspDirectives, securityHeaders, serializeCsp } from './csp.config.js';
+
+/**
+ * SvelteKit's options (ARV-300): since SvelteKit 3 they are passed to its Vite plugin, and a svelte.config.js file
+ * stops the build. Options SvelteKit does not use itself (preprocess, compilerOptions) go on to vite-plugin-svelte.
+ */
+const kitOptions = {
+	// Consult https://svelte.dev/docs/kit/integrations for more information about preprocessors
+	preprocess: vitePreprocess(),
+	compilerOptions: {
+		runes: true
+	},
+	// Static SPA build served by nginx (see Dockerfile and static/nginx/default.conf), as in Aman.Web.
+	adapter: adapter({
+		pages: 'build',
+		assets: 'build',
+		fallback: 'index.html' // for SPA routing
+	}),
+	// SvelteKit 3 no longer provides $lib; declaring it keeps every import as it was (its own migration path).
+	alias: {
+		$lib: './src/lib',
+		'@': './src/lib'
+	},
+	// CWE-79: strict content security policy (see csp.config.js). Hash mode adds the hash of SvelteKit's inline
+	// bootstrap script, so script-src needs no 'unsafe-inline'.
+	csp: {
+		mode: 'hash' as const,
+		directives: cspDirectives()
+	}
+};
 
 /**
  * Vite applies preview.headers only to the files its own static middleware serves, but SvelteKit's preview
  * middleware answers every request. This plugin runs first in the preview server and sets preview.headers on
  * every response; for HTML pages SvelteKit then replaces Content-Security-Policy with the same policy plus the
- * hash of its inline bootstrap script (kit.csp in svelte.config.js). It also switches off the permissive CORS
+ * hash of its inline bootstrap script (csp in kitOptions above). It also switches off the permissive CORS
  * (Access-Control-Allow-Origin: *) that SvelteKit enables for the preview server, because nginx sends none.
  *
  * Page requests are never answered with 304 Not Modified: SvelteKit's preview renders its own fallback page, and a
@@ -55,7 +86,7 @@ const apiProxy = {
 // The preview server sends the production security headers, the same values nginx sends (csp.config.js and
 // static/nginx/default.conf), so the Playwright functional tests exercise the real policy.
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit(), previewSecurityHeaders()],
+	plugins: [tailwindcss(), sveltekit(kitOptions), previewSecurityHeaders()],
 	server: { port: 51010, proxy: apiProxy },
 	preview: {
 		port: 51011,

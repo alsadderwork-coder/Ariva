@@ -84,7 +84,7 @@ Invariants:
 | Live push | SignalR with Redis backplane and MessagePack | ADR-0021 |
 | Observability | Serilog plus OpenTelemetry to SigNoz or Loki | ADR-0022 |
 | Search | No OpenSearch in Phase 0 or the MVP | ADR-0023 |
-| Front end | SvelteKit 2, Svelte 5, Tailwind 4, bits-ui, ECharts, svelte-i18n | ADR-0024 |
+| Front end | SvelteKit 3 (since ARV-300; amendment proposed), Svelte 5, Tailwind 4, bits-ui, ECharts, svelte-i18n | ADR-0024 |
 | Simulation | Ariva.Simulation.Api with the seeded reference day (seed 9303) and the AUH-TA arrivals evening (seed 9304), one day per scenario site | ADR-0025 |
 | Authorisation | AMAN's `Permission` attribute, default-deny fallback policy, integration scopes, device authentication | `../docs/security/cwe-controls.md` |
 

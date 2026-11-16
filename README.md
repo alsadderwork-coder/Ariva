@@ -36,7 +36,7 @@ Ariva/
     Business/
       Ariva.Business.Contracts   AMAN feed contracts V1, shipped to AMAN as a package
     Frontplane/
-      Ariva.Web                  SvelteKit 2, Svelte 5, Tailwind 4 single page app
+      Ariva.Web                  SvelteKit 3, Svelte 5, Tailwind 4 single page app
     Simulation/
       Ariva.Simulation.Api       sensor, AODB and AMAN emulators; seeded reference day
     Testing/
