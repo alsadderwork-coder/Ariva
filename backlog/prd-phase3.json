@@ -2808,7 +2808,7 @@
         "node scripts/verify.mjs web passes; security-reviewer verdict PASS recorded in backlog/progress.md; wiki 12 updated; node scripts/verify.mjs docs passes"
       ],
       "priority": 332,
-      "passes": false,
+      "passes": true,
       "notes": "Filed and built 2026-11-16. Not sign-in or authentication code: the sign-in, first sign-in, step-up and account security pages are left as they are under the owner's sign-in freeze.",
       "dependsOn": [
         "ARV-298",
@@ -2831,7 +2831,7 @@
         "docs and wiki pages affected by the change are updated (node scripts/verify.mjs docs passes)"
       ],
       "priority": 333,
-      "passes": false,
+      "passes": true,
       "notes": "Built 2026-11-16 on story/ARV-300-sveltekit-3, on top of ARV-299a, so that ARV-299a lands on a clean audit. The deprecated alias option (SvelteKit prints a warning at every sync and build) and the deprecated replaceState option of goto in the shell and the sign-in code stay until the sign-in freeze lifts: moving $lib to the #lib subpath import touches the frozen pages. The npm override on runed goes once bits-ui depends on a runed that accepts SvelteKit 3. The web image build is for the owner's pipeline (ARV-295).",
       "dependsOn": [
         "ARV-299a"
