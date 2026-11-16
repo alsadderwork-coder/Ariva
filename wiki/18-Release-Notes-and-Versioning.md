@@ -148,7 +148,7 @@ Changes since the last release that an operator must act on when upgrading, newe
 
 ### ARV-300: the web advisories of 2026-11-16, SvelteKit 3 (2026-11-16)
 
-- Behaviour: Ariva.Web builds with SvelteKit 3.2.0, Vite 8.3.8, adapter-static 4.0.1 and TypeScript 6.0.3, which fix GHSA-3r8g-jcqq-3p5j (High) and five Moderate advisories in SvelteKit, adapter-static and Vite. The screens, the content security policy (the same script hash mode and the same route announcer hash) and nginx's configuration are unchanged; the static build runs no SvelteKit server code in production. ADR-0024 carries a proposed amendment for the owner (SvelteKit 3 while Aman.Web is on SvelteKit 2).
+- Behaviour: Ariva.Web builds with SvelteKit 3.2.0, Vite 8.3.8, adapter-static 4.0.1 and TypeScript 6.0.3, which fix GHSA-3r8g-jcqq-3p5j (High) and five Moderate advisories in SvelteKit, adapter-static and Vite. The screens, the content security policy (the same script hash mode and the same route announcer hash) and nginx's configuration are unchanged; the static build runs no SvelteKit server code in production. ADR-0024 is amended (the owner's decision of 2026-11-16: SvelteKit 3 while Aman.Web is on SvelteKit 2).
 - Before the upgrade: nothing.
 - After the upgrade: replace the web image with one built from this release. A developer runs `npm ci` in `Platform/Frontplane/Ariva.Web` (Node 22.17 or later) and sets SvelteKit's options in `vite.config.ts`: SvelteKit 3 stops at a `svelte.config.js` file.
 

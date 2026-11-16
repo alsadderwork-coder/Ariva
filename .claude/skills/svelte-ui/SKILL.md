@@ -1,6 +1,6 @@
 ---
 name: svelte-ui
-description: Ariva.Web patterns (SvelteKit 2, Svelte 5 runes, Aman.Web's design system and tokens, shadcn-svelte and Bits UI, Tailwind 4, ECharts, i18n with RTL, SignalR live data, CSP-safe code). Load for any front-end work.
+description: Ariva.Web patterns (SvelteKit 3, Svelte 5 runes, Aman.Web's design system and tokens, shadcn-svelte and Bits UI, Tailwind 4, ECharts, i18n with RTL, SignalR live data, CSP-safe code). Load for any front-end work.
 ---
 # Ariva.Web patterns
 

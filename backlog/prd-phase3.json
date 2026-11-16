@@ -2832,7 +2832,7 @@
       ],
       "priority": 333,
       "passes": true,
-      "notes": "Built 2026-11-16 on story/ARV-300-sveltekit-3, on top of ARV-299a, so that ARV-299a lands on a clean audit. The deprecated alias option (SvelteKit prints a warning at every sync and build) and the deprecated replaceState option of goto in the shell and the sign-in code stay until the sign-in freeze lifts: moving $lib to the #lib subpath import touches the frozen pages. The npm override on runed goes once bits-ui depends on a runed that accepts SvelteKit 3. The web image build is for the owner's pipeline (ARV-295).",
+      "notes": "Built 2026-11-16 on story/ARV-300-sveltekit-3, on top of ARV-299a, so that ARV-299a lands on a clean audit. The deprecated alias option (SvelteKit prints a warning at every sync and build) and the deprecated replaceState option of goto in the shell and the sign-in code stay until the sign-in freeze lifts: moving $lib to the #lib subpath import touches the frozen pages. The npm override on runed goes once bits-ui depends on a runed that accepts SvelteKit 3. The web image build is for the owner's pipeline (ARV-295). The owner accepted the ADR-0024 amendment on 2026-11-16 (SvelteKit 3 stays, no exception for the SvelteKit 2 advisory).",
       "dependsOn": [
         "ARV-299a"
       ]
