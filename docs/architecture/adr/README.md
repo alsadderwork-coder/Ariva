@@ -21,7 +21,7 @@ Format per ADR: title, Status, Date, Source, Context, Decision, Consequences, Al
 | [ADR-0013](ADR-0013-python-forecasting-worker.md) | Python worker for model training and batch forecasts | Accepted | 2026-09-28 | D5 key decision 13; D4 model quality |
 | [ADR-0014](ADR-0014-canonical-flight-model-and-mocks.md) | Canonical flight model with AIDX and ACRIS adapters, mocks and a replay harness | Accepted | 2026-09-28 | D5 key decision 14; product decision 11 (mock AODB feeds during development) |
 | [ADR-0015](ADR-0015-product-name-ariva.md) | Product and code name Ariva | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 |
-| [ADR-0016](ADR-0016-repository-mirrors-aman.md) | Repository layout mirrors AMAN and inherits AMAN's code conventions | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 |
+| [ADR-0016](ADR-0016-repository-mirrors-aman.md) | Repository layout mirrors AMAN and inherits AMAN's code conventions | Accepted; amendment proposed 2026-11-06 (the move to Azure DevOps) | 2026-10-01 | Product owner decision, 2026-10-01 |
 | [ADR-0017](ADR-0017-nhibernate-and-timescale-sql-scripts.md) | NHibernate via IStorageProvider; dev-only SchemaUpdate; versioned SQL for TimescaleDB; binary COPY on the hot path | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 (overrides D5's EF Core statement) |
 | [ADR-0018](ADR-0018-masstransit-kafka-rider-behind-isvcmessagebus.md) | MassTransit 8 Kafka Rider behind ISvcMessageBus; raw Confluent consumer for stateful streams | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 (status Proposed) |
 | [ADR-0019](ADR-0019-kafka-topic-naming.md) | Kafka topic naming and keys | Accepted | 2026-10-01 | Product owner decision, 2026-10-01 (replaces D5's topic names) |

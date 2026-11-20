@@ -72,6 +72,8 @@ The chart and Helmfile need no change for Azure: every values file already defau
 
 ### Decisions to take first
 
+Taken 2026-11-06 (the owner; docs/product/decisions.md, ADR-0016's amendment of 2026-11-06): decision 1, Option B, and decision 2, a cosign key in Azure Key Vault, which also signs the offline bundle (decision 3). Decisions 4 to 6, and where the signed bundle is archived, follow from a reference project of Dalil's the owner is providing. Taken 2026-11-20 (the owner): until the Azure pipelines pass, Azure Pipelines builds from the GitHub repository through the Azure Pipelines app and the import into Azure Repos waits for the cut-over (ARV-223); the pipelines run on a self-hosted Linux x64 agent in pool `Default`, which also runs the checkpoint's mutation step (ARV-220). The owner's settings, step by step: [docs/harness/azure-devops.md](../harness/azure-devops.md).
+
 1. **Where the code lives.**
    - Option A, GitHub stays the home and Azure Pipelines does the delivery: Azure Pipelines builds from the GitHub repository (a GitHub service connection), pushes to Dalil Container Registry and releases to Dalil's Azure. Everything that works today keeps working, including this kind of cloud agent session, which works on GitHub repositories. The repository stays public (owner decision 2026-10-15).
    - Option B, Azure Repos becomes the home, as for AMAN: the repository is imported into Azure Repos, every GitHub workflow has to be ported or dropped, and GitHub is archived or kept as a read-only mirror. Agents then work through local Claude Code sessions on a machine with the Azure Repos clone; cloud sessions like this one attach GitHub repositories, so they could only work on the mirror.
@@ -86,7 +88,7 @@ The chart and Helmfile need no change for Azure: every values file already defau
 
 Each step names its story in `backlog/prd-azure-move.json`. Steps 1 and 2 are done by you in Azure DevOps and Azure; the pipeline work (3 to 7) is agent work in the repository.
 
-**1. Project and repository (ARV-215, you).**
+**1. Project and repository (ARV-215, you; every setting in [docs/harness/azure-devops.md](../harness/azure-devops.md)).**
 - Pick or create the Azure DevOps project (the one AMAN uses, or a new one).
 - Option A: Pipelines, New pipeline, GitHub, and install the Azure Pipelines app on `alsadderwork-coder/Ariva` (read access is enough).
 - Option B: Repos, Import repository, clone URL `https://github.com/alsadderwork-coder/Ariva.git` (public, so no credentials); it brings every branch and the full history. Set `main` as the default branch.

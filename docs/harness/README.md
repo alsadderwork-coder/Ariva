@@ -81,7 +81,6 @@ Each iteration starts a fresh Claude Code session on the highest-priority story 
 ## GitHub repository settings (one time, by the owner)
 
 - Visibility: public, confirmed as intended by the owner on 2026-10-15 (it had been set private on 2026-10-01). Everything committed is published: client material stays out of the repository (`.private/` is git-ignored), and so do credentials.
-- Actions secrets: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY` for the `claude` workflow; install the Claude GitHub App on the repository so the workflow can comment.
-- Variable `ENABLE_CODEQL=true`: CodeQL, secret scanning (with push protection) and dependency review are free on a public repository, so they can be turned on now (Settings, Code security).
-- A ruleset on `main` (require the `ci` checks and one review, block force pushes and deletions) is available on GitHub Free for a public repository; until the owner sets one, the harness hooks are the only guard.
+- Since ARV-295 GitHub runs no workflow: Actions disabled, the Actions secrets and the `k8s-dev` environment deleted and their tokens revoked, a ruleset on `v*` tags and one on `main` (block force pushes and deletions, linear history). Every step is in [azure-devops.md](azure-devops.md) section 3, with the Azure DevOps settings of the move (ARV-215 onwards).
+- Secret scanning with push protection stays free on a public repository (Settings, Code security); CodeQL ran as a workflow, now archived, and ARV-220 decides what replaces it.
 - Dependabot alerts and security updates: on (free on private repositories).

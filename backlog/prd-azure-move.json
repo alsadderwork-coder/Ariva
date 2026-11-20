@@ -56,7 +56,7 @@
       ],
       "priority": 1,
       "passes": false,
-      "notes": "Owner-run. Size S for the agent (the checklist), hours for the owner.",
+      "notes": "Owner-run. Size S for the agent (the checklist), hours for the owner. 2026-11-20: the checklist is docs/harness/azure-devops.md; the owner decided that Azure Pipelines builds from GitHub through the Azure Pipelines app until the pipelines pass, with the import into Azure Repos at the cut-over (ARV-223). Passes on the owner's record of sections 0 to 3 (the table at the end of the checklist).",
       "dependsOn": []
     },
     {
@@ -73,7 +73,7 @@
       ],
       "priority": 2,
       "passes": false,
-      "notes": "Owner-run for the Azure side. Decision 6 (the secret store) decides whether the variable group is linked to Azure Key Vault; ARV-083c is the store itself.",
+      "notes": "Owner-run for the Azure side. Decision 6 (the secret store) decides whether the variable group is linked to Azure Key Vault; ARV-083c is the store itself. 2026-11-20, the owner: a self-hosted Linux x64 agent in pool Default (no job time limit, so the checkpoint's mutation step runs there), not Microsoft-hosted. Its section goes into docs/harness/azure-devops.md.",
       "dependsOn": [
         "ARV-215"
       ]
@@ -152,7 +152,7 @@
       ],
       "priority": 6,
       "passes": false,
-      "notes": "Size M. Needed: GitHub runs none of these since ARV-295. 2026-11-06 (ARV-295): third-party-images.yml, codeql.yml and dependabot.yml are archived in github_archived/; port from there, and move the checks that read them (scripts/base-images.mjs, artifact-secrets.mjs, NbjSiteScopeTests) to the Azure pipeline. ARV-295: once work moves to Azure Repos nothing scans pushes for secrets (GitHub's secret scanning and push protection see only pushes to GitHub; Trivy's secret scan is archived): GitHub Advanced Security for Azure DevOps or Trivy's secret scan in the pull request gate.",
+      "notes": "Size M. Needed: GitHub runs none of these since ARV-295. 2026-11-06 (ARV-295): third-party-images.yml, codeql.yml and dependabot.yml are archived in github_archived/; port from there, and move the checks that read them (scripts/base-images.mjs, artifact-secrets.mjs, NbjSiteScopeTests) to the Azure pipeline. ARV-295: once work moves to Azure Repos nothing scans pushes for secrets (GitHub's secret scanning and push protection see only pushes to GitHub; Trivy's secret scan is archived): GitHub Advanced Security for Azure DevOps or Trivy's secret scan in the pull request gate. 2026-11-20, the owner: the checkpoint's mutation step, which the cloud sessions cannot finish (backlog/progress.md, the checkpoint on a7ef2ef7), runs on the self-hosted agent: the mutation pipeline, or the whole checkpoint, has no job time limit there.",
       "dependsOn": [
         "ARV-217"
       ]
